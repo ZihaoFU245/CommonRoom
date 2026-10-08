@@ -61,13 +61,22 @@ full local date and timezone available on timestamp hover. The server stores
 Unix timestamps in seconds. Commands and replies retain their console format
 alongside chat messages, only in your current tab and the view where the command ran.
 The Command view has its own local history. Private messages are grouped by
-person; only people with saved message history appear in the list. Start a
+person; only people you have exchanged private messages with appear in the list. Start a
 new private conversation with `/tell person message`; typing in a private conversation is equivalent to `/tell person message`. Reloading clears command output and
-fetches the latest 50 chat messages per room, plus up to 50 of your private
-messages. `/history 200` reads more retained messages on demand. `/clear`
+fetches a 50-message tail per room and per private conversation. Opening a
+conversation fetches its retained history; `/history 200` also prints more
+retained messages as local command output. `/clear`
 clears the local display without deleting server history; refresh restores it.
 The URL remembers the selected room, so refresh returns to the same conversation.
 Every permission check happens on the server.
+
+Orange badges count messages from other people that you have not read. Opening
+an unread conversation starts at its first unread message; **Jump to unread**
+returns to the next unread message while you browse history. Only messages
+viewed in a focused, visible conversation advance the read position. Unread
+counts sync across your devices and survive restarting or moving `data/`.
+Commands and reactions do not add unread messages. Histories evicted by the
+retention limit no longer contribute to the count.
 
 Message actions appear on hover (always on touch devices). Use **Reply** to
 quote a message in the composer, or **+** to choose an emoji/custom UTF-8
@@ -112,7 +121,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/rooms` | Everyone | List your rooms; admins can discover all rooms |
 | `/users` | Everyone | List active account names and permissions |
 | `/members [room]` | Everyone | List members of a room you belong to |
-| `/history [count] [user]` | Everyone | Read retained messages (default up to 50; room limit from config, private limit 200); private view uses the selected person |
+| `/history [count] [user]` | Everyone | Read retained messages (default up to 50; per-room and per-private-conversation limit from `max_messages`); private view uses the selected person |
 | `/join room` | Everyone | Open a room you already belong to; admins can join any room |
 | `/leave [room]` | Everyone | Leave the specified or selected room; an admin must add regular users back |
 | `/tell user message` | Everyone | Private message, visible only to sender and recipient |
@@ -226,9 +235,13 @@ production mode; debug builds use the saved `production` setting.
 They limit new account and room creation through both web commands and stdin.
 Disabled accounts count toward `max_users`. Lowering a limit preserves existing
 accounts and rooms while preventing new creation until the count is below it.
-`max_messages` is a positive integer, defaulting to 1000 per room. Each new
-message evicts the oldest when the room is full, keeping the newest messages.
-Lowering this limit trims and saves existing room histories at startup.
+`max_messages` is a positive integer, defaulting to 1000 for each room and each
+private conversation. Each new message evicts the oldest when that conversation
+is full, keeping the newest messages. A busy private conversation does not
+evict another person's history. Lowering this limit trims and saves both room
+and private histories at startup. Queue append/eviction is O(1); message saves
+still serialize the retained application state. Read positions use a separate
+SQLite table with indexed, monotonic updates and do not rewrite message data.
 Restart after editing these values.
 
 ### Cloudflare Tunnel (without Nginx)
@@ -272,7 +285,7 @@ See Cloudflare's [routing documentation](https://developers.cloudflare.com/tunne
 [WebSocket support](https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/),
 and [forwarded headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/).
 
-`origins` checks the browser Origin header for login, logout, and WebSockets.
+`origins` checks the browser Origin header for login, logout, read acknowledgements, and WebSockets.
 It contains scheme + host + optional port, never a path; for
 `https://domain.com/commonroom/`, the origin is `https://domain.com`.
 Production uses one HTTPS origin. `trust` checks the proxy IP separately.
@@ -310,6 +323,15 @@ rtk proxy ./chat > chat.log 2>&1
 Closing stdin leaves the web service running. Ctrl + C or SIGTERM stops it
 gracefully and checkpoints SQLite. No default account or password is shipped.
 
+## Data upgrades
+
+Schema v3 automatically migrates v1/v2 data folders, preserving accounts,
+sessions, message IDs, replies, mentions, and reactions. Existing retained
+history starts as read. Migration commits the new private conversations and
+read baselines together. Messages previously evicted by older versions cannot
+be recovered. Back up `data/` with the server stopped before upgrading; older
+binaries cannot open the upgraded schema.
+
 ## Move to another machine
 
 1. Stop the old server with Ctrl + C or SIGTERM. Wait for it to exit.
@@ -326,7 +348,7 @@ service/
 └── data/
     ├── config.json      # listener, public origin, production mode
     ├── chat.sqlite      # accounts, password hashes, rooms, memberships,
-    │                    # messages, and unexpired login sessions
+    │                    # messages, read positions, and unexpired login sessions
     └── chat.lock        # exclusive OS lock; safe to move after shutdown
 ```
 
@@ -334,10 +356,9 @@ SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
 the data folder. Only one process can use a folder at once. Compatible newer
-binaries read schema v1 and migrate it to v2 without discarding accounts or
-messages. Schema v2 adds reactions, replies and mentions; older binaries
-reject unknown newer schema
-versions. Browser login sessions keep their original 12-hour expiry across
+binaries read schemas v1/v2 and migrate them to v3 without discarding retained
+accounts or messages. Schema v3 adds per-conversation private queues and durable
+read positions; older binaries reject unknown newer schema versions. Browser login sessions keep their original 12-hour expiry across
 restart and migration. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.

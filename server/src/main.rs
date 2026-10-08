@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             shutdown_signal().await;
             app.stopping
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let _ = app.changes.send(());
+            let _ = app.changes.send(web::Change::All);
             tracing::info!("Shutting down");
         }
     })
@@ -132,7 +132,7 @@ fn console(app: App) {
                 Ok(reply) => {
                     tracing::info!("{reply}");
                     if app.engine.lock().unwrap().revision != before {
-                        let _ = app.changes.send(());
+                        let _ = app.changes.send(web::Change::All);
                     }
                 }
                 Err(error) => tracing::warn!("{error}"),

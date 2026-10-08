@@ -8,7 +8,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const PRIVATE_HISTORY: usize = 200;
 const VISIBLE_HISTORY: usize = 50;
 
 pub fn now() -> u64 {
@@ -55,6 +54,8 @@ pub struct Message {
     pub text: String,
     pub time: u64,
     #[serde(default)]
+    pub sequence: u64,
+    #[serde(default)]
     pub reactions: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
     pub reply: Option<Reply>,
@@ -71,12 +72,24 @@ pub struct Reply {
 pub struct Room {
     pub members: BTreeSet<String>,
     pub messages: VecDeque<Message>,
+    #[serde(default)]
+    pub revision: u64,
+}
+#[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PrivateChat {
+    pub messages: VecDeque<Message>,
+    pub revision: u64,
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Data {
     pub users: BTreeMap<String, Account>,
     pub rooms: BTreeMap<String, Room>,
-    pub direct: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct: Vec<Message>, // Legacy v1/v2 input; migrated once into private chats.
+    #[serde(default)]
+    pub private: BTreeMap<String, PrivateChat>,
+    #[serde(default)]
+    pub next_sequence: u64,
     #[serde(default)]
     pub sessions: BTreeMap<String, Session>,
 }
@@ -92,6 +105,20 @@ pub struct RoomView {
     pub messages: Vec<Message>,
 }
 #[derive(Serialize)]
+pub struct Unread {
+    pub count: usize,
+    pub first: Option<u64>,
+    pub through: u64,
+    pub oldest: u64,
+    pub revision: u64,
+}
+#[derive(Serialize)]
+pub struct History {
+    pub view: String,
+    pub messages: Vec<Message>,
+    pub revision: u64,
+}
+#[derive(Serialize)]
 pub struct Snapshot {
     pub kind: &'static str,
     pub username: String,
@@ -102,6 +129,7 @@ pub struct Snapshot {
     pub private_peers: Vec<String>,
     pub commands: Vec<crate::commands::Command>,
     pub available_rooms: Vec<String>,
+    pub unread: BTreeMap<String, Unread>,
 }
 
 pub struct Engine {
@@ -111,6 +139,7 @@ pub struct Engine {
     max_rooms: usize,
     max_messages: usize,
     db: Connection,
+    read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     _lock: Option<std::fs::File>,
 }
 impl Engine {
@@ -135,22 +164,123 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 2 {
+        if version > 3 {
             return Err("This data folder was written by a newer, incompatible server.".into());
         }
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);").map_err(|e| e.to_string())?;
-        db.execute_batch("PRAGMA user_version=2;")
-            .map_err(|e| e.to_string())?;
         let raw = db.query_row("SELECT json FROM state WHERE id=1", [], |r| {
             r.get::<_, String>(0)
         });
-        let data = match raw {
+        let mut data: Data = match raw {
             Ok(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string())?,
             Err(rusqlite::Error::QueryReturnedNoRows) => Data::default(),
             Err(e) => return Err(e.to_string()),
         };
+        db.execute_batch("CREATE TABLE IF NOT EXISTS read_positions (username TEXT NOT NULL, conversation TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY(username,conversation));").map_err(|e| e.to_string())?;
+        for message in data.direct.drain(..) {
+            let peer = message
+                .to
+                .as_deref()
+                .ok_or("Invalid legacy private message.")?;
+            data.private
+                .entry(private_key(&message.from, peer))
+                .or_default()
+                .messages
+                .push_back(message);
+        }
+        let mut messages: Vec<_> = data
+            .rooms
+            .values_mut()
+            .flat_map(|r| r.messages.iter_mut())
+            .chain(
+                data.private
+                    .values_mut()
+                    .flat_map(|r| r.messages.iter_mut()),
+            )
+            .collect();
+        messages.sort_by_key(|m| m.time);
+        data.next_sequence = data
+            .next_sequence
+            .max(messages.iter().map(|m| m.sequence).max().unwrap_or(0));
+        for message in messages {
+            if message.sequence == 0 {
+                data.next_sequence = data
+                    .next_sequence
+                    .checked_add(1)
+                    .filter(|n| *n <= i64::MAX as u64)
+                    .ok_or("Message sequence exhausted.")?;
+                message.sequence = data.next_sequence;
+            }
+        }
+        if version < 3 {
+            for room in data.rooms.values_mut() {
+                room.messages.make_contiguous().sort_by_key(|m| m.sequence);
+            }
+            for chat in data.private.values_mut() {
+                chat.messages.make_contiguous().sort_by_key(|m| m.sequence);
+            }
+        }
+        // Migration and its read baselines are committed together. Existing
+        // history starts read; future messages receive monotonically larger IDs.
+        if version < 3 {
+            let transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            for (name, room) in &data.rooms {
+                if let Some(last) = room.messages.back() {
+                    for user in &room.members {
+                        transaction
+                            .execute(
+                                "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
+                                params![user, format!("room:{name}"), last.sequence],
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            for (key, chat) in &data.private {
+                let (a, b) = key.split_once(':').ok_or("Invalid private conversation.")?;
+                if let Some(last) = chat.messages.back() {
+                    for user in [a, b] {
+                        transaction
+                            .execute(
+                                "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
+                                params![user, format!("dm:{key}"), last.sequence],
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
+            transaction.execute("INSERT INTO state(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![json]).map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=3;")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+        {
+            let mut query = db
+                .prepare("SELECT username,conversation,sequence FROM read_positions")
+                .map_err(|e| e.to_string())?;
+            let rows = query
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, u64>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (user, view, sequence) = row.map_err(|e| e.to_string())?;
+                read_positions
+                    .entry(user)
+                    .or_default()
+                    .insert(view, sequence);
+            }
+        }
         Ok(Self {
             data,
+            read_positions,
             revision: 0,
             max_users: 64,
             max_rooms: 64,
@@ -173,11 +303,24 @@ impl Engine {
             .rooms
             .values()
             .any(|room| room.messages.len() > max_messages)
+            || self
+                .data
+                .private
+                .values()
+                .any(|chat| chat.messages.len() > max_messages)
         {
             let previous = self.data.clone();
             for room in self.data.rooms.values_mut() {
-                room.messages
-                    .drain(..room.messages.len().saturating_sub(max_messages));
+                if room.messages.len() > max_messages {
+                    room.messages.drain(..room.messages.len() - max_messages);
+                    room.revision = room.revision.wrapping_add(1);
+                }
+            }
+            for chat in self.data.private.values_mut() {
+                if chat.messages.len() > max_messages {
+                    chat.messages.drain(..chat.messages.len() - max_messages);
+                    chat.revision = chat.revision.wrapping_add(1);
+                }
             }
             if let Err(error) = self.save() {
                 self.data = previous;
@@ -289,6 +432,124 @@ impl Engine {
         }
         Ok(())
     }
+    fn message(&mut self, from: &str, to: Option<&str>, text: &str) -> Result<Message, String> {
+        self.data.next_sequence = self
+            .data
+            .next_sequence
+            .checked_add(1)
+            .filter(|n| *n <= i64::MAX as u64)
+            .ok_or("Message sequence exhausted.")?;
+        let mut message = new_message(from, to, text);
+        message.sequence = self.data.next_sequence;
+        Ok(message)
+    }
+    fn push_private(&mut self, message: Message) {
+        let key = private_key(&message.from, message.to.as_deref().unwrap());
+        let chat = self.data.private.entry(key).or_default();
+        if chat.messages.len() == self.max_messages {
+            chat.messages.pop_front();
+        }
+        chat.messages.push_back(message);
+        chat.revision = chat.revision.wrapping_add(1);
+    }
+    fn unread(&self, user: &str, key: &str, messages: &VecDeque<Message>, revision: u64) -> Unread {
+        let read = self
+            .read_positions
+            .get(user)
+            .and_then(|p| p.get(key))
+            .copied()
+            .unwrap_or(0);
+        let start = messages.partition_point(|m| m.sequence <= read);
+        let mut incoming = messages.iter().skip(start).filter(|m| m.from != user);
+        let first = incoming.next().map(|m| m.sequence);
+        Unread {
+            count: usize::from(first.is_some()) + incoming.count(),
+            first,
+            through: messages.back().map_or(0, |m| m.sequence),
+            oldest: messages.front().map_or(0, |m| m.sequence),
+            revision,
+        }
+    }
+    fn conversation(
+        &self,
+        user: &str,
+        view: &str,
+    ) -> Result<(String, &VecDeque<Message>, u64), String> {
+        if !self.active(user) {
+            return Err("Account unavailable.".into());
+        }
+        if let Some(peer) = view.strip_prefix("@direct:") {
+            let key = private_key(user, peer);
+            let chat = self
+                .data
+                .private
+                .get(&key)
+                .ok_or("Conversation not found.")?;
+            return Ok((format!("dm:{key}"), &chat.messages, chat.revision));
+        }
+        let room = self
+            .data
+            .rooms
+            .get(view)
+            .filter(|r| r.members.contains(user))
+            .ok_or("You are not a member of this room.")?;
+        Ok((format!("room:{view}"), &room.messages, room.revision))
+    }
+    pub fn history(&self, user: &str, view: &str) -> Result<History, String> {
+        let (_, messages, revision) = self.conversation(user, view)?;
+        Ok(History {
+            view: view.into(),
+            messages: messages.iter().cloned().collect(),
+            revision,
+        })
+    }
+    pub fn mark_read(&mut self, user: &str, view: &str, through: u64) -> Result<bool, String> {
+        let (key, messages, _) = self.conversation(user, view)?;
+        if messages
+            .binary_search_by_key(&through, |m| m.sequence)
+            .is_err()
+        {
+            return Err("Message is no longer in this conversation.".into());
+        }
+        if self
+            .read_positions
+            .get(user)
+            .and_then(|p| p.get(&key))
+            .copied()
+            .unwrap_or(0)
+            >= through
+        {
+            return Ok(false);
+        }
+        self.db.execute("INSERT INTO read_positions VALUES(?1,?2,?3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+            params![user,key,through]).map_err(|e| { tracing::error!(error=%e,"Read position write failed"); "Storage unavailable; read position was not applied.".to_string() })?;
+        self.read_positions
+            .entry(user.into())
+            .or_default()
+            .insert(key, through);
+        Ok(true)
+    }
+    pub fn unreads(&self, name: &str) -> BTreeMap<String, Unread> {
+        self.data
+            .rooms
+            .iter()
+            .filter(|(_, room)| room.members.contains(name))
+            .map(|(view, room)| {
+                (
+                    view.clone(),
+                    self.unread(name, &format!("room:{view}"), &room.messages, room.revision),
+                )
+            })
+            .chain(self.data.private.iter().filter_map(|(key, chat)| {
+                private_peer(key, name).map(|peer| {
+                    (
+                        format!("@direct:{peer}"),
+                        self.unread(name, &format!("dm:{key}"), &chat.messages, chat.revision),
+                    )
+                })
+            }))
+            .collect()
+    }
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
         let user = self.data.users.get(name).filter(|u| !u.disabled)?;
         Some(Snapshot {
@@ -318,34 +579,30 @@ impl Engine {
                         .collect(),
                 })
                 .collect(),
-            direct: self
-                .data
-                .direct
-                .iter()
-                .filter(|m| m.from == name || m.to.as_deref() == Some(name))
-                .rev()
-                .take(VISIBLE_HISTORY)
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect(),
+            direct: {
+                let mut messages: Vec<_> = self
+                    .data
+                    .private
+                    .iter()
+                    .filter(|(key, _)| private_peer(key, name).is_some())
+                    .flat_map(|(_, chat)| {
+                        chat.messages
+                            .iter()
+                            .skip(chat.messages.len().saturating_sub(VISIBLE_HISTORY))
+                            .cloned()
+                    })
+                    .collect();
+                messages.sort_by_key(|m| m.sequence);
+                messages
+            },
             private_peers: self
                 .data
-                .direct
-                .iter()
-                .filter_map(|m| {
-                    if m.from == name {
-                        m.to.clone()
-                    } else if m.to.as_deref() == Some(name) {
-                        Some(m.from.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
+                .private
+                .keys()
+                .filter_map(|key| private_peer(key, name))
+                .map(String::from)
                 .collect(),
+            unread: self.unreads(name),
             commands: crate::commands::available(user.admin, false),
             available_rooms: self
                 .data
@@ -455,6 +712,7 @@ impl Engine {
                 return Err("Messages support at most 4000 characters.".into());
             }
             let room = room.ok_or("Select a room first.")?;
+            let mut message = self.message(author, None, input)?;
             let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
             if actor.is_some() && !target.members.contains(author) {
                 return Err("You are not a member of this room.".into());
@@ -462,11 +720,11 @@ impl Engine {
             if target.messages.len() == self.max_messages {
                 target.messages.pop_front();
             }
-            let mut message = new_message(author, None, input);
             message
                 .mentions
                 .retain(|name| target.members.contains(name));
             target.messages.push_back(message);
+            target.revision = target.revision.wrapping_add(1);
             return Ok(String::new());
         }
         match parts[0] {
@@ -488,9 +746,11 @@ impl Engine {
                     target.messages.iter().find(|m| m.id == id)
                 } else {
                     self.data
-                        .direct
+                        .private
                         .iter()
-                        .find(|m| m.id == id && (m.from == user || m.to.as_deref() == Some(user)))
+                        .filter(|(key, _)| private_peer(key, user).is_some())
+                        .flat_map(|(_, chat)| &chat.messages)
+                        .find(|m| m.id == id)
                 }
                 .cloned()
                 .ok_or("Message not found in this conversation (it may have expired).")?;
@@ -509,7 +769,16 @@ impl Engine {
                             .iter_mut()
                             .find(|m| m.id == id)
                     } else {
-                        self.data.direct.iter_mut().find(|m| m.id == id)
+                        self.data
+                            .private
+                            .get_mut(&private_key(
+                                &original.from,
+                                original.to.as_deref().unwrap(),
+                            ))
+                            .unwrap()
+                            .messages
+                            .iter_mut()
+                            .find(|m| m.id == id)
                     }
                     .unwrap();
                     if !target.reactions.contains_key(value) && target.reactions.len() >= 32 {
@@ -521,6 +790,20 @@ impl Engine {
                     }
                     if users.is_empty() {
                         target.reactions.remove(value);
+                    }
+                    if let Some(name) = room {
+                        let room = self.data.rooms.get_mut(name).unwrap();
+                        room.revision = room.revision.wrapping_add(1);
+                    } else {
+                        let chat = self
+                            .data
+                            .private
+                            .get_mut(&private_key(
+                                &original.from,
+                                original.to.as_deref().unwrap(),
+                            ))
+                            .unwrap();
+                        chat.revision = chat.revision.wrapping_add(1);
                     }
                     return Ok("Reaction updated.".into());
                 }
@@ -540,7 +823,7 @@ impl Engine {
                 } else {
                     None
                 };
-                let mut message = new_message(user, recipient, value);
+                let mut message = self.message(user, recipient, value)?;
                 message.reply = Some(Reply {
                     id: original.id.clone(),
                     from: original.from.clone(),
@@ -555,12 +838,12 @@ impl Engine {
                         target.messages.pop_front();
                     }
                     target.messages.push_back(message);
+                    target.revision = target.revision.wrapping_add(1);
                 } else {
                     message
                         .mentions
                         .retain(|name| name == user || Some(name.as_str()) == recipient);
-                    self.data.direct.push(message);
-                    trim(&mut self.data.direct);
+                    self.push_private(message);
                 }
                 Ok(String::new())
             }
@@ -582,21 +865,35 @@ impl Engine {
                 let scope = parts.get(2).copied().or(room).unwrap_or("@all");
                 let mut removed = 0;
                 if scope == "@all" || scope == "@private" {
-                    let before = self.data.direct.len();
-                    self.data.direct.retain(|m| m.time >= cutoff);
-                    removed += before - self.data.direct.len();
+                    for chat in self.data.private.values_mut() {
+                        let before = chat.messages.len();
+                        chat.messages.retain(|m| m.time >= cutoff);
+                        let deleted = before - chat.messages.len();
+                        if deleted > 0 {
+                            chat.revision = chat.revision.wrapping_add(1);
+                        }
+                        removed += deleted;
+                    }
                 }
                 if scope == "@all" {
                     for target in self.data.rooms.values_mut() {
                         let before = target.messages.len();
                         target.messages.retain(|m| m.time >= cutoff);
-                        removed += before - target.messages.len();
+                        let deleted = before - target.messages.len();
+                        if deleted > 0 {
+                            target.revision = target.revision.wrapping_add(1);
+                        }
+                        removed += deleted;
                     }
                 } else if scope != "@private" {
                     let target = self.data.rooms.get_mut(scope).ok_or("Room not found.")?;
                     let before = target.messages.len();
                     target.messages.retain(|m| m.time >= cutoff);
-                    removed += before - target.messages.len();
+                    let deleted = before - target.messages.len();
+                    if deleted > 0 {
+                        target.revision = target.revision.wrapping_add(1);
+                    }
+                    removed += deleted;
                 }
                 Ok(format!(
                     "Deleted {removed} messages older than {} from {scope}.",
@@ -681,11 +978,7 @@ impl Engine {
                         "Usage: /history [count] [user] (user is for private history)".into(),
                     );
                 }
-                let limit = if room.is_some() {
-                    self.max_messages
-                } else {
-                    PRIVATE_HISTORY
-                };
+                let limit = self.max_messages;
                 let count_error = format!("Count must be between 1 and {limit}.");
                 let count = parts
                     .get(1)
@@ -696,7 +989,7 @@ impl Engine {
                 if !(1..=limit).contains(&count) {
                     return Err(count_error);
                 }
-                let messages: Vec<_> = if let Some(name) = room {
+                let mut messages: Vec<_> = if let Some(name) = room {
                     let target = self.data.rooms.get(name).ok_or("Room not found.")?;
                     if actor.is_some() && !target.members.contains(author) {
                         return Err("You are not a member of this room.".into());
@@ -704,19 +997,19 @@ impl Engine {
                     target.messages.iter().collect()
                 } else if actor.is_some() {
                     self.data
-                        .direct
+                        .private
                         .iter()
-                        .filter(|m| m.from == author || m.to.as_deref() == Some(author))
-                        .filter(|m| {
-                            parts.get(2).is_none_or(|peer| {
-                                (m.from == author && m.to.as_deref() == Some(*peer))
-                                    || (m.from == *peer && m.to.as_deref() == Some(author))
+                        .filter(|(key, _)| {
+                            private_peer(key, author).is_some_and(|peer| {
+                                parts.get(2).is_none_or(|requested| peer == *requested)
                             })
                         })
+                        .flat_map(|(_, chat)| &chat.messages)
                         .collect()
                 } else {
                     return Err("Specify a room via a web session to read history.".into());
                 };
+                messages.sort_by_key(|m| m.sequence);
                 let text = messages
                     .iter()
                     .skip(messages.len().saturating_sub(count))
@@ -862,12 +1155,11 @@ impl Engine {
                 if !self.active(recipient) {
                     return Err("User not found.".into());
                 }
-                let mut message = new_message(author, Some(recipient), text);
+                let mut message = self.message(author, Some(recipient), text)?;
                 message
                     .mentions
                     .retain(|name| name == author || name == recipient);
-                self.data.direct.push(message);
-                trim(&mut self.data.direct);
+                self.push_private(message);
                 Ok(format!("Private message sent to {recipient}."))
             }
             "/delete" => {
@@ -963,6 +1255,7 @@ fn new_message(from: &str, to: Option<&str>, text: &str) -> Message {
         to: to.map(String::from),
         text: text.into(),
         time: now(),
+        sequence: 0,
         reactions: BTreeMap::new(),
         reply: None,
         mentions: mentioned_names(text),
@@ -989,9 +1282,21 @@ fn mentioned_names(text: &str) -> BTreeSet<String> {
     }
     result
 }
-fn trim(messages: &mut Vec<Message>) {
-    if messages.len() > PRIVATE_HISTORY {
-        messages.drain(..messages.len() - PRIVATE_HISTORY);
+fn private_key(a: &str, b: &str) -> String {
+    if a <= b {
+        format!("{a}:{b}")
+    } else {
+        format!("{b}:{a}")
+    }
+}
+fn private_peer<'a>(key: &'a str, user: &str) -> Option<&'a str> {
+    let (a, b) = key.split_once(':')?;
+    if a == user {
+        Some(b)
+    } else if b == user {
+        Some(a)
+    } else {
+        None
     }
 }
 
@@ -1025,7 +1330,7 @@ mod tests {
             }
             e.execute(Some("alice"), None, "/tell bob old private")
                 .unwrap();
-            e.data.direct[0].time = now() - 8 * 86400;
+            e.data.private.get_mut("alice:bob").unwrap().messages[0].time = now() - 8 * 86400;
             e.execute(Some("alice"), None, "/tell bob new private")
                 .unwrap();
             assert!(e.execute(Some("bob"), None, "/clean 7d @all").is_err());
@@ -1038,13 +1343,13 @@ mod tests {
             e.execute(Some("alice"), Some("one"), "/clean 7d").unwrap();
             assert_eq!(e.data.rooms["one"].messages.len(), 1);
             assert_eq!(e.data.rooms["two"].messages.len(), 2);
-            assert_eq!(e.data.direct.len(), 2);
+            assert_eq!(e.data.private["alice:bob"].messages.len(), 2);
             e.execute(None, None, "/clean 7d @all").unwrap();
         }
         let e = Engine::open(&path).unwrap();
         assert_eq!(e.data.rooms["two"].messages[0].text, "new");
-        assert_eq!(e.data.direct[0].text, "new private");
-        assert_eq!(e.data.direct.len(), 1);
+        assert_eq!(e.data.private["alice:bob"].messages[0].text, "new private");
+        assert_eq!(e.data.private["alice:bob"].messages.len(), 1);
     }
     #[test]
     fn password_change_keeps_current_session_and_rejects_stale_hashes() {
@@ -1074,8 +1379,93 @@ mod tests {
         }
         let snapshot = e.snapshot("alice").unwrap();
         assert_eq!(snapshot.private_peers, vec!["bob", "eve"]);
-        assert!(!snapshot.direct.iter().any(|m| m.from == "bob"));
+        assert!(snapshot.direct.iter().any(|m| m.from == "bob"));
         assert_eq!(e.snapshot("bob").unwrap().private_peers, vec!["alice"]);
+    }
+    #[test]
+    fn private_rings_are_independent_and_read_positions_persist() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chat.sqlite");
+        let through;
+        {
+            let mut e = Engine::open(&path).unwrap();
+            for name in ["alice", "bob", "eve"] {
+                e.provision(name, "hash".into(), name == "alice", false)
+                    .unwrap();
+            }
+            e.set_limits(64, 64, 3).unwrap();
+            e.execute(Some("alice"), None, "/new room").unwrap();
+            e.execute(Some("alice"), None, "/add bob room").unwrap();
+            for n in 0..5 {
+                e.execute(Some("alice"), None, &format!("/tell bob 私信 {n} 🙂"))
+                    .unwrap();
+                e.execute(Some("alice"), Some("room"), &format!("chat {n}"))
+                    .unwrap();
+            }
+            e.execute(Some("alice"), None, "/tell eve independent")
+                .unwrap();
+            assert_eq!(e.history("bob", "@direct:alice").unwrap().messages.len(), 3);
+            assert_eq!(e.history("alice", "@direct:eve").unwrap().messages.len(), 1);
+            assert_eq!(
+                e.history("bob", "@direct:alice").unwrap().messages[0].text,
+                "私信 2 🙂"
+            );
+            assert!(e.history("eve", "room").is_err());
+            let dm = e.snapshot("bob").unwrap();
+            assert_eq!(dm.unread["@direct:alice"].count, 3);
+            assert_eq!(dm.unread["room"].count, 3);
+            through = dm.unread["@direct:alice"].through;
+            let revision = e.revision;
+            assert!(e.mark_read("bob", "@direct:alice", through).unwrap());
+            assert_eq!(
+                e.revision, revision,
+                "read writes must not rewrite message state"
+            );
+            assert!(!e.mark_read("bob", "@direct:alice", through).unwrap());
+            assert!(e.mark_read("bob", "room", through).is_err());
+            assert!(
+                e.mark_read("eve", "room", dm.unread["room"].through)
+                    .is_err()
+            );
+            assert!(e.mark_read("bob", "@direct:alice", through + 100).is_err());
+            assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 0);
+            assert_eq!(e.snapshot("alice").unwrap().unread["@direct:bob"].count, 0);
+            let room_first = dm.unread["room"].first.unwrap();
+            e.mark_read("bob", "room", room_first).unwrap();
+            assert_eq!(e.snapshot("bob").unwrap().unread["room"].count, 2);
+            e.mark_read("bob", "room", dm.unread["room"].through)
+                .unwrap();
+            e.mark_read("bob", "room", room_first).unwrap();
+            assert_eq!(e.snapshot("bob").unwrap().unread["room"].count, 0);
+        }
+        let mut e = Engine::open(&path).unwrap();
+        assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 0);
+        e.execute(Some("alice"), None, "/tell bob after restart")
+            .unwrap();
+        assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
+        assert!(
+            e.snapshot("bob").unwrap().unread["@direct:alice"]
+                .first
+                .unwrap()
+                > through
+        );
+        e.set_limits(64, 64, 1).unwrap();
+        assert_eq!(e.history("bob", "@direct:alice").unwrap().messages.len(), 1);
+        assert_eq!(e.history("alice", "@direct:eve").unwrap().messages.len(), 1);
+    }
+    #[test]
+    fn failed_read_and_private_eviction_writes_restore_state() {
+        let mut e = engine();
+        e.set_limits(64, 64, 1).unwrap();
+        e.execute(Some("alice"), None, "/tell bob retained")
+            .unwrap();
+        let before = e.data.clone();
+        let through = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
+        e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+        assert!(e.mark_read("bob", "@direct:alice", through).is_err());
+        assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
+        assert!(e.execute(Some("alice"), None, "/tell bob failed").is_err());
+        assert!(e.data == before);
     }
     #[test]
     fn configurable_limits_preserve_existing_accounts_and_rooms() {
@@ -1342,7 +1732,7 @@ mod tests {
         }
         e.execute(Some("alice"), None, "/tell bob @bob @eve secret DM")
             .unwrap();
-        let dm = e.data.direct.last().unwrap().clone();
+        let dm = e.data.private["alice:bob"].messages.back().unwrap().clone();
         assert_eq!(dm.mentions, BTreeSet::from(["bob".into()]));
         assert!(
             e.execute(Some("eve"), None, &format!("/react {} 👍", dm.id))
@@ -1354,7 +1744,15 @@ mod tests {
         );
         e.execute(Some("bob"), None, &format!("/reply {} @alice 好", dm.id))
             .unwrap();
-        assert_eq!(e.data.direct.last().unwrap().to.as_deref(), Some("alice"));
+        assert_eq!(
+            e.data.private["alice:bob"]
+                .messages
+                .back()
+                .unwrap()
+                .to
+                .as_deref(),
+            Some("alice")
+        );
         assert!(e.snapshot("eve").unwrap().direct.is_empty());
     }
     #[test]
@@ -1381,6 +1779,52 @@ mod tests {
         assert_eq!(e.data.rooms["room"].messages[0].text, "旧消息");
         assert!(e.data.rooms["room"].messages[0].reactions.is_empty());
         assert!(e.data.rooms["room"].messages[0].reply.is_none());
+    }
+    #[test]
+    fn schema_two_migrates_private_pairs_without_losing_features() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chat.sqlite");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY, json TEXT NOT NULL); PRAGMA user_version=2;").unwrap();
+            let account = serde_json::json!({"hash":"hash","admin":false,"disabled":false});
+            let legacy = serde_json::json!({
+                "users":{"alice":account,"bob":account,"eve":account}, "rooms":{},
+                "direct":[
+                    {"id":"dm1","from":"alice","to":"bob","text":"你好","time":1,"reactions":{"🙂":["bob"]},"mentions":["bob"]},
+                    {"id":"dm2","from":"bob","to":"alice","text":"reply","time":2,"reply":{"id":"dm1","from":"alice","text":"你好"}},
+                    {"id":"dm3","from":"alice","to":"eve","text":"independent","time":3}
+                ],"sessions":{"token":{"username":"bob","expires":now()+43200}}
+            });
+            db.execute(
+                "INSERT INTO state VALUES(1,?1)",
+                params![legacy.to_string()],
+            )
+            .unwrap();
+        }
+        {
+            let mut e = Engine::open(&path).unwrap();
+            assert!(e.data.direct.is_empty());
+            assert_eq!(e.session("token").as_deref(), Some("bob"));
+            let messages = e.history("bob", "@direct:alice").unwrap().messages;
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].id, "dm1");
+            assert!(messages[0].reactions["🙂"].contains("bob"));
+            assert!(messages[0].mentions.contains("bob"));
+            assert_eq!(messages[1].reply.as_ref().unwrap().id, "dm1");
+            assert!(messages[0].sequence < messages[1].sequence);
+            assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 0);
+            e.execute(Some("alice"), None, "/tell bob new").unwrap();
+            assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
+        }
+        let e = Engine::open(&path).unwrap();
+        assert_eq!(e.history("bob", "@direct:alice").unwrap().messages.len(), 3);
+        assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
+        assert_eq!(
+            e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap(),
+            3
+        );
     }
     #[test]
     fn message_features_migrate_persist_and_rollback() {
@@ -1421,7 +1865,7 @@ mod tests {
         assert_eq!(
             e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            2
+            3
         );
     }
     #[test]

@@ -2,18 +2,30 @@
 export function ingest(
   snapshot,
   ledger = { sequence: 0, messages: new Map() },
+  extras = [],
 ) {
-  const messages = [
+  const messages = [...new Map([
+    ...extras,
     ...snapshot.rooms.flatMap((r) => r.messages),
     ...snapshot.direct,
-  ].sort((a, b) => a.time - b.time);
+  ].map(message => [message.id, message])).values()]
+    .sort((a, b) => (a.sequence - b.sequence) || (a.time - b.time));
   const current = new Set(messages.map((message) => message.id));
   for (const key of ledger.messages.keys()) {
     if (!current.has(key)) ledger.messages.delete(key);
   }
-  for (const message of messages) {
-    if (!ledger.messages.has(message.id))
-      ledger.messages.set(message.id, ++ledger.sequence);
+  // Insert fetched older history before known messages without moving local
+  // command output. New live messages still append to the tab's ledger.
+  for (let i = 0; i < messages.length;) {
+    if (ledger.messages.has(messages[i].id)) { i++; continue; }
+    const start = i;
+    while (i < messages.length && !ledger.messages.has(messages[i].id)) i++;
+    const left = start ? ledger.messages.get(messages[start - 1].id) : 0;
+    const right = i < messages.length ? ledger.messages.get(messages[i].id) : null;
+    for (let j = start; j < i; j++) {
+      const order = right === null ? ++ledger.sequence : left + (right - left) * (j - start + 1) / (i - start + 1);
+      ledger.messages.set(messages[j].id, order);
+    }
   }
   return ledger;
 }

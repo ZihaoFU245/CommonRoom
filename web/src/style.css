@@ -212,12 +212,6 @@ textarea {
 .selected .hash {
   color: var(--ink);
 }
-.room-count {
-  margin-left: auto;
-  font-size: 0.71429rem;
-  color: var(--muted);
-  flex-shrink: 0;
-}
 .direct-link {
   margin-top: 17px;
   border-top: 1px solid var(--line);
@@ -718,3 +712,10 @@ button:focus-visible { outline-color: var(--accent); }
 .font-preview { border-left: 4px solid var(--ink); padding: 5px 10px; margin-bottom: 20px; font-size: var(--chat-font-size, 16px); line-height: 1.65; overflow-wrap: anywhere; }
 .settings-reset { background: var(--accent); border-radius: 6px; padding: 8px 12px; }
 .profile { gap: 6px; }
+
+/* Unread state uses the same accent as the send button. */
+.unread-badge { margin-left: auto; flex-shrink: 0; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; background: #CC7D5E; color: #fff; font: 600 0.71429rem/1 sans-serif; }
+.unread-bar, .history-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 20px; border-bottom: 1px solid var(--line); font-size: 0.85714rem; flex-shrink: 0; }
+.unread-bar button, .history-error button { background: #CC7D5E; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+.unread-divider { display: flex; gap: 12px; align-items: center; margin: 16px 0; font-size: 0.78571rem; color: #666661; }
+.unread-divider::before, .unread-divider::after { content: ""; flex: 1; height: 1px; background: #9c9c95; }

@@ -133,6 +133,7 @@ async function connect(cookie) {
     const frame = JSON.parse(raw);
     client.frames.push(frame);
     if (frame.kind === "snapshot") client.snapshot = frame;
+    if (frame.kind === "read") client.snapshot = {...client.snapshot, unread:frame.unread};
   });
   let error;
   client.ws.on("error", (e) => {
@@ -328,6 +329,21 @@ try {
   assert.deepEqual(bob.snapshot.direct.at(-1).mentions, ["bob"]);
   await send(eve, `/react ${dmId} ❤️`, null, "error");
   await send(eve, `/reply ${dmId} leak`, null, "error");
+  const bobOtherDevice = await connect(cookies.bob);
+  const readState = bob.snapshot.unread["@direct:alice"];
+  assert.ok(readState.count > 0);
+  const retainedDM = await (await request("history?view=%40direct%3Aalice", cookies.bob)).json();
+  assert.ok(retainedDM.messages.length >= readState.count);
+  assert.equal((await request("history?view=study", cookies.carol)).status, 401);
+  assert.equal((await request("history?view=%40direct%3Abob", cookies.eve)).status, 403);
+  assert.equal((await request("read", cookies.eve, {view:"study",through:readState.through})).status, 400);
+  assert.equal((await request("read", cookies.bob, {view:"@direct:alice",through:readState.through+999})).status, 400);
+  const aliceFrameCount = alice.frames.length;
+  assert.equal((await request("read", cookies.bob, {view:"@direct:alice",through:readState.through})).status, 200);
+  await until(() => bobOtherDevice.snapshot.unread["@direct:alice"].count === 0, "cross-device read position");
+  await until(() => bob.snapshot.unread["@direct:alice"].count === 0, "original device read position");
+  assert.ok(bobOtherDevice.frames.some(frame => frame.kind === "read" && !frame.rooms && !frame.direct), "read updates contain metadata only");
+  assert.equal(alice.frames.length, aliceFrameCount, "read changes are sent only to this user's devices");
   await send(alice, "/kick bob study");
   await until(
     () => !bob.snapshot.rooms.some((r) => r.name === "study"),
@@ -371,6 +387,13 @@ try {
   const boundedState = await (await request("me", cookies.alice)).json();
   assert.equal(boundedState.rooms.find((r) => r.name === "study").messages.length, 4);
   assert.ok(boundedState.direct.some((m) => m.text === "a private message"));
+  assert.equal((await (await request("me",cookies.bob)).json()).unread["@direct:alice"].count, 0, "read position survives moving data folder");
+  for (let i=0; i<5; i++) await send(migratedAlice, `/tell bob bounded ${i} 你好`);
+  await send(migratedAlice, "/tell eve independent private history");
+  const boundedDM = await (await request("history?view=%40direct%3Abob",cookies.alice)).json();
+  assert.deepEqual(boundedDM.messages.map(m => m.text), ["bounded 1 你好","bounded 2 你好","bounded 3 你好","bounded 4 你好"]);
+  const independentDM = await (await request("history?view=%40direct%3Aeve",cookies.alice)).json();
+  assert.equal(independentDM.messages.at(-1).text,"independent private history");
   const migratedBob = await connect(cookies.bob);
   child.stdin.write("/reset bob changed-long-password\n");
   await until(
@@ -406,16 +429,25 @@ try {
   const deviceOne = await connect(deviceCookie);
   for (const name of ["empty", "quiet", "active"]) await send(deviceOne, `/new ${name}`, null);
   await send(deviceOne, "/tell bob older conversation", null);
-  // Use Alice's own DMs to move Bob outside the 50-message history window.
+  // Busy Eve history must not evict Bob or his separate snapshot tail.
   for (let i = 0; i < 55; i++) {
     await send(deviceOne, `/tell eve recent ${i}`, null);
     if (i % 20 === 19) await pause(10100); // honor the WebSocket rate limit
   }
+  const eveDeviceCookie = await login("eve");
+  const eveDevice = await connect(eveDeviceCookie);
+  assert.equal(eveDevice.snapshot.unread["@direct:alice"].count,55);
+  assert.equal(eveDevice.snapshot.direct.length,50);
+  const eveHistory = await (await request("history?view=%40direct%3Aalice",eveDeviceCookie)).json();
+  assert.equal(eveHistory.messages.length,55);
+  assert.equal(eveHistory.messages[0].sequence,eveDevice.snapshot.unread["@direct:alice"].first);
+  assert.equal((await request("read",eveDeviceCookie,{view:"@direct:alice",through:eveHistory.messages[4].sequence})).status,200);
+  await until(() => eveDevice.snapshot.unread["@direct:alice"].count === 50, "partial history read");
   const assertDirectory = snapshot => {
     assert.deepEqual(snapshot.rooms.map(room => room.name), ["active", "empty", "quiet"]);
     assert.ok(snapshot.rooms.every(room => room.messages.length === 0));
     assert.deepEqual(snapshot.private_peers, ["bob", "eve"]);
-    assert.ok(!snapshot.direct.some(message => message.to === "bob"));
+    assert.ok(snapshot.direct.some(message => message.to === "bob"));
   };
   const secondCookie = await login("alice");
   assertDirectory(await (await request("me", secondCookie)).json());
@@ -511,7 +543,7 @@ try {
   });
   assert.equal(spoofed.status, 403, "forwarded headers cannot impersonate a trusted socket peer");
   console.log(
-    "PASS: login, second-device directories and reconnects, roles, room privacy, DMs, revocation, folder migration, embedded assets, production HTTPS checks, secure cookies, and proxy IP trust.",
+    "PASS: login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

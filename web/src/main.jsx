@@ -1,9 +1,10 @@
 import { render } from "preact";
-import { useEffect, useRef, useState, useMemo } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "preact/hooks";
 import "./style.css";
 import { messageDate, groupedMessage } from "./messages.js";
 import { mentionSuggestions, mentionedText } from "./interactions.js";
 import { notifyMentions } from "./notifications.js";
+import { retainedHistory, visibleReadPosition, badgeLabel } from "./unread.js";
 import { snapshotSync } from "./sync.js";
 import { defaultFonts, loadFonts, saveFonts } from "./settings.js";
 import { ingest, timeline, suggestions, privatePeers, privateMessages, redactCommand, helpSections } from "./console.js";
@@ -16,11 +17,12 @@ if (import.meta.env.PROD && location.protocol !== "https:") {
   render(<App />, document.getElementById("app"));
 }
 
-async function api(path, body) {
+async function api(path, body, signal) {
   const response = await fetch(new URL(`api/${path}`, document.baseURI), {
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     cache: "no-store",
+    signal,
     ...(body === undefined
       ? {}
       : {
@@ -222,13 +224,29 @@ function Chat({ initial, onLogout }) {
   const serial = useRef(0);
   const desiredRoom = useRef(null);
   const end = useRef(null);
+  const historyElement = useRef(null);
+  const [loadedHistory, setLoadedHistory] = useState(null);
+  const historyCache = useRef(null);
+  const [historyError, setHistoryError] = useState("");
+  const [historyRetry, setHistoryRetry] = useState(0);
+  const [unreadBoundary, setUnreadBoundary] = useState(null);
+  const enteredView = useRef(null);
+  const atBottom = useRef(true);
+  const readSent = useRef(new Map());
+  const readBusy = useRef(false);
+  const readTimer = useRef(null);
   const input = useRef(null);
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(() => privatePeers(state), [state.private_peers, state.direct, state.username]);
   const direct = selected === "@direct" || selected.startsWith("@direct:");
   const peer = selected.startsWith("@direct:") ? selected.slice(8) : null;
   const consoleView = selected === "@command";
-  const messages = useMemo(() => direct ? privateMessages(state.direct, state.username, peer) : room?.messages || [], [direct, peer, state.direct, state.username, room?.messages]);
+  const tail = useMemo(() => direct ? privateMessages(state.direct, state.username, peer) : room?.messages || [], [direct, peer, state.direct, state.username, room?.messages]);
+  const unread = state.unread?.[selected];
+  const historyReady = !!unread && loadedHistory?.view === selected && loadedHistory.revision === unread.revision;
+  const messages = useMemo(() => loadedHistory?.view === selected && unread
+    ? retainedHistory(loadedHistory.messages, tail, unread) : tail,
+    [loadedHistory, tail, selected, unread?.oldest, unread?.through]);
   const entries = useMemo(() => timeline(messages, output, ledger.current, cleared[selected] || 0, selected), [messages, output, cleared, selected]);
   const renderedEntries = useMemo(() => {
     let lastDay = null;
@@ -238,14 +256,16 @@ function Chat({ initial, onLogout }) {
       const newDay = lastDay !== date.key;
       lastDay = date.key;
       const previous = entries[index - 1];
-      const grouped = previous?.kind === "message" && groupedMessage(entry.message, previous.message);
+      const isUnreadBoundary = entry.message.sequence === unreadBoundary;
+      const grouped = !isUnreadBoundary && previous?.kind === "message" && groupedMessage(entry.message, previous.message);
       return <div key={entry.key}>
         {newDay && <div class="message-day"><time dateTime={date.iso}>{date.label}</time></div>}
+        {isUnreadBoundary && <div class="unread-divider">New messages</div>}
         <ConsoleMessage message={entry.message} self={state.username} date={date} grouped={grouped && !entry.message.reply} pending={pending}
           onReact={(value) => reactTo(entry.message, value)} onReply={() => { setReplyTarget({...entry.message, view:selected}); input.current?.focus(); }} />
       </div>;
     });
-  }, [entries, state.username, selected, pending]);
+  }, [entries, state.username, selected, pending, unreadBoundary]);
   const hints =
     hintDismissed || pending
       ? []
@@ -259,6 +279,7 @@ function Chat({ initial, onLogout }) {
 
   function append(command, result = null, error = false, view = selected) {
     command = redactCommand(command);
+    if (view === selectedRef.current) atBottom.current = true;
     const order = ++ledger.current.sequence;
     const entry = {
       kind: "command",
@@ -285,13 +306,16 @@ function Chat({ initial, onLogout }) {
     let retry;
     let attempts = 0;
     const sync = snapshotSync(() => api("me"), (data, baseline) => {
-      notifyMentions(currentState.current, data, {
+      const contentChanged = currentState.current.rooms !== data.rooms || currentState.current.direct !== data.direct;
+      if (contentChanged) notifyMentions(currentState.current, data, {
         baseline, enabled: notificationsRef.current,
         NotificationClass: window.Notification,
         background: document.hidden || !document.hasFocus(), selected: selectedRef.current,
         open: view => { window.focus(); setSelected(view); },
       });
-      ingest(data, ledger.current);
+      const cache = historyCache.current;
+      const metadata = cache && data.unread?.[cache.view];
+      if (contentChanged) ingest(data, ledger.current, metadata ? retainedHistory(cache.messages, [], metadata) : []);
       currentState.current = data;
       setState(data);
       if (desiredRoom.current && data.rooms.some(r => r.name === desiredRoom.current)) {
@@ -329,6 +353,8 @@ function Chat({ initial, onLogout }) {
         if (data.kind === "snapshot") {
           sync.receive(data, baseline);
           baseline = false;
+        } else if (data.kind === "read") {
+          sync.receive({...currentState.current, unread:data.unread}, true);
         } else if (["notice", "error"].includes(data.kind)) {
           const current = request.current;
           if (!current || data.id !== current.id) return;
@@ -389,9 +415,86 @@ function Chat({ initial, onLogout }) {
   useEffect(() => {
     history.replaceState(null, "", `#room=${encodeURIComponent(selected)}`);
   }, [selected]);
+  // Fetch one conversation on demand, rather than sending every retained
+  // message to every connection. Read acknowledgements leave revision alone.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
-  }, [messages.at(-1)?.id, selected, output, cleared]);
+    setHistoryError("");
+    if (!unread || historyReady) return;
+    const cache = historyCache.current;
+    if (cache?.view === selected) {
+      const last = cache.messages.at(-1)?.sequence || 0;
+      const additions = tail.filter(message => message.sequence > last).length;
+      if (additions && cache.revision + additions === unread.revision) {
+        const data = {view:selected, revision:unread.revision, messages:retainedHistory(cache.messages, tail, unread)};
+        historyCache.current = data;
+        setLoadedHistory(data);
+        return;
+      }
+    }
+    const controller = new AbortController();
+    api(`history?view=${encodeURIComponent(selected)}`, undefined, controller.signal).then(data => {
+      if (controller.signal.aborted || selectedRef.current !== data.view ||
+          currentState.current.unread?.[data.view]?.revision !== data.revision) return;
+      historyCache.current = data;
+      ingest(currentState.current, ledger.current, data.messages);
+      setLoadedHistory(data);
+    }).catch(error => { if (!controller.signal.aborted) setHistoryError(error.message); });
+    return () => controller.abort();
+  }, [selected, unread?.revision, historyRetry]);
+  useLayoutEffect(() => {
+    if (enteredView.current !== selected && (!unread || historyReady)) {
+      enteredView.current = selected;
+      const first = unread?.first;
+      setUnreadBoundary(first || null);
+      if (first) {
+        setCleared(previous => ({...previous, [selected]:0}));
+        historyElement.current?.querySelector(`[data-sequence="${first}"]`)?.scrollIntoView({block:"start"});
+        atBottom.current = false;
+      } else { end.current?.scrollIntoView({block:"end"}); atBottom.current = true; }
+    } else if (enteredView.current === selected && atBottom.current) {
+      end.current?.scrollIntoView({block:"end"});
+    }
+  }, [messages, selected, historyReady, output, cleared]);
+  function acknowledgeVisible() {
+    clearTimeout(readTimer.current);
+    readTimer.current = setTimeout(async () => {
+      if (readBusy.current || !historyReady || document.hidden || !document.hasFocus() ||
+          settingsOpen || (menu && window.matchMedia("(max-width: 700px)").matches)) return;
+      const viewport = historyElement.current;
+      if (!viewport) return;
+      const elements = [...viewport.querySelectorAll("[data-sequence]")].map(element => ({
+        sequence:Number(element.dataset.sequence), ...element.getBoundingClientRect().toJSON(),
+      }));
+      const through = visibleReadPosition(elements, viewport.getBoundingClientRect(), unread.first);
+      if (!through || (readSent.current.get(selected) || 0) >= through) return;
+      const view = selected;
+      readBusy.current = true;
+      try { await api("read", {view, through}); readSent.current.set(view, through); }
+      catch { /* Retry on the next snapshot, focus, or scroll. */ }
+      finally { readBusy.current = false; }
+    }, 250);
+  }
+  useEffect(() => {
+    acknowledgeVisible();
+    window.addEventListener("focus", acknowledgeVisible);
+    document.addEventListener("visibilitychange", acknowledgeVisible);
+    return () => {
+      clearTimeout(readTimer.current);
+      window.removeEventListener("focus", acknowledgeVisible);
+      document.removeEventListener("visibilitychange", acknowledgeVisible);
+    };
+  }, [selected, messages, unread, historyReady, menu, settingsOpen, status]);
+  function jumpToUnread() {
+    if (!unread?.first) return;
+    if (!historyReady) { setHistoryRetry(value => value + 1); return; }
+    setCleared(previous => ({...previous, [selected]:0}));
+    setUnreadBoundary(unread.first);
+    atBottom.current = false;
+    requestAnimationFrame(() => {
+      historyElement.current?.querySelector(`[data-sequence="${unread.first}"]`)?.scrollIntoView({block:"start"});
+      acknowledgeVisible();
+    });
+  }
   useEffect(() => {
     if (!pending) input.current?.focus();
   }, [pending]);
@@ -405,6 +508,7 @@ function Chat({ initial, onLogout }) {
     }
   }
   function choose(name) {
+    enteredView.current = null;
     setSelected(name);
     if (window.matchMedia("(max-width: 700px)").matches) setMenu(false);
     input.current?.focus();
@@ -505,14 +609,14 @@ function Chat({ initial, onLogout }) {
           <details class="nav-group" open>
             <summary>Rooms<span class="group-count">{state.rooms.length}</span></summary>
             <div class="nav-items">
-              {state.rooms.map((r) => <button key={r.name} class={`room-link ${selected === r.name ? "selected" : ""}`} onClick={() => choose(r.name)}><span class="hash">#</span>{r.name}<span class="room-count">{r.members.length}</span></button>)}
+              {state.rooms.map((r) => <button key={r.name} class={`room-link ${selected === r.name ? "selected" : ""}`} onClick={() => choose(r.name)}><span class="hash">#</span>{r.name}{state.unread?.[r.name]?.count > 0 && <span class="unread-badge" aria-label={`${state.unread[r.name].count} unread messages`}>{badgeLabel(state.unread[r.name].count)}</span>}</button>)}
               {!state.rooms.length && <p class="no-rooms">No rooms</p>}
             </div>
           </details>
           <details class="nav-group" open>
             <summary>Private messages<span class="group-count">{peers.length}</span></summary>
             <div class="nav-items">
-              {peers.map((name) => <button key={name} class={`room-link ${peer === name ? "selected" : ""}`} onClick={() => choose(`@direct:${name}`)}><span class="hash">↗</span>{name}</button>)}
+              {peers.map((name) => <button key={name} class={`room-link ${peer === name ? "selected" : ""}`} onClick={() => choose(`@direct:${name}`)}><span class="hash">↗</span>{name}{state.unread?.[`@direct:${name}`]?.count > 0 && <span class="unread-badge" aria-label={`${state.unread[`@direct:${name}`].count} unread messages`}>{badgeLabel(state.unread[`@direct:${name}`].count)}</span>}</button>)}
               {!peers.length && <p class="no-rooms">No conversations</p>}
             </div>
           </details>
@@ -573,7 +677,15 @@ function Chat({ initial, onLogout }) {
                 : "Reconnecting"}
           </span>
         </header>
+        {unread?.count > 0 && <div class="unread-bar"><span>{unread.count} unread</span><button onClick={jumpToUnread}>Jump to unread ↓</button></div>}
+        {historyError && <div class="history-error" role="alert">{historyError}<button onClick={() => setHistoryRetry(value => value + 1)}>Retry history</button></div>}
         <section
+          ref={historyElement}
+          onScroll={() => {
+            const element = historyElement.current;
+            atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+            acknowledgeVisible();
+          }}
           class="message-list console-history"
           aria-label="Conversation history"
           aria-live="polite"
@@ -703,7 +815,7 @@ function ConsoleMessage({ message, self, date, grouped, pending, onReact, onRepl
   const [reactionOpen, setReactionOpen] = useState(false);
   const text = mentionedText(message.text, message.mentions);
   return (
-    <article id={`message-${message.id}`} class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""}`} title={date.full}>
+    <article id={`message-${message.id}`} data-sequence={message.sequence} class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""}`} title={date.full}>
       {grouped && <time class="continuation-time" dateTime={date.iso} aria-label={date.full}>{date.time}</time>}
       <div class="message-content">
         {!grouped && <header class="message-meta"><strong class="message-author">{message.from}</strong><time dateTime={date.iso} title={date.full} aria-label={date.full}>{date.time}</time></header>}
