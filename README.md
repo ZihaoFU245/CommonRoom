@@ -141,6 +141,15 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/reset name password` | Admin or stdin | Reset password and revoke all login sessions |
 | `/disable name` | Admin or stdin | Disable account, revoke sessions, and remove memberships |
 | `/enable name` | Admin or stdin | Enable account without restoring room memberships; old sessions stay revoked |
+| `/deleteuser name` | Admin or stdin | Permanently delete account, sessions, memberships, reactions, read positions, and its private conversations; retain room messages as `name (deleted)` |
+
+`/deleteuser bob` permanently removes Bob's account and private conversations
+for both participants. Shared room messages and reply quotes remain, with their
+author labeled `bob (deleted)`. The username and user-limit slot become available
+again; a replacement account starts without old memberships, DMs, or read
+positions. Web admins cannot delete themselves or the last active admin; stdin
+can remove any account and create a replacement administrator. Use `/disable`
+for a reversible account suspension.
 
 There is no default room. Existing rooms are preserved, including rooms named
 `lobby`, which can be deleted like any other room. Rooms are invitation-only for regular users;

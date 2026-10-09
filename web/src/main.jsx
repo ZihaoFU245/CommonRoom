@@ -318,7 +318,8 @@ function Chat({ initial, onLogout }) {
       if (contentChanged) ingest(data, ledger.current, metadata ? retainedHistory(cache.messages, [], metadata) : []);
       currentState.current = data;
       setState(data);
-      if (desiredRoom.current && data.rooms.some(r => r.name === desiredRoom.current)) {
+      if (desiredRoom.current && (data.rooms.some(r => r.name === desiredRoom.current) ||
+          (desiredRoom.current.startsWith("@direct:") && privatePeers(data).includes(desiredRoom.current.slice(8))))) {
         setSelected(desiredRoom.current);
         desiredRoom.current = null;
       }
@@ -374,7 +375,13 @@ function Chat({ initial, onLogout }) {
                 desiredRoom.current = null;
               }
             }
-            if (command === "/tell" && target) setSelected(`@direct:${target}`);
+            if (command === "/tell" && target) {
+              desiredRoom.current = `@direct:${target}`;
+              if (privatePeers(currentState.current).includes(target)) {
+                setSelected(desiredRoom.current);
+                desiredRoom.current = null;
+              }
+            }
           }
         }
       };
@@ -409,9 +416,10 @@ function Chat({ initial, onLogout }) {
   }, []);
 
   useEffect(() => {
-    if (!direct && !(consoleView && state.admin) && !state.rooms.some((r) => r.name === selected))
-      setSelected(state.admin ? "@command" : state.rooms[0]?.name || "@direct");
-  }, [state.rooms, state.admin, selected]);
+    if ((peer && !peers.includes(peer)) ||
+        (!direct && !(consoleView && state.admin) && !state.rooms.some((r) => r.name === selected)))
+      setSelected(state.admin ? "@command" : state.rooms[0]?.name || (peers[0] ? `@direct:${peers[0]}` : "@direct"));
+  }, [state.rooms, state.admin, selected, peers]);
   useEffect(() => {
     history.replaceState(null, "", `#room=${encodeURIComponent(selected)}`);
   }, [selected]);

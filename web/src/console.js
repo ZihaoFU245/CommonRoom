@@ -93,7 +93,7 @@ export function suggestions(draft, commands, users, rooms) {
   const prefix = parts.at(-1);
   let values = [];
   if (
-    ["/tell", "/grant", "/revoke", "/add", "/kick", "/reset", "/disable", "/enable"].includes(name) &&
+    ["/tell", "/grant", "/revoke", "/add", "/kick", "/reset", "/disable", "/enable", "/deleteuser"].includes(name) &&
     position === 1
   )
     values = users;

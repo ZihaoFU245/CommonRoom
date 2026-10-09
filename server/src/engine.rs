@@ -560,7 +560,7 @@ impl Engine {
                 .data
                 .users
                 .iter()
-                .filter(|(_, u)| !u.disabled)
+                .filter(|(_, u)| user.admin || !u.disabled)
                 .map(|(n, _)| n.clone())
                 .collect(),
             rooms: self
@@ -659,6 +659,11 @@ impl Engine {
         room: Option<&str>,
         input: &str,
     ) -> Result<String, String> {
+        if input.split_whitespace().next() == Some("/deleteuser") {
+            let parts: Vec<_> = input.split_whitespace().collect();
+            require_len(&parts, 2, "/deleteuser user")?;
+            return self.delete_user(actor, parts[1]);
+        }
         if matches!(
             input.split_whitespace().next(),
             Some("/help" | "/whoami" | "/rooms" | "/users" | "/members" | "/history")
@@ -683,6 +688,111 @@ impl Engine {
                 Err(e)
             }
         }
+    }
+    fn delete_user(&mut self, actor: Option<&str>, name: &str) -> Result<String, String> {
+        if let Some(actor) = actor {
+            let account = self
+                .data
+                .users
+                .get(actor)
+                .filter(|u| !u.disabled)
+                .ok_or("Account unavailable.")?;
+            require_admin(account.admin)?;
+            if actor == name {
+                return Err("You cannot delete your own account from the web.".into());
+            }
+        }
+        let account = self.data.users.get(name).ok_or("User not found.")?;
+        if actor.is_some()
+            && account.admin
+            && !account.disabled
+            && self
+                .data
+                .users
+                .values()
+                .filter(|u| u.admin && !u.disabled)
+                .count()
+                == 1
+        {
+            return Err("Cannot delete the last active administrator.".into());
+        }
+        let previous = self.data.clone();
+        self.data.users.remove(name);
+        self.data
+            .sessions
+            .retain(|_, session| session.username != name);
+        let deleted_author = format!("{name} (deleted)");
+        for room in self.data.rooms.values_mut() {
+            room.members.remove(name);
+            let mut changed = false;
+            for message in &mut room.messages {
+                if message.from == name {
+                    message.from.clone_from(&deleted_author);
+                    changed = true;
+                }
+                if let Some(reply) = &mut message.reply
+                    && reply.from == name
+                {
+                    reply.from.clone_from(&deleted_author);
+                    changed = true;
+                }
+                changed |= message.mentions.remove(name);
+                message.reactions.retain(|_, users| {
+                    changed |= users.remove(name);
+                    !users.is_empty()
+                });
+            }
+            if changed {
+                room.revision = room.revision.wrapping_add(1);
+            }
+        }
+        let mut removed = BTreeSet::new();
+        self.data.private.retain(|key, _| {
+            if private_peer(key, name).is_some() {
+                removed.insert(format!("dm:{key}"));
+                false
+            } else {
+                true
+            }
+        });
+        // Commit account/session/history cleanup and read positions together.
+        // Only update the in-memory cursor cache after the transaction succeeds.
+        let result = (|| -> Result<(), String> {
+            let json = serde_json::to_string(&self.data).map_err(|e| e.to_string())?;
+            let transaction = self.db.transaction().map_err(|e| e.to_string())?;
+            transaction.execute("INSERT INTO state(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![json]).map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM read_positions WHERE username=?1",
+                    params![name],
+                )
+                .map_err(|e| e.to_string())?;
+            if !removed.is_empty() {
+                let placeholders = vec!["?"; removed.len()].join(",");
+                transaction
+                    .execute(
+                        &format!(
+                            "DELETE FROM read_positions WHERE conversation IN ({placeholders})"
+                        ),
+                        rusqlite::params_from_iter(&removed),
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            transaction.commit().map_err(|e| e.to_string())
+        })();
+        if let Err(error) = result {
+            self.data = previous;
+            tracing::error!(error = %error, "Account deletion failed");
+            return Err("Storage unavailable; account deletion was not applied.".into());
+        }
+        self.read_positions.remove(name);
+        for positions in self.read_positions.values_mut() {
+            positions.retain(|view, _| !removed.contains(view));
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(format!(
+            "Deleted account {name} and its private conversations. Room messages retained as {deleted_author}."
+        ))
     }
     fn apply(
         &mut self,
@@ -1925,6 +2035,153 @@ mod tests {
         e.db.execute_batch("DROP TABLE state;").unwrap();
         assert!(e.execute(Some("alice"), None, "/new lost").is_err());
         assert!(!e.data.rooms.contains_key("lost"));
+    }
+    #[test]
+    fn delete_user_checks_permissions_and_cleans_references() {
+        let mut e = engine();
+        for (actor, command) in [
+            (Some("bob"), "/deleteuser eve"),
+            (Some("missing"), "/deleteuser bob"),
+            (Some("alice"), "/deleteuser alice"),
+            (Some("alice"), "/deleteuser nobody"),
+            (Some("alice"), "/deleteuser"),
+            (None, "/deleteuser bob extra"),
+        ] {
+            let before = e.data.clone();
+            assert!(e.execute(actor, None, command).is_err());
+            assert!(e.data == before);
+        }
+        assert!(
+            !e.execute(Some("bob"), None, "/help")
+                .unwrap()
+                .contains("/deleteuser")
+        );
+        assert!(
+            e.execute(Some("alice"), None, "/help")
+                .unwrap()
+                .contains("/deleteuser user")
+        );
+        e.execute(Some("bob"), Some("lobby"), "old room message")
+            .unwrap();
+        let original = e.data.rooms["lobby"].messages[0].id.clone();
+        e.execute(
+            Some("alice"),
+            Some("lobby"),
+            &format!("/reply {original} @bob reply"),
+        )
+        .unwrap();
+        for (user, reaction) in [("bob", "👍"), ("alice", "👍"), ("bob", "😎")] {
+            e.execute(
+                Some(user),
+                Some("lobby"),
+                &format!("/react {original} {reaction}"),
+            )
+            .unwrap();
+        }
+        for (user, text) in [
+            ("alice", "/tell bob secret"),
+            ("bob", "/tell eve another secret"),
+            ("alice", "/tell eve unrelated"),
+        ] {
+            e.execute(Some(user), None, text).unwrap();
+        }
+        for (token, user) in [
+            ("bob-one", "bob"),
+            ("bob-two", "bob"),
+            ("alice-session", "alice"),
+        ] {
+            e.login(token.into(), user, "test-hash", None).unwrap();
+        }
+        let dm = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
+        e.mark_read("bob", "@direct:alice", dm).unwrap();
+        e.mark_read("alice", "@direct:bob", dm).unwrap();
+        e.execute(Some("alice"), None, "/deleteuser bob").unwrap();
+        assert!(!e.data.users.contains_key("bob"));
+        assert!(e.session("bob-one").is_none() && e.session("bob-two").is_none());
+        assert_eq!(e.session("alice-session").as_deref(), Some("alice"));
+        assert!(!e.data.rooms["lobby"].members.contains("bob"));
+        let messages = &e.data.rooms["lobby"].messages;
+        assert_eq!(messages[0].from, "bob (deleted)");
+        assert_eq!(messages[0].id, original);
+        assert_eq!(messages[0].text, "old room message");
+        assert_eq!(messages[1].reply.as_ref().unwrap().from, "bob (deleted)");
+        assert!(!messages[1].mentions.contains("bob"));
+        assert_eq!(
+            messages[0].reactions["👍"],
+            BTreeSet::from(["alice".into()])
+        );
+        assert!(!messages[0].reactions.contains_key("😎"));
+        assert_eq!(e.data.private.len(), 1);
+        assert_eq!(e.snapshot("alice").unwrap().private_peers, vec!["eve"]);
+        assert!(e.history("alice", "@direct:bob").is_err());
+        assert!(!e.read_positions.contains_key("bob"));
+        assert!(
+            e.read_positions
+                .get("alice")
+                .is_none_or(|p| !p.contains_key("dm:alice:bob"))
+        );
+        assert_eq!(e.db.query_row::<u64,_,_>("SELECT COUNT(*) FROM read_positions WHERE username='bob' OR conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),0);
+        e.provision("bob", "new-hash".into(), false, false).unwrap();
+        let replacement = e.snapshot("bob").unwrap();
+        assert!(
+            replacement.rooms.is_empty()
+                && replacement.direct.is_empty()
+                && replacement.unread.is_empty()
+        );
+        assert!(e.login("stale".into(), "bob", "test-hash", None).is_err());
+    }
+    #[test]
+    fn delete_user_persists_and_stdin_can_replace_the_last_admin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        {
+            let mut e = Engine::open(&path).unwrap();
+            e.set_limits(2, 2, 1000).unwrap();
+            e.provision("alice", "hash".into(), true, false).unwrap();
+            e.provision("bob", "hash".into(), false, false).unwrap();
+            assert!(e.provision("eve", "hash".into(), false, false).is_err());
+            e.execute(None, None, "/disable bob").unwrap();
+            e.execute(Some("alice"), None, "/deleteuser bob").unwrap();
+            e.provision("eve", "hash".into(), false, false).unwrap();
+            e.execute(None, None, "/deleteuser alice").unwrap();
+            e.provision("alice", "replacement".into(), true, false)
+                .unwrap();
+        }
+        let e = Engine::open(&path).unwrap();
+        assert!(!e.data.users.contains_key("bob"));
+        assert!(e.active("eve") && e.is_admin("alice"));
+        assert_eq!(e.data.users["alice"].hash, "replacement");
+    }
+    #[test]
+    fn delete_user_rolls_back_database_and_cache_on_cleanup_failure() {
+        let mut e = engine();
+        e.execute(Some("alice"), None, "/tell bob retained")
+            .unwrap();
+        e.login("bob-token".into(), "bob", "test-hash", None)
+            .unwrap();
+        let through = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
+        e.mark_read("bob", "@direct:alice", through).unwrap();
+        let before = e.data.clone();
+        let positions = e.read_positions.clone();
+        let revision = e.revision;
+        let disk: String =
+            e.db.query_row("SELECT json FROM state", [], |r| r.get(0))
+                .unwrap();
+        e.db.execute_batch("CREATE TRIGGER fail_cleanup BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'test cleanup failure'); END;").unwrap();
+        assert!(e.execute(Some("alice"), None, "/deleteuser bob").is_err());
+        assert!(e.data == before);
+        assert_eq!(e.read_positions, positions);
+        assert_eq!(e.revision, revision);
+        assert_eq!(e.session("bob-token").as_deref(), Some("bob"));
+        assert_eq!(
+            e.db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+                .unwrap(),
+            disk
+        );
+        assert_eq!(e.db.query_row::<u64,_,_>("SELECT sequence FROM read_positions WHERE username='bob' AND conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),through);
+        e.db.execute_batch("DROP TRIGGER fail_cleanup;").unwrap();
+        e.execute(Some("alice"), None, "/deleteuser bob").unwrap();
+        assert!(e.session("bob-token").is_none());
     }
     #[test]
     fn role_commands_are_authorized_and_not_chat_messages() {

@@ -43,6 +43,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
         ),
         (
             "Account",
+            "/deleteuser",
+            "/deleteuser user",
+            "Permanently delete an account and its private conversations",
+            true,
+        ),
+        (
+            "Account",
             "/reset",
             "/reset user password",
             "Reset a password and revoke sessions",

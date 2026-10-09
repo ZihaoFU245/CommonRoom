@@ -459,6 +459,53 @@ try {
   const reconnected = await connect(secondCookie);
   assert.deepEqual(reconnected.snapshot.rooms.map(room => room.name), ["active", "added_elsewhere", "empty", "quiet"]);
   assert.deepEqual(reconnected.snapshot.private_peers, ["bob", "eve"]);
+  // Delete accounts through both command entry points. Existing sessions and
+  // private histories must not become accessible to a replacement username.
+  const bobCookie = await login("bob");
+  const bobSecondCookie = await login("bob");
+  const bobDevice = await connect(bobCookie);
+  const bobSecondDevice = await connect(bobSecondCookie);
+  await send(eveDevice, "/deleteuser bob", null, "error");
+  await send(deviceOne, "/deleteuser alice", null, "error");
+  await send(deviceOne, "/add bob active", null);
+  await send(bobDevice, "preserved after deletion", "active");
+  await until(() => deviceOne.snapshot.rooms.find(r => r.name === "active").messages.length === 1, "original deleted-user message");
+  const originalId = deviceOne.snapshot.rooms.find(r => r.name === "active").messages[0].id;
+  await send(deviceOne, `/reply ${originalId} @bob preserved reply`, "active");
+  await send(bobDevice, `/react ${originalId} 👍`, "active");
+  await send(deviceOne, "/tell bob private before deletion", null);
+  await send(deviceOne, "/deleteuser bob", null);
+  await until(() => bobDevice.ws.readyState === WebSocket.CLOSED && bobSecondDevice.ws.readyState === WebSocket.CLOSED, "deleted-user sessions disconnect");
+  assert.equal((await request("me",bobCookie)).status,401);
+  assert.equal((await request("me",bobSecondCookie)).status,401);
+  await until(() => !reconnected.snapshot.users.includes("bob") && !reconnected.snapshot.private_peers.includes("bob"), "other admin device sees deletion");
+  const retainedRoom = reconnected.snapshot.rooms.find(r => r.name === "active");
+  assert.ok(!retainedRoom.members.includes("bob"));
+  assert.equal(retainedRoom.messages[0].from,"bob (deleted)");
+  assert.equal(retainedRoom.messages[0].id,originalId);
+  assert.deepEqual(retainedRoom.messages[0].reactions,{});
+  assert.equal(retainedRoom.messages[1].reply.from,"bob (deleted)");
+  assert.deepEqual(retainedRoom.messages[1].mentions,[]);
+  assert.equal((await request("history?view=%40direct%3Abob",deviceCookie)).status,403);
+  await send(deviceOne,"/user bob fresh-password",null);
+  const freshBobCookie = await login("bob","fresh-password");
+  const freshBob = await connect(freshBobCookie);
+  assert.deepEqual(freshBob.snapshot.rooms,[]);
+  assert.deepEqual(freshBob.snapshot.private_peers,[]);
+  assert.deepEqual(freshBob.snapshot.unread,{});
+  await send(deviceOne,"/tell bob fresh private",null);
+  await until(() => freshBob.snapshot.direct.length === 1, "replacement user's fresh private history");
+  assert.equal(freshBob.snapshot.direct[0].text,"fresh private");
+  child.stdin.write("/deleteuser eve\n");
+  await until(() => logs.includes("Deleted account eve"), "stdin account deletion");
+  await until(() => eveDevice.ws.readyState === WebSocket.CLOSED, "stdin deletion revokes live session");
+  assert.equal((await request("me",eveDeviceCookie)).status,401);
+  await stop();
+  await start(devices);
+  const restartedDirectory = await (await request("me",deviceCookie)).json();
+  assert.ok(!restartedDirectory.users.includes("eve"));
+  assert.deepEqual(restartedDirectory.private_peers,["bob"]);
+  assert.equal(restartedDirectory.rooms.find(r => r.name === "active").messages[0].from,"bob (deleted)");
   await stop();
   await start(join(temporary, "production"), true, undefined, "/commonroom/");
   const bare = await fetch(base, { headers: { "X-Forwarded-Proto": "https" }, redirect: "manual" });
@@ -543,7 +590,7 @@ try {
   });
   assert.equal(spoofed.status, 403, "forwarded headers cannot impersonate a trusted socket peer");
   console.log(
-    "PASS: login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

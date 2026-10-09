@@ -79,3 +79,9 @@ test("hints appear only for slash commands and complete usernames or rooms", () 
     null,
   );
 });
+
+test("delete-user hints complete usernames rather than rooms", () => {
+  const commands=[{name:"/deleteuser",usage:"/deleteuser user",description:"Delete account"}];
+  assert.equal(suggestions("/deleteu",commands,["bob"],["board"])[0].value,"/deleteuser ");
+  assert.deepEqual(suggestions("/deleteuser b",commands,["bob"],["board"]).map(h=>h.value),["/deleteuser bob "]);
+});
