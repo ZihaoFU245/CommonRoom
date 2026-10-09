@@ -104,12 +104,29 @@ impl Engine {
             }))
             .collect()
     }
+    pub fn connect(&mut self, name: &str) {
+        *self.online_connections.entry(name.into()).or_default() += 1;
+    }
+    pub fn disconnect(&mut self, name: &str) {
+        if let Some(count) = self.online_connections.get_mut(name) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.online_connections.remove(name);
+            }
+        }
+    }
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
         let user = self.data.users.get(name).filter(|u| !u.disabled)?;
         Some(Snapshot {
             kind: "snapshot",
             username: name.into(),
             admin: user.admin,
+            online: self
+                .online_connections
+                .keys()
+                .filter(|name| self.active(name))
+                .cloned()
+                .collect(),
             users: self
                 .data
                 .users

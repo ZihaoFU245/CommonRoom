@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
 import type { MessageDate } from "../features/conversation/messages.ts";
@@ -12,6 +12,7 @@ export function ConsoleMessage({
   pending,
   onReact,
   onReply,
+  onDelete,
 }: {
   message: Message;
   self: string;
@@ -20,10 +21,34 @@ export function ConsoleMessage({
   pending: boolean;
   onReact: (value: string) => void;
   onReply: () => void;
+  onDelete: () => void;
 }) {
   const [reaction, setReaction] = useState("");
   const [reactionOpen, setReactionOpen] = useState(false);
   const placement = useReactionPlacement(reactionOpen);
+  useEffect(() => {
+    if (!reactionOpen) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !placement.anchor.current?.contains(event.target)
+      ) {
+        setReactionOpen(false);
+      }
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setReactionOpen(false);
+        placement.anchor.current?.querySelector("summary")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("keydown", dismissEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("keydown", dismissEscape);
+    };
+  }, [reactionOpen, placement.anchor]);
   const reply = message.reply;
   const text = mentionedText(message.text, message.mentions);
   return (
@@ -101,6 +126,16 @@ export function ConsoleMessage({
         >
           Reply
         </button>
+        {message.from === self && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onDelete}
+            aria-label="Delete your message"
+          >
+            Delete
+          </button>
+        )}
         <details
           ref={placement.anchor}
           open={reactionOpen}

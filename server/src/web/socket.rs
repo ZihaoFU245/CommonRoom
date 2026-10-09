@@ -47,8 +47,30 @@ pub(super) async fn send(socket: &mut WebSocket, message: Message) -> bool {
         .await
         .is_ok_and(|r| r.is_ok())
 }
+// Count sockets rather than accounts so closing one tab keeps other tabs online.
+struct Presence {
+    app: App,
+    user: String,
+}
+impl Drop for Presence {
+    fn drop(&mut self) {
+        if let Ok(mut engine) = self.app.engine() {
+            engine.disconnect(&self.user);
+        }
+        let _ = self.app.changes.send(Change::All);
+    }
+}
 pub(super) async fn connection(app: App, headers: HeaderMap, user: String, mut socket: WebSocket) {
     let mut changes = app.changes.subscribe();
+    match app.engine() {
+        Ok(mut engine) => engine.connect(&user),
+        Err(_) => return,
+    }
+    let _presence = Presence {
+        app: app.clone(),
+        user: user.clone(),
+    };
+    let _ = app.changes.send(Change::All);
     if !snapshot(&app, &user, &mut socket).await {
         return;
     }

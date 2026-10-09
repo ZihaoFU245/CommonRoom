@@ -15,6 +15,7 @@ interface Props {
   unreadBoundary: number | null;
   onReact: (message: Message, value: string) => void;
   onReply: (message: Message) => void;
+  onDelete: (message: Message) => void;
   historyElement: RefObject<HTMLElement>;
   end: RefObject<HTMLDivElement>;
   onScroll: () => void;
@@ -26,6 +27,7 @@ export const MessageList = memo(function MessageList({
   unreadBoundary,
   onReact,
   onReply,
+  onDelete,
   historyElement,
   end,
   onScroll,
@@ -59,6 +61,7 @@ export const MessageList = memo(function MessageList({
             grouped={grouped && !entry.message.reply}
             pending={pending}
             onReact={(value) => onReact(entry.message, value)}
+            onDelete={() => onDelete(entry.message)}
             onReply={() => {
               onReply(entry.message);
             }}
@@ -66,7 +69,7 @@ export const MessageList = memo(function MessageList({
         </div>
       );
     });
-  }, [entries, username, pending, unreadBoundary, onReact, onReply]);
+  }, [entries, username, pending, unreadBoundary, onReact, onReply, onDelete]);
   return (
     <section
       ref={historyElement}

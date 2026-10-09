@@ -85,6 +85,7 @@ pub struct Snapshot {
     pub username: String,
     pub admin: bool,
     pub users: Vec<String>,
+    pub online: Vec<String>,
     pub rooms: Vec<RoomView>,
     pub direct: Vec<Message>,
     pub private_peers: Vec<String>,

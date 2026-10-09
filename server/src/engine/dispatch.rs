@@ -101,7 +101,7 @@ impl Engine {
             "/new" | "/add" | "/kick" | "/join" | "/leave" | "/delete" => {
                 self.apply_rooms(&context)
             }
-            "/react" | "/reply" | "/clean" | "/tell" => self.apply_messages(&context),
+            "/react" | "/reply" | "/retract" | "/clean" | "/tell" => self.apply_messages(&context),
             "/help" | "/whoami" | "/rooms" | "/users" | "/members" | "/history" => {
                 self.apply_queries(&context)
             }

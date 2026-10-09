@@ -120,9 +120,11 @@ export function Composer({
         </div>
       )}
       <form class="composer" onSubmit={send}>
-        <span class="prompt" aria-hidden="true">
-          ›
-        </span>
+        {consoleView && (
+          <span class="prompt" aria-hidden="true">
+            ›
+          </span>
+        )}
         <textarea
           ref={input}
           dir="auto"

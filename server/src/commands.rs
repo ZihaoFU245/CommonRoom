@@ -130,6 +130,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
         ),
         (
             "Messages",
+            "/retract",
+            "/retract message-id",
+            "Delete your own message for everyone in its conversation",
+            false,
+        ),
+        (
+            "Messages",
             "/react",
             "/react message-id reaction",
             "Toggle an emoji or text reaction",
@@ -171,6 +178,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
                 && (!console
                     || ![
                         "/passwd", "/join", "/leave", "/tell", "/history", "/react", "/reply",
+                        "/retract",
                     ]
                     .contains(name))
         })

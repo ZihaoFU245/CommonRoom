@@ -240,6 +240,23 @@ try {
   const help = alice.frames.find((f) => f.id === alice.serial).text;
   assert.ok(help.split("\n").length > 10);
   assert.ok(help.includes("/reset"));
+  await until(
+    () => alice.snapshot.online.includes("bob"),
+    "online presence broadcast",
+  );
+  const presenceTab = await connect(cookies.bob);
+  assert.equal(
+    presenceTab.snapshot.online.filter((name) => name === "bob").length,
+    1,
+  );
+  presenceTab.ws.close();
+  await until(
+    () => presenceTab.ws.readyState === WebSocket.CLOSED,
+    "second tab closes",
+  );
+  assert.ok(
+    (await (await request("me", cookies.alice)).json()).online.includes("bob"),
+  );
   assert.deepEqual(bob.snapshot.rooms, [], "new users start without rooms");
   assert.deepEqual(
     bob.snapshot.private_peers,
@@ -260,6 +277,10 @@ try {
   const carolCookie = await login("carol", "abc");
   const carol = await connect(carolCookie);
   assert.deepEqual(carol.snapshot.rooms, []);
+  await until(
+    () => alice.snapshot.online.includes("carol"),
+    "new account online",
+  );
   await send(alice, "/reset carol xyz", null);
   await until(
     () => carol.ws.readyState === WebSocket.CLOSED,
@@ -357,6 +378,26 @@ try {
   assert.equal(roomReply.reply.text, multilingual);
   await send(eve, `/react ${roomMessageId} 👀`, "study", "error");
   await send(eve, `/reply ${roomMessageId} no access`, "study", "error");
+  await send(alice, `/retract ${roomMessageId}`, "study", "error");
+  await send(eve, `/retract ${roomMessageId}`, "study", "error");
+  await send(bob, "temporary room deletion fixture", "study");
+  await until(
+    () =>
+      alice.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)
+        ?.text === "temporary room deletion fixture",
+    "room deletion fixture",
+  );
+  const retractRoomId = alice.snapshot.rooms
+    .find((r) => r.name === "study")
+    .messages.at(-1).id;
+  await send(bob, `/retract ${retractRoomId}`, "study");
+  await until(
+    () =>
+      !alice.snapshot.rooms
+        .find((r) => r.name === "study")
+        .messages.some((m) => m.id === retractRoomId),
+    "room deletion broadcast",
+  );
   const longUnicode = "🙂".repeat(4000);
   await send(bob, `/tell alice ${longUnicode}`, null, "notice", true);
   await until(
@@ -395,6 +436,21 @@ try {
   assert.deepEqual(bob.snapshot.direct.at(-1).mentions, ["bob"]);
   await send(eve, `/react ${dmId} ❤️`, null, "error");
   await send(eve, `/reply ${dmId} leak`, null, "error");
+  await send(alice, `/retract ${dmId}`, null, "error");
+  await send(eve, `/retract ${dmId}`, null, "error");
+  await send(bob, "/tell alice temporary private deletion fixture", null);
+  await until(
+    () =>
+      alice.snapshot.direct.at(-1)?.text ===
+      "temporary private deletion fixture",
+    "private deletion fixture",
+  );
+  const retractPrivateId = alice.snapshot.direct.at(-1).id;
+  await send(bob, `/retract ${retractPrivateId}`, null);
+  await until(
+    () => !alice.snapshot.direct.some((m) => m.id === retractPrivateId),
+    "private deletion broadcast",
+  );
   const bobOtherDevice = await connect(cookies.bob);
   const readState = bob.snapshot.unread["@direct:alice"];
   assert.ok(readState.count > 0);
@@ -843,7 +899,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

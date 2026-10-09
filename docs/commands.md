@@ -32,12 +32,18 @@ counts sync across your devices and survive restarting or moving `data/`.
 Commands and reactions do not add unread messages. Histories evicted by the
 retention limit no longer contribute to the count.
 
+The compact top bar shows a green Connected dot and an online count. Open the
+count to see connected accounts; a user remains online while any tab or device
+is connected.
+
 Message actions appear on hover (always on touch devices). Use **Reply** to
-quote a message in the composer, or **+** to choose an emoji/custom UTF-8
+quote a message in the composer, **Delete** to retract your own message for
+everyone in the conversation (including its retained reply previews) after
+confirmation, or **+** to choose an emoji/custom UTF-8
 reaction. The picker opens above when there is insufficient room below in the
 visible chat area, and updates its placement on scroll or resize. Clicking a
 reaction toggles your participation. Reactions allow
-1–16 Unicode characters without control characters, with at most 32 distinct
+1–128 Unicode characters without control characters, with at most 32 distinct
 reactions per message. Reactions and replies are persisted for both rooms and
 private conversations; only conversation participants may use them. Quoted
 replies keep the original author's name and a 160-character preview even after
@@ -82,6 +88,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/leave [room]` | Everyone | Leave the specified or selected room; an admin must add regular users back |
 | `/tell user message` | Everyone | Private message, visible only to sender and recipient |
 | `/react message-id reaction` | Web users | Toggle your reaction on a retained message in the selected room or your private history |
+| `/retract message-id` | Web users | Delete your own retained room/private message for everyone; remove its retained reply previews |
 | `/reply message-id message` | Web users | Reply in the selected room, or to the other participant of a private message |
 | `/new room` | Admin or stdin | Create a room; the web admin becomes its first member |
 | `/add user [room]` | Admin or stdin | Add an existing account; defaults to the selected room in the web UI |

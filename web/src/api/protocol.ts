@@ -40,6 +40,7 @@ export interface Snapshot {
   username: string;
   admin: boolean;
   users: string[];
+  online: string[];
   rooms: Room[];
   direct: Message[];
   private_peers: string[];
@@ -139,6 +140,7 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   typeof v.username === "string" &&
   typeof v.admin === "boolean" &&
   strings(v.users) &&
+  strings(v.online) &&
   Array.isArray(v.rooms) &&
   v.rooms.every(
     (r) =>

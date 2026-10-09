@@ -137,6 +137,7 @@ impl Engine {
             }
         }
         Ok(Self {
+            online_connections: BTreeMap::new(),
             data,
             read_positions,
             revision: 0,

@@ -29,6 +29,7 @@ pub struct Engine {
     max_rooms: usize,
     max_messages: usize,
     db: Connection,
+    online_connections: BTreeMap<String, usize>,
     read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     _lock: Option<std::fs::File>,
 }

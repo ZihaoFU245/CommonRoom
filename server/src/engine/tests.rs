@@ -391,7 +391,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
         e.execute(
             Some("bob"),
             Some("lobby"),
-            &format!("/react {} {}", original.id, "a".repeat(17))
+            &format!("/react {} {}", original.id, "a".repeat(129))
         )
         .is_err()
     );
@@ -402,6 +402,16 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
             &format!("/react {} bad\nreaction", original.id)
         )
         .is_err()
+    );
+    let long_reaction = "🙂".repeat(128);
+    let command = format!("/react {} {long_reaction}", original.id);
+    e.execute(Some("bob"), Some("lobby"), &command).unwrap();
+    assert!(e.data.rooms["lobby"].messages[0].reactions[&long_reaction].contains("bob"));
+    e.execute(Some("bob"), Some("lobby"), &command).unwrap();
+    assert!(
+        !e.data.rooms["lobby"].messages[0]
+            .reactions
+            .contains_key(&long_reaction)
     );
     e.set_limits(64, 64, 1).unwrap();
     e.execute(
@@ -854,4 +864,108 @@ fn granted_role_survives_restart() {
         e.execute(Some("alice"), None, "/grant bob").unwrap();
     }
     assert!(Engine::open(&path).unwrap().snapshot("bob").unwrap().admin);
+}
+
+#[test]
+fn online_presence_counts_tabs_and_excludes_disabled_accounts() {
+    let mut e = engine();
+    let revision = e.revision;
+    e.connect("bob");
+    e.connect("bob");
+    e.connect("eve");
+    assert_eq!(e.snapshot("alice").unwrap().online, vec!["bob", "eve"]);
+    e.disconnect("bob");
+    assert_eq!(e.snapshot("alice").unwrap().online, vec!["bob", "eve"]);
+    e.disconnect("bob");
+    e.disconnect("bob");
+    assert_eq!(e.snapshot("alice").unwrap().online, vec!["eve"]);
+    assert_eq!(e.revision, revision);
+    e.execute(Some("alice"), None, "/disable eve").unwrap();
+    assert!(e.snapshot("alice").unwrap().online.is_empty());
+}
+
+#[test]
+fn retract_enforces_ownership_membership_and_private_visibility() {
+    let mut e = engine();
+    e.execute(Some("bob"), Some("lobby"), "room original")
+        .unwrap();
+    let id = e.data.rooms["lobby"].messages[0].id.clone();
+    let command = format!("/retract {id}");
+    // Even administrators cannot retract another author's message.
+    assert!(e.execute(Some("alice"), Some("lobby"), &command).is_err());
+    e.execute(Some("alice"), Some("lobby"), &format!("/reply {id} reply"))
+        .unwrap();
+    e.execute(Some("alice"), None, "/kick bob lobby").unwrap();
+    assert!(e.execute(Some("bob"), Some("lobby"), &command).is_err());
+    e.execute(Some("alice"), None, "/add bob lobby").unwrap();
+    let revision = e.data.rooms["lobby"].revision;
+    e.execute(Some("bob"), Some("lobby"), &command).unwrap();
+    assert_eq!(e.data.rooms["lobby"].revision, revision + 1);
+    assert_eq!(e.data.rooms["lobby"].messages.len(), 1);
+    assert!(e.data.rooms["lobby"].messages[0].reply.is_none());
+    assert!(e.execute(Some("bob"), Some("lobby"), &command).is_err());
+    assert_eq!(e.snapshot("alice").unwrap().unread["lobby"].count, 0);
+
+    e.execute(Some("bob"), None, "/tell alice private original")
+        .unwrap();
+    let id = e.data.private["alice:bob"].messages[0].id.clone();
+    let command = format!("/retract {id}");
+    assert!(e.execute(Some("eve"), None, &command).is_err());
+    assert!(e.execute(Some("alice"), None, &command).is_err());
+    assert!(e.execute(Some("bob"), Some("lobby"), &command).is_err());
+    e.execute(Some("alice"), None, &format!("/reply {id} reply"))
+        .unwrap();
+    e.execute(Some("bob"), None, &command).unwrap();
+    assert_eq!(e.data.private["alice:bob"].messages.len(), 1);
+    assert!(e.data.private["alice:bob"].messages[0].reply.is_none());
+}
+
+#[test]
+fn retract_persists_and_failed_writes_restore_message_and_quotes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.provision("bob", "hash".into(), false, false).unwrap();
+        e.execute(Some("alice"), None, "/new room").unwrap();
+        for room in [Some("room"), None] {
+            e.execute(
+                Some("alice"),
+                room,
+                if room.is_some() {
+                    "original"
+                } else {
+                    "/tell bob original"
+                },
+            )
+            .unwrap();
+            let id = if room.is_some() {
+                e.data.rooms["room"].messages[0].id.clone()
+            } else {
+                e.data.private["alice:bob"].messages[0].id.clone()
+            };
+            e.execute(Some("alice"), room, &format!("/reply {id} reply"))
+                .unwrap();
+            let before = e.data.clone();
+            let revision = e.revision;
+            e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+            assert!(
+                e.execute(Some("alice"), room, &format!("/retract {id}"))
+                    .is_err()
+            );
+            assert!(e.data == before);
+            assert_eq!(e.revision, revision);
+            e.db.execute_batch("PRAGMA query_only=OFF;").unwrap();
+            e.execute(Some("alice"), room, &format!("/retract {id}"))
+                .unwrap();
+        }
+        e.connect("alice");
+    }
+    let e = Engine::open(&path).unwrap();
+    assert_eq!(e.data.rooms["room"].messages.len(), 1);
+    assert!(e.data.rooms["room"].messages[0].reply.is_none());
+    assert_eq!(e.data.private["alice:bob"].messages.len(), 1);
+    assert!(e.data.private["alice:bob"].messages[0].reply.is_none());
+    assert!(e.snapshot("alice").unwrap().online.is_empty());
 }

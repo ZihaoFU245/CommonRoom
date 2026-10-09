@@ -19,7 +19,7 @@ Non-success HTTP responses contain `{error:string}`. Production requests must co
 The web sends `{id:number, room:string|null, text:string}`. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console and private views; private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
-- `Snapshot`: `{kind:"snapshot",username,admin,users,rooms,direct,private_peers,commands,available_rooms,unread}`.
+- `Snapshot`: `{kind:"snapshot",username,admin,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
 The canonical frontend declarations and runtime guards are in `web/src/api/protocol.ts`; Rust serialization types are in `server/src/engine/models.rs`. Change both together. Unknown JSON is validated before entering application state. Malformed frames are ignored and malformed successful HTTP responses become explicit errors. The integration harness validates actual server frames with these same guards.
@@ -37,3 +37,12 @@ The initial WebSocket snapshot and HTTP resync are baselines and do not trigger 
 History requests carry an abort signal and are accepted only for the current view and matching revision. Live snapshot tails replace cached messages by ID; cleanup, reactions, or gaps cause a fresh retained-history fetch. Read-only updates preserve message-array references to avoid re-rendering the transcript.
 
 Command output is bounded to the last 200 entries in tab memory, scoped to the originating view. Refresh removes it. `/clear` changes visible local history only. Unacknowledged requests are never resent automatically: after a disconnect, preserve the draft and ask the user to inspect history before resending.
+
+`online` lists active accounts with at least one authenticated WebSocket. Presence is
+transient, counts multiple tabs/devices, updates on connect/disconnect, and resets
+on restart. It is separate from the registered account directory in `users`.
+
+`/retract message-id` deletes only the requesting author’s retained message in the
+selected room or their private history. It increments the conversation revision
+and clears quotes of that message in retained replies. Snapshots and history
+resynchronization remove the message and quotes on other devices.

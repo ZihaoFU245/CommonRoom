@@ -18,6 +18,7 @@ const snapshot = {
   username: "alice",
   admin: true,
   users: ["alice", "bob"],
+  online: ["alice"],
   rooms: [{ name: "room", members: ["alice", "bob"], messages: [message] }],
   direct: [],
   private_peers: [],
@@ -49,6 +50,7 @@ test("protocol rejects malformed nested data before it reaches UI state", () => 
   for (const invalid of [
     null,
     {},
+    { ...snapshot, online: [123] },
     { ...snapshot, rooms: [{ ...snapshot.rooms[0], members: "alice" }] },
     { ...snapshot, direct: [{ ...message, reactions: { "👍": "bob" } }] },
     { ...snapshot, direct: [{ ...message, reply: { id: "old" } }] },

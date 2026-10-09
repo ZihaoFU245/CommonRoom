@@ -47,6 +47,43 @@ impl Engine {
             ..
         } = *context;
         match parts[0] {
+            "/retract" => {
+                require_len(parts, 2, "/retract message-id")?;
+                let user = actor.ok_or("Message actions require a user account.")?;
+                let id = parts[1];
+                let (messages, revision) = if let Some(name) = room {
+                    let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
+                    if !target.members.contains(user) {
+                        return Err("You are not a member of this room.".into());
+                    }
+                    (&mut target.messages, &mut target.revision)
+                } else {
+                    let chat = self
+                        .data
+                        .private
+                        .iter_mut()
+                        .filter(|(key, _)| private_peer(key, user).is_some())
+                        .map(|(_, chat)| chat)
+                        .find(|chat| chat.messages.iter().any(|m| m.id == id))
+                        .ok_or("Message not found in this conversation.")?;
+                    (&mut chat.messages, &mut chat.revision)
+                };
+                let original = messages
+                    .iter()
+                    .find(|m| m.id == id)
+                    .ok_or("Message not found in this conversation (it may have expired).")?;
+                if original.from != user {
+                    return Err("You can only delete your own messages.".into());
+                }
+                messages.retain(|m| m.id != id);
+                for message in messages {
+                    if message.reply.as_ref().is_some_and(|quote| quote.id == id) {
+                        message.reply = None;
+                    }
+                }
+                *revision = revision.wrapping_add(1);
+                Ok("Message deleted.".into())
+            }
             "/react" | "/reply" => {
                 let user = actor.ok_or("Message actions require a user account.")?;
                 let content = input
@@ -77,9 +114,9 @@ impl Engine {
                 .cloned()
                 .ok_or("Message not found in this conversation (it may have expired).")?;
                 if parts[0] == "/react" {
-                    if value.chars().count() > 16 || value.chars().any(char::is_control) {
+                    if value.chars().count() > 128 || value.chars().any(char::is_control) {
                         return Err(
-                            "Reactions support 1–16 characters without control characters.".into(),
+                            "Reactions support 1–128 characters without control characters.".into(),
                         );
                     }
                     let target = if let Some(name) = room {

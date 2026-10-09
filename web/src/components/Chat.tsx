@@ -13,6 +13,7 @@ import {
   privatePeers,
   privateMessages,
 } from "../features/conversation/console.ts";
+import { DeleteConfirmation } from "./DeleteConfirmation.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Settings } from "./Settings.tsx";
 import { Composer } from "./Composer.tsx";
@@ -95,7 +96,7 @@ export function Chat({
   const menuButton = useRef<HTMLButtonElement>(null);
   function closeMenu() {
     setMenu(false);
-    menuButton.current?.focus();
+    requestAnimationFrame(() => menuButton.current?.focus());
   }
   useEffect(() => {
     if (!menu || settingsOpen) return;
@@ -246,6 +247,9 @@ export function Chat({
     [messages, output, cleared, selected],
   );
   const handleReact = useEvent(reactTo);
+  const handleDelete = useEvent((message: Message) =>
+    commands.retract(message),
+  );
   const handleReply = useEvent((message: Message) => {
     setReplyTarget({ ...message, view: selected });
     input.current?.focus();
@@ -293,6 +297,12 @@ export function Chat({
   }
   return (
     <div class="chat-layout">
+      {commands.deleteConfirmation && (
+        <DeleteConfirmation
+          onCancel={commands.cancelDelete}
+          onConfirm={commands.confirmDelete}
+        />
+      )}
       <Sidebar
         state={state}
         menu={menu}
@@ -329,6 +339,7 @@ export function Chat({
         <header class="chat-header">
           <button
             class="mobile-menu"
+            hidden={menu}
             ref={menuButton}
             aria-label={menu ? "Close navigation" : "Open navigation"}
             aria-expanded={menu}
@@ -349,14 +360,45 @@ export function Chat({
                   : selected}
             </h1>
           </div>
-          <span class={`connection ${status}`}>
-            <i />
-            {status === "online"
-              ? "Connected"
-              : status === "connecting"
-                ? "Connecting"
-                : "Reconnecting"}
-          </span>
+          <div class="header-actions">
+            <details class="online-users">
+              <summary>
+                {status === "online"
+                  ? `${state.online.length} online`
+                  : "Online users"}
+              </summary>
+              <div class="online-list">
+                {status === "online" ? (
+                  state.online.map((name) => (
+                    <span key={name}>
+                      {name}
+                      {name === state.username ? " (you)" : ""}
+                    </span>
+                  ))
+                ) : (
+                  <span>Reconnecting…</span>
+                )}
+              </div>
+            </details>
+            <span
+              class={`connection ${status}`}
+              role="status"
+              aria-label={
+                status === "online"
+                  ? "Connected"
+                  : status === "connecting"
+                    ? "Connecting"
+                    : "Reconnecting"
+              }
+            >
+              <i />
+              {status === "online"
+                ? "Connected"
+                : status === "connecting"
+                  ? "Connecting"
+                  : "Reconnecting"}
+            </span>
+          </div>
         </header>
         {unread && unread.count > 0 && (
           <div class="unread-bar">
@@ -377,6 +419,7 @@ export function Chat({
           unreadBoundary={unreadBoundary}
           onReact={handleReact}
           onReply={handleReply}
+          onDelete={handleDelete}
           historyElement={historyElement}
           end={end}
           onScroll={handleScroll}

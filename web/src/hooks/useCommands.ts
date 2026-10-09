@@ -62,6 +62,40 @@ export function useCommands({
   useEffect(() => {
     setReplyTarget(null);
   }, [selected]);
+  const [deleteConfirmation, setDeleteConfirmation] = useState(false);
+  const deleteAction = useRef<(() => void) | null>(null);
+  function requestDelete(action: () => void) {
+    deleteAction.current = action;
+    setDeleteConfirmation(true);
+  }
+  function cancelDelete() {
+    deleteAction.current = null;
+    setDeleteConfirmation(false);
+  }
+  function confirmDelete() {
+    const action = deleteAction.current;
+    cancelDelete();
+    action?.();
+  }
+  function retract(message: Message, confirmed = false) {
+    if (
+      message.from !== state.username ||
+      request.current ||
+      socket.current?.readyState !== WebSocket.OPEN
+    )
+      return;
+    if (!confirmed) return requestDelete(() => retract(message, true));
+    const id = ++serial.current;
+    const text = `/retract ${message.id}`;
+    request.current = { id, text, room: selected, key: null, action: true };
+    setPending(true);
+    sendFrame(socket.current, {
+      id,
+      room: direct || consoleView ? null : selected,
+      text,
+    });
+    if (replyTarget?.id === message.id) setReplyTarget(null);
+  }
   function reactTo(message: Message, value: string) {
     if (
       !value.trim() ||
@@ -108,7 +142,7 @@ export function useCommands({
     edit(hint.value);
     input.current?.focus();
   }
-  function send(event: Event) {
+  function send(event: Event, confirmed = false) {
     event.preventDefault();
     const text = draft.trim();
     if (!text || pending) return;
@@ -137,6 +171,8 @@ export function useCommands({
       append(text, "Use a command or select a room to send a message.", true);
       return;
     }
+    if (text.split(/\s+/)[0] === "/retract" && !confirmed)
+      return requestDelete(() => send(event, true));
     const id = ++serial.current;
     request.current = {
       id,
@@ -238,6 +274,10 @@ export function useCommands({
     keydown,
     acceptHint,
     reactTo,
+    retract,
+    deleteConfirmation,
+    cancelDelete,
+    confirmDelete,
     receive,
     disconnect,
   };
