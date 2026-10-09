@@ -50,7 +50,16 @@ Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` conta
 - Write application web code in `.ts`/`.tsx`. Keep strict null/index/optional-property checks, explicit return paths, switch fallthrough checks, and unused/unreachable-code checks enabled. Use `unknown` at JSON boundaries, validate it, then narrow to a protocol type. Avoid `any`, non-null assertions, unchecked protocol casts, `@ts-ignore`, and disabling checks to make a build pass.
 - `pnpm --dir web typecheck` explicitly uses TypeScript 7 via the `@typescript/native` alias. The separate `typescript` 6 dependency supplies the supported compiler API for type-aware ESLint. Keep both lockfile versions compatible with their tooling; the default bare `tsc` executable belongs to the API dependency. ESLint rejects unsafe assignments/returns, unhandled promises, asynchronous callbacks used as void handlers, and non-null assertions. Handle promises with `await` or an explicit rejection handler; `void promise` does not bypass the rule.
 - Declare component props and type DOM refs/events. Keep rendering components separate from connection, history, and command state. Prefer pure feature helpers and focused hooks.
-- Preserve current UI conventions: white backgrounds, dark normal text, orange primary buttons/unread badges, left-aligned chat, browser-local dates, and Unicode message text.
+- Preserve current UI conventions: the light theme keeps its paper background and dark
+  normal text, both themes keep orange primary buttons and unread badges, and chat stays
+  left-aligned with browser-local dates and Unicode message text. Themed surfaces read
+  the palette custom properties at the top of `style.css`; add a new color to `:root`
+  and to `:root[data-theme="dark"]` rather than hardcoding it in a rule, then add the
+  same token to `paletteTokens` and derive it in `features/preferences/palette.ts`. A
+  custom palette writes every entry of that list as an inline property, so a token
+  missing from it silently keeps the built-in value. Text drawn on `--accent` must use
+  `--accent-label` or `--accent-contrast`, never `--ink`, because the accent fill does not
+  change between themes.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`, and avoid holding the engine mutex across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.

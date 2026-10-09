@@ -5,7 +5,12 @@ import { errorMessage } from "./api/protocol.ts";
 import { api } from "./api/client.ts";
 import { Chat } from "./components/Chat.tsx";
 import { Login } from "./components/Login.tsx";
+import { bootAppearance } from "./features/preferences/appearance.ts";
 import "./style.css";
+
+/* Resolve the saved theme before the first render so it never paints the
+   wrong background and then corrects itself. */
+bootAppearance();
 
 if (import.meta.env.PROD && location.protocol !== "https:") {
   location.replace(

@@ -66,9 +66,16 @@ Notifications are not push delivery to a closed browser/tab, and browser/OS
 notification settings can block them. Private message previews can appear in
 system notifications only after you opt in.
 
-The Settings button beside your profile adjusts chat text (14–24px) and UI
-text (12–18px) independently, with a live preview and Reset defaults. These
-preferences stay in this browser; they do not change the server configuration.
+The Settings button beside your profile chooses the theme (Light, Dark, System,
+which follows the operating system, or Custom) and adjusts chat text (14–24px)
+and UI text (12–18px) independently, taking effect immediately; Reset defaults
+restores the theme, the custom colors, and both font sizes. Custom takes a
+surface color and an accent color as hex values and generates the rest of the
+palette from them: every text, border, hover, and status tone is solved against
+a contrast target, and the surface's own lightness decides whether the result is
+light or dark. These preferences stay in this browser; they do not change the
+server configuration. The theme is resolved from browser storage in the entry
+module, before the app renders.
 Room and private-chat lists share a scrollable sidebar area; the profile stays
 fixed below it. Joined rooms and private peers come from the server on login,
 socket reconnect and when the page returns to the foreground. An older HTTP
