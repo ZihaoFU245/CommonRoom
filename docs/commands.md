@@ -34,7 +34,9 @@ retention limit no longer contribute to the count.
 
 Message actions appear on hover (always on touch devices). Use **Reply** to
 quote a message in the composer, or **+** to choose an emoji/custom UTF-8
-reaction. Clicking a reaction toggles your participation. Reactions allow
+reaction. The picker opens above when there is insufficient room below in the
+visible chat area, and updates its placement on scroll or resize. Clicking a
+reaction toggles your participation. Reactions allow
 1–16 Unicode characters without control characters, with at most 32 distinct
 reactions per message. Reactions and replies are persisted for both rooms and
 private conversations; only conversation participants may use them. Quoted
@@ -119,4 +121,3 @@ and editing `data/config.json` takes effect after restart.
 Web admins do not receive private
 messages between other users. `/tell` opens the private-message view in the UI.
 Names contain 1–32 ASCII letters, digits, `_`, or `-`.
-

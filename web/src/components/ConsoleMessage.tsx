@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
 import type { MessageDate } from "../features/conversation/messages.ts";
+import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
 
 export function ConsoleMessage({
   message,
@@ -22,6 +23,7 @@ export function ConsoleMessage({
 }) {
   const [reaction, setReaction] = useState("");
   const [reactionOpen, setReactionOpen] = useState(false);
+  const placement = useReactionPlacement(reactionOpen);
   const text = mentionedText(message.text, message.mentions);
   return (
     <article
@@ -89,7 +91,7 @@ export function ConsoleMessage({
           ))}
         </div>
       </div>
-      <div class="message-actions">
+      <div class={`message-actions ${reactionOpen ? "open" : ""}`}>
         <button
           type="button"
           disabled={pending}
@@ -99,13 +101,23 @@ export function ConsoleMessage({
           Reply
         </button>
         <details
+          ref={placement.anchor}
           open={reactionOpen}
           onToggle={(event) => setReactionOpen(event.currentTarget.open)}
         >
-          <summary aria-label={`Add reaction to ${message.from}'s message`}>
+          <summary
+            aria-label={`Add reaction to ${message.from}'s message`}
+            onClick={(event) => {
+              event.preventDefault();
+              setReactionOpen(!reactionOpen);
+            }}
+          >
             +
           </summary>
-          <div class="reaction-picker">
+          <div
+            ref={placement.picker}
+            class={`reaction-picker ${placement.above ? "above" : ""}`}
+          >
             <div class="reaction-choices">
               {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
                 <button

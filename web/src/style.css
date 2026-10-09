@@ -900,13 +900,17 @@ button:focus-visible {
   position: absolute;
   z-index: 3;
   left: 0;
-  top: 24px;
+  top: calc(100% + 4px);
   width: min(250px, 65vw);
   padding: 10px;
   border: 1px solid var(--line);
   background: var(--paper);
   border-radius: 8px;
   box-shadow: 0 4px 15px #2d2d2b12;
+}
+.reaction-picker.above {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .reaction-choices {
   display: flex;
@@ -1025,7 +1029,8 @@ button:focus-visible {
     opacity: 0;
   }
   .chat-message:hover .message-actions,
-  .chat-message:focus-within .message-actions {
+  .chat-message:focus-within .message-actions,
+  .message-actions.open {
     opacity: 1;
   }
 }
