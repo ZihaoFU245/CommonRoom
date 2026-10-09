@@ -17,14 +17,21 @@ impl Engine {
         message.sequence = self.data.next_sequence;
         Ok(message)
     }
-    pub(super) fn push_private(&mut self, message: Message) {
-        let key = private_key(&message.from, message.to.as_deref().unwrap());
+    pub(super) fn push_private(&mut self, message: Message) -> Result<(), String> {
+        let key = private_key(
+            &message.from,
+            message
+                .to
+                .as_deref()
+                .ok_or("Private message has no recipient.")?,
+        );
         let chat = self.data.private.entry(key).or_default();
         if chat.messages.len() == self.max_messages {
             chat.messages.pop_front();
         }
         chat.messages.push_back(message);
         chat.revision = chat.revision.wrapping_add(1);
+        Ok(())
     }
     pub(super) fn apply_messages(
         &mut self,
@@ -42,7 +49,10 @@ impl Engine {
         match parts[0] {
             "/react" | "/reply" => {
                 let user = actor.ok_or("Message actions require a user account.")?;
-                let content = input.strip_prefix(parts[0]).unwrap().trim_start();
+                let content = input
+                    .strip_prefix(parts[0])
+                    .ok_or("Invalid command.")?
+                    .trim_start();
                 let (id, value) = content
                     .split_once(char::is_whitespace)
                     .ok_or("Usage: /react message-id reaction or /reply message-id message")?;
@@ -76,7 +86,7 @@ impl Engine {
                         self.data
                             .rooms
                             .get_mut(name)
-                            .unwrap()
+                            .ok_or("Room not found.")?
                             .messages
                             .iter_mut()
                             .find(|m| m.id == id)
@@ -85,14 +95,17 @@ impl Engine {
                             .private
                             .get_mut(&private_key(
                                 &original.from,
-                                original.to.as_deref().unwrap(),
+                                original
+                                    .to
+                                    .as_deref()
+                                    .ok_or("Private message has no recipient.")?,
                             ))
-                            .unwrap()
+                            .ok_or("Private conversation not found.")?
                             .messages
                             .iter_mut()
                             .find(|m| m.id == id)
                     }
-                    .unwrap();
+                    .ok_or("Message not found in this conversation.")?;
                     if !target.reactions.contains_key(value) && target.reactions.len() >= 32 {
                         return Err("This message already has 32 different reactions.".into());
                     }
@@ -104,7 +117,7 @@ impl Engine {
                         target.reactions.remove(value);
                     }
                     if let Some(name) = room {
-                        let room = self.data.rooms.get_mut(name).unwrap();
+                        let room = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
                         room.revision = room.revision.wrapping_add(1);
                     } else {
                         let chat = self
@@ -112,9 +125,12 @@ impl Engine {
                             .private
                             .get_mut(&private_key(
                                 &original.from,
-                                original.to.as_deref().unwrap(),
+                                original
+                                    .to
+                                    .as_deref()
+                                    .ok_or("Private message has no recipient.")?,
                             ))
-                            .unwrap();
+                            .ok_or("Message not found in this conversation.")?;
                         chat.revision = chat.revision.wrapping_add(1);
                     }
                     return Ok("Reaction updated.".into());
@@ -124,7 +140,10 @@ impl Engine {
                 }
                 let recipient = if room.is_none() {
                     let peer = if original.from == user {
-                        original.to.as_deref().unwrap()
+                        original
+                            .to
+                            .as_deref()
+                            .ok_or("Private message has no recipient.")?
                     } else {
                         &original.from
                     };
@@ -142,7 +161,7 @@ impl Engine {
                     text: original.text.chars().take(160).collect(),
                 });
                 if let Some(name) = room {
-                    let target = self.data.rooms.get_mut(name).unwrap();
+                    let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
                     message
                         .mentions
                         .retain(|name| target.members.contains(name));
@@ -155,7 +174,7 @@ impl Engine {
                     message
                         .mentions
                         .retain(|name| name == user || Some(name.as_str()) == recipient);
-                    self.push_private(message);
+                    self.push_private(message)?;
                 }
                 Ok(String::new())
             }
@@ -212,7 +231,10 @@ impl Engine {
                 if actor.is_none() {
                     return Err("Direct messages require a user account.".into());
                 }
-                let content = input.strip_prefix("/tell").unwrap().trim_start();
+                let content = input
+                    .strip_prefix("/tell")
+                    .ok_or("Invalid command.")?
+                    .trim_start();
                 let (recipient, text) = content
                     .split_once(char::is_whitespace)
                     .ok_or("Usage: /tell user message")?;
@@ -230,10 +252,10 @@ impl Engine {
                 message
                     .mentions
                     .retain(|name| name == author || name == recipient);
-                self.push_private(message);
+                self.push_private(message)?;
                 Ok(format!("Private message sent to {recipient}."))
             }
-            _ => unreachable!("Dispatcher selected the wrong command domain"),
+            _ => Err("Unknown command.".into()),
         }
     }
 }

@@ -63,42 +63,47 @@ export function useReadTracking({
   }, [messages, selected, historyReady, output, cleared]);
   function acknowledgeVisible() {
     clearTimeout(readTimer.current);
-    readTimer.current = setTimeout(async () => {
-      if (
-        readBusy.current ||
-        !historyReady ||
-        document.hidden ||
-        !document.hasFocus() ||
-        settingsOpen ||
-        (menu && window.matchMedia("(max-width: 700px)").matches)
-      )
-        return;
-      const viewport = historyElement.current;
-      if (!viewport) return;
-      const elements = [
-        ...viewport.querySelectorAll<HTMLElement>("[data-sequence]"),
-      ].map((element) => ({
-        sequence: Number(element.dataset.sequence),
-        top: element.getBoundingClientRect().top,
-        bottom: element.getBoundingClientRect().bottom,
-      }));
-      const through = visibleReadPosition(
-        elements,
-        viewport.getBoundingClientRect(),
-        unread?.first ?? null,
-      );
-      if (!through || (readSent.current.get(selected) || 0) >= through) return;
-      const view = selected;
-      readBusy.current = true;
-      try {
-        await api.read(view, through);
-        readSent.current.set(view, through);
-      } catch {
-        /* Retry on the next snapshot, focus, or scroll. */
-      } finally {
-        readBusy.current = false;
-      }
+    readTimer.current = setTimeout(() => {
+      recordVisibleRead().catch((error: unknown) => {
+        console.error("Read tracking failed", error);
+      });
     }, 250);
+  }
+  async function recordVisibleRead() {
+    if (
+      readBusy.current ||
+      !historyReady ||
+      document.hidden ||
+      !document.hasFocus() ||
+      settingsOpen ||
+      (menu && window.matchMedia("(max-width: 700px)").matches)
+    )
+      return;
+    const viewport = historyElement.current;
+    if (!viewport) return;
+    const elements = [
+      ...viewport.querySelectorAll<HTMLElement>("[data-sequence]"),
+    ].map((element) => ({
+      sequence: Number(element.dataset.sequence),
+      top: element.getBoundingClientRect().top,
+      bottom: element.getBoundingClientRect().bottom,
+    }));
+    const through = visibleReadPosition(
+      elements,
+      viewport.getBoundingClientRect(),
+      unread?.first ?? null,
+    );
+    if (!through || (readSent.current.get(selected) || 0) >= through) return;
+    const view = selected;
+    readBusy.current = true;
+    try {
+      await api.read(view, through);
+      readSent.current.set(view, through);
+    } catch {
+      /* Retry on the next snapshot, focus, or scroll. */
+    } finally {
+      readBusy.current = false;
+    }
   }
   useEffect(() => {
     acknowledgeVisible();

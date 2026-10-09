@@ -313,7 +313,7 @@ impl Engine {
                     text
                 })
             }
-            _ => unreachable!("Dispatcher selected the wrong command domain"),
+            _ => Err("Unknown command.".into()),
         }
     }
 }

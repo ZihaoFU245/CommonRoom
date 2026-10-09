@@ -12,6 +12,7 @@ import type {
 import { mentionSuggestions } from "../features/conversation/interactions.ts";
 import { suggestions, privatePeers } from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
+import type { ValueRef } from "./refs.ts";
 interface Context {
   selected: string;
   direct: boolean;
@@ -20,7 +21,7 @@ interface Context {
   state: Snapshot;
   room: Room | undefined;
   socket: RefObject<WebSocket | null>;
-  currentState: RefObject<Snapshot>;
+  currentState: ValueRef<Snapshot>;
   input: RefObject<HTMLTextAreaElement>;
   desiredRoom: RefObject<string | null>;
   setSelected: (view: string) => void;
@@ -172,9 +173,10 @@ export function useCommands({
       );
       return;
     }
-    if (event.key === "Tab" && hints[activeHint]?.value) {
+    const hint = hints[activeHint];
+    if (event.key === "Tab" && hint?.value) {
       event.preventDefault();
-      acceptHint(hints[activeHint]!);
+      acceptHint(hint);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -199,14 +201,14 @@ export function useCommands({
       const [command, target] = current.text.trim().split(/\s+/);
       if (["/new", "/join"].includes(command || "") && target) {
         desiredRoom.current = target;
-        if (currentState.current!.rooms.some((room) => room.name === target)) {
+        if (currentState.current.rooms.some((room) => room.name === target)) {
           setSelected(target);
           desiredRoom.current = null;
         }
       }
       if (command === "/tell" && target) {
         desiredRoom.current = `@direct:${target}`;
-        if (privatePeers(currentState.current!).includes(target)) {
+        if (privatePeers(currentState.current).includes(target)) {
           setSelected(desiredRoom.current);
           desiredRoom.current = null;
         }

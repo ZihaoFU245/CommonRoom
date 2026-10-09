@@ -5,14 +5,15 @@ import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
 import { retainedHistory } from "../features/conversation/unread.ts";
 import { ingest } from "../features/conversation/console.ts";
+import type { ValueRef } from "./refs.ts";
 export function useHistory(
   state: Snapshot,
   selected: string,
   tail: Message[],
   historyCache: RefObject<History | null>,
-  currentState: RefObject<Snapshot>,
+  currentState: ValueRef<Snapshot>,
   selectedRef: RefObject<string>,
-  ledger: RefObject<Ledger | null>,
+  ledger: ValueRef<Ledger>,
 ) {
   const [loadedHistory, setLoadedHistory] = useState<History | null>(null);
   const [historyError, setHistoryError] = useState("");
@@ -58,11 +59,11 @@ export function useHistory(
         if (
           controller.signal.aborted ||
           selectedRef.current !== data.view ||
-          currentState.current!.unread?.[data.view]?.revision !== data.revision
+          currentState.current.unread?.[data.view]?.revision !== data.revision
         )
           return;
         historyCache.current = data;
-        ingest(currentState.current!, ledger.current!, data.messages);
+        ingest(currentState.current, ledger.current, data.messages);
         setLoadedHistory(data);
       })
       .catch((error) => {

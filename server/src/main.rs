@@ -58,7 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_graceful_shutdown({
         let app = app.clone();
         async move {
-            shutdown_signal().await;
+            if let Err(error) = shutdown_signal().await {
+                tracing::error!(error = %error, "Shutdown signal handler failed");
+            }
             app.stopping
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = app.changes.send(web::Change::All);
@@ -66,19 +68,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })
     .await?;
-    app.engine.lock().unwrap().checkpoint()?;
+    app.engine()?.checkpoint()?;
     Ok(())
 }
-async fn shutdown_signal() {
+async fn shutdown_signal() -> io::Result<()> {
     #[cfg(unix)]
     {
         let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("Install SIGTERM handler");
-        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! { result = tokio::signal::ctrl_c() => { result?; }, _ = terminate.recv() => {} }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        tokio::signal::ctrl_c().await?;
     }
+    Ok(())
 }

@@ -12,7 +12,9 @@ if (import.meta.env.PROD && location.protocol !== "https:") {
     `https://${location.host}${location.pathname}${location.search}${location.hash}`,
   );
 } else {
-  render(<App />, document.getElementById("app")!);
+  const root = document.getElementById("app");
+  if (!root) throw new Error("Missing application root.");
+  render(<App />, root);
 }
 
 function App() {

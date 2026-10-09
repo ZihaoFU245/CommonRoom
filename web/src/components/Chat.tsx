@@ -143,7 +143,7 @@ export function Chat({
       if (contentChanged)
         ingest(
           data,
-          ledger.current!,
+          ledger.current,
           metadata ? retainedHistory(cache.messages, [], metadata) : [],
         );
       if (
@@ -189,7 +189,9 @@ export function Chat({
     append,
     complete,
     clearView,
-    logout,
+    logout: () => {
+      logout().catch(reportUnexpectedError);
+    },
   });
   const {
     draft,
@@ -237,7 +239,7 @@ export function Chat({
       timeline(
         messages,
         output,
-        ledger.current!,
+        ledger.current,
         cleared[selected] || 0,
         selected,
       ),
@@ -280,6 +282,9 @@ export function Chat({
       append("/logout", errorMessage(error), true);
     }
   }
+  function reportUnexpectedError(error: unknown) {
+    append("Error", errorMessage(error), true);
+  }
   function choose(name: string) {
     resetEntry();
     setSelected(name);
@@ -298,9 +303,13 @@ export function Chat({
         closeMenu={closeMenu}
         choose={choose}
         openSettings={() => setSettingsOpen(true)}
-        toggleNotifications={toggleNotifications}
+        toggleNotifications={() => {
+          toggleNotifications().catch(reportUnexpectedError);
+        }}
         notifications={notifications}
-        logout={logout}
+        logout={() => {
+          logout().catch(reportUnexpectedError);
+        }}
       />
       {settingsOpen && (
         <Settings

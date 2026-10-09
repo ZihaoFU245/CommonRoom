@@ -5,6 +5,7 @@ mod history;
 mod security;
 mod socket;
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests;
 
 use crate::{config::Config, engine::Engine};
@@ -39,6 +40,18 @@ pub struct App {
     pub connections: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
+}
+impl App {
+    // Fail closed after a panic; a poisoned engine may contain a partial mutation.
+    pub fn engine(&self) -> Result<std::sync::MutexGuard<'_, Engine>, String> {
+        self.engine
+            .lock()
+            .map_err(|_| "Server state unavailable; restart the service.".into())
+    }
+    fn engine_api(&self) -> Result<std::sync::MutexGuard<'_, Engine>, ApiError> {
+        self.engine()
+            .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))
+    }
 }
 type ApiError = (StatusCode, Json<serde_json::Value>);
 fn error(code: StatusCode, message: &str) -> ApiError {

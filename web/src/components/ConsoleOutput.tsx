@@ -14,7 +14,7 @@ export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
       </div>
       {help ? (
         <div class="help-sections">
-          {helpSections(entry.result!).map((group) => (
+          {helpSections(help).map((group) => (
             <section key={group.title}>
               <h2>{group.title}</h2>
               <ul class="help-list" aria-label={`${group.title} commands`}>

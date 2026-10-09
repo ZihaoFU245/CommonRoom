@@ -16,9 +16,7 @@ pub(super) async fn history(
     Query(input): Query<HistoryQuery>,
 ) -> Result<Json<crate::engine::History>, ApiError> {
     let user = authenticate(&app, &headers)?;
-    app.engine
-        .lock()
-        .unwrap()
+    app.engine_api()?
         .history(&user, &input.view)
         .map(Json)
         .map_err(|e| error(StatusCode::FORBIDDEN, &e))
@@ -36,9 +34,7 @@ pub(super) async fn read(
     check_origin(&app, &headers)?;
     let user = authenticate(&app, &headers)?;
     let changed = app
-        .engine
-        .lock()
-        .unwrap()
+        .engine_api()?
         .mark_read(&user, &input.view, input.through)
         .map_err(|e| error(StatusCode::BAD_REQUEST, &e))?;
     if changed {

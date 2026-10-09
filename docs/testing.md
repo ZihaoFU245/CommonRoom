@@ -5,18 +5,36 @@
 From the repository root:
 
 ```sh
+rtk proxy ./auto/check.sh
+```
+
+This runs Rust formatting, Clippy with warnings as errors, Rust tests, TypeScript
+checks, type-aware ESLint, web formatting, and web tests. Dependencies must be
+installed first. To run individual checks:
+
+```sh
 rtk cargo fmt --all --check
 rtk cargo test --locked
 rtk cargo clippy --all-targets --locked -- -D warnings
 rtk pnpm --dir web typecheck
+rtk pnpm --dir web lint
 rtk pnpm --dir web format:check
 rtk pnpm --dir web test
-rtk proxy ./build.sh debug
-rtk proxy ./build.sh release
+rtk proxy ./auto/build.sh debug
+rtk proxy ./auto/build.sh release
 rtk pnpm --dir web test:integration
 ```
 
-The web build runs TypeScript checks before Vite. Vite's own transpilation is not a substitute for type checking. Frozen pnpm and Cargo lockfiles make build dependencies reproducible. The scripts contain ordinary commands; RTK wraps their invocation only.
+`auto/build.sh release` installs frozen dependencies, runs `auto/check.sh`, then
+bundles the web and compiles/packages Rust. Any failed check stops the process
+before replacing web/release artifacts. `auto/build.sh debug` skips source checks
+and tests for quick iteration; run `auto/check.sh` separately when needed.
+`auto/debug.sh` only runs the existing debug binary.
+
+The standalone `pnpm --dir web build` runs TypeScript, ESLint, and formatting
+checks before Vite. Vite's transpilation is not a substitute for type checking.
+Frozen pnpm and Cargo lockfiles make dependencies reproducible. The scripts contain
+ordinary commands; RTK wraps their invocation only.
 
 For formatting:
 
@@ -30,6 +48,11 @@ rtk pnpm --dir web format
 Rust tests cover configuration validation, proxy trust, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, migrations, restart/move persistence, and failed-write rollback.
 
 Web helper tests cover local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
+
+Build tests inject failures at every release check stage in disposable fixtures,
+verify that later stages never run and existing artifacts remain intact, and check
+that debug builds skip checks. Rust tests also verify that a poisoned engine
+returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, migration/restart, embedded assets, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 

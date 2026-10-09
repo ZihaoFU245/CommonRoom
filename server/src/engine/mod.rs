@@ -7,6 +7,7 @@ mod queries;
 mod rooms;
 mod storage;
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test assertions fail the test on purpose.
 mod tests;
 
 use dispatch::CommandContext;

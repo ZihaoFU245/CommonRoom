@@ -6,12 +6,16 @@ To build manually:
 
 ```sh
 rtk pnpm --dir web install
+rtk proxy ./auto/check.sh
 rtk pnpm --dir web build
 rtk cargo build --release
 rtk proxy cp target/release/chat ./chat
 ```
 
-Builds can also use `rtk proxy ./build.sh`. The script generates
+Builds can also use `rtk proxy ./auto/build.sh`. Release builds first run the full
+source check/test suite from `auto/check.sh`; failure stops bundling and packaging.
+Debug builds (`./auto/build.sh debug`) skip that suite. All shell scripts live in
+`auto/` and work from any current directory. The script generates
 missing lockfiles on its first run and uses frozen/locked dependencies on
 subsequent runs. Both lockfiles are included for reproducible builds. The script
 itself uses ordinary commands; RTK only wraps your invocation. Release compilation requires a built
@@ -165,4 +169,3 @@ rtk proxy ./chat > chat.log 2>&1
 
 Closing stdin leaves the web service running. Ctrl + C or SIGTERM stops it
 gracefully and checkpoints SQLite. No default account or password is shipped.
-

@@ -33,8 +33,8 @@ export function mentionEvents(previous: Snapshot, next: Snapshot) {
     }
   }
   for (const room of next.rooms) {
-    if (previousRooms.has(room.name))
-      add(room.messages, previousRooms.get(room.name)!.messages, room.name);
+    const previousRoom = previousRooms.get(room.name);
+    if (previousRoom) add(room.messages, previousRoom.messages, room.name);
   }
   add(next.direct, previous.direct, null);
   return events.map((e) => ({

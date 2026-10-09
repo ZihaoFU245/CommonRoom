@@ -30,11 +30,16 @@ Open http://localhost:5173. Vite proxies `/api` and `/ws` to the Rust listener a
 For an embedded debug build:
 
 ```sh
-rtk proxy ./build.sh debug
-rtk proxy ./debug.sh
+rtk proxy ./auto/build.sh debug
+rtk proxy ./auto/debug.sh
 ```
 
-Open http://localhost:3000. `debug.sh` runs the existing artifact; it does not rebuild. Rebuild after changing web assets or Rust code. Release packaging uses `rtk proxy ./build.sh release` and produces `./chat`.
+Open http://localhost:3000. `debug.sh` runs the existing artifact; it does not rebuild. Rebuild after changing web assets or Rust code. Release packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat`.
+
+All shell scripts live in `auto/` and locate the repository root themselves.
+Debug builds skip source checks and tests; release builds must pass the full
+`auto/check.sh` suite before bundling/packaging. Run `rtk proxy ./auto/check.sh`
+for a manual check during development.
 
 Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` contains real account credentials, sessions, and private history; do not delete or modify it for tests. Tests create their own temporary folders. Stop a server before copying its entire data folder.
 
@@ -42,10 +47,12 @@ Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` conta
 
 - Read [Architecture](architecture.md) before changing state ownership or module boundaries.
 - Prefix commands you execute with RTK. Use `rtk proxy` for unsupported commands. Build/run scripts themselves contain ordinary commands; do not insert RTK into their bodies.
-- Write application web code in `.ts`/`.tsx`. Keep `strict`, `noUncheckedIndexedAccess`, and unused-code checks enabled. Use `unknown` at JSON boundaries, validate it, then narrow to a protocol type. Avoid `any`, unchecked protocol casts, `@ts-ignore`, and disabling checks to make a build pass.
+- Write application web code in `.ts`/`.tsx`. Keep strict null/index/optional-property checks, explicit return paths, switch fallthrough checks, and unused/unreachable-code checks enabled. Use `unknown` at JSON boundaries, validate it, then narrow to a protocol type. Avoid `any`, non-null assertions, unchecked protocol casts, `@ts-ignore`, and disabling checks to make a build pass.
+- `pnpm --dir web typecheck` explicitly uses TypeScript 7 via the `@typescript/native` alias. The separate `typescript` 6 dependency supplies the supported compiler API for type-aware ESLint. Keep both lockfile versions compatible with their tooling; the default bare `tsc` executable belongs to the API dependency. ESLint rejects unsafe assignments/returns, unhandled promises, asynchronous callbacks used as void handlers, and non-null assertions. Handle promises with `await` or an explicit rejection handler; `void promise` does not bypass the rule.
 - Declare component props and type DOM refs/events. Keep rendering components separate from connection, history, and command state. Prefer pure feature helpers and focused hooks.
 - Preserve current UI conventions: white backgrounds, dark normal text, orange primary buttons/unread badges, left-aligned chat, browser-local dates, and Unicode message text.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`, and avoid holding the engine mutex across `.await`.
+- Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
 - Keep migrations compatible with existing `data/`. Any schema change needs a version increment, migration tests, rollback behavior, and an update to [Data](data.md).
 - Use `cargo fmt` and the web Prettier scripts. Update the relevant guides when paths, commands, protocol, configuration, or deployment behavior changes.

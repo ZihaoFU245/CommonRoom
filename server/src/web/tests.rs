@@ -4,6 +4,41 @@ use super::{
     security::{check_origin, trusted_proxy},
 };
 use axum::http::{HeaderMap, HeaderValue, header};
+
+#[test]
+#[allow(clippy::panic)] // Deliberately simulate a panic during a state mutation.
+fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
+    let (changes, _) = broadcast::channel(1);
+    let app = App {
+        engine: Arc::new(Mutex::new(
+            Engine::open(std::path::Path::new(":memory:")).unwrap(),
+        )),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        stopping: Default::default(),
+    };
+    let engine = app.engine.clone();
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = engine.lock().unwrap();
+            panic!("simulated partial mutation");
+        })
+        .join()
+        .is_err()
+    );
+    assert!(app.engine().is_err());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        HeaderValue::from_static("chat_session=fixture"),
+    );
+    let (status, _) = auth::authenticate(&app, &headers).unwrap_err();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(app.engine.is_poisoned());
+}
 #[test]
 fn proxy_trust_uses_the_socket_peer() {
     let config = Config::default();

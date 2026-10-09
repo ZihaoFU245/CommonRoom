@@ -36,7 +36,13 @@ export function Login({
       </div>
       <section class="login-card">
         <h1>Sign in.</h1>
-        <form onSubmit={submit}>
+        <form
+          onSubmit={(event) => {
+            submit(event).catch((error: unknown) =>
+              setError(errorMessage(error)),
+            );
+          }}
+        >
           <label for="username">Username</label>
           <input
             id="username"

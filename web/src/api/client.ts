@@ -15,7 +15,7 @@ async function request<T>(
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     cache: "no-store",
-    signal,
+    ...(signal === undefined ? {} : { signal }),
     ...(body === undefined
       ? {}
       : {

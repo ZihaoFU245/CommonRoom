@@ -29,21 +29,30 @@ export function ingest(
   // Insert fetched older history before known messages without moving local
   // command output. New live messages still append to the tab's ledger.
   for (let i = 0; i < messages.length;) {
-    if (ledger.messages.has(messages[i]!.id)) {
+    const current = messages[i];
+    if (!current) break;
+    if (ledger.messages.has(current.id)) {
       i++;
       continue;
     }
     const start = i;
-    while (i < messages.length && !ledger.messages.has(messages[i]!.id)) i++;
-    const left = start ? ledger.messages.get(messages[start - 1]!.id)! : 0;
-    const right =
-      i < messages.length ? ledger.messages.get(messages[i]!.id)! : null;
+    while (i < messages.length) {
+      const next = messages[i];
+      if (!next || ledger.messages.has(next.id)) break;
+      i++;
+    }
+    const previous = messages[start - 1];
+    const next = messages[i];
+    const left = previous ? (ledger.messages.get(previous.id) ?? 0) : 0;
+    const right = next ? (ledger.messages.get(next.id) ?? null) : null;
     for (let j = start; j < i; j++) {
+      const message = messages[j];
+      if (!message) continue;
       const order =
         right === null
           ? ++ledger.sequence
           : left + ((right - left) * (j - start + 1)) / (i - start + 1);
-      ledger.messages.set(messages[j]!.id, order);
+      ledger.messages.set(message.id, order);
     }
   }
   return ledger;
@@ -112,7 +121,7 @@ export function helpSections(text: string) {
     else {
       if (!groups.length) groups.push({ title: "Commands", commands: [] });
       const [usage = "", description] = line.split(" — ");
-      groups.at(-1)!.commands.push({ usage, description: description || "" });
+      groups.at(-1)?.commands.push({ usage, description: description || "" });
     }
   }
   return groups;

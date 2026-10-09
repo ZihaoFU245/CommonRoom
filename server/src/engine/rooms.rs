@@ -95,7 +95,7 @@ impl Engine {
                 self.data.rooms.remove(parts[1]).ok_or("Room not found.")?;
                 Ok(format!("Deleted #{}.", parts[1]))
             }
-            _ => unreachable!("Dispatcher selected the wrong command domain"),
+            _ => Err("Unknown command.".into()),
         }
     }
 }

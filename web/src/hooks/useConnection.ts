@@ -22,6 +22,13 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
     let stopped = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
+    const handleSyncError = (error: unknown) => {
+      if (
+        ["Please log in.", "Account unavailable."].includes(errorMessage(error))
+      )
+        callbacks.current.onLogout();
+      // Transient refresh failures retry on reconnect/focus; socket updates remain authoritative.
+    };
     const sync = snapshotSync(
       api.me,
       (data, baseline) => {
@@ -30,23 +37,16 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         setState(data);
         callbacks.current.onSnapshot(previous, data, baseline);
       },
-      (error) => {
-        if (
-          ["Please log in.", "Account unavailable."].includes(
-            errorMessage(error),
-          )
-        )
-          callbacks.current.onLogout();
-      },
+      handleSyncError,
     );
     const resume = () => {
-      if (!document.hidden) sync.refresh();
+      if (!document.hidden) sync.refresh().catch(handleSyncError);
     };
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("focus", resume);
     window.addEventListener("pageshow", resume);
     window.addEventListener("online", resume);
-    async function connect() {
+    function connect() {
       if (stopped) return;
       setStatus("connecting");
       const url = new URL("ws", document.baseURI);
@@ -57,7 +57,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         if (stopped || socket.current !== ws) return;
         attempts = 0;
         setStatus("online");
-        sync.refresh();
+        sync.refresh().catch(handleSyncError);
       };
       let baseline = true;
       ws.onmessage = (event) => {
@@ -73,13 +73,20 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
           callbacks.current.onResult(data);
         }
       };
-      ws.onclose = async () => {
+      ws.onclose = () => {
         if (stopped) return;
         setStatus("offline");
         callbacks.current.onDisconnect();
-        await sync.refresh();
-        if (!stopped)
-          retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 15000));
+        sync
+          .refresh()
+          .then(() => {
+            if (!stopped)
+              retry = setTimeout(
+                connect,
+                Math.min(1000 * 2 ** attempts++, 15000),
+              );
+          })
+          .catch(handleSyncError);
       };
       ws.onerror = () => ws.close();
     }

@@ -110,8 +110,11 @@ impl Config {
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "bind must be an IP address and port, such as 127.0.0.1:3000.")?;
         let temp = data.join("config.json.tmp");
-        std::fs::write(&temp, serde_json::to_vec_pretty(&config).unwrap())
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            &temp,
+            serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         std::fs::rename(temp, path).map_err(|e| e.to_string())?;
         Ok(config)
     }
@@ -137,6 +140,7 @@ fn normalize_base_url(value: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests {
     use super::*;
     #[test]

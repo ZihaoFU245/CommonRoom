@@ -20,7 +20,13 @@ pub fn start(app: App) {
             if parts.is_empty() {
                 continue;
             }
-            let before = app.engine.lock().unwrap().revision;
+            let before = match app.engine() {
+                Ok(engine) => engine.revision,
+                Err(error) => {
+                    tracing::error!("{error}");
+                    break;
+                }
+            };
             let result = match parts[0] {
                 "/help" => Ok(commands::help(true, true)),
                 "/configs" if parts.len() == 1 => app.config.display(),
@@ -40,7 +46,7 @@ pub fn start(app: App) {
                         Err("Role must be admin or user.".into())
                     } else {
                         hash_password(parts[2]).and_then(|hash| {
-                            app.engine.lock().unwrap().provision(
+                            app.engine()?.provision(
                                 parts[1],
                                 hash,
                                 parts.get(3) == Some(&"admin"),
@@ -49,12 +55,14 @@ pub fn start(app: App) {
                         })
                     }
                 }
-                _ => app.engine.lock().unwrap().execute(None, None, &line),
+                _ => app
+                    .engine()
+                    .and_then(|mut engine| engine.execute(None, None, &line)),
             };
             match result {
                 Ok(reply) => {
                     tracing::info!("{reply}");
-                    if app.engine.lock().unwrap().revision != before {
+                    if app.engine().is_ok_and(|engine| engine.revision != before) {
                         let _ = app.changes.send(Change::All);
                     }
                 }

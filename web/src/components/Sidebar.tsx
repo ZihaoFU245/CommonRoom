@@ -65,7 +65,7 @@ export function Sidebar({
               >
                 <span class="hash">#</span>
                 {r.name}
-                <UnreadBadge count={state.unread[r.name]?.count} />
+                <UnreadBadge count={state.unread[r.name]?.count ?? 0} />
               </button>
             ))}
             {!state.rooms.length && <p class="no-rooms">No rooms</p>}
@@ -84,7 +84,9 @@ export function Sidebar({
               >
                 <span class="hash">↗</span>
                 {name}
-                <UnreadBadge count={state.unread[`@direct:${name}`]?.count} />
+                <UnreadBadge
+                  count={state.unread[`@direct:${name}`]?.count ?? 0}
+                />
               </button>
             ))}
             {!peers.length && <p class="no-rooms">No conversations</p>}

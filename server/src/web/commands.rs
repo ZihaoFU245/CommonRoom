@@ -18,7 +18,7 @@ pub(super) async fn execute_input(
 ) -> Result<(String, bool), String> {
     let parts: Vec<_> = input.text.split_whitespace().collect();
     if parts.first() == Some(&"/configs") {
-        if !app.engine.lock().unwrap().is_admin(user) {
+        if !app.engine()?.is_admin(user) {
             return Err("Admin permission required.".into());
         }
         if parts.len() != 1 {
@@ -28,12 +28,12 @@ pub(super) async fn execute_input(
     }
     let passwd = parts.first() == Some(&"/passwd");
     if !passwd && !matches!(parts.first(), Some(&"/user") | Some(&"/reset")) {
-        let mut engine = app.engine.lock().unwrap();
+        let mut engine = app.engine()?;
         let before = engine.revision;
         let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
         return Ok((reply, engine.revision != before));
     }
-    if !passwd && !app.engine.lock().unwrap().is_admin(user) {
+    if !passwd && !app.engine()?.is_admin(user) {
         return Err("Admin permission required.".into());
     }
     let reset = parts[0] == "/reset";
@@ -58,9 +58,7 @@ pub(super) async fn execute_input(
     }
     let expected = if passwd {
         Some(
-            app.engine
-                .lock()
-                .unwrap()
+            app.engine()?
                 .data
                 .users
                 .get(user)
@@ -91,14 +89,19 @@ pub(super) async fn execute_input(
     })
     .await
     .map_err(|_| "Password hashing failed.")??;
-    let mut engine = app.engine.lock().unwrap();
+    let mut engine = app.engine()?;
     let current = token(headers).ok_or("Please log in.")?;
     if engine.session(current).as_deref() != Some(user) {
         return Err("Please log in.".into());
     }
     if passwd {
         return engine
-            .change_password(user, expected.as_deref().unwrap(), hash, current)
+            .change_password(
+                user,
+                expected.as_deref().ok_or("Account unavailable.")?,
+                hash,
+                current,
+            )
             .map(|text| (text, true));
     }
     // Recheck access after hashing, without constructing a chat snapshot.

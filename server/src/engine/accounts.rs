@@ -24,7 +24,11 @@ impl Engine {
             return Err("Account or session changed. Please log in again.".into());
         }
         let before = self.data.clone();
-        self.data.users.get_mut(user).unwrap().hash = hash;
+        self.data
+            .users
+            .get_mut(user)
+            .ok_or("Account unavailable.")?
+            .hash = hash;
         self.data
             .sessions
             .retain(|token, session| session.username != user || token == keep);
@@ -249,7 +253,11 @@ impl Engine {
                 {
                     return Err("Cannot revoke the last active administrator.".into());
                 }
-                self.data.users.get_mut(name).unwrap().admin = grant;
+                self.data
+                    .users
+                    .get_mut(name)
+                    .ok_or("User not found.")?
+                    .admin = grant;
                 Ok(format!(
                     "{name}: permission {}.",
                     if grant { "admin" } else { "user" }
@@ -295,7 +303,7 @@ impl Engine {
                 }
                 Ok(format!("Disabled {}.", parts[1]))
             }
-            _ => unreachable!("Dispatcher selected the wrong command domain"),
+            _ => Err("Unknown command.".into()),
         }
     }
 }

@@ -14,11 +14,14 @@ export function useReactionPlacement(open: boolean) {
     const place = () => {
       const bounds = trigger.getBoundingClientRect();
       const clip = transcript?.getBoundingClientRect();
-      const top = Math.max(0, clip ? clip.top + transcript!.clientTop : 0);
+      const top = Math.max(
+        0,
+        clip && transcript ? clip.top + transcript.clientTop : 0,
+      );
       const bottom = Math.min(
         window.innerHeight,
-        clip
-          ? clip.top + transcript!.clientTop + transcript!.clientHeight
+        clip && transcript
+          ? clip.top + transcript.clientTop + transcript.clientHeight
           : window.innerHeight,
       );
       const below = bottom - bounds.bottom - 4;

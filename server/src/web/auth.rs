@@ -24,8 +24,10 @@ pub(super) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, Api
             "Server is shutting down.",
         ));
     }
-    token(headers)
-        .and_then(|t| app.engine.lock().unwrap().session(t))
+    let session_token =
+        token(headers).ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))?;
+    app.engine_api()?
+        .session(session_token)
         .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))
 }
 #[derive(Deserialize)]
@@ -47,7 +49,12 @@ pub(super) async fn login(
         ));
     }
     {
-        let mut attempts = app.attempts.lock().unwrap();
+        let mut attempts = app.attempts.lock().map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Login state unavailable; restart the service.",
+            )
+        })?;
         attempts.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
         // Key on IP, never the client's ephemeral TCP port.
         let key = SocketAddr::new(peer.ip(), 0);
@@ -61,9 +68,7 @@ pub(super) async fn login(
         entry.1 += 1;
     }
     let account = app
-        .engine
-        .lock()
-        .unwrap()
+        .engine_api()?
         .data
         .users
         .get(&input.username)
@@ -94,13 +99,14 @@ pub(super) async fn login(
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    app.engine
-        .lock()
-        .unwrap()
+    app.engine_api()?
         .login(
             value.clone(),
             &input.username,
-            &account.unwrap().hash,
+            &account
+                .as_ref()
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid username or password."))?
+                .hash,
             token(&headers),
         )
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
@@ -108,7 +114,12 @@ pub(super) async fn login(
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_str(&cookie(&app, &value, 43200)).unwrap(),
+        HeaderValue::from_str(&cookie(&app, &value, 43200)).map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Invalid session cookie configuration.",
+            )
+        })?,
     );
     Ok(response)
 }
@@ -129,9 +140,7 @@ pub(super) async fn logout(
 ) -> Result<Response, ApiError> {
     check_origin(&app, &headers)?;
     if let Some(token) = token(&headers) {
-        app.engine
-            .lock()
-            .unwrap()
+        app.engine_api()?
             .logout(token)
             .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     }
@@ -139,7 +148,12 @@ pub(super) async fn logout(
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_str(&cookie(&app, "", 0)).unwrap(),
+        HeaderValue::from_str(&cookie(&app, "", 0)).map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Invalid session cookie configuration.",
+            )
+        })?,
     );
     Ok(response)
 }
@@ -148,6 +162,6 @@ pub(super) async fn me(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let username = authenticate(&app, &headers)?;
-    let snapshot = app.engine.lock().unwrap().snapshot(&username);
+    let snapshot = app.engine_api()?.snapshot(&username);
     Ok(Json(json!(snapshot)))
 }

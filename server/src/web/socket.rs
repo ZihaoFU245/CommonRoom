@@ -33,11 +33,10 @@ pub(super) async fn upgrade(
 }
 pub(super) async fn snapshot(app: &App, user: &str, socket: &mut WebSocket) -> bool {
     let value = app
-        .engine
-        .lock()
-        .unwrap()
-        .snapshot(user)
-        .map(|s| serde_json::to_string(&s).unwrap());
+        .engine()
+        .ok()
+        .and_then(|engine| engine.snapshot(user))
+        .and_then(|snapshot| serde_json::to_string(&snapshot).ok());
     match value {
         Some(value) => send(socket, Message::Text(value.into())).await,
         None => false,
@@ -66,7 +65,7 @@ pub(super) async fn connection(app: App, headers: HeaderMap, user: String, mut s
                 if matches!(&change, Ok(Change::Read(name)) if name != &user) { continue; }
                 if matches!(change, Err(broadcast::error::RecvError::Closed)) || authenticate(&app, &headers).is_err() { break; }
                 if matches!(change, Ok(Change::Read(_))) {
-                    let unread = app.engine.lock().unwrap().unreads(&user);
+                    let unread = match app.engine() { Ok(engine) => engine.unreads(&user), Err(_) => break };
                     if !send(&mut socket, Message::Text(json!({"kind":"read", "unread":unread}).to_string().into())).await { break; }
                 } else if !snapshot(&app, &user, &mut socket).await { break; }
             },

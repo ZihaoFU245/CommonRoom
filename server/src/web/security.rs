@@ -49,14 +49,25 @@ pub(super) async fn security(State(app): State<App>, request: Request, next: Nex
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static("max-age=31536000"),
         );
-        let websocket_origin = app.config.origins[0].replacen("https://", "wss://", 1);
+        let Some(origin) = app.config.origins.first() else {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Missing origin configuration.",
+            )
+            .into_response();
+        };
+        let websocket_origin = origin.replacen("https://", "wss://", 1);
         let policy = format!(
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' {websocket_origin}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
         );
-        h.insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_str(&policy).expect("Validated origin"),
-        );
+        let Ok(policy) = HeaderValue::from_str(&policy) else {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Invalid security policy configuration.",
+            )
+            .into_response();
+        };
+        h.insert(header::CONTENT_SECURITY_POLICY, policy);
     }
     response
 }

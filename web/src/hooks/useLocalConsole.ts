@@ -10,8 +10,8 @@ export function useLocalConsole(
 ) {
   const [output, setOutput] = useState<LocalOutput[]>([]);
   const [cleared, setCleared] = useState<Record<string, number>>({});
-  const ledger = useRef<Ledger | null>(null);
-  if (!ledger.current) ledger.current = ingest(initial);
+  const [initialLedger] = useState(() => ingest(initial));
+  const ledger = useRef<Ledger>(initialLedger);
   function append(
     command: string,
     result: string | null = null,
@@ -20,7 +20,7 @@ export function useLocalConsole(
   ) {
     command = redactCommand(command);
     if (view === selectedRef.current) atBottom.current = true;
-    const order = ++ledger.current!.sequence;
+    const order = ++ledger.current.sequence;
     const entry: LocalOutput = {
       kind: "command",
       key: `local-${order}`,
@@ -47,7 +47,7 @@ export function useLocalConsole(
     );
     setCleared((previous) => ({
       ...previous,
-      [selected]: ledger.current!.sequence,
+      [selected]: ledger.current.sequence,
     }));
   }
   return { output, cleared, setCleared, ledger, append, complete, clearView };

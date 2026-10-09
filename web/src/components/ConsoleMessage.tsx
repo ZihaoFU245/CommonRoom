@@ -24,6 +24,7 @@ export function ConsoleMessage({
   const [reaction, setReaction] = useState("");
   const [reactionOpen, setReactionOpen] = useState(false);
   const placement = useReactionPlacement(reactionOpen);
+  const reply = message.reply;
   const text = mentionedText(message.text, message.mentions);
   return (
     <article
@@ -50,18 +51,18 @@ export function ConsoleMessage({
             </time>
           </header>
         )}
-        {message.reply && (
+        {reply && (
           <button
             class="reply-quote"
             onClick={() =>
               document
-                .getElementById(`message-${message.reply!.id}`)
+                .getElementById(`message-${reply.id}`)
                 ?.scrollIntoView({ block: "center" })
             }
             title="Jump to original message if it is loaded"
           >
-            <strong>↳ {message.reply.from}</strong>
-            <span dir="auto">{message.reply.text}</span>
+            <strong>↳ {reply.from}</strong>
+            <span dir="auto">{reply.text}</span>
           </button>
         )}
         <p dir="auto">

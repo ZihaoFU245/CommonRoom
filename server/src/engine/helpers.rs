@@ -48,7 +48,7 @@ pub(super) fn parse_age(value: &str) -> Result<u64, String> {
         .chars()
         .last()
         .ok_or("Age must use s, m, h, d or w, e.g. 7d.")?;
-    let digits = value.strip_suffix(unit).unwrap();
+    let digits = value.strip_suffix(unit).ok_or("Invalid duration.")?;
     let multiplier = match unit {
         's' => 1,
         'm' => 60,
