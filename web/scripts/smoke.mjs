@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { parseFrame } from "../src/api/protocol.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const binary = join(
@@ -130,10 +131,15 @@ async function connect(cookie) {
   };
   sockets.push(client);
   client.ws.on("message", (raw) => {
-    const frame = JSON.parse(raw);
+    const frame = parseFrame(raw.toString());
+    assert.ok(
+      frame,
+      "Server frame must satisfy the TypeScript client's runtime contract",
+    );
     client.frames.push(frame);
     if (frame.kind === "snapshot") client.snapshot = frame;
-    if (frame.kind === "read") client.snapshot = {...client.snapshot, unread:frame.unread};
+    if (frame.kind === "read")
+      client.snapshot = { ...client.snapshot, unread: frame.unread };
   });
   let error;
   client.ws.on("error", (e) => {
@@ -143,8 +149,14 @@ async function connect(cookie) {
   if (error) throw error;
   return client;
 }
-async function send(client, text, room = "lobby", kind = "notice", escaped = false) {
-    const id = ++client.serial;
+async function send(
+  client,
+  text,
+  room = "lobby",
+  kind = "notice",
+  escaped = false,
+) {
+  const id = ++client.serial;
   const frame = JSON.stringify({ id, room, text });
   client.ws.send(escaped ? frame.replaceAll("🙂", "\\ud83d\\ude42") : frame);
   await until(
@@ -217,7 +229,9 @@ try {
   await send(bob, "/configs", null, "error");
   await send(bob, "/clean 7d @all", null, "error");
   await send(alice, "/configs", null);
-  const configs = JSON.parse(alice.frames.find((f) => f.id === alice.serial).text);
+  const configs = JSON.parse(
+    alice.frames.find((f) => f.id === alice.serial).text,
+  );
   assert.equal(configs.max_users, 4);
   assert.equal(configs.max_rooms, 1);
   assert.equal(configs.max_messages, 1000);
@@ -227,7 +241,11 @@ try {
   assert.ok(help.split("\n").length > 10);
   assert.ok(help.includes("/reset"));
   assert.deepEqual(bob.snapshot.rooms, [], "new users start without rooms");
-  assert.deepEqual(bob.snapshot.private_peers, [], "unmessaged accounts are not private contacts");
+  assert.deepEqual(
+    bob.snapshot.private_peers,
+    [],
+    "unmessaged accounts are not private contacts",
+  );
   await send(bob, "/user denied abc", null, "error");
   await send(bob, "/reset alice abc", null, "error");
   await send(bob, "/disable alice", null, "error");
@@ -235,19 +253,28 @@ try {
   await send(alice, "/user carol abc", null);
   await send(alice, "/user dave abc", null, "error");
   child.stdin.write("/user dave abc\n");
-  await until(() => logs.includes("User limit reached (4)."), "stdin user limit");
+  await until(
+    () => logs.includes("User limit reached (4)."),
+    "stdin user limit",
+  );
   const carolCookie = await login("carol", "abc");
   const carol = await connect(carolCookie);
   assert.deepEqual(carol.snapshot.rooms, []);
   await send(alice, "/reset carol xyz", null);
-  await until(() => carol.ws.readyState === WebSocket.CLOSED, "admin password reset revokes sessions");
+  await until(
+    () => carol.ws.readyState === WebSocket.CLOSED,
+    "admin password reset revokes sessions",
+  );
   await login("carol", "xyz");
   const carol2 = await connect(await login("carol", "xyz"));
   const carol3Cookie = await login("carol", "xyz");
   const carol3 = await connect(carol3Cookie);
   await send(carol2, "/passwd wrong abc", null, "error");
   await send(carol2, "/passwd xyz abc", null);
-  await until(() => carol3.ws.readyState === WebSocket.CLOSED, "password change revokes other sessions");
+  await until(
+    () => carol3.ws.readyState === WebSocket.CLOSED,
+    "password change revokes other sessions",
+  );
   assert.equal((await request("me", carol3Cookie)).status, 401);
   await send(carol2, "/whoami", null);
   await send(alice, "/disable carol", null);
@@ -275,7 +302,10 @@ try {
   await send(alice, "/new study");
   await send(alice, "/new overflow", null, "error");
   child.stdin.write("/new overflow\n");
-  await until(() => logs.includes("Room limit reached (1)."), "stdin room limit");
+  await until(
+    () => logs.includes("Room limit reached (1)."),
+    "stdin room limit",
+  );
   await send(bob, "/join study", null, "error");
   await send(alice, "/add bob study");
   await until(
@@ -285,23 +315,54 @@ try {
   await send(bob, "a retained room message", "study");
   const multilingual = "你好 日本語 한국어 مرحبا नमस्ते Привет שלום 🙂 e\u0301";
   await send(bob, multilingual, "study");
-  await until(() => bob.snapshot.rooms.find(r => r.name === "study").messages.at(-1)?.text === multilingual, "Unicode room delivery");
-  const roomMessageId = bob.snapshot.rooms.find(r => r.name === "study").messages.at(-1).id;
+  await until(
+    () =>
+      bob.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)
+        ?.text === multilingual,
+    "Unicode room delivery",
+  );
+  const roomMessageId = bob.snapshot.rooms
+    .find((r) => r.name === "study")
+    .messages.at(-1).id;
   await send(alice, `/react ${roomMessageId} 好👍`, "study");
-  await until(() => bob.snapshot.rooms.find(r => r.name === "study").messages.find(m => m.id === roomMessageId)?.reactions["好👍"]?.includes("alice"), "reaction broadcast");
+  await until(
+    () =>
+      bob.snapshot.rooms
+        .find((r) => r.name === "study")
+        .messages.find((m) => m.id === roomMessageId)
+        ?.reactions["好👍"]?.includes("alice"),
+    "reaction broadcast",
+  );
   await send(bob, `/react ${roomMessageId} 好👍`, "study");
-  await until(() => alice.snapshot.rooms.find(r => r.name === "study").messages.find(m => m.id === roomMessageId)?.reactions["好👍"]?.length === 2, "shared reaction count");
+  await until(
+    () =>
+      alice.snapshot.rooms
+        .find((r) => r.name === "study")
+        .messages.find((m) => m.id === roomMessageId)?.reactions["好👍"]
+        ?.length === 2,
+    "shared reaction count",
+  );
   await send(alice, `/react ${roomMessageId} 好👍`, "study");
   await send(bob, `/reply ${roomMessageId} @alice 回答 🙂`, "study");
-  await until(() => alice.snapshot.rooms.find(r => r.name === "study").messages.at(-1)?.reply?.id === roomMessageId, "reply delivery");
-  const roomReply = alice.snapshot.rooms.find(r => r.name === "study").messages.at(-1);
+  await until(
+    () =>
+      alice.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)
+        ?.reply?.id === roomMessageId,
+    "reply delivery",
+  );
+  const roomReply = alice.snapshot.rooms
+    .find((r) => r.name === "study")
+    .messages.at(-1);
   assert.deepEqual(roomReply.mentions, ["alice"]);
   assert.equal(roomReply.reply.text, multilingual);
   await send(eve, `/react ${roomMessageId} 👀`, "study", "error");
   await send(eve, `/reply ${roomMessageId} no access`, "study", "error");
   const longUnicode = "🙂".repeat(4000);
   await send(bob, `/tell alice ${longUnicode}`, null, "notice", true);
-  await until(() => alice.snapshot.direct.some((m) => m.text === longUnicode), "full-length UTF-8 private message");
+  await until(
+    () => alice.snapshot.direct.some((m) => m.text === longUnicode),
+    "full-length UTF-8 private message",
+  );
   await send(bob, "/tell alice a private message");
   await until(
     () => alice.snapshot.direct.some((m) => m.text === "a private message"),
@@ -321,10 +382,15 @@ try {
       ),
     ),
   );
-  const dmId = alice.snapshot.direct.find(m => m.text === "a private message").id;
+  const dmId = alice.snapshot.direct.find(
+    (m) => m.text === "a private message",
+  ).id;
   await send(alice, `/react ${dmId} ❤️`, null);
   await send(alice, `/reply ${dmId} @bob 私信`, null);
-  await until(() => bob.snapshot.direct.at(-1)?.reply?.id === dmId, "private reply delivery");
+  await until(
+    () => bob.snapshot.direct.at(-1)?.reply?.id === dmId,
+    "private reply delivery",
+  );
   assert.equal(bob.snapshot.direct.at(-1).to, "bob");
   assert.deepEqual(bob.snapshot.direct.at(-1).mentions, ["bob"]);
   await send(eve, `/react ${dmId} ❤️`, null, "error");
@@ -332,18 +398,65 @@ try {
   const bobOtherDevice = await connect(cookies.bob);
   const readState = bob.snapshot.unread["@direct:alice"];
   assert.ok(readState.count > 0);
-  const retainedDM = await (await request("history?view=%40direct%3Aalice", cookies.bob)).json();
+  const retainedDM = await (
+    await request("history?view=%40direct%3Aalice", cookies.bob)
+  ).json();
   assert.ok(retainedDM.messages.length >= readState.count);
-  assert.equal((await request("history?view=study", cookies.carol)).status, 401);
-  assert.equal((await request("history?view=%40direct%3Abob", cookies.eve)).status, 403);
-  assert.equal((await request("read", cookies.eve, {view:"study",through:readState.through})).status, 400);
-  assert.equal((await request("read", cookies.bob, {view:"@direct:alice",through:readState.through+999})).status, 400);
+  assert.equal(
+    (await request("history?view=study", cookies.carol)).status,
+    401,
+  );
+  assert.equal(
+    (await request("history?view=%40direct%3Abob", cookies.eve)).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request("read", cookies.eve, {
+        view: "study",
+        through: readState.through,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await request("read", cookies.bob, {
+        view: "@direct:alice",
+        through: readState.through + 999,
+      })
+    ).status,
+    400,
+  );
   const aliceFrameCount = alice.frames.length;
-  assert.equal((await request("read", cookies.bob, {view:"@direct:alice",through:readState.through})).status, 200);
-  await until(() => bobOtherDevice.snapshot.unread["@direct:alice"].count === 0, "cross-device read position");
-  await until(() => bob.snapshot.unread["@direct:alice"].count === 0, "original device read position");
-  assert.ok(bobOtherDevice.frames.some(frame => frame.kind === "read" && !frame.rooms && !frame.direct), "read updates contain metadata only");
-  assert.equal(alice.frames.length, aliceFrameCount, "read changes are sent only to this user's devices");
+  assert.equal(
+    (
+      await request("read", cookies.bob, {
+        view: "@direct:alice",
+        through: readState.through,
+      })
+    ).status,
+    200,
+  );
+  await until(
+    () => bobOtherDevice.snapshot.unread["@direct:alice"].count === 0,
+    "cross-device read position",
+  );
+  await until(
+    () => bob.snapshot.unread["@direct:alice"].count === 0,
+    "original device read position",
+  );
+  assert.ok(
+    bobOtherDevice.frames.some(
+      (frame) => frame.kind === "read" && !frame.rooms && !frame.direct,
+    ),
+    "read updates contain metadata only",
+  );
+  assert.equal(
+    alice.frames.length,
+    aliceFrameCount,
+    "read changes are sent only to this user's devices",
+  );
   await send(alice, "/kick bob study");
   await until(
     () => !bob.snapshot.rooms.some((r) => r.name === "study"),
@@ -370,30 +483,84 @@ try {
       .messages.some((m) => m.text === "a retained room message"),
   );
   assert.ok(state.direct.some((m) => m.text === "a private message"));
-  assert.ok(state.rooms.find(r => r.name === "study").messages.some(m => m.reply?.text === multilingual && m.mentions.includes("alice")));
-  assert.ok(state.direct.some(m => m.reply && m.mentions.includes("bob")));
-  assert.ok(state.direct.find(m => m.text === "a private message").reactions["❤️"].includes("alice"));
+  assert.ok(
+    state.rooms
+      .find((r) => r.name === "study")
+      .messages.some(
+        (m) => m.reply?.text === multilingual && m.mentions.includes("alice"),
+      ),
+  );
+  assert.ok(state.direct.some((m) => m.reply && m.mentions.includes("bob")));
+  assert.ok(
+    state.direct
+      .find((m) => m.text === "a private message")
+      .reactions["❤️"].includes("alice"),
+  );
   const migratedAlice = await connect(cookies.alice);
   await send(migratedAlice, "/configs", null);
-  assert.equal(JSON.parse(migratedAlice.frames.find((f) => f.id === migratedAlice.serial).text).max_messages, 4);
-  for (const text of ["ring first", "ring oldest", "ring next", "ring middle 你好", "ring newest 🙂"]) {
+  assert.equal(
+    JSON.parse(
+      migratedAlice.frames.find((f) => f.id === migratedAlice.serial).text,
+    ).max_messages,
+    4,
+  );
+  for (const text of [
+    "ring first",
+    "ring oldest",
+    "ring next",
+    "ring middle 你好",
+    "ring newest 🙂",
+  ]) {
     await send(migratedAlice, text, "study");
   }
-  await until(() => migratedAlice.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)?.text === "ring newest 🙂", "bounded room delivery");
-  assert.deepEqual(migratedAlice.snapshot.rooms.find((r) => r.name === "study").messages.map((m) => m.text), ["ring oldest", "ring next", "ring middle 你好", "ring newest 🙂"]);
+  await until(
+    () =>
+      migratedAlice.snapshot.rooms
+        .find((r) => r.name === "study")
+        .messages.at(-1)?.text === "ring newest 🙂",
+    "bounded room delivery",
+  );
+  assert.deepEqual(
+    migratedAlice.snapshot.rooms
+      .find((r) => r.name === "study")
+      .messages.map((m) => m.text),
+    ["ring oldest", "ring next", "ring middle 你好", "ring newest 🙂"],
+  );
   await send(migratedAlice, "/history 5", "study", "error");
   await send(migratedAlice, "/history", "study");
-  assert.match(migratedAlice.frames.find((f) => f.id === migratedAlice.serial).text, /ring middle 你好/);
+  assert.match(
+    migratedAlice.frames.find((f) => f.id === migratedAlice.serial).text,
+    /ring middle 你好/,
+  );
   const boundedState = await (await request("me", cookies.alice)).json();
-  assert.equal(boundedState.rooms.find((r) => r.name === "study").messages.length, 4);
+  assert.equal(
+    boundedState.rooms.find((r) => r.name === "study").messages.length,
+    4,
+  );
   assert.ok(boundedState.direct.some((m) => m.text === "a private message"));
-  assert.equal((await (await request("me",cookies.bob)).json()).unread["@direct:alice"].count, 0, "read position survives moving data folder");
-  for (let i=0; i<5; i++) await send(migratedAlice, `/tell bob bounded ${i} 你好`);
+  assert.equal(
+    (await (await request("me", cookies.bob)).json()).unread["@direct:alice"]
+      .count,
+    0,
+    "read position survives moving data folder",
+  );
+  for (let i = 0; i < 5; i++)
+    await send(migratedAlice, `/tell bob bounded ${i} 你好`);
   await send(migratedAlice, "/tell eve independent private history");
-  const boundedDM = await (await request("history?view=%40direct%3Abob",cookies.alice)).json();
-  assert.deepEqual(boundedDM.messages.map(m => m.text), ["bounded 1 你好","bounded 2 你好","bounded 3 你好","bounded 4 你好"]);
-  const independentDM = await (await request("history?view=%40direct%3Aeve",cookies.alice)).json();
-  assert.equal(independentDM.messages.at(-1).text,"independent private history");
+  const boundedDM = await (
+    await request("history?view=%40direct%3Abob", cookies.alice)
+  ).json();
+  assert.deepEqual(
+    boundedDM.messages.map((m) => m.text),
+    ["bounded 1 你好", "bounded 2 你好", "bounded 3 你好", "bounded 4 你好"],
+  );
+  const independentDM = await (
+    await request("history?view=%40direct%3Aeve", cookies.alice)
+  ).json();
+  assert.equal(
+    independentDM.messages.at(-1).text,
+    "independent private history",
+  );
   const migratedBob = await connect(cookies.bob);
   child.stdin.write("/reset bob changed-long-password\n");
   await until(
@@ -419,15 +586,28 @@ try {
   // command, including empty joined rooms and peers outside visible history.
   const devices = join(temporary, "devices");
   await mkdir(devices);
-  await writeFile(join(devices, "config.json"), JSON.stringify({bind:"127.0.0.1:0",origins:[origin],production:false}));
+  await writeFile(
+    join(devices, "config.json"),
+    JSON.stringify({
+      bind: "127.0.0.1:0",
+      origins: [origin],
+      production: false,
+    }),
+  );
   await start(devices);
   for (const name of ["alice", "bob", "eve"]) {
-    child.stdin.write(`/user ${name} ${name}-long-password ${name === "alice" ? "admin" : "user"}\n`);
-    await until(() => logs.includes(`Account ${name} created.`), `device account ${name}`);
+    child.stdin.write(
+      `/user ${name} ${name}-long-password ${name === "alice" ? "admin" : "user"}\n`,
+    );
+    await until(
+      () => logs.includes(`Account ${name} created.`),
+      `device account ${name}`,
+    );
   }
   const deviceCookie = await login("alice");
   const deviceOne = await connect(deviceCookie);
-  for (const name of ["empty", "quiet", "active"]) await send(deviceOne, `/new ${name}`, null);
+  for (const name of ["empty", "quiet", "active"])
+    await send(deviceOne, `/new ${name}`, null);
   await send(deviceOne, "/tell bob older conversation", null);
   // Busy Eve history must not evict Bob or his separate snapshot tail.
   for (let i = 0; i < 55; i++) {
@@ -436,28 +616,54 @@ try {
   }
   const eveDeviceCookie = await login("eve");
   const eveDevice = await connect(eveDeviceCookie);
-  assert.equal(eveDevice.snapshot.unread["@direct:alice"].count,55);
-  assert.equal(eveDevice.snapshot.direct.length,50);
-  const eveHistory = await (await request("history?view=%40direct%3Aalice",eveDeviceCookie)).json();
-  assert.equal(eveHistory.messages.length,55);
-  assert.equal(eveHistory.messages[0].sequence,eveDevice.snapshot.unread["@direct:alice"].first);
-  assert.equal((await request("read",eveDeviceCookie,{view:"@direct:alice",through:eveHistory.messages[4].sequence})).status,200);
-  await until(() => eveDevice.snapshot.unread["@direct:alice"].count === 50, "partial history read");
-  const assertDirectory = snapshot => {
-    assert.deepEqual(snapshot.rooms.map(room => room.name), ["active", "empty", "quiet"]);
-    assert.ok(snapshot.rooms.every(room => room.messages.length === 0));
+  assert.equal(eveDevice.snapshot.unread["@direct:alice"].count, 55);
+  assert.equal(eveDevice.snapshot.direct.length, 50);
+  const eveHistory = await (
+    await request("history?view=%40direct%3Aalice", eveDeviceCookie)
+  ).json();
+  assert.equal(eveHistory.messages.length, 55);
+  assert.equal(
+    eveHistory.messages[0].sequence,
+    eveDevice.snapshot.unread["@direct:alice"].first,
+  );
+  assert.equal(
+    (
+      await request("read", eveDeviceCookie, {
+        view: "@direct:alice",
+        through: eveHistory.messages[4].sequence,
+      })
+    ).status,
+    200,
+  );
+  await until(
+    () => eveDevice.snapshot.unread["@direct:alice"].count === 50,
+    "partial history read",
+  );
+  const assertDirectory = (snapshot) => {
+    assert.deepEqual(
+      snapshot.rooms.map((room) => room.name),
+      ["active", "empty", "quiet"],
+    );
+    assert.ok(snapshot.rooms.every((room) => room.messages.length === 0));
     assert.deepEqual(snapshot.private_peers, ["bob", "eve"]);
-    assert.ok(snapshot.direct.some(message => message.to === "bob"));
+    assert.ok(snapshot.direct.some((message) => message.to === "bob"));
   };
   const secondCookie = await login("alice");
   assertDirectory(await (await request("me", secondCookie)).json());
   const deviceTwo = await connect(secondCookie);
   assertDirectory(deviceTwo.snapshot);
   await send(deviceOne, "/new added_elsewhere", null);
-  await until(() => deviceTwo.snapshot.rooms.some(room => room.name === "added_elsewhere"), "other device membership update");
+  await until(
+    () =>
+      deviceTwo.snapshot.rooms.some((room) => room.name === "added_elsewhere"),
+    "other device membership update",
+  );
   deviceTwo.ws.terminate();
   const reconnected = await connect(secondCookie);
-  assert.deepEqual(reconnected.snapshot.rooms.map(room => room.name), ["active", "added_elsewhere", "empty", "quiet"]);
+  assert.deepEqual(
+    reconnected.snapshot.rooms.map((room) => room.name),
+    ["active", "added_elsewhere", "empty", "quiet"],
+  );
   assert.deepEqual(reconnected.snapshot.private_peers, ["bob", "eve"]);
   // Delete accounts through both command entry points. Existing sessions and
   // private histories must not become accessible to a replacement username.
@@ -469,49 +675,92 @@ try {
   await send(deviceOne, "/deleteuser alice", null, "error");
   await send(deviceOne, "/add bob active", null);
   await send(bobDevice, "preserved after deletion", "active");
-  await until(() => deviceOne.snapshot.rooms.find(r => r.name === "active").messages.length === 1, "original deleted-user message");
-  const originalId = deviceOne.snapshot.rooms.find(r => r.name === "active").messages[0].id;
+  await until(
+    () =>
+      deviceOne.snapshot.rooms.find((r) => r.name === "active").messages
+        .length === 1,
+    "original deleted-user message",
+  );
+  const originalId = deviceOne.snapshot.rooms.find((r) => r.name === "active")
+    .messages[0].id;
   await send(deviceOne, `/reply ${originalId} @bob preserved reply`, "active");
   await send(bobDevice, `/react ${originalId} 👍`, "active");
   await send(deviceOne, "/tell bob private before deletion", null);
   await send(deviceOne, "/deleteuser bob", null);
-  await until(() => bobDevice.ws.readyState === WebSocket.CLOSED && bobSecondDevice.ws.readyState === WebSocket.CLOSED, "deleted-user sessions disconnect");
-  assert.equal((await request("me",bobCookie)).status,401);
-  assert.equal((await request("me",bobSecondCookie)).status,401);
-  await until(() => !reconnected.snapshot.users.includes("bob") && !reconnected.snapshot.private_peers.includes("bob"), "other admin device sees deletion");
-  const retainedRoom = reconnected.snapshot.rooms.find(r => r.name === "active");
+  await until(
+    () =>
+      bobDevice.ws.readyState === WebSocket.CLOSED &&
+      bobSecondDevice.ws.readyState === WebSocket.CLOSED,
+    "deleted-user sessions disconnect",
+  );
+  assert.equal((await request("me", bobCookie)).status, 401);
+  assert.equal((await request("me", bobSecondCookie)).status, 401);
+  await until(
+    () =>
+      !reconnected.snapshot.users.includes("bob") &&
+      !reconnected.snapshot.private_peers.includes("bob"),
+    "other admin device sees deletion",
+  );
+  const retainedRoom = reconnected.snapshot.rooms.find(
+    (r) => r.name === "active",
+  );
   assert.ok(!retainedRoom.members.includes("bob"));
-  assert.equal(retainedRoom.messages[0].from,"bob (deleted)");
-  assert.equal(retainedRoom.messages[0].id,originalId);
-  assert.deepEqual(retainedRoom.messages[0].reactions,{});
-  assert.equal(retainedRoom.messages[1].reply.from,"bob (deleted)");
-  assert.deepEqual(retainedRoom.messages[1].mentions,[]);
-  assert.equal((await request("history?view=%40direct%3Abob",deviceCookie)).status,403);
-  await send(deviceOne,"/user bob fresh-password",null);
-  const freshBobCookie = await login("bob","fresh-password");
+  assert.equal(retainedRoom.messages[0].from, "bob (deleted)");
+  assert.equal(retainedRoom.messages[0].id, originalId);
+  assert.deepEqual(retainedRoom.messages[0].reactions, {});
+  assert.equal(retainedRoom.messages[1].reply.from, "bob (deleted)");
+  assert.deepEqual(retainedRoom.messages[1].mentions, []);
+  assert.equal(
+    (await request("history?view=%40direct%3Abob", deviceCookie)).status,
+    403,
+  );
+  await send(deviceOne, "/user bob fresh-password", null);
+  const freshBobCookie = await login("bob", "fresh-password");
   const freshBob = await connect(freshBobCookie);
-  assert.deepEqual(freshBob.snapshot.rooms,[]);
-  assert.deepEqual(freshBob.snapshot.private_peers,[]);
-  assert.deepEqual(freshBob.snapshot.unread,{});
-  await send(deviceOne,"/tell bob fresh private",null);
-  await until(() => freshBob.snapshot.direct.length === 1, "replacement user's fresh private history");
-  assert.equal(freshBob.snapshot.direct[0].text,"fresh private");
+  assert.deepEqual(freshBob.snapshot.rooms, []);
+  assert.deepEqual(freshBob.snapshot.private_peers, []);
+  assert.deepEqual(freshBob.snapshot.unread, {});
+  await send(deviceOne, "/tell bob fresh private", null);
+  await until(
+    () => freshBob.snapshot.direct.length === 1,
+    "replacement user's fresh private history",
+  );
+  assert.equal(freshBob.snapshot.direct[0].text, "fresh private");
   child.stdin.write("/deleteuser eve\n");
-  await until(() => logs.includes("Deleted account eve"), "stdin account deletion");
-  await until(() => eveDevice.ws.readyState === WebSocket.CLOSED, "stdin deletion revokes live session");
-  assert.equal((await request("me",eveDeviceCookie)).status,401);
+  await until(
+    () => logs.includes("Deleted account eve"),
+    "stdin account deletion",
+  );
+  await until(
+    () => eveDevice.ws.readyState === WebSocket.CLOSED,
+    "stdin deletion revokes live session",
+  );
+  assert.equal((await request("me", eveDeviceCookie)).status, 401);
   await stop();
   await start(devices);
-  const restartedDirectory = await (await request("me",deviceCookie)).json();
+  const restartedDirectory = await (await request("me", deviceCookie)).json();
   assert.ok(!restartedDirectory.users.includes("eve"));
-  assert.deepEqual(restartedDirectory.private_peers,["bob"]);
-  assert.equal(restartedDirectory.rooms.find(r => r.name === "active").messages[0].from,"bob (deleted)");
+  assert.deepEqual(restartedDirectory.private_peers, ["bob"]);
+  assert.equal(
+    restartedDirectory.rooms.find((r) => r.name === "active").messages[0].from,
+    "bob (deleted)",
+  );
   await stop();
   await start(join(temporary, "production"), true, undefined, "/commonroom/");
-  const bare = await fetch(base, { headers: { "X-Forwarded-Proto": "https" }, redirect: "manual" });
+  const bare = await fetch(base, {
+    headers: { "X-Forwarded-Proto": "https" },
+    redirect: "manual",
+  });
   assert.equal(bare.status, 308);
   assert.equal(bare.headers.get("location"), "/commonroom/");
-  assert.equal((await fetch(new URL("/api/health", base), { headers: { "X-Forwarded-Proto": "https" } })).status, 404);
+  assert.equal(
+    (
+      await fetch(new URL("/api/health", base), {
+        headers: { "X-Forwarded-Proto": "https" },
+      })
+    ).status,
+    404,
+  );
   assert.equal(
     (await request("health", null, undefined, publicOrigin, null)).status,
     400,
@@ -588,7 +837,11 @@ try {
       Origin: publicOrigin,
     },
   });
-  assert.equal(spoofed.status, 403, "forwarded headers cannot impersonate a trusted socket peer");
+  assert.equal(
+    spoofed.status,
+    403,
+    "forwarded headers cannot impersonate a trusted socket peer",
+  );
   console.log(
     "PASS: account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
   );

@@ -1,13 +1,14 @@
 mod commands;
 mod config;
+mod console;
 mod engine;
 mod web;
 
 use config::Config;
-use engine::{Engine, hash_password};
+use engine::Engine;
 use std::{
     collections::HashMap,
-    io::{self, BufRead},
+    io,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -48,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let listener = tokio::net::TcpListener::bind(&app.config.bind).await?;
-    console(app.clone());
+    console::start(app.clone());
     tracing::info!(address = %listener.local_addr()?, production = app.config.production, "Chat server ready");
     axum::serve(
         listener,
@@ -80,64 +81,4 @@ async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
-}
-
-fn console(app: App) {
-    std::thread::spawn(move || {
-        tracing::info!("Console ready. /help lists commands. Console input is never logged.");
-        for line in io::stdin().lock().lines() {
-            let line = match line {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!(error = %e, "Console read failed");
-                    break;
-                }
-            };
-            let parts: Vec<_> = line.split_whitespace().collect();
-            if parts.is_empty() {
-                continue;
-            }
-            let before = app.engine.lock().unwrap().revision;
-            let result = match parts[0] {
-                "/help" => Ok(commands::help(true, true)),
-                "/configs" if parts.len() == 1 => app.config.display(),
-                "/configs" => Err("Usage: /configs".into()),
-                "/user" | "/reset" => {
-                    let reset = parts[0] == "/reset";
-                    if (reset && parts.len() != 3) || (!reset && !(3..=4).contains(&parts.len())) {
-                        Err(
-                            "Usage: /user name password [admin|user] or /reset name password"
-                                .into(),
-                        )
-                    } else if !reset
-                        && parts
-                            .get(3)
-                            .is_some_and(|role| !["admin", "user"].contains(role))
-                    {
-                        Err("Role must be admin or user.".into())
-                    } else {
-                        hash_password(parts[2]).and_then(|hash| {
-                            app.engine.lock().unwrap().provision(
-                                parts[1],
-                                hash,
-                                parts.get(3) == Some(&"admin"),
-                                reset,
-                            )
-                        })
-                    }
-                }
-                _ => app.engine.lock().unwrap().execute(None, None, &line),
-            };
-            match result {
-                Ok(reply) => {
-                    tracing::info!("{reply}");
-                    if app.engine.lock().unwrap().revision != before {
-                        let _ = app.changes.send(web::Change::All);
-                    }
-                }
-                Err(error) => tracing::warn!("{error}"),
-            }
-        }
-        tracing::info!("Console stdin closed; web server remains running.");
-    });
 }
