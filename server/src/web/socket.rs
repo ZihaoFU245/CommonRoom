@@ -1,4 +1,4 @@
-use super::commands::{Input, execute_input};
+use super::commands::{Input, error_reply, run_input};
 use super::*;
 use super::{auth::authenticate, security::check_origin};
 use axum::{
@@ -123,13 +123,18 @@ pub(super) async fn connection(
                         budget.1 += 1;
                         let parsed = serde_json::from_str::<Input>(&raw);
                         let (id, result) = match parsed {
-                            Ok(input) if budget.1 <= 30 => (input.id, execute_input(&app, &headers, &user, &input).await),
+                            Ok(input) if budget.1 <= 30 => (input.id, run_input(&app, &headers, &user, &input).await),
                             Ok(input) => (input.id, Err("Slow down; at most 30 messages per 10 seconds.".into())),
                             Err(_) => (0, Err("Invalid message format.".into())),
                         };
-                        let reply = match &result { Ok((text, _)) => json!({ "kind": "notice", "id": id, "text": text }), Err(text) => json!({ "kind": "error", "id": id, "text": text }) };
-                        if !send(&mut socket, Message::Text(reply.to_string().into())).await { break; }
-                        if matches!(result, Ok((_, true))) { let _ = app.changes.send(Change::All); }
+                        let message = match &result {
+                            Ok(outcome) => {
+                                outcome.broadcast(&app);
+                                outcome.notice(id)
+                            }
+                            Err(text) => error_reply(id, text),
+                        };
+                        if !send(&mut socket, Message::Text(message.to_string().into())).await { break; }
                     },
                     Message::Close(_) => break,
                     Message::Binary(_) => break,

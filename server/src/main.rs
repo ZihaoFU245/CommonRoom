@@ -47,6 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::new(config),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        agent_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
+        // Providers are reached over TLS with roots from the bundled webpki set.
+        http: reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(20))
+            .build()?,
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let listener = tokio::net::TcpListener::bind(&app.config.bind).await?;

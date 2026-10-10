@@ -1,6 +1,7 @@
 use super::auth::token;
 use super::*;
 use crate::engine::{
+    AGENT_ERROR_PREFIX, AgentJob,
     authorization::{Action, Scope},
     hash_password, sudo_command, verify_password,
 };
@@ -13,12 +14,14 @@ pub(super) struct Input {
     pub(super) room: Option<String>,
     pub(super) text: String,
 }
-pub(super) async fn execute_input(
+/// Run one input and start the agent replies it triggered. Starting the work
+/// here keeps the engine lock released while a provider is called.
+pub(super) async fn run_input(
     app: &App,
     headers: &HeaderMap,
     user: &str,
     input: &Input,
-) -> Result<(String, bool), String> {
+) -> Result<Outcome, String> {
     let elevated = sudo_command(&input.text)?;
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
@@ -32,7 +35,7 @@ pub(super) async fn execute_input(
                 if parts.len() != 1 {
                     return Err(format!("Usage: {}", parts[0]));
                 }
-                Ok(("Done.".into(), false))
+                Ok(Outcome::unchanged("Done.".into()))
             },
         );
     }
@@ -45,22 +48,37 @@ pub(super) async fn execute_input(
             if parts.len() != 1 {
                 return Err("Usage: /configs".into());
             }
-            app.config.display().map(|text| (text, false))
+            app.config.display().map(Outcome::unchanged)
         });
     }
     let passwd = parts.first() == Some(&"/passwd");
     if !passwd && !matches!(parts.first(), Some(&"/user") | Some(&"/reset")) {
-        let mut engine = app.engine()?;
-        if token(headers)
-            .and_then(|token| engine.session(token))
-            .as_deref()
-            != Some(user)
-        {
-            return Err("Please log in.".into());
+        // The session is rechecked here because the token was read before the
+        // lock, and a command may be running while another device signs out.
+        // Agent work is taken out of the outcome so the provider calls run after
+        // the engine lock is released.
+        let mut outcome = {
+            let mut engine = app.engine()?;
+            if token(headers)
+                .and_then(|token| engine.session(token))
+                .as_deref()
+                != Some(user)
+            {
+                return Err("Please log in.".into());
+            }
+            let before = engine.revision;
+            let execution = engine.run(Some(user), input.room.as_deref(), &input.text)?;
+            Outcome {
+                reply: execution.reply,
+                changed: engine.revision != before,
+                agents: execution.agents,
+            }
+        };
+        if !outcome.agents.is_empty() {
+            let jobs = std::mem::take(&mut outcome.agents);
+            spawn_agent_replies(app.clone(), jobs);
         }
-        let before = engine.revision;
-        let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
-        return Ok((reply, engine.revision != before));
+        return Ok(outcome);
     }
     let reset = parts[0] == "/reset";
     if input.text.len() > 4000
@@ -162,7 +180,7 @@ pub(super) async fn execute_input(
                     hash,
                     current,
                 )
-                .map(|text| (text, true));
+                .map(Outcome::changed);
         }
         // Recheck the command, action and target identity after hashing.
         engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
@@ -187,6 +205,92 @@ pub(super) async fn execute_input(
                 parts.get(3) == Some(&"admin"),
                 reset,
             )
-            .map(|text| (text, true))
+            .map(Outcome::changed)
     })
+}
+
+/// One completed input, ready for acknowledgement and agent follow-up.
+pub(super) struct Outcome {
+    reply: String,
+    changed: bool,
+    agents: Vec<AgentJob>,
+}
+impl Outcome {
+    /// Whether this input changed persisted state. Used by the test suite.
+    #[cfg(test)]
+    pub(super) fn changed_state(&self) -> bool {
+        self.changed
+    }
+    /// Local command output for the requesting socket.
+    pub(super) fn notice(&self, id: u64) -> serde_json::Value {
+        json!({ "kind": "notice", "id": id, "text": self.reply })
+    }
+    /// Broadcast state changes only after a persisted mutation.
+    pub(super) fn broadcast(&self, app: &App) {
+        if self.changed {
+            let _ = app.changes.send(Change::All);
+        }
+    }
+    fn changed(reply: String) -> Self {
+        Self {
+            reply,
+            changed: true,
+            agents: Vec::new(),
+        }
+    }
+    /// The console text. Used by the test suite.
+    #[cfg(test)]
+    pub(super) fn reply(self) -> String {
+        self.reply
+    }
+    fn unchanged(reply: String) -> Self {
+        Self {
+            reply,
+            changed: false,
+            agents: Vec::new(),
+        }
+    }
+}
+
+/// Local error output for the requesting socket.
+pub(super) fn error_reply(id: u64, text: &str) -> serde_json::Value {
+    json!({ "kind": "error", "id": id, "text": text })
+}
+
+/// Generate each agent answer off the request path, then publish it.
+fn spawn_agent_replies(app: App, jobs: Vec<AgentJob>) {
+    for job in jobs {
+        let app = app.clone();
+        tokio::spawn(async move {
+            {
+                // One trigger produces one answer: skip a duplicate claim.
+                let Ok(mut engine) = app.engine() else {
+                    return;
+                };
+                if !engine.claim_agent(&job.name) {
+                    return;
+                }
+            }
+            let text = match agent::reply(&app.http, &job, &app.agent_jobs).await {
+                Ok(text) => text,
+                // The marker identifies a server fault so the engine can keep
+                // it out of the model's conversation context.
+                Err(error) => format!("{AGENT_ERROR_PREFIX} {error}"),
+            };
+            let published = app
+                .engine()
+                .and_then(|mut engine| engine.insert_agent_reply(&job.name, &job.view, &text));
+            match published {
+                Ok(_) => {
+                    let _ = app.changes.send(Change::All);
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %job.name, error = %error, "Agent reply was not stored");
+                }
+            }
+            if let Ok(mut engine) = app.engine() {
+                engine.release_agent(&job.name);
+            }
+        });
+    }
 }
