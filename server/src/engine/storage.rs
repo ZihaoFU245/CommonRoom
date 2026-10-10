@@ -22,7 +22,7 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 3 {
+        if version > 5 {
             return Err("This data folder was written by a newer, incompatible server.".into());
         }
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);").map_err(|e| e.to_string())?;
@@ -80,37 +80,43 @@ impl Engine {
         }
         // Migration and its read baselines are committed together. Existing
         // history starts read; future messages receive monotonically larger IDs.
-        if version < 3 {
+        if version < 5 {
+            if version < 4 {
+                super::authorization::migrate(&mut data);
+            }
+            super::authorization::migrate_command_grants(&mut data);
             let transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            for (name, room) in &data.rooms {
-                if let Some(last) = room.messages.back() {
-                    for user in &room.members {
-                        transaction
-                            .execute(
-                                "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
-                                params![user, format!("room:{name}"), last.sequence],
-                            )
-                            .map_err(|e| e.to_string())?;
+            if version < 3 {
+                for (name, room) in &data.rooms {
+                    if let Some(last) = room.messages.back() {
+                        for user in &room.members {
+                            transaction
+                                .execute(
+                                    "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
+                                    params![user, format!("room:{name}"), last.sequence],
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
                     }
                 }
-            }
-            for (key, chat) in &data.private {
-                let (a, b) = key.split_once(':').ok_or("Invalid private conversation.")?;
-                if let Some(last) = chat.messages.back() {
-                    for user in [a, b] {
-                        transaction
-                            .execute(
-                                "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
-                                params![user, format!("dm:{key}"), last.sequence],
-                            )
-                            .map_err(|e| e.to_string())?;
+                for (key, chat) in &data.private {
+                    let (a, b) = key.split_once(':').ok_or("Invalid private conversation.")?;
+                    if let Some(last) = chat.messages.back() {
+                        for user in [a, b] {
+                            transaction
+                                .execute(
+                                    "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
+                                    params![user, format!("dm:{key}"), last.sequence],
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
                     }
                 }
             }
             let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
             transaction.execute("INSERT INTO state(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![json]).map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=3;")
+                .execute_batch("PRAGMA user_version=5;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -136,7 +142,9 @@ impl Engine {
                     .insert(view, sequence);
             }
         }
+        let authorization = super::authorization::CompiledPolicy::compile(&data)?;
         Ok(Self {
+            authorization,
             online_connections: BTreeMap::new(),
             data,
             read_positions,
@@ -192,8 +200,16 @@ impl Engine {
         Ok(())
     }
     pub(super) fn save(&mut self) -> Result<(), String> {
+        let authorization = if self.authorization.revision != self.data.policy.revision {
+            Some(super::authorization::CompiledPolicy::compile(&self.data)?)
+        } else {
+            None
+        };
         let json = serde_json::to_string(&self.data).map_err(|e| e.to_string())?;
         self.db.execute("INSERT INTO state(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![json]).map_err(|e| { tracing::error!(error = %e, "Storage write failed"); "Storage unavailable; change was not applied.".to_string() })?;
+        if let Some(authorization) = authorization {
+            self.authorization = authorization;
+        }
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }

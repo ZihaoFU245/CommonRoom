@@ -57,8 +57,53 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, migration/restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
+The trust-model regressions additionally cover su group delegation and revocation,
+protected su accounts (including disabled targets), creator ownership,
+invitation-only rooms, per-chat command gates, read-only grants, cleanup age
+constraints, cross-target authorization, private inspection, stable IDs,
+ownership transfer, migration/cursor preservation,
+owner delegation and revocation of invitations without enabling other management
+permissions, loss of that delegation authority after ownership transfer,
+and compiled-policy rollback. Output regressions verify that @global and its
+legacy alias resolve to the same scope, command requirements do not grant actions,
+and assignment privacy and conditional cleanup limits survive formatting. The room
+directory excludes other users' private pairs even with explicit inspection grants
+or su membership. `/console` checks scoped grants, rejects extra arguments, and
+does not change authorization or persisted state. Run
+the manual optimized permission benchmark with:
+
+```sh
+rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --nocapture
+```
+
 ## UI verification
 
 After changes to components/hooks, inspect both a wide desktop and compact view. Verify login, sidebar collapse and scrolling, room/private selection, local commands and hints, composing Unicode text, replies/reactions, settings, unread badges/jump, and reconnect behavior. Refresh must erase command output while restoring server chat history. Check browser errors and HTTP/WebSocket failures.
 
 For production deployment, additionally verify the actual public hostname through Nginx/cloudflared: HTTPS redirects, WSS, session cookies, and the configured base path. Local forwarded-header checks do not exercise public DNS/TLS infrastructure. Validate Nginx configuration on the target host.
+
+## Authorization coverage matrix
+
+The trust suite checks every declared action against fresh user/admin/su/console
+principals across server, owned room, foreign/private, account and unknown-resource
+scopes. An explicit probe table covers denial of every registered command from
+Command, room and private contexts for an account with no grants; adding a command
+without a probe fails the test. HTTP history/read operations and snapshot payloads
+are tested independently of command invocation.
+
+Boundary tests cover direct versus group syntax, additive revoke behavior, scopes
+named after groups, malformed requests, su-only delegation and protected accounts,
+partial-authority invitations/group assignment, cross-target command borrowing,
+message ownership and identity reuse, private visibility, read-only controls,
+cleanup constraints, persistence failures and v1–v5 migration/restart behavior.
+
+A deterministic password-job test queues hashing behind a blocking worker, then
+revokes the action or command, promotes the target to su (active or disabled),
+replaces the target and regrants its privileges, revokes the session, disables
+the actor, or revokes account-creation authority. Each case verifies the specific rejection and that
+no stale operation modifies the resulting state. This test uses no timing sleeps.
+
+These are behavioral and boundary checks, not a claim of 100% line/branch coverage
+or a proof that every possible attack is excluded. Update this matrix and add
+positive/negative cases whenever new permissions, commands or resource types are
+introduced.

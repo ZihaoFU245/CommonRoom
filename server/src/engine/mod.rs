@@ -1,4 +1,5 @@
 mod accounts;
+pub mod authorization;
 mod dispatch;
 mod helpers;
 mod messages;
@@ -9,6 +10,9 @@ mod storage;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test assertions fail the test on purpose.
 mod tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod trust_tests;
 
 use dispatch::CommandContext;
 use helpers::*;
@@ -31,5 +35,6 @@ pub struct Engine {
     db: Connection,
     online_connections: BTreeMap<String, usize>,
     read_positions: BTreeMap<String, BTreeMap<String, u64>>,
+    authorization: authorization::CompiledPolicy,
     _lock: Option<std::fs::File>,
 }

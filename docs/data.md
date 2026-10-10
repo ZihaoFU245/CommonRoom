@@ -2,12 +2,21 @@
 
 ## Data upgrades
 
-Schema v3 automatically migrates v1/v2 data folders, preserving accounts,
-sessions, message IDs, replies, mentions, and reactions. Existing retained
-history starts as read. Migration commits the new private conversations and
-read baselines together. Messages previously evicted by older versions cannot
-be recovered. Back up `data/` with the server stopped before upgrading; older
-binaries cannot open the upgraded schema.
+Schema v5 automatically migrates v1/v2/v3/v4 data folders, preserving accounts,
+sessions, message IDs, replies, mentions, reactions, and existing read cursors.
+It adds stable resource/account identities, author IDs, room ownership, scoped
+grants, predefined group assignments, and bounded audit records. Existing admin
+powers become explicit grants; see [Security](security.md) for the migration policy.
+Migration of state, schema version, and legacy read baselines commits together.
+A failed migration does not replace the stored state or advance the schema.
+
+Back up the entire data folder with the server stopped before upgrading. Older
+binaries cannot open v5. Restore that backup to roll back; there is no downgrade
+migration. Tests use isolated temporary data and never modify working `data/`.
+
+Schema v5 renames stored `/permit` and `/unpermit` command grants to `/grant`
+and `/revoke`. V4 identities, ownership, scopes, constraints, sessions and read
+cursors remain unchanged. Historical audit entries keep the command originally used.
 
 ## Move to another machine
 
@@ -35,9 +44,9 @@ SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
 the data folder. Only one process can use a folder at once. Compatible newer
-binaries read schemas v1/v2 and migrate them to v3 without discarding retained
-accounts or messages. Schema v3 adds per-conversation private queues and durable
-read positions; older binaries reject unknown newer schema versions. Browser login sessions keep their original 12-hour expiry across
+binaries read schemas v1/v2/v3/v4 and migrate them to v5 without discarding retained
+accounts or messages. Schema v3 added per-conversation private queues and durable
+read positions; schema v4 adds grant-based authorization and stable identities; older binaries reject unknown newer schema versions. Browser login sessions keep their original 12-hour expiry across
 restart and migration. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.

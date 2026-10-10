@@ -532,7 +532,7 @@ fn schema_two_migrates_private_pairs_without_losing_features() {
     assert_eq!(
         e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        3
+        5
     );
 }
 #[test]
@@ -571,7 +571,7 @@ fn message_features_migrate_persist_and_rollback() {
     assert_eq!(
         e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        3
+        5
     );
 }
 #[test]

@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod console;
 mod engine;
+mod manual;
 mod web;
 
 use config::Config;

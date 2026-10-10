@@ -21,17 +21,25 @@ the peer address. The allowance is 10 login attempts per IP per minute.
 
 ## Frames
 
-The web sends `{id:number, room:string|null, text:string}`. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console and private views; private sends use `/tell`. The server returns one of:
+The web sends `{id:number, room:string|null, text:string}`. Private views send
+`@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
-- `Snapshot`: `{kind:"snapshot",username,admin,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
+- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
 The canonical frontend declarations and runtime guards are in `web/src/api/protocol.ts`; Rust serialization types are in `server/src/engine/models.rs`. Change both together. Unknown JSON is validated before entering application state. Malformed frames are ignored and malformed successful HTTP responses become explicit errors. The integration harness validates actual server frames with these same guards.
 
 Each message contains `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
-Room views contain `name`, `members`, and the latest up to 50 messages. `direct` contains up to 50 messages per private conversation involving the current account. `private_peers` is the persistent conversation directory, so conversations remain discoverable even when their snapshot tails are empty. Memberships/peers are loaded from server state on every login, independent of browser history.
+Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
+`commands`, filtered `members`, and the latest up to 50 messages. Read grants govern
+which views/messages/unread metadata appear; member lists have a separate grant.
+`private_access` maps ordinary private views to stable IDs and exact effective
+permissions/command lists. `private_permissions` and `private_commands` provide
+the defaults for starting a new pair.
+Su and explicitly authorized accounts see other private pairs as room-like
+`@private:a:b` views, with the same history/read endpoints. `direct` contains up to 50 messages per private conversation involving the current account. `private_peers` is the persistent conversation directory, so conversations remain discoverable even when their snapshot tails are empty. Memberships/peers are loaded from server state on every login, independent of browser history.
 
 `unread` is keyed by room name or `@direct:peer`. Each value has `count`, nullable first incoming unread sequence in `first`, latest sequence in `through`, oldest retained sequence in `oldest`, and content `revision`. Fetch the selected conversation's full retained history on demand. Each room/private pair retains at most `max_messages` independently. `read` requires an existing retained sequence and only advances; own messages do not contribute to unread counts.
 
@@ -50,10 +58,25 @@ on restart. It is separate from the registered account directory in `users`.
 `/retract message-id` deletes only the requesting author’s retained message in the
 selected room or their private history. It increments the conversation revision
 and clears quotes of that message in retained replies. Snapshots and history
-resynchronization remove the message and quotes on other devices. Web admins
-follow the same ownership restriction. Stdin `su` can retract any retained room or
-private message by ID without selecting a conversation.
+resynchronization remove the message and quotes on other devices. Ordinary admins
+follow the same ownership restriction. The `su` group has any-message retraction
+and read grants; stdin can locate a retained message globally by ID.
 
-`/debug on|off` is a read-only, web-admin command; a successful acknowledgement
+`/debug on|off` is a read-only command requiring metadata permission; a successful acknowledgement
 toggles message details locally in the requesting tab. It does not change persisted
-state or expose messages outside the admin’s authorized conversations.
+state or expose messages outside the account’s authorized conversations.
+
+Private messages include `private_id`, the stable original participant-pair ID.
+Clients route messages by this ID, so authorized inspectors can reply without
+changing a private conversation’s participants.
+
+`/man [command|topic]` returns read-only manual text as a local notice. The text
+uses headings, bullet lists, fenced examples, and inline code. The web renders
+these as structured documentation using text nodes; HTML and links are not interpreted.
+Stdin displays the same readable source. Both group
+assignments and individual permission updates use `/grant` and `/revoke`.
+Policy commands use `@global` for the global scope; `@server` is accepted as a
+legacy alias. `/permissions`, `/grant`, and `/revoke` notices use the same
+structured text format as manuals. Command metadata includes optional string
+`requirements` for documentation and completion; older snapshots may omit it.
+This field describes action requirements and never authorizes an operation.

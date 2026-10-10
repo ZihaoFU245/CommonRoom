@@ -4,13 +4,20 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
     pub hash: String,
-    pub admin: bool,
+    #[serde(default, skip_serializing)]
+    pub admin: bool, // Legacy input only; authorization uses grants.
+    #[serde(default)]
+    pub id: String,
     pub disabled: bool,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
     pub id: String,
     pub from: String,
+    #[serde(default)]
+    pub author_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub private_id: String,
     pub to: Option<String>,
     pub text: String,
     pub time: u64,
@@ -31,6 +38,10 @@ pub struct Reply {
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Room {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub owner_id: String,
     pub members: BTreeSet<String>,
     pub messages: VecDeque<Message>,
     #[serde(default)]
@@ -38,6 +49,8 @@ pub struct Room {
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct PrivateChat {
+    #[serde(default)]
+    pub id: String,
     pub messages: VecDeque<Message>,
     pub revision: u64,
 }
@@ -53,6 +66,8 @@ pub struct Data {
     pub next_sequence: u64,
     #[serde(default)]
     pub sessions: BTreeMap<String, Session>,
+    #[serde(default)]
+    pub policy: super::authorization::Policy,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Session {
@@ -61,6 +76,10 @@ pub struct Session {
 }
 #[derive(Serialize)]
 pub struct RoomView {
+    pub id: String,
+    pub owner: String,
+    pub permissions: Vec<String>,
+    pub commands: Vec<crate::commands::Command>,
     pub name: String,
     pub members: BTreeSet<String>,
     pub messages: Vec<Message>,
@@ -80,9 +99,21 @@ pub struct History {
     pub revision: u64,
 }
 #[derive(Serialize)]
+pub struct Access {
+    pub id: String,
+    pub permissions: Vec<String>,
+    pub commands: Vec<crate::commands::Command>,
+}
+#[derive(Serialize)]
 pub struct Snapshot {
     pub kind: &'static str,
     pub username: String,
+    pub groups: Vec<String>,
+    pub permissions: Vec<String>,
+    pub private_access: BTreeMap<String, Access>,
+    pub private_permissions: Vec<String>,
+    pub private_commands: Vec<crate::commands::Command>,
+    pub policy_revision: u64,
     pub admin: bool,
     pub users: Vec<String>,
     pub online: Vec<String>,

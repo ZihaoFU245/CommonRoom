@@ -52,10 +52,21 @@ export function useCommands({
   clearView,
   logout,
 }: Context) {
+  const permissions =
+    room?.permissions ??
+    state.private_access[selected]?.permissions ??
+    (direct ? state.private_permissions : state.permissions);
+  const availableCommands =
+    room?.commands ??
+    state.private_access[selected]?.commands ??
+    (direct ? state.private_commands : state.commands);
+  const canExecute = (name: string) =>
+    availableCommands.some((command) => command.name === name);
+  const canDebug = permissions.includes("r:message.metadata");
   const [debug, setDebug] = useState(false);
   useEffect(() => {
-    if (!state.admin) setDebug(false);
-  }, [state.admin]);
+    if (!canDebug) setDebug(false);
+  }, [canDebug]);
   const [draft, setDraft] = useState("");
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [pending, setPending] = useState(false);
@@ -83,7 +94,10 @@ export function useCommands({
   }
   function retract(message: Message, confirmed = false) {
     if (
-      message.from !== state.username ||
+      (!permissions.includes("w:message.retract.any") &&
+        (message.from !== state.username ||
+          !permissions.includes("w:message.retract.own"))) ||
+      !canExecute("/retract") ||
       request.current ||
       socket.current?.readyState !== WebSocket.OPEN
     )
@@ -95,13 +109,15 @@ export function useCommands({
     setPending(true);
     sendFrame(socket.current, {
       id,
-      room: direct || consoleView ? null : selected,
+      room: consoleView ? null : selected,
       text,
     });
     if (replyTarget?.id === message.id) setReplyTarget(null);
   }
   function reactTo(message: Message, value: string) {
     if (
+      !permissions.includes("w:message.react") ||
+      !canExecute("/react") ||
       !value.trim() ||
       request.current ||
       socket.current?.readyState !== WebSocket.OPEN
@@ -113,7 +129,7 @@ export function useCommands({
     setPending(true);
     sendFrame(socket.current, {
       id,
-      room: direct || consoleView ? null : selected,
+      room: consoleView ? null : selected,
       text,
     });
   }
@@ -123,7 +139,7 @@ export function useCommands({
       : (draft.startsWith("/")
           ? suggestions(
               draft,
-              state.commands || [],
+              availableCommands,
               state.users,
               state.available_rooms || state.rooms.map((r) => r.name),
             )
@@ -152,6 +168,20 @@ export function useCommands({
     if (!text || pending) return;
     if (!text.startsWith("/") && Array.from(text).length > 4000) {
       append(text, "Messages support at most 4000 characters.", true);
+      return;
+    }
+    if (!text.startsWith("/") && !permissions.includes("w:message.create")) {
+      append(text, "This conversation is read-only.", true);
+      return;
+    }
+    if (text.startsWith("/") && !canExecute(text.split(/\s+/)[0] ?? "")) {
+      const command = text.split(/\s+/u)[0] ?? "";
+      const scope = consoleView ? "Command view" : selected;
+      append(
+        text,
+        `Command grant missing: ${command} in ${scope}. Action permissions alone do not enable a command. Check /permissions or /man ${command.slice(1)}.`,
+        true,
+      );
       return;
     }
     if (text === "/clear") {
@@ -195,7 +225,7 @@ export function useCommands({
       wireText = `${text === "/history" ? "/history 50" : text} ${peer}`;
     sendFrame(socket.current, {
       id,
-      room: direct || consoleView ? null : selected,
+      room: consoleView ? null : selected,
       text: wireText,
     });
   }
@@ -239,6 +269,10 @@ export function useCommands({
       setDraft("");
       if (current.reply) setReplyTarget(null);
       const [command, target] = current.text.trim().split(/\s+/);
+      if (command === "/console") {
+        desiredRoom.current = null;
+        setSelected("@command");
+      }
       if (["/new", "/join"].includes(command || "") && target) {
         desiredRoom.current = target;
         if (currentState.current.rooms.some((room) => room.name === target)) {
@@ -246,7 +280,7 @@ export function useCommands({
           desiredRoom.current = null;
         }
       }
-      if (command === "/debug" && state.admin) setDebug(target === "on");
+      if (command === "/debug") setDebug(target === "on");
       if (command === "/tell" && target) {
         desiredRoom.current = `@direct:${target}`;
         if (privatePeers(currentState.current).includes(target)) {
@@ -268,7 +302,9 @@ export function useCommands({
     }
   }
   return {
-    debug: debug && state.admin,
+    permissions,
+    availableCommands,
+    debug: debug && canDebug,
     draft,
     pending,
     replyTarget,

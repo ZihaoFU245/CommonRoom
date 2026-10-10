@@ -1,8 +1,15 @@
 import type { LocalOutput } from "../api/protocol.ts";
 import { helpSections } from "../features/conversation/console.ts";
+import { Manual } from "./Manual.tsx";
 
 export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
   const help = entry.command === "/help" && !entry.error && entry.result;
+  const manual =
+    ["/man", "/permissions", "/grant", "/revoke"].includes(
+      entry.command.split(/\s+/u)[0] ?? "",
+    ) &&
+    !entry.error &&
+    entry.result;
   return (
     <article
       class={`console-output ${entry.error ? "error" : ""}`}
@@ -28,6 +35,8 @@ export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
             </section>
           ))}
         </div>
+      ) : manual ? (
+        <Manual text={manual} />
       ) : (
         <pre>{entry.result ?? "…"}</pre>
       )}

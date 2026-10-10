@@ -2,9 +2,9 @@
 
 ## Commands
 
-Admins start in a local Command view and can register or manage accounts there. Rooms and private conversations use foldable navigation lists.
+Accounts without conversations start in a local Command view. Use `/console` to open it from a conversation; select a room or private conversation in the sidebar to return. Account management there requires the appropriate grants. Rooms and private conversations use foldable navigation lists.
 New accounts have no room memberships. Type messages or commands in the composer. Enter sends; Shift + Enter adds
-a line. Use `/help` for commands grouped into General, Account, Rooms, Messages, and Server, filtered by your role. Typing `/`
+a line. Use `/help` for commands grouped into General, Account, Rooms, Messages, and Server, filtered by your grants in the selected context. Typing `/`
 shows contextual command and argument hints; arrow keys select a hint, Tab
 completes it, and Escape closes the hints. Enter executes what you typed.
 Chat messages use a Discord-style layout, all aligned on the left, with the
@@ -22,7 +22,16 @@ conversation fetches its retained history; `/history 200` also prints more
 retained messages as local command output. `/clear`
 clears the local display without deleting server history; refresh restores it.
 The URL remembers the selected room, so refresh returns to the same conversation.
-Every permission check happens on the server.
+Every permission check happens on the server. Use `/man` for the manual index,
+`/man grant` and `/man revoke` for both command forms, and `/man permissions` for
+the complete action catalog. Manuals use headings, short lists, and separate
+command examples in the web UI; stdin shows the same structured text.
+Manuals are read-only and do not grant execution rights.
+
+`@global` names the global scope (`@server` remains a compatibility alias).
+Command suggestions and command-grant confirmations list the additional action
+requirements. `/permissions` groups effective read/write/management actions and
+command grants separately from the assignments at the selected scope.
 
 Orange badges count messages from other people that you have not read. Opening
 an unread conversation starts at its first unread message; **Jump to unread**
@@ -36,10 +45,10 @@ The compact top bar shows a green Connected dot and an online count. Open the
 count to see connected accounts; a user remains online while any tab or device
 is connected.
 
-Message actions appear on hover (always on touch devices). Web admins can use
+Message actions appear on hover (always on touch devices). Accounts with metadata grants can use
 `/debug on` to reveal a **⋯** button beside **+**; click it to expand selectable
 message details, including the message ID. `/debug off` hides the details. Debug
-is off after refresh and when admin permission is revoked; it stays local to the tab. Use **Reply** to
+is off after refresh and when metadata permission is revoked; it stays local to the tab. Use **Reply** to
 quote a message in the composer, **Delete** to retract your own message for
 everyone in the conversation (including its retained reply previews) after
 confirmation, or **+** to choose an emoji/custom UTF-8
@@ -48,7 +57,7 @@ visible chat area, and updates its placement on scroll or resize. Clicking a
 reaction toggles your participation. Reactions allow
 1–128 Unicode characters without control characters, with at most 32 distinct
 reactions per message. Reactions and replies are persisted for both rooms and
-private conversations; only conversation participants may use them. Quoted
+private conversations; they require matching scoped action and command grants. Quoted
 replies keep the original author's name and a 160-character preview even after
 the original message expires. The quote jumps to the original if it is loaded.
 
@@ -90,47 +99,55 @@ refresh cannot overwrite a newer WebSocket snapshot.
 
 | Command | Who | Behavior |
 | --- | --- | --- |
-| `/help` | Everyone | Show the command reference |
-| `/whoami` | Everyone | Show your name and permission (`user`, `admin`, or stdin `su`) |
-| `/debug on\|off` | Web admins | Toggle expandable message details in this tab, including message ID, sender, recipient, timestamp, and sequence |
-| `/passwd old new` | Web users | Verify your old password, change it, and sign out other sessions; current session stays logged in |
-| `/rooms` | Everyone | List your rooms; admins can discover all rooms |
-| `/users` | Everyone | List active account names and permissions |
-| `/members [room]` | Everyone | List members of a room you belong to |
-| `/history [count] [user]` | Everyone | Read retained messages (default up to 50; per-room and per-private-conversation limit from `max_messages`); private view uses the selected person |
-| `/join room` | Everyone | Open a room you already belong to; admins can join any room |
-| `/leave [room]` | Everyone | Leave the specified or selected room; an admin must add regular users back |
-| `/tell user message` | Everyone | Private message, visible only to sender and recipient |
-| `/react message-id reaction` | Web users | Toggle your reaction on a retained message in the selected room or your private history |
-| `/retract message-id` | Everyone | Web users (including admins) delete only their own retained room/private messages; stdin `su` can delete any retained message by ID. Removes retained reply previews |
-| `/reply message-id message` | Web users | Reply in the selected room, or to the other participant of a private message |
-| `/new room` | Admin or stdin | Create a room; the web admin becomes its first member |
-| `/add user [room]` | Admin or stdin | Add an existing account; defaults to the selected room in the web UI |
-| `/kick user [room]` | Admin or stdin | Revoke room access immediately |
-| `/delete room` | Admin or stdin | Delete room and history |
-| `/grant user` | Admin or stdin | Grant administrator permission |
-| `/revoke user` | Admin or stdin | Restore user permission; web cannot revoke the last active admin |
-| `/configs` | Admin or stdin | Print the active configuration; values require restart to change |
-| `/clean age [room\|@private\|@all]` | Admin or stdin | Delete messages older than an age; units `s`, `m`, `h`, `d`, `w` |
-| `/clear` | Web only | Clear local console output and visible chat without deleting persisted messages |
-| `/logout` | Web only | Sign out |
-| `/user name password [admin\|user]` | Admin or stdin | Create an account; default role is user |
-| `/reset name password` | Admin or stdin | Reset password and revoke all login sessions |
-| `/disable name` | Admin or stdin | Disable account, revoke sessions, and remove memberships |
-| `/enable name` | Admin or stdin | Enable account without restoring room memberships; old sessions stay revoked |
-| `/deleteuser name` | Admin or stdin | Permanently delete account, sessions, memberships, reactions, read positions, and its private conversations; retain room messages as `name (deleted)` |
+| `/help` | Authorized commands | Show commands permitted in the current context |
+| `/man [command\|topic]` | Manual command grant | Read manuals: grant, revoke, permissions, groups, scopes, ownership, or any command |
+| `/whoami` | Accounts/stdin | Show name and group label (`user`, `admin`, `su`) |
+| `/console` | Web command grant | Open the Command view in this tab; does not add permissions |
+| `/permissions [scope]` | Accounts/stdin | Inspect effective grants; `@groups` lists predefined bundles, `@audit` requires su |
+| `/grant user group [room]` or `/grant user scope permission [minimum-age]` | Scoped grant/group managers | Assign a predefined group or add a direct action/command grant; `/man grant` explains |
+| `/revoke user group [room]` or `/revoke user scope permission` | Scoped grant/group managers | Remove a group assignment or direct permission; `/man revoke` explains |
+| `/owner user [room]` | Room management grants | Transfer room ownership |
+| `/debug on\|off` | Metadata grant | Toggle expandable details for readable messages in this tab |
+| `/passwd old new` | Own-password grant | Change password and sign out other sessions |
+| `/rooms` | Accounts/stdin | List discoverable rooms with their owners, then your own readable private pairs; one entry per line. Other users' pairs are excluded even for su |
+| `/users` | Directory grant | List active accounts and groups |
+| `/members [room]` | Member-list grant | List authorized conversation participants |
+| `/history [count] [user\|@private:a:b]` | Read and command grants | Read retained history, default up to 50 |
+| `/join room` | Read/join grants | Open an authorized room; does not create membership |
+| `/leave [room]` | Accounts | Remove own room access; owners must transfer first |
+| `/tell user message` | Private-send grants | Send within a private conversation |
+| `/react message-id reaction` | Read/reaction grants | Toggle a reaction on a message in the selected conversation |
+| `/retract message-id` | Read/retract grants | Retract own messages; su has permission to retract any message |
+| `/reply message-id message` | Read/write grants | Reply within the selected conversation |
+| `/new room` | Room-create grant | Create an invitation-only room with creator ownership/grants |
+| `/add user [room]` | Room-invite grant | Add participant with room user grants |
+| `/kick user [room]` | Room-remove grant | Remove participant and direct room grants |
+| `/delete room` | Room-delete grant | Delete room, history and scoped grants |
+| `/configs` | Configuration grant | Print active configuration; changes require restart |
+| `/clean age [scope]` | Scoped cleanup grants | Authorize every target before deleting old messages; units s/m/h/d/w |
+| `/clear` | Web command grant | Clear visible local history; refresh restores persisted history |
+| `/logout` | Web | Sign out |
+| `/user name password [admin\|user]` | Account-create grant | Create account; admin assignment needs its own permission |
+| `/reset name password` | Explicit password-reset grant | Reset password and revoke sessions; ordinary admins have no default reset grant |
+| `/disable name` | Account-disable grant | Disable, revoke sessions and remove room access |
+| `/enable name` | Account-enable grant | Enable without restoring room access |
+| `/deleteuser name` | Account-delete grant | Delete account and private pairs; retain room messages with deleted-author label |
+
+See [Security](security.md) for permission names, group bundles, scope syntax,
+read-only access, delegation limits, ownership and migration examples.
 
 `/deleteuser bob` permanently removes Bob's account and private conversations
 for both participants. Shared room messages and reply quotes remain, with their
 author labeled `bob (deleted)`. The username and user-limit slot become available
 again; a replacement account starts without old memberships, DMs, or read
-positions. Web admins cannot delete themselves or the last active admin; stdin
-can remove any account and create a replacement administrator. Use `/disable`
+positions. Ordinary admins cannot delete themselves or the last active admin. `su` can
+manage any account, including other superusers; only `su` can manage a su account. Use `/disable`
 for a reversible account suspension.
 
 There is no default room. Existing rooms are preserved, including rooms named
 `lobby`, which can be deleted like any other room. Rooms are invitation-only for regular users;
-admins explicitly control membership. Stdin is `su` and can manage
+owners and explicitly authorized room managers control membership. Ordinary
+admins cannot join someone else’s new private room automatically. Stdin is `su` and can manage
 all rooms; specify the room on stdin. Account command passwords, including both `/passwd` arguments, are masked in local output and never logged.
 `/clean 7d room-name` cleans one room; `/clean 24h @private` cleans private messages;
 `/clean 7d @all` cleans all rooms and private messages. Without a scope it uses
@@ -139,6 +156,6 @@ at or newer than the cutoff and reports the number removed. It preserves rooms,
 accounts, and memberships. Cleanup is manual and uses stored UTC timestamps.
 There is no runtime configuration setter: `/configs` shows the loaded settings,
 and editing `data/config.json` takes effect after restart.
-Web admins do not receive private
-messages between other users. `/tell` opens the private-message view in the UI.
+Ordinary web admins do not receive private
+messages between other users. Web accounts in `su` can inspect every private pair. `/tell` opens the private-message view in the UI.
 Names contain 1–32 ASCII letters, digits, `_`, or `-`.

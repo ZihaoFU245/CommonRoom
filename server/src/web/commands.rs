@@ -1,6 +1,9 @@
 use super::auth::token;
 use super::*;
-use crate::engine::{hash_password, verify_password};
+use crate::engine::{
+    authorization::{Action, Scope},
+    hash_password, verify_password,
+};
 use axum::http::HeaderMap;
 use serde::Deserialize;
 
@@ -18,9 +21,10 @@ pub(super) async fn execute_input(
 ) -> Result<(String, bool), String> {
     let parts: Vec<_> = input.text.split_whitespace().collect();
     if parts.first() == Some(&"/configs") {
-        if !app.engine()?.is_admin(user) {
-            return Err("Admin permission required.".into());
-        }
+        let engine = app.engine()?;
+        engine.require_command(Some(user), input.room.as_deref(), "/configs")?;
+        engine.require_target_command(Some(user), &Scope::Server, "/configs")?;
+        engine.require(Some(user), &Scope::Server, Action::Config)?;
         if parts.len() != 1 {
             return Err("Usage: /configs".into());
         }
@@ -32,9 +36,6 @@ pub(super) async fn execute_input(
         let before = engine.revision;
         let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
         return Ok((reply, engine.revision != before));
-    }
-    if !passwd && !app.engine()?.is_admin(user) {
-        return Err("Admin permission required.".into());
     }
     let reset = parts[0] == "/reset";
     if input.text.len() > 4000
@@ -56,6 +57,34 @@ pub(super) async fn execute_input(
     {
         return Err("Role must be admin or user.".into());
     }
+    let target_id = {
+        let engine = app.engine()?;
+        engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
+        if passwd {
+            let scope = engine.account_target(Some(user), user, Action::Password)?;
+            engine.require_target_command(Some(user), &scope, parts[0])?;
+            None
+        } else if reset {
+            let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
+            engine.require_target_command(Some(user), &scope, parts[0])?;
+            Some(
+                engine
+                    .data
+                    .users
+                    .get(parts[1])
+                    .ok_or("User not found.")?
+                    .id
+                    .clone(),
+            )
+        } else {
+            engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
+            engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
+            if parts.get(3) == Some(&"admin") {
+                engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
+            }
+            None
+        }
+    };
     let expected = if passwd {
         Some(
             app.engine()?
@@ -95,6 +124,9 @@ pub(super) async fn execute_input(
         return Err("Please log in.".into());
     }
     if passwd {
+        engine.require_command(Some(user), input.room.as_deref(), "/passwd")?;
+        let scope = engine.account_target(Some(user), user, Action::Password)?;
+        engine.require_target_command(Some(user), &scope, parts[0])?;
         return engine
             .change_password(
                 user,
@@ -104,11 +136,28 @@ pub(super) async fn execute_input(
             )
             .map(|text| (text, true));
     }
-    // Recheck access after hashing, without constructing a chat snapshot.
-    if !engine.is_admin(user) {
-        return Err("Admin permission required.".into());
+    // Recheck the command, action and target identity after hashing.
+    engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
+    if reset {
+        let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
+        engine.require_target_command(Some(user), &scope, parts[0])?;
+        if engine.data.users.get(parts[1]).map(|u| &u.id) != target_id.as_ref() {
+            return Err("Account changed. Try again.".into());
+        }
+    } else {
+        engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
+        engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
+        if parts.get(3) == Some(&"admin") {
+            engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
+        }
     }
     engine
-        .provision(parts[1], hash, parts.get(3) == Some(&"admin"), reset)
+        .provision_by(
+            Some(user),
+            parts[1],
+            hash,
+            parts.get(3) == Some(&"admin"),
+            reset,
+        )
         .map(|text| (text, true))
 }

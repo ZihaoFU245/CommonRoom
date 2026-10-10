@@ -42,12 +42,10 @@ export function Chat({
       new URLSearchParams(location.hash.slice(1)).get("room") || "";
     return (requested?.startsWith("@direct:") &&
       privatePeers(initial).includes(requested.slice(8))) ||
-      (requested === "@command" && initial.admin) ||
+      requested === "@command" ||
       initial.rooms.some((room) => room.name === requested)
       ? requested
-      : initial.admin
-        ? "@command"
-        : initial.rooms[0]?.name || "@direct";
+      : initial.rooms[0]?.name || "@command";
   });
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -175,9 +173,22 @@ export function Chat({
   const tail = useMemo(
     () =>
       direct
-        ? privateMessages(state.direct, state.username, peer)
+        ? privateMessages(
+            state.direct,
+            state.username,
+            peer,
+            state.private_access[selected]?.id,
+          )
         : room?.messages || [],
-    [direct, peer, state.direct, state.username, room?.messages],
+    [
+      direct,
+      peer,
+      selected,
+      state.direct,
+      state.username,
+      state.private_access,
+      room?.messages,
+    ],
   );
   const commands = useCommands({
     selected,
@@ -268,17 +279,12 @@ export function Chat({
   useEffect(() => {
     if (
       (peer && !peers.includes(peer)) ||
-      (!direct &&
-        !(consoleView && state.admin) &&
-        !state.rooms.some((r) => r.name === selected))
+      (!direct && !consoleView && !state.rooms.some((r) => r.name === selected))
     )
       setSelected(
-        state.admin
-          ? "@command"
-          : state.rooms[0]?.name ||
-              (peers[0] ? `@direct:${peers[0]}` : "@direct"),
+        state.rooms[0]?.name || (peers[0] ? `@direct:${peers[0]}` : "@command"),
       );
-  }, [state.rooms, state.admin, selected, peers]);
+  }, [state.rooms, selected, peers]);
   useEffect(() => {
     history.replaceState(null, "", `#room=${encodeURIComponent(selected)}`);
   }, [selected]);
@@ -310,7 +316,6 @@ export function Chat({
       <Sidebar
         state={state}
         menu={menu}
-        consoleView={consoleView}
         selected={selected}
         peers={peers}
         peer={peer}
@@ -422,6 +427,8 @@ export function Chat({
         )}
         <MessageList
           debug={commands.debug}
+          permissions={commands.permissions}
+          commands={commands.availableCommands}
           entries={entries}
           username={state.username}
           pending={pending}
@@ -434,6 +441,7 @@ export function Chat({
           onScroll={handleScroll}
         />
         <Composer
+          canWrite={commands.permissions.includes("w:message.create")}
           minimumComposerHeight={minimumComposerHeight}
           actualComposerHeight={actualComposerHeight}
           hints={hints}

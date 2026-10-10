@@ -180,3 +180,156 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         StatusCode::TOO_MANY_REQUESTS
     );
 }
+
+#[test]
+fn password_jobs_recheck_authority_session_and_target_after_hashing() {
+    // Queue hashing behind a blocking worker, rather than relying on timing sleeps.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for case in [
+            "action",
+            "command",
+            "target-su",
+            "target-disabled-su",
+            "target-replaced",
+            "session",
+            "disabled",
+            "creation",
+        ] {
+            let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+            engine
+                .provision("actor", "hash".into(), true, false)
+                .unwrap();
+            engine
+                .provision("target", "hash".into(), false, false)
+                .unwrap();
+            engine
+                .execute(
+                    None,
+                    None,
+                    "/grant actor @account:target x:account.password.reset",
+                )
+                .unwrap();
+            engine
+                .execute(None, None, "/grant actor @account:target /reset")
+                .unwrap();
+            engine
+                .login("fixture".into(), "actor", "hash", None)
+                .unwrap();
+            let (changes, _) = broadcast::channel(1);
+            let app = App {
+                engine: Arc::new(Mutex::new(engine)),
+                attempts: Default::default(),
+                changes,
+                config: Arc::new(Config::default()),
+                connections: Arc::new(tokio::sync::Semaphore::new(128)),
+                password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+                stopping: Default::default(),
+            };
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+            let job_app = app.clone();
+            let text = if case == "creation" {
+                "/user created long-fixture-password user"
+            } else {
+                "/reset target long-fixture-password"
+            };
+            let job = tokio::spawn(async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::COOKIE,
+                    HeaderValue::from_static("chat_session=fixture"),
+                );
+                let input = super::commands::Input {
+                    id: 1,
+                    room: None,
+                    text: text.into(),
+                };
+                super::commands::execute_input(&job_app, &headers, "actor", &input).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while app.password_jobs.available_permits() == 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let expected = {
+                let mut e = app.engine().unwrap();
+                match case {
+                    "action" => {
+                        e.execute(
+                            None,
+                            None,
+                            "/revoke actor @account:target x:account.password.reset",
+                        )
+                        .unwrap();
+                    }
+                    "command" => {
+                        e.execute(None, None, "/revoke actor @account:target /reset")
+                            .unwrap();
+                    }
+                    "target-su" => {
+                        e.execute(None, None, "/grant target su").unwrap();
+                    }
+                    "target-disabled-su" => {
+                        e.execute(None, None, "/grant target su").unwrap();
+                        e.execute(None, None, "/disable target").unwrap();
+                    }
+                    "target-replaced" => {
+                        e.execute(None, None, "/deleteuser target").unwrap();
+                        e.provision("target", "replacement-hash".into(), false, false)
+                            .unwrap();
+                        // Regrant on the replacement to ensure rejection checks identity as well as rights.
+                        e.execute(
+                            None,
+                            None,
+                            "/grant actor @account:target x:account.password.reset",
+                        )
+                        .unwrap();
+                        e.execute(None, None, "/grant actor @account:target /reset")
+                            .unwrap();
+                    }
+                    "session" => {
+                        e.provision("actor", "rotated-hash".into(), false, true)
+                            .unwrap();
+                    }
+                    "disabled" => {
+                        e.execute(None, None, "/disable actor").unwrap();
+                    }
+                    "creation" => {
+                        e.execute(None, None, "/revoke actor admin").unwrap();
+                    }
+                    _ => (),
+                }
+                e.data.clone()
+            };
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            let error = job.await.unwrap().unwrap_err();
+            let expected_error = match case {
+                "action" => "Permission required",
+                "command" | "creation" => "Command not permitted",
+                "target-su" | "target-disabled-su" => "Only su",
+                "target-replaced" => "Account changed",
+                "session" | "disabled" => "Please log in",
+                _ => "",
+            };
+            assert!(error.contains(expected_error), "{case}: {error}");
+            assert!(
+                app.engine().unwrap().data == expected,
+                "stale password job committed: {case}"
+            );
+        }
+    });
+}

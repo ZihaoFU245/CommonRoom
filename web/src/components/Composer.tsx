@@ -10,6 +10,7 @@ interface Props {
   consoleView: boolean;
   draft: string;
   pending: boolean;
+  canWrite: boolean;
   startResize: JSX.PointerEventHandler<HTMLDivElement>;
   moveResize: JSX.PointerEventHandler<HTMLDivElement>;
   endResize: () => void;
@@ -30,6 +31,7 @@ export function Composer({
   consoleView,
   draft,
   pending,
+  canWrite,
   startResize,
   moveResize,
   endResize,
@@ -136,7 +138,13 @@ export function Composer({
           aria-activedescendant={
             hints.length ? `hint-${activeHint}` : undefined
           }
-          placeholder={consoleView ? "Command" : "Message or command"}
+          placeholder={
+            consoleView
+              ? "Command"
+              : canWrite
+                ? "Message or command"
+                : "Read-only conversation · Enter a command"
+          }
           value={draft}
           disabled={pending}
           onInput={(event) => edit(event.currentTarget.value)}
@@ -144,7 +152,11 @@ export function Composer({
         />
         <button
           class="send-button"
-          disabled={pending || !draft.trim()}
+          disabled={
+            pending ||
+            !draft.trim() ||
+            (!canWrite && !draft.trim().startsWith("/"))
+          }
           aria-label="Send message"
         >
           {pending ? (

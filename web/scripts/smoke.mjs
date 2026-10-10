@@ -152,7 +152,7 @@ async function connect(cookie) {
 async function send(
   client,
   text,
-  room = "lobby",
+  room = null,
   kind = "notice",
   escaped = false,
 ) {
@@ -194,6 +194,13 @@ try {
       `provision ${name}`,
     );
   }
+  child.stdin.write(
+    "/grant alice @global x:account.password.reset\n/grant alice @global /reset\n",
+  );
+  await until(
+    () => logs.includes("Grant updated."),
+    "explicit reset delegation",
+  );
   assert.equal((await request("me")).status, 401);
   assert.equal(
     (
@@ -225,6 +232,15 @@ try {
     bob.frames.find((f) => f.id === bob.serial).text,
     /Permission: user/,
   );
+  assert.ok(
+    bob.snapshot.commands.some((command) => command.name === "/console"),
+  );
+  await send(bob, "/console");
+  assert.equal(
+    bob.frames.find((f) => f.id === bob.serial).text,
+    "Command view opened.",
+  );
+  await send(bob, "/console extra", null, "error");
   await send(bob, "/grant bob", null, "error");
   await send(bob, "/configs", null, "error");
   await send(bob, "/clean 7d @all", null, "error");
@@ -801,6 +817,116 @@ try {
     restartedDirectory.rooms.find((r) => r.name === "active").messages[0].from,
     "bob (deleted)",
   );
+  await stop();
+  const trustData = join(temporary, "trust");
+  await mkdir(trustData);
+  await writeFile(
+    join(trustData, "config.json"),
+    JSON.stringify({
+      bind: "127.0.0.1:0",
+      origins: [origin],
+      production: false,
+    }),
+  );
+  await start(trustData);
+  for (const [name, role] of [
+    ["owner", "admin"],
+    ["reader", "user"],
+    ["other", "admin"],
+  ]) {
+    child.stdin.write(`/user ${name} ${name}-long-password ${role}\n`);
+    await until(
+      () => logs.includes(`Account ${name} created.`),
+      `trust account ${name}`,
+    );
+  }
+  const ownerCookie = await login("owner"),
+    readerCookie = await login("reader"),
+    otherCookie = await login("other");
+  const ownerClient = await connect(ownerCookie),
+    readerClient = await connect(readerCookie),
+    otherClient = await connect(otherCookie);
+  child.stdin.write(
+    "/grant reader @global w:room.create\n/grant reader @global /new\n",
+  );
+  await until(
+    () =>
+      readerClient.snapshot.permissions.includes("w:room.create") &&
+      readerClient.snapshot.commands.some((command) => command.name === "/new"),
+    "user receives room creation grants",
+  );
+  await send(readerClient, "/new delegated", null);
+  await send(readerClient, "/grant owner delegated /add", "delegated");
+  await send(ownerClient, "/add other delegated", null, "error");
+  await send(readerClient, "/grant owner delegated x:member.add", "delegated");
+  await send(ownerClient, "/add other delegated", null, "error");
+  await send(readerClient, "/add owner", "delegated");
+  await send(ownerClient, "/add other", "delegated");
+  await until(
+    () => otherClient.snapshot.rooms.some((room) => room.name === "delegated"),
+    "delegated invitation grants participant access",
+  );
+  await send(otherClient, "invited participant", "delegated");
+  await send(readerClient, "/revoke owner delegated x:member.add", "delegated");
+  await send(ownerClient, "/add other", "delegated", "error");
+  await send(readerClient, "/revoke owner delegated /add", "delegated");
+  await send(ownerClient, "/add other", "delegated", "error");
+  await send(readerClient, "/delete delegated", "delegated");
+  await send(ownerClient, "/new owned", null);
+  await send(ownerClient, "private room text", "owned");
+  await send(otherClient, "/join owned", null, "error");
+  assert.equal((await request("history?view=owned", otherCookie)).status, 403);
+  await send(readerClient, "/man grant", null);
+  assert.ok(readerClient.frames.at(-1).text.includes("scope permission"));
+  await send(readerClient, "/man revoke", null);
+  assert.ok(readerClient.frames.at(-1).text.includes("direct permission"));
+  await send(readerClient, "/man unknown", null, "error");
+  await send(ownerClient, "/grant reader owned r:message.read", "owned");
+  await send(ownerClient, "/grant reader owned /history", "owned");
+  await until(
+    () => readerClient.snapshot.rooms.some((r) => r.name === "owned"),
+    "read-only live grant",
+  );
+  assert.ok(
+    !readerClient.snapshot.rooms[0].permissions.includes("w:message.create"),
+  );
+  assert.deepEqual(readerClient.snapshot.rooms[0].members, []);
+  await send(readerClient, "denied write", "owned", "error");
+  await send(readerClient, "/history", "owned");
+  await send(ownerClient, "/grant reader su", null, "error");
+  child.stdin.write("/grant reader su\n");
+  await until(
+    () => readerClient.snapshot.groups.includes("su"),
+    "live su membership",
+  );
+  await send(readerClient, "/grant other su", null);
+  await until(
+    () => otherClient.snapshot.groups.includes("su"),
+    "su delegates su",
+  );
+  const protectedMessage = readerClient.snapshot.rooms.find(
+    (r) => r.name === "owned",
+  ).messages[0];
+  await send(readerClient, `/retract ${protectedMessage.id}`, "owned");
+  await until(
+    () =>
+      ownerClient.snapshot.rooms.find((r) => r.name === "owned").messages
+        .length === 0,
+    "su retracts another author",
+  );
+  await send(ownerClient, "/disable reader", null, "error");
+  await send(otherClient, "/revoke reader su", null);
+  await until(
+    () => !readerClient.snapshot.groups.includes("su"),
+    "live su revoke",
+  );
+  await send(readerClient, "write revoked", "owned", "error");
+  await send(ownerClient, "/revoke reader owned r:message.read", "owned");
+  await until(
+    () => !readerClient.snapshot.rooms.some((r) => r.name === "owned"),
+    "live read revoke",
+  );
+  assert.equal((await request("history?view=owned", readerCookie)).status, 403);
   await stop();
   await start(join(temporary, "production"), true, undefined, "/commonroom/");
   const bare = await fetch(base, {

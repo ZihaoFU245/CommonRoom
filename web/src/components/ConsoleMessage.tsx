@@ -11,6 +11,9 @@ export function ConsoleMessage({
   grouped,
   pending,
   debug,
+  canReact,
+  canReply,
+  canDelete,
   onReact,
   onReply,
   onDelete,
@@ -21,6 +24,9 @@ export function ConsoleMessage({
   grouped: boolean;
   pending: boolean;
   debug: boolean;
+  canReact: boolean;
+  canReply: boolean;
+  canDelete: boolean;
   onReact: (value: string) => void;
   onReply: () => void;
   onDelete: () => void;
@@ -126,7 +132,7 @@ export function ConsoleMessage({
           {Object.entries(message.reactions || {}).map(([value, users]) => (
             <button
               key={value}
-              disabled={pending}
+              disabled={pending || !canReact}
               aria-pressed={users.includes(self)}
               title={users.join(", ")}
               aria-label={`React ${value}: ${users.length}`}
@@ -141,76 +147,82 @@ export function ConsoleMessage({
       <div
         class={`message-actions ${reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
       >
-        <button
-          type="button"
-          disabled={pending}
-          onClick={onReply}
-          aria-label={`Reply to ${message.from}'s message`}
-        >
-          Reply
-        </button>
-        {message.from === self && (
+        {canReply && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onReply}
+            aria-label={`Reply to ${message.from}'s message`}
+          >
+            Reply
+          </button>
+        )}
+        {canDelete && (
           <button
             type="button"
             disabled={pending}
             onClick={onDelete}
-            aria-label="Delete your message"
+            aria-label={
+              message.from === self ? "Delete your message" : "Delete message"
+            }
           >
             Delete
           </button>
         )}
-        <details
-          ref={placement.anchor}
-          open={reactionOpen}
-          onToggle={(event) => setReactionOpen(event.currentTarget.open)}
-        >
-          <summary
-            aria-label={`Add reaction to ${message.from}'s message`}
-            onClick={(event) => {
-              event.preventDefault();
-              setReactionOpen(!reactionOpen);
-            }}
+        {canReact && (
+          <details
+            ref={placement.anchor}
+            open={reactionOpen}
+            onToggle={(event) => setReactionOpen(event.currentTarget.open)}
           >
-            +
-          </summary>
-          <div
-            ref={placement.picker}
-            class={`reaction-picker ${placement.above ? "above" : ""}`}
-          >
-            <div class="reaction-choices">
-              {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  disabled={pending}
-                  aria-label={`Add reaction ${value}`}
-                  onClick={() => {
-                    onReact(value);
-                    setReactionOpen(false);
-                  }}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-            <form
-              onSubmit={(event) => {
+            <summary
+              aria-label={`Add reaction to ${message.from}'s message`}
+              onClick={(event) => {
                 event.preventDefault();
-                onReact(reaction);
-                setReaction("");
-                setReactionOpen(false);
+                setReactionOpen(!reactionOpen);
               }}
             >
-              <input
-                aria-label="Custom reaction"
-                placeholder="Emoji or text"
-                value={reaction}
-                onInput={(e) => setReaction(e.currentTarget.value)}
-              />
-              <button disabled={pending || !reaction.trim()}>Add</button>
-            </form>
-          </div>
-        </details>
+              +
+            </summary>
+            <div
+              ref={placement.picker}
+              class={`reaction-picker ${placement.above ? "above" : ""}`}
+            >
+              <div class="reaction-choices">
+                {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    disabled={pending}
+                    aria-label={`Add reaction ${value}`}
+                    onClick={() => {
+                      onReact(value);
+                      setReactionOpen(false);
+                    }}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  onReact(reaction);
+                  setReaction("");
+                  setReactionOpen(false);
+                }}
+              >
+                <input
+                  aria-label="Custom reaction"
+                  placeholder="Emoji or text"
+                  value={reaction}
+                  onInput={(e) => setReaction(e.currentTarget.value)}
+                />
+                <button disabled={pending || !reaction.trim()}>Add</button>
+              </form>
+            </div>
+          </details>
+        )}
         {debug && (
           <button
             type="button"

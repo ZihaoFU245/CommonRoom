@@ -1,6 +1,15 @@
 use super::*;
+use authorization::{Action, Scope};
 
 impl Engine {
+    fn room_owner_name(&self, owner_id: &str) -> &str {
+        self.data
+            .users
+            .iter()
+            .find(|(_, user)| user.id == owner_id)
+            .map_or("su", |(name, _)| name.as_str())
+    }
+
     pub(super) fn unread(
         &self,
         user: &str,
@@ -33,8 +42,18 @@ impl Engine {
         if !self.active(user) {
             return Err("Account unavailable.".into());
         }
+        if let Some(key) = view.strip_prefix("@private:") {
+            self.require(Some(user), &self.private_scope(key), Action::Read)?;
+            let chat = self
+                .data
+                .private
+                .get(key)
+                .ok_or("Conversation not found.")?;
+            return Ok((format!("dm:{key}"), &chat.messages, chat.revision));
+        }
         if let Some(peer) = view.strip_prefix("@direct:") {
             let key = private_key(user, peer);
+            self.require(Some(user), &self.private_scope(&key), Action::Read)?;
             let chat = self
                 .data
                 .private
@@ -42,12 +61,8 @@ impl Engine {
                 .ok_or("Conversation not found.")?;
             return Ok((format!("dm:{key}"), &chat.messages, chat.revision));
         }
-        let room = self
-            .data
-            .rooms
-            .get(view)
-            .filter(|r| r.members.contains(user))
-            .ok_or("You are not a member of this room.")?;
+        let room = self.data.rooms.get(view).ok_or("Room not found.")?;
+        self.require(Some(user), &Scope::Room(room.id.clone()), Action::Read)?;
         Ok((format!("room:{view}"), &room.messages, room.revision))
     }
     pub fn history(&self, user: &str, view: &str) -> Result<History, String> {
@@ -87,7 +102,9 @@ impl Engine {
         self.data
             .rooms
             .iter()
-            .filter(|(_, room)| room.members.contains(name))
+            .filter(|(_, room)| {
+                self.allows(Some(name), &Scope::Room(room.id.clone()), Action::Read)
+            })
             .map(|(view, room)| {
                 (
                     view.clone(),
@@ -95,13 +112,30 @@ impl Engine {
                 )
             })
             .chain(self.data.private.iter().filter_map(|(key, chat)| {
-                private_peer(key, name).map(|peer| {
-                    (
-                        format!("@direct:{peer}"),
-                        self.unread(name, &format!("dm:{key}"), &chat.messages, chat.revision),
-                    )
-                })
+                private_peer(key, name)
+                    .filter(|_| self.allows(Some(name), &self.private_scope(key), Action::Read))
+                    .map(|peer| {
+                        (
+                            format!("@direct:{peer}"),
+                            self.unread(name, &format!("dm:{key}"), &chat.messages, chat.revision),
+                        )
+                    })
             }))
+            .chain(
+                self.data
+                    .private
+                    .iter()
+                    .filter(|(key, _)| {
+                        private_peer(key, name).is_none()
+                            && self.allows(Some(name), &self.private_scope(key), Action::Read)
+                    })
+                    .map(|(key, chat)| {
+                        (
+                            format!("@private:{key}"),
+                            self.unread(name, &format!("dm:{key}"), &chat.messages, chat.revision),
+                        )
+                    }),
+            )
             .collect()
     }
     pub fn connect(&mut self, name: &str) {
@@ -116,32 +150,77 @@ impl Engine {
         }
     }
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
-        let user = self.data.users.get(name).filter(|u| !u.disabled)?;
+        self.data.users.get(name).filter(|u| !u.disabled)?;
         Some(Snapshot {
             kind: "snapshot",
             username: name.into(),
-            admin: user.admin,
+            admin: self.is_admin(name),
+            groups: self.groups(Some(name)),
+            permissions: self.effective(Some(name), &Scope::Server).names(),
+            private_access: self
+                .data
+                .private
+                .iter()
+                .filter(|(key, _)| self.allows(Some(name), &self.private_scope(key), Action::Read))
+                .filter_map(|(key, chat)| {
+                    private_peer(key, name).map(|peer| {
+                        let view = format!("@direct:{peer}");
+                        (
+                            view.clone(),
+                            Access {
+                                id: chat.id.clone(),
+                                permissions: self
+                                    .effective(Some(name), &self.private_scope(key))
+                                    .names(),
+                                commands: self.commands_for(Some(name), Some(&view)),
+                            },
+                        )
+                    })
+                })
+                .collect(),
+            private_permissions: self
+                .effective(Some(name), &self.private_scope(&private_key(name, name)))
+                .names(),
+            private_commands: self.commands_for(Some(name), Some(&format!("@direct:{name}"))),
+            policy_revision: self.data.policy.revision,
             online: self
                 .online_connections
                 .keys()
-                .filter(|name| self.active(name))
+                .filter(|online| {
+                    self.active(online)
+                        && self.allows(Some(name), &Scope::Server, Action::Directory)
+                })
                 .cloned()
                 .collect(),
             users: self
                 .data
                 .users
                 .iter()
-                .filter(|(_, u)| user.admin || !u.disabled)
+                .filter(|(_, u)| {
+                    self.allows(Some(name), &Scope::Server, Action::Directory)
+                        && (self.is_admin(name) || !u.disabled)
+                })
                 .map(|(n, _)| n.clone())
                 .collect(),
             rooms: self
                 .data
                 .rooms
                 .iter()
-                .filter(|(_, r)| r.members.contains(name))
+                .filter(|(_, r)| self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read))
                 .map(|(n, r)| RoomView {
+                    id: r.id.clone(),
+                    owner: self.room_owner_name(&r.owner_id).into(),
+                    permissions: self
+                        .effective(Some(name), &Scope::Room(r.id.clone()))
+                        .names(),
+                    commands: self.commands_for(Some(name), Some(n)),
                     name: n.clone(),
-                    members: r.members.clone(),
+                    members: if self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Members)
+                    {
+                        r.members.clone()
+                    } else {
+                        BTreeSet::new()
+                    },
                     messages: r
                         .messages
                         .iter()
@@ -149,13 +228,47 @@ impl Engine {
                         .cloned()
                         .collect(),
                 })
+                .chain(
+                    self.data
+                        .private
+                        .iter()
+                        .filter(|(key, _)| {
+                            private_peer(key, name).is_none()
+                                && self.allows(Some(name), &self.private_scope(key), Action::Read)
+                        })
+                        .map(|(key, chat)| {
+                            let view = format!("@private:{key}");
+                            let scope = self.private_scope(key);
+                            RoomView {
+                                id: chat.id.clone(),
+                                name: view.clone(),
+                                owner: "participants".into(),
+                                permissions: self.effective(Some(name), &scope).names(),
+                                commands: self.commands_for(Some(name), Some(&view)),
+                                members: if self.allows(Some(name), &scope, Action::Members) {
+                                    key.split(':').map(str::to_owned).collect()
+                                } else {
+                                    BTreeSet::new()
+                                },
+                                messages: chat
+                                    .messages
+                                    .iter()
+                                    .skip(chat.messages.len().saturating_sub(VISIBLE_HISTORY))
+                                    .cloned()
+                                    .collect(),
+                            }
+                        }),
+                )
                 .collect(),
             direct: {
                 let mut messages: Vec<_> = self
                     .data
                     .private
                     .iter()
-                    .filter(|(key, _)| private_peer(key, name).is_some())
+                    .filter(|(key, _)| {
+                        private_peer(key, name).is_some()
+                            && self.allows(Some(name), &self.private_scope(key), Action::Read)
+                    })
                     .flat_map(|(_, chat)| {
                         chat.messages
                             .iter()
@@ -170,16 +283,20 @@ impl Engine {
                 .data
                 .private
                 .keys()
+                .filter(|key| self.allows(Some(name), &self.private_scope(key), Action::Read))
                 .filter_map(|key| private_peer(key, name))
                 .map(String::from)
                 .collect(),
             unread: self.unreads(name),
-            commands: crate::commands::available(user.admin, false),
+            commands: self.commands_for(Some(name), None),
             available_rooms: self
                 .data
                 .rooms
                 .iter()
-                .filter(|(_, r)| user.admin || r.members.contains(name))
+                .filter(|(_, r)| {
+                    self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Discover)
+                        || self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read)
+                })
                 .map(|(n, _)| n.clone())
                 .collect(),
         })
@@ -189,13 +306,26 @@ impl Engine {
             actor,
             room,
             parts,
-            admin,
             author,
             ..
         } = *context;
         match parts[0] {
+            "/console" => {
+                require_len(parts, 1, "/console")?;
+                if actor.is_none() {
+                    return Err("The Command view is available in the web UI only.".into());
+                }
+                Ok("Command view opened.".into())
+            }
             "/debug" => {
-                require_admin(admin)?;
+                let allowed = self.allows(actor, &context.scope, Action::Metadata)
+                    || (context.scope == Scope::Server
+                        && (self.data.rooms.values().any(|r| {
+                            self.allows(actor, &Scope::Room(r.id.clone()), Action::Metadata)
+                        }) || self.is_su(actor)));
+                if !allowed {
+                    return Err("Permission required: r:message.metadata".into());
+                }
                 if actor.is_none() {
                     return Err("Debug details are available in the web UI only.".into());
                 }
@@ -205,48 +335,73 @@ impl Engine {
                 }
                 Ok(format!("Debug {}.", parts[1]))
             }
+            "/man" => {
+                if parts.len() > 2 {
+                    return Err("Usage: /man [command|topic], e.g. /man grant".into());
+                }
+                crate::manual::manual(parts.get(1).copied())
+            }
             "/help" => {
                 require_len(parts, 1, "/help")?;
-                Ok(crate::commands::help(admin, actor.is_none()))
+                Ok(crate::commands::help_for(
+                    &self.commands_for(actor, context.view),
+                ))
             }
             "/whoami" => {
                 require_len(parts, 1, "/whoami")?;
                 Ok(format!(
                     "Name: {}\nPermission: {}",
                     actor.unwrap_or("su"),
-                    if actor.is_none() {
-                        "su"
-                    } else if admin {
-                        "admin"
-                    } else {
-                        "user"
-                    }
+                    self.permission_label(actor)
                 ))
             }
             "/rooms" => {
                 require_len(parts, 1, "/rooms")?;
+                let rooms = self
+                    .data
+                    .rooms
+                    .iter()
+                    .filter(|(_, r)| {
+                        self.allows(actor, &Scope::Room(r.id.clone()), Action::Discover)
+                            || self.allows(actor, &Scope::Room(r.id.clone()), Action::Read)
+                    })
+                    .map(|(n, r)| format!("#{n} — owner: {}", self.room_owner_name(&r.owner_id)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let private = self
+                    .data
+                    .private
+                    .iter()
+                    .filter(|(key, _)| {
+                        actor.is_some_and(|user| private_peer(key, user).is_some())
+                            && self.allows(actor, &self.private_scope(key), Action::Read)
+                    })
+                    .map(|(key, _)| format!("@private:{key}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 Ok(format!(
-                    "Your rooms: {}",
-                    self.data
-                        .rooms
-                        .iter()
-                        .filter(|(_, r)| admin || r.members.contains(author))
-                        .map(|(n, _)| format!("#{n}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    "Your rooms:\n{}\n\nPrivate conversations:\n{}",
+                    if rooms.is_empty() { "None." } else { &rooms },
+                    if private.is_empty() {
+                        "None."
+                    } else {
+                        &private
+                    }
                 ))
             }
             "/users" => {
                 require_len(parts, 1, "/users")?;
+                self.require_target_command(actor, &Scope::Server, parts[0])?;
+                self.require(actor, &Scope::Server, Action::Directory)?;
                 Ok(format!(
                     "Users:\n{}",
                     self.data
                         .users
                         .iter()
-                        .filter(|(_, u)| admin || !u.disabled)
+                        .filter(|(_, u)| self.is_su(actor) || !u.disabled)
                         .map(|(n, u)| format!(
                             "{n} — {}{}",
-                            if u.admin { "admin" } else { "user" },
+                            self.permission_label(Some(n)),
                             if u.disabled { " (disabled)" } else { "" }
                         ))
                         .collect::<Vec<_>>()
@@ -257,28 +412,35 @@ impl Engine {
                 if parts.len() > 2 {
                     return Err("Usage: /members [room]".into());
                 }
+                if parts.len() == 1
+                    && let Scope::Private(id) = &context.scope
+                {
+                    self.require(actor, &context.scope, Action::Members)?;
+                    let key = self
+                        .data
+                        .private
+                        .iter()
+                        .find(|(_, chat)| chat.id == *id)
+                        .map(|(key, _)| key)
+                        .ok_or("Private conversation not found.")?;
+                    return Ok(key
+                        .split(':')
+                        .map(|n| format!("{n} — {}", self.permission_label(Some(n))))
+                        .collect::<Vec<_>>()
+                        .join("\n"));
+                }
                 let name = parts
                     .get(1)
                     .copied()
                     .or(room)
                     .ok_or("Select or specify a room.")?;
                 let target = self.data.rooms.get(name).ok_or("Room not found.")?;
-                if actor.is_some() && !target.members.contains(author) {
-                    return Err("You are not a member of this room.".into());
-                }
+                self.require_target_command(actor, &Scope::Room(target.id.clone()), parts[0])?;
+                self.require(actor, &Scope::Room(target.id.clone()), Action::Members)?;
                 Ok(target
                     .members
                     .iter()
-                    .map(|n| {
-                        format!(
-                            "{n} — {}",
-                            if self.data.users[n].admin {
-                                "admin"
-                            } else {
-                                "user"
-                            }
-                        )
-                    })
+                    .map(|n| format!("{n} — {}", self.permission_label(Some(n))))
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
@@ -301,18 +463,47 @@ impl Engine {
                 }
                 let mut messages: Vec<_> = if let Some(name) = room {
                     let target = self.data.rooms.get(name).ok_or("Room not found.")?;
-                    if actor.is_some() && !target.members.contains(author) {
-                        return Err("You are not a member of this room.".into());
-                    }
+                    self.require_target_command(actor, &Scope::Room(target.id.clone()), parts[0])?;
+                    self.require(actor, &Scope::Room(target.id.clone()), Action::Read)?;
                     target.messages.iter().collect()
+                } else if let Some(key) = parts.get(2).and_then(|v| v.strip_prefix("@private:")) {
+                    self.require_target_command(actor, &self.private_scope(key), parts[0])?;
+                    self.require(actor, &self.private_scope(key), Action::Read)?;
+                    self.data
+                        .private
+                        .get(key)
+                        .ok_or("Private conversation not found.")?
+                        .messages
+                        .iter()
+                        .collect()
+                } else if parts.len() <= 2
+                    && let Scope::Private(id) = &context.scope
+                {
+                    self.require(actor, &context.scope, Action::Read)?;
+                    self.data
+                        .private
+                        .values()
+                        .find(|chat| chat.id == *id)
+                        .ok_or("Private conversation not found.")?
+                        .messages
+                        .iter()
+                        .collect()
                 } else if actor.is_some() {
                     self.data
                         .private
                         .iter()
                         .filter(|(key, _)| {
-                            private_peer(key, author).is_some_and(|peer| {
-                                parts.get(2).is_none_or(|requested| peer == *requested)
-                            })
+                            self.allows(actor, &self.private_scope(key), Action::Read)
+                                && self
+                                    .require_target_command(
+                                        actor,
+                                        &self.private_scope(key),
+                                        parts[0],
+                                    )
+                                    .is_ok()
+                                && private_peer(key, author).is_some_and(|peer| {
+                                    parts.get(2).is_none_or(|requested| peer == *requested)
+                                })
                         })
                         .flat_map(|(_, chat)| &chat.messages)
                         .collect()

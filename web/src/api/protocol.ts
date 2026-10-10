@@ -7,6 +7,7 @@ export interface Reply {
 export interface Message {
   id: string;
   from: string;
+  private_id?: string;
   to: string | null;
   text: string;
   time: number;
@@ -16,6 +17,10 @@ export interface Message {
   mentions: string[];
 }
 export interface Room {
+  id: string;
+  owner: string;
+  permissions: string[];
+  commands: Command[];
   name: string;
   members: string[];
   messages: Message[];
@@ -24,6 +29,7 @@ export interface Command {
   name: string;
   usage: string;
   description: string;
+  requirements?: string;
   section: string;
   admin: boolean;
   console: boolean;
@@ -35,9 +41,20 @@ export interface Unread {
   oldest: number;
   revision: number;
 }
+export interface Access {
+  id: string;
+  permissions: string[];
+  commands: Command[];
+}
 export interface Snapshot {
   kind: "snapshot";
   username: string;
+  groups: string[];
+  permissions: string[];
+  private_access: Record<string, Access>;
+  private_permissions: string[];
+  private_commands: Command[];
+  policy_revision: number;
   admin: boolean;
   users: string[];
   online: string[];
@@ -113,6 +130,7 @@ const reply = (v: unknown): v is Reply =>
   typeof v.text === "string";
 export const isMessage = (v: unknown): v is Message =>
   record(v) &&
+  (v.private_id === undefined || typeof v.private_id === "string") &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&
   (v.to === null || typeof v.to === "string") &&
@@ -134,11 +152,37 @@ const unread = (v: unknown): v is Unread =>
   integer(v.revision);
 const unreads = (v: unknown): v is Record<string, Unread> =>
   record(v) && Object.values(v).every(unread);
+const commands = (v: unknown): v is Command[] =>
+  Array.isArray(v) &&
+  v.every(
+    (c) =>
+      record(c) &&
+      typeof c.name === "string" &&
+      typeof c.usage === "string" &&
+      typeof c.description === "string" &&
+      (c.requirements === undefined || typeof c.requirements === "string") &&
+      typeof c.section === "string" &&
+      typeof c.admin === "boolean" &&
+      typeof c.console === "boolean",
+  );
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
   v.kind === "snapshot" &&
   typeof v.username === "string" &&
   typeof v.admin === "boolean" &&
+  strings(v.groups) &&
+  strings(v.permissions) &&
+  strings(v.private_permissions) &&
+  record(v.private_access) &&
+  Object.values(v.private_access).every(
+    (a) =>
+      record(a) &&
+      typeof a.id === "string" &&
+      strings(a.permissions) &&
+      commands(a.commands),
+  ) &&
+  commands(v.private_commands) &&
+  integer(v.policy_revision) &&
   strings(v.users) &&
   strings(v.online) &&
   Array.isArray(v.rooms) &&
@@ -146,6 +190,10 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
     (r) =>
       record(r) &&
       typeof r.name === "string" &&
+      typeof r.id === "string" &&
+      typeof r.owner === "string" &&
+      strings(r.permissions) &&
+      commands(r.commands) &&
       strings(r.members) &&
       messages(r.messages),
   ) &&
@@ -153,17 +201,7 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   strings(v.private_peers) &&
   strings(v.available_rooms) &&
   unreads(v.unread) &&
-  Array.isArray(v.commands) &&
-  v.commands.every(
-    (c) =>
-      record(c) &&
-      typeof c.name === "string" &&
-      typeof c.usage === "string" &&
-      typeof c.description === "string" &&
-      typeof c.section === "string" &&
-      typeof c.admin === "boolean" &&
-      typeof c.console === "boolean",
-  );
+  commands(v.commands);
 export const isHistory = (v: unknown): v is History =>
   record(v) &&
   typeof v.view === "string" &&

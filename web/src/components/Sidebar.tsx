@@ -4,7 +4,6 @@ import { UnreadBadge } from "./UnreadBadge.tsx";
 interface Props {
   state: Snapshot;
   menu: boolean;
-  consoleView: boolean;
   selected: string;
   peers: string[];
   peer: string | null;
@@ -18,7 +17,6 @@ interface Props {
 export function Sidebar({
   state,
   menu,
-  consoleView,
   selected,
   peers,
   peer,
@@ -44,14 +42,6 @@ export function Sidebar({
         </button>
       </div>
       <nav class="navigation" aria-label="Conversations">
-        {state.admin && (
-          <button
-            class={`room-link command-link ${consoleView ? "selected" : ""}`}
-            onClick={() => choose("@command")}
-          >
-            <span class="hash">&gt;</span>Command
-          </button>
-        )}
         <details class="nav-group" open>
           <summary>
             Rooms<span class="group-count">{state.rooms.length}</span>
@@ -63,8 +53,10 @@ export function Sidebar({
                 class={`room-link ${selected === r.name ? "selected" : ""}`}
                 onClick={() => choose(r.name)}
               >
-                <span class="hash">#</span>
-                {r.name}
+                <span class="hash">
+                  {r.name.startsWith("@private:") ? "↗" : "#"}
+                </span>
+                {r.name.startsWith("@private:") ? r.name.slice(9) : r.name}
                 <UnreadBadge count={state.unread[r.name]?.count ?? 0} />
               </button>
             ))}
@@ -97,7 +89,11 @@ export function Sidebar({
         <div class="profile">
           <div class="profile-name">
             <strong>{state.username}</strong>
-            <small>{state.admin ? "admin" : "user"}</small>
+            <small>
+              {state.groups.includes("su")
+                ? "su"
+                : state.groups.join(", ") || "user"}
+            </small>
           </div>
           <button
             class="settings-toggle"

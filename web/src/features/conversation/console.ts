@@ -98,11 +98,13 @@ export function privateMessages(
   messages: Message[],
   self: string,
   peer: string | null,
+  privateId?: string,
 ) {
-  return messages.filter(
-    (message) =>
-      (message.from === self && message.to === peer) ||
-      (message.from === peer && message.to === self),
+  return messages.filter((message) =>
+    privateId && message.private_id
+      ? message.private_id === privateId
+      : (message.from === self && message.to === peer) ||
+        (message.from === peer && message.to === self),
   );
 }
 export function redactCommand(text: string) {
@@ -136,12 +138,16 @@ export function suggestions(
   if (!draft.startsWith("/") || draft.includes("\n")) return [];
   const parts = draft.split(/\s+/);
   const name = parts[0] || "";
+  const describe = (command: Command) =>
+    command.requirements
+      ? `${command.description} · Requires: ${command.requirements}`
+      : command.description;
   if (parts.length === 1) {
     return commands
       .filter((c) => c.name.startsWith(name))
       .map((c) => ({
         label: c.usage,
-        description: c.description,
+        description: describe(c),
         value: c.name + (c.usage === c.name ? "" : " "),
       }));
   }
@@ -149,6 +155,26 @@ export function suggestions(
   if (!spec) return [];
   const position = parts.length - 1;
   const prefix = parts.at(-1) || "";
+  if (["/grant", "/revoke"].includes(name)) {
+    if (
+      position === 3 &&
+      (prefix.startsWith("/") ||
+        !["user", "admin", "su"].includes(parts[2] ?? ""))
+    ) {
+      return commands
+        .filter((command) => command.name.startsWith(prefix))
+        .map((command) => ({
+          label: command.name,
+          description: describe(command),
+          value: [...parts.slice(0, 3), command.name].join(" ") + " ",
+        }));
+    }
+    const granted = commands.find((command) => command.name === parts[3]);
+    if (position > 3 && granted)
+      return [
+        { label: granted.usage, description: describe(granted), value: null },
+      ];
+  }
   let values: string[] = [];
   if (
     [
@@ -171,6 +197,36 @@ export function suggestions(
   )
     values = rooms;
   if (["/add", "/kick"].includes(name) && position === 2) values = rooms;
+  if (["/grant", "/revoke"].includes(name) && position === 2)
+    values = [
+      ...new Set([
+        "user",
+        "admin",
+        "su",
+        ...rooms,
+        "@global",
+        "@account:",
+        "@private:",
+      ]),
+    ];
+  if (
+    ["/grant", "/revoke"].includes(name) &&
+    position === 3 &&
+    ["user", "admin", "su"].includes(parts[2] ?? "")
+  )
+    values = rooms;
+  if (name === "/man" && position === 1)
+    values = [
+      ...new Set([
+        "grant",
+        "revoke",
+        "permissions",
+        "groups",
+        "scopes",
+        "ownership",
+        ...commands.map((command) => command.name.slice(1)),
+      ]),
+    ];
   if (name === "/clean" && position === 2)
     values = [...rooms, "@private", "@all"];
   if (values.length)
@@ -178,8 +234,10 @@ export function suggestions(
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({
         label: value,
-        description: spec.usage,
+        description: spec.requirements
+          ? `${spec.usage} · Requires: ${spec.requirements}`
+          : spec.usage,
         value: [...parts.slice(0, -1), value].join(" ") + " ",
       }));
-  return [{ label: spec.usage, description: spec.description, value: null }];
+  return [{ label: spec.usage, description: describe(spec), value: null }];
 }

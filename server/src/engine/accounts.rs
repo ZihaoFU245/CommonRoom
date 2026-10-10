@@ -2,10 +2,8 @@ use super::*;
 
 impl Engine {
     pub fn is_admin(&self, name: &str) -> bool {
-        self.data
-            .users
-            .get(name)
-            .is_some_and(|u| u.admin && !u.disabled)
+        self.has_group(Some(name), authorization::Group::Admin)
+            || self.has_group(Some(name), authorization::Group::Su)
     }
     pub fn change_password(
         &mut self,
@@ -14,6 +12,7 @@ impl Engine {
         hash: String,
         keep: &str,
     ) -> Result<String, String> {
+        self.account_target(Some(user), user, authorization::Action::Password)?;
         if !self
             .data
             .users
@@ -101,6 +100,32 @@ impl Engine {
         admin: bool,
         reset: bool,
     ) -> Result<String, String> {
+        self.provision_by(None, name, hash, admin, reset)
+    }
+    pub fn provision_by(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        hash: String,
+        admin: bool,
+        reset: bool,
+    ) -> Result<String, String> {
+        if reset {
+            self.account_target(actor, name, authorization::Action::Reset)?;
+        } else {
+            self.require(
+                actor,
+                &authorization::Scope::Server,
+                authorization::Action::CreateAccount,
+            )?;
+            if admin {
+                self.require(
+                    actor,
+                    &authorization::Scope::Server,
+                    authorization::Action::AssignAdmin,
+                )?;
+            }
+        }
         if !valid_name(name) {
             return Err("Invalid username.".into());
         }
@@ -120,10 +145,31 @@ impl Engine {
                 name.into(),
                 Account {
                     hash,
-                    admin,
+                    admin: false,
+                    id: uuid::Uuid::new_v4().to_string(),
                     disabled: false,
                 },
             );
+        }
+        self.audit(actor, if reset { "/reset" } else { "/user" }, name);
+        if !reset {
+            let id = self
+                .data
+                .users
+                .get(name)
+                .ok_or("User not found.")?
+                .id
+                .clone();
+            self.assign(
+                id,
+                if admin {
+                    authorization::Group::Admin
+                } else {
+                    authorization::Group::User
+                },
+                authorization::Scope::Server,
+            );
+            self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         }
         if let Err(e) = self.save() {
             self.data = before;
@@ -139,34 +185,40 @@ impl Engine {
         actor: Option<&str>,
         name: &str,
     ) -> Result<String, String> {
-        if let Some(actor) = actor {
-            let account = self
-                .data
-                .users
-                .get(actor)
-                .filter(|u| !u.disabled)
-                .ok_or("Account unavailable.")?;
-            require_admin(account.admin)?;
-            if actor == name {
-                return Err("You cannot delete your own account from the web.".into());
-            }
+        self.account_target(actor, name, authorization::Action::DeleteAccount)?;
+        if actor.is_some() && !self.is_su(actor) && actor == Some(name) {
+            return Err("You cannot delete your own account from the web.".into());
         }
-        let account = self.data.users.get(name).ok_or("User not found.")?;
-        if actor.is_some()
-            && account.admin
-            && !account.disabled
-            && self
-                .data
-                .users
-                .values()
-                .filter(|u| u.admin && !u.disabled)
-                .count()
-                == 1
+        if !self.is_su(actor)
+            && self.is_admin(name)
+            && self.data.users.keys().filter(|n| self.is_admin(n)).count() == 1
         {
             return Err("Cannot delete the last active administrator.".into());
         }
         let previous = self.data.clone();
+        let deleted_id = self
+            .data
+            .users
+            .get(name)
+            .ok_or("User not found.")?
+            .id
+            .clone();
+        self.audit(actor, "/deleteuser", name);
+        self.data.policy.assignments.retain(|a| {
+            a.account_id != deleted_id
+                && a.scope != authorization::Scope::Account(deleted_id.clone())
+        });
+        self.data.policy.grants.retain(|g| {
+            g.subject != authorization::Subject::Account(deleted_id.clone())
+                && g.scope != authorization::Scope::Account(deleted_id.clone())
+        });
+        self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         self.data.users.remove(name);
+        for room in self.data.rooms.values_mut() {
+            if room.owner_id == deleted_id {
+                room.owner_id = "console".into();
+            }
+        }
         self.data
             .sessions
             .retain(|_, session| session.username != name);
@@ -196,6 +248,21 @@ impl Engine {
             }
         }
         let mut removed = BTreeSet::new();
+        let removed_scopes: Vec<_> = self
+            .data
+            .private
+            .iter()
+            .filter(|(key, _)| private_peer(key, name).is_some())
+            .map(|(_, chat)| authorization::Scope::Private(chat.id.clone()))
+            .collect();
+        self.data
+            .policy
+            .grants
+            .retain(|g| !removed_scopes.contains(&g.scope));
+        self.data
+            .policy
+            .assignments
+            .retain(|a| !removed_scopes.contains(&a.scope));
         self.data.private.retain(|key, _| {
             if private_peer(key, name).is_some() {
                 removed.insert(format!("dm:{key}"));
@@ -212,6 +279,7 @@ impl Engine {
             tracing::error!(error = %error, "Account deletion failed");
             return Err("Storage unavailable; account deletion was not applied.".into());
         }
+        self.rebuild_authorization()?;
         self.read_positions.remove(name);
         for positions in self.read_positions.values_mut() {
             positions.retain(|view, _| !removed.contains(view));
@@ -225,47 +293,13 @@ impl Engine {
         &mut self,
         context: &CommandContext<'_>,
     ) -> Result<String, String> {
-        let CommandContext {
-            actor,
-            parts,
-            admin,
-            ..
-        } = *context;
+        let CommandContext { actor, parts, .. } = *context;
         match parts[0] {
-            "/grant" | "/revoke" => {
-                require_admin(admin)?;
-                require_len(parts, 2, "/grant user or /revoke user")?;
-                let name = parts[1];
-                if !self.active(name) {
-                    return Err("User not found.".into());
-                }
-                let grant = parts[0] == "/grant";
-                if !grant
-                    && actor.is_some()
-                    && self.data.users[name].admin
-                    && self
-                        .data
-                        .users
-                        .values()
-                        .filter(|u| u.admin && !u.disabled)
-                        .count()
-                        == 1
-                {
-                    return Err("Cannot revoke the last active administrator.".into());
-                }
-                self.data
-                    .users
-                    .get_mut(name)
-                    .ok_or("User not found.")?
-                    .admin = grant;
-                Ok(format!(
-                    "{name}: permission {}.",
-                    if grant { "admin" } else { "user" }
-                ))
-            }
             "/enable" => {
-                require_admin(admin)?;
                 require_len(parts, 2, "/enable user")?;
+                let scope = self.account_target(actor, parts[1], authorization::Action::Enable)?;
+                self.require_target_command(actor, &scope, parts[0])?;
+                self.audit(actor, "/enable", parts[1]);
                 self.data
                     .users
                     .get_mut(parts[1])
@@ -274,32 +308,46 @@ impl Engine {
                 Ok(format!("Enabled {}.", parts[1]))
             }
             "/disable" => {
-                require_admin(admin)?;
                 require_len(parts, 2, "/disable user")?;
-                if actor.is_some()
-                    && self
-                        .data
-                        .users
-                        .get(parts[1])
-                        .is_some_and(|u| u.admin && !u.disabled)
-                    && self
-                        .data
-                        .users
-                        .values()
-                        .filter(|u| u.admin && !u.disabled)
-                        .count()
-                        == 1
+                let scope = self.account_target(actor, parts[1], authorization::Action::Disable)?;
+                self.require_target_command(actor, &scope, parts[0])?;
+                if !self.is_su(actor)
+                    && self.is_admin(parts[1])
+                    && self.data.users.keys().filter(|n| self.is_admin(n)).count() == 1
                 {
                     return Err("Cannot disable the last active admin.".into());
                 }
+                self.audit(actor, "/disable", parts[1]);
                 self.data
                     .users
                     .get_mut(parts[1])
                     .ok_or("User not found.")?
                     .disabled = true;
                 self.data.sessions.retain(|_, s| s.username != parts[1]);
+                let id = self
+                    .data
+                    .users
+                    .get(parts[1])
+                    .ok_or("User not found.")?
+                    .id
+                    .clone();
+                self.data.policy.assignments.retain(|a| {
+                    a.account_id != id || !matches!(a.scope, authorization::Scope::Room(_))
+                });
+                self.data.policy.grants.retain(|g| {
+                    g.subject != authorization::Subject::Account(id.clone())
+                        || !matches!(g.scope, authorization::Scope::Room(_))
+                });
+                let mut recovered = Vec::new();
                 for room in self.data.rooms.values_mut() {
                     room.members.remove(parts[1]);
+                    if room.owner_id == id {
+                        room.owner_id = "console".into();
+                        recovered.push(authorization::Scope::Room(room.id.clone()));
+                    }
+                }
+                for scope in recovered {
+                    self.add_owner_grants("console".into(), scope);
                 }
                 Ok(format!("Disabled {}.", parts[1]))
             }

@@ -16,10 +16,26 @@ const message = {
 const snapshot = {
   kind: "snapshot",
   username: "alice",
+  groups: ["user"],
+  permissions: [],
+  private_access: {},
+  private_permissions: [],
+  private_commands: [],
+  policy_revision: 0,
   admin: true,
   users: ["alice", "bob"],
   online: ["alice"],
-  rooms: [{ name: "room", members: ["alice", "bob"], messages: [message] }],
+  rooms: [
+    {
+      id: "room-id",
+      owner: "alice",
+      permissions: [],
+      commands: [],
+      name: "room",
+      members: ["alice", "bob"],
+      messages: [message],
+    },
+  ],
   direct: [],
   private_peers: [],
   commands: [
@@ -37,6 +53,17 @@ const snapshot = {
 };
 test("protocol accepts complete Unicode snapshots, history, and every server frame", () => {
   assert.ok(isSnapshot(snapshot));
+  assert.ok(
+    isSnapshot({
+      ...snapshot,
+      commands: [
+        {
+          ...snapshot.commands[0],
+          requirements: "r:message.read + w:message.create",
+        },
+      ],
+    }),
+  );
   assert.ok(isHistory({ view: "room", messages: [message], revision: 1 }));
   for (const frame of [
     snapshot,
@@ -51,11 +78,27 @@ test("protocol rejects malformed nested data before it reaches UI state", () => 
     null,
     {},
     { ...snapshot, online: [123] },
+    { ...snapshot, groups: [123] },
+    { ...snapshot, policy_revision: -1 },
+    { ...snapshot, private_permissions: null },
+    { ...snapshot, private_commands: [{}] },
+    {
+      ...snapshot,
+      private_access: {
+        "@direct:bob": { id: "pair", permissions: [], commands: [{}] },
+      },
+    },
+    { ...snapshot, rooms: [{ ...snapshot.rooms[0], permissions: [123] }] },
+    { ...snapshot, rooms: [{ ...snapshot.rooms[0], commands: [{}] }] },
     { ...snapshot, rooms: [{ ...snapshot.rooms[0], members: "alice" }] },
     { ...snapshot, direct: [{ ...message, reactions: { "👍": "bob" } }] },
     { ...snapshot, direct: [{ ...message, reply: { id: "old" } }] },
     { ...snapshot, unread: { room: { ...snapshot.unread.room, count: -1 } } },
     { ...snapshot, commands: [{ ...snapshot.commands[0], admin: "true" }] },
+    {
+      ...snapshot,
+      commands: [{ ...snapshot.commands[0], requirements: ["w:room.create"] }],
+    },
     { ...snapshot, direct: [{ ...message, sequence: 1.5 }] },
   ]) {
     assert.equal(isSnapshot(invalid), false);

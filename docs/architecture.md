@@ -12,6 +12,7 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | --- | --- |
 | `models.rs` | Persisted data and serialized snapshot/history types |
 | `storage.rs` | SQLite opening, migration, locking, writes, cursor persistence, and checkpointing |
+| `authorization.rs` | Action/command grants, predefined group bundles, scope/ownership policies, compiled permission index, and audit |
 | `accounts.rs` | Account/session lifecycle, roles, provisioning, and account deletion |
 | `rooms.rs` | Room creation, deletion, invitations, joining, and leaving |
 | `messages.rs` | Message construction, private queues, reactions, replies, and cleanup |
@@ -20,7 +21,7 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
 | `tests.rs` | Engine regression tests using isolated storage |
 
-`commands.rs` outside the engine is the role-aware help/completion registry. The domain dispatcher executes commands; the registry does not authorize them.
+`commands.rs` outside the engine is the help/completion registry. `manual.rs` provides read-only command and grant-system manuals. The domain dispatcher executes commands; the registry does not authorize them.
 
 `web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` handles asynchronous account commands and configuration output. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage module.
 
@@ -39,7 +40,7 @@ One `Arc<Mutex<Engine>>` serializes state changes. Never hold its lock across `.
 - `hooks/useFonts.ts` and `useComposerResize.ts` own presentation preferences and input sizing.
 - `features/conversation/` contains pure ordering, date, mention, and unread helpers. `features/preferences/` contains browser preference and notification helpers.
 
-Server snapshots are authoritative for membership, permissions, peer directories, and messages. Browser storage contains presentation/notification preferences only. Stable event callbacks and memoized message lists keep draft edits from sorting and rendering the transcript again. Keep pure helpers independent of browser APIs where possible.
+Server snapshots are authoritative for membership, scoped permissions and commands, peer directories, and messages. The legacy wire `admin` flag is informational; UI controls use effective grants. Browser storage contains presentation/notification preferences only. Stable event callbacks and memoized message lists keep draft edits from sorting and rendering the transcript again. Keep pure helpers independent of browser APIs where possible.
 
 ## Scaling and extension
 

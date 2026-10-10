@@ -145,3 +145,75 @@ test("delete-user hints complete usernames rather than rooms", () => {
     ["/deleteuser bob "],
   );
 });
+
+test("private inspectors' messages stay in their original participant pair", () => {
+  const messages = [
+    { from: "moderator", to: "alice", private_id: "pair", text: "review" },
+    { from: "moderator", to: "alice", private_id: "other", text: "elsewhere" },
+  ];
+  assert.deepEqual(
+    privateMessages(messages, "alice", "bob", "pair").map((m) => m.text),
+    ["review"],
+  );
+});
+
+test("manual topics and both grant forms have contextual completion", () => {
+  const commands = [
+    { name: "/grant", usage: "/grant user group [room]", description: "Grant" },
+    {
+      name: "/revoke",
+      usage: "/revoke user scope permission",
+      description: "Revoke",
+    },
+    { name: "/man", usage: "/man [topic]", description: "Manual" },
+  ];
+  assert.equal(suggestions("/man g", commands, [], [])[0].value, "/man grant ");
+  assert.equal(
+    suggestions("/revoke bob su", commands, ["bob"], ["support"])[0].value,
+    "/revoke bob su ",
+  );
+  assert.equal(
+    suggestions("/grant bob @g", commands, ["bob"], ["support"])[0].value,
+    "/grant bob @global ",
+  );
+  assert.equal(
+    suggestions("/grant bob user s", commands, ["bob"], ["support"])[0].value,
+    "/grant bob user support ",
+  );
+});
+
+test("command and grant hints disclose all action requirements without granting access", () => {
+  const commands = [
+    {
+      name: "/grant",
+      usage: "/grant user scope permission",
+      description: "Grant",
+    },
+    {
+      name: "/reply",
+      usage: "/reply id text",
+      description: "Reply",
+      requirements: "r:message.read + w:message.create on the conversation",
+    },
+  ];
+  for (const draft of [
+    "/rep",
+    "/reply id text",
+    "/grant bob support /rep",
+    "/grant bob support /reply ",
+  ]) {
+    const hint = suggestions(draft, commands, ["bob"], ["support"])[0];
+    assert.ok(hint.description.includes("r:message.read + w:message.create"));
+  }
+  assert.equal(
+    suggestions("/grant bob support /rep", commands, ["bob"], ["support"])[0]
+      .value,
+    "/grant bob support /reply ",
+  );
+  assert.equal(
+    suggestions("/grant bob @server", commands, ["bob"], ["support"]).some(
+      (hint) => hint.value === "/grant bob @server ",
+    ),
+    false,
+  );
+});

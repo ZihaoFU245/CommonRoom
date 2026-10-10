@@ -36,13 +36,6 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     })
 }
 
-pub(super) fn require_admin(admin: bool) -> Result<(), String> {
-    if admin {
-        Ok(())
-    } else {
-        Err("Admin permission required.".into())
-    }
-}
 pub(super) fn parse_age(value: &str) -> Result<u64, String> {
     let unit = value
         .chars()
@@ -75,6 +68,8 @@ pub(super) fn new_message(from: &str, to: Option<&str>, text: &str) -> Message {
     Message {
         id: uuid::Uuid::new_v4().to_string(),
         from: from.into(),
+        author_id: String::new(),
+        private_id: String::new(),
         to: to.map(String::from),
         text: text.into(),
         time: now(),
