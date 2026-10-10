@@ -21,6 +21,12 @@ unreachable = "deny"
 [dependencies]
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
+# Agent replies call the DeepSeek chat-completions API. TLS roots come from the
+# crate so the bundled binary needs no OS certificate store.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls-webpki-roots",
+] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

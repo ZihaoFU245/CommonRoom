@@ -1,6 +1,8 @@
+mod agent;
 mod auth;
 mod commands;
 mod history;
+mod search;
 mod security;
 mod socket;
 #[cfg(test)]
@@ -37,6 +39,9 @@ pub struct App {
     pub config: Arc<Config>,
     pub connections: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
+    /// Bounds concurrent provider requests made for agent replies.
+    pub agent_jobs: Arc<tokio::sync::Semaphore>,
+    pub http: reqwest::Client,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 impl App {
