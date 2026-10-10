@@ -77,6 +77,7 @@ on the same machine:
   "production": true,
   "bind": "127.0.0.1:3000",
   "trust": "127.0.0.1",
+  "set_real_ip_from": "X-Forwarded-For",
   "base_url": "/commonroom/",
   "max_users": 64,
   "max_rooms": 64,
@@ -99,6 +100,26 @@ balancer's actual source IP for a remote proxy, and bind to a reachable private
 address. Trust is enforced in production. Existing config files without
 `trust` receive the default automatically. Release builds always enforce
 production mode; debug builds use the saved `production` setting.
+`set_real_ip_from` names the header used for the client IP in login throttling.
+It defaults to `"X-Forwarded-For"`, including for existing configuration files,
+matching the example's `proxy_set_header X-Forwarded-For $remote_addr`.
+Only the socket-peer IP configured in `trust` may supply this header, in either
+production or development. The value must contain exactly one IPv4 or IPv6
+address; missing, malformed, duplicate, or comma-separated values fall back to
+the socket-peer IP. IPv4-mapped IPv6 addresses share the same throttle bucket
+as their IPv4 form. Set it to `null` to disable header-based client IPs, or use
+another header name such as `"X-Real-IP"` and configure Nginx to overwrite it.
+This setting names a header, unlike Nginx's `set_real_ip_from` directive, which
+names trusted proxy addresses. Changes require a restart.
+
+Nginx must overwrite the chosen header with a verified address. Do not use
+`$proxy_add_x_forwarded_for`: this server deliberately rejects address chains.
+If Nginx sits behind Cloudflare or another proxy, `$remote_addr` identifies that
+proxy unless Nginx's real-IP module is configured to trust that upstream and
+resolve the actual client. Only trust your actual upstream proxies.
+Login allows 10 attempts per client IP per minute; users sharing an IP still
+share that budget.
+
 `max_users` and `max_rooms` are positive integers, each defaulting to 64.
 They limit new account and room creation through both web commands and stdin.
 Disabled accounts count toward `max_users`. Lowering a limit preserves existing
@@ -117,6 +138,7 @@ Restart after editing these values.
   "production": true,
   "bind": "127.0.0.1:3000",
   "trust": "127.0.0.1",
+  "set_real_ip_from": "X-Forwarded-For",
   "base_url": "/",
   "origins": ["https://chat.example.com"],
   "max_users": 64,

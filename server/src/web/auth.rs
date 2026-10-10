@@ -1,4 +1,4 @@
-use super::security::check_origin;
+use super::security::{check_origin, client_ip};
 use super::*;
 use crate::engine::verify_password;
 use axum::{
@@ -57,7 +57,7 @@ pub(super) async fn login(
         })?;
         attempts.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
         // Key on IP, never the client's ephemeral TCP port.
-        let key = SocketAddr::new(peer.ip(), 0);
+        let key = SocketAddr::new(client_ip(&app.config, peer.ip(), &headers), 0);
         let entry = attempts.entry(key).or_insert((Instant::now(), 0));
         if entry.1 >= 10 {
             return Err(error(

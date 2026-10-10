@@ -14,6 +14,11 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 
 Non-success HTTP responses contain `{error:string}`. Production requests must come from the configured trusted socket-peer IP and include `X-Forwarded-Proto: https`. Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are same-origin, HttpOnly, SameSite Strict, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript.
 
+Login throttling uses the client address from the configured `set_real_ip_from`
+header (default `X-Forwarded-For`) only when the socket peer matches `trust`.
+The proxy must overwrite it with one verified IP; invalid or absent values use
+the peer address. The allowance is 10 login attempts per IP per minute.
+
 ## Frames
 
 The web sends `{id:number, room:string|null, text:string}`. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console and private views; private sends use `/tell`. The server returns one of:

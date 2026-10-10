@@ -7,6 +7,7 @@ pub struct Config {
     pub origins: Vec<String>,
     pub production: bool,
     pub trust: std::net::IpAddr,
+    pub set_real_ip_from: Option<String>,
     pub base_url: String,
     pub max_users: usize,
     pub max_rooms: usize,
@@ -18,6 +19,7 @@ impl Default for Config {
             bind: "127.0.0.1:3000".into(),
             production: false,
             trust: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            set_real_ip_from: Some("X-Forwarded-For".into()),
             base_url: "/".into(),
             max_users: 64,
             max_rooms: 64,
@@ -97,11 +99,19 @@ impl Config {
                 .transpose()?
                 .or_else(|| saved.as_ref().map(|c| c.trust))
                 .unwrap_or_else(|| Self::default().trust),
+            set_real_ip_from: saved.as_ref().map_or_else(
+                || Self::default().set_real_ip_from,
+                |c| c.set_real_ip_from.clone(),
+            ),
             bind: std::env::var("CHAT_BIND")
                 .ok()
                 .or_else(|| saved.map(|c| c.bind))
                 .unwrap_or_else(|| "127.0.0.1:3000".into()),
         };
+        if let Some(name) = &config.set_real_ip_from {
+            axum::http::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| "set_real_ip_from must be a valid HTTP header name or null.")?;
+        }
         if config.max_users == 0 || config.max_rooms == 0 || config.max_messages == 0 {
             return Err("max_users, max_rooms and max_messages must be positive integers.".into());
         }
@@ -159,6 +169,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.trust.to_string(), "127.0.0.1");
         assert_eq!(config.max_messages, 1000);
+        assert_eq!(config.set_real_ip_from.as_deref(), Some("X-Forwarded-For"));
         let partial: Config = serde_json::from_str(r#"{"production":false}"#).unwrap();
         assert_eq!(partial.bind, "127.0.0.1:3000");
         assert!(serde_json::from_str::<Config>(r#"{"trust":"not-an-ip"}"#).is_err());
@@ -172,6 +183,7 @@ mod tests {
             origins: vec!["https://chat.example.com".into()],
             production: true,
             trust: "10.0.0.2".parse().unwrap(),
+            set_real_ip_from: Some("X-Real-IP".into()),
             base_url: "/commonroom/".into(),
             max_users: 8,
             max_rooms: 12,
@@ -192,6 +204,7 @@ mod tests {
         assert_eq!(restored.bind, original.bind);
         assert_eq!(restored.origins, original.origins);
         assert_eq!(restored.trust, original.trust);
+        assert_eq!(restored.set_real_ip_from, original.set_real_ip_from);
         assert_eq!(restored.base_url, original.base_url);
         assert_eq!(restored.max_users, 8);
         assert_eq!(restored.max_rooms, 12);
@@ -215,5 +228,32 @@ mod tests {
         ] {
             assert!(normalize_base_url(invalid).is_err(), "{invalid}");
         }
+    }
+    #[test]
+    fn invalid_real_ip_header_is_rejected_without_rewriting_config() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["", "X Real IP", "X-Real-IP\r\nInjected"] {
+            let raw = serde_json::json!({"set_real_ip_from": name}).to_string();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, &raw).unwrap();
+            assert!(Config::load(dir.path()).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn real_ip_header_defaults_on_first_start_and_can_be_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Config::load(dir.path())
+                .unwrap()
+                .set_real_ip_from
+                .as_deref(),
+            Some("X-Forwarded-For")
+        );
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"set_real_ip_from":null}"#).unwrap();
+        assert!(Config::load(dir.path()).unwrap().set_real_ip_from.is_none());
+        assert!(Config::load(dir.path()).unwrap().set_real_ip_from.is_none());
     }
 }

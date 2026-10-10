@@ -85,3 +85,31 @@ pub(super) fn check_origin(app: &App, headers: &HeaderMap) -> Result<(), ApiErro
         Err(error(StatusCode::FORBIDDEN, "Untrusted request origin."))
     }
 }
+
+// The trusted proxy must overwrite this header with one verified client address.
+// Never select an address from an unverified forwarding chain.
+pub(super) fn client_ip(
+    config: &Config,
+    peer: std::net::IpAddr,
+    headers: &HeaderMap,
+) -> std::net::IpAddr {
+    let peer = peer.to_canonical();
+    if !trusted_proxy(config, peer) {
+        return peer;
+    }
+    let Some(name) = config.set_real_ip_from.as_deref() else {
+        return peer;
+    };
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return peer;
+    };
+    if values.next().is_some() {
+        return peer;
+    }
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.trim().parse::<std::net::IpAddr>().ok())
+        .map_or(peer, |ip| ip.to_canonical())
+}

@@ -47,7 +47,7 @@ rtk pnpm --dir web format
 
 ## Coverage
 
-Rust tests cover configuration validation, proxy trust, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, migrations, restart/move persistence, and failed-write rollback.
+Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, migrations, restart/move persistence, and failed-write rollback.
 
 Web helper tests cover local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
