@@ -39,8 +39,8 @@
   font-size: var(--ui-font-size, 14px);
   line-height: 1.5;
 }
-/* Dark appearance. The pre-paint script in index.html sets data-theme before
-   the first frame; useTheme keeps it current afterwards. The surfaces are a
+/* Dark appearance. bootAppearance sets data-theme before the first frame;
+   the app-level useTheme keeps it current afterwards. The surfaces are a
    blue-tinted near-black (the blue channel leads the red) rather than a warm
    charcoal, following the ChatGPT/Codex dark family. --accent itself is
    shared: the brand fill does not change, only the foregrounds tuned for it. */
@@ -972,7 +972,7 @@ button:focus-visible {
 }
 .message-actions > button:hover,
 .message-actions summary:hover {
-  background: var(--line);
+  background: var(--wash);
 }
 .message-actions details {
   position: relative;

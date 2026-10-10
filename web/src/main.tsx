@@ -6,6 +6,7 @@ import { api } from "./api/client.ts";
 import { Chat } from "./components/Chat.tsx";
 import { Login } from "./components/Login.tsx";
 import { bootAppearance } from "./features/preferences/appearance.ts";
+import { useTheme } from "./hooks/useTheme.ts";
 import "./style.css";
 
 /* Resolve the saved theme before the first render so it never paints the
@@ -23,6 +24,7 @@ if (import.meta.env.PROD && location.protocol !== "https:") {
 }
 
 function App() {
+  const appearance = useTheme();
   const [account, setAccount] = useState<Snapshot | null | undefined>(
     undefined,
   );
@@ -43,7 +45,11 @@ function App() {
   if (account === undefined)
     return <div class="loading">Opening Commonroom…</div>;
   return account ? (
-    <Chat initial={account} onLogout={() => setAccount(null)} />
+    <Chat
+      initial={account}
+      onLogout={() => setAccount(null)}
+      appearance={appearance}
+    />
   ) : (
     <Login initialError={initialError} onLogin={setAccount} />
   );

@@ -67,12 +67,15 @@ notification settings can block them. Private message previews can appear in
 system notifications only after you opt in.
 
 The Settings button beside your profile chooses the theme (Light, Dark, System,
-which follows the operating system, or Custom) and adjusts chat text (14–24px)
-and UI text (12–18px) independently, taking effect immediately; Reset defaults
+which follows the operating system even on the login screen, or Custom) and
+adjusts chat text (14–24px) and UI text (12–18px) independently, taking effect
+immediately; Reset defaults
 restores the theme, the custom colors, and both font sizes. Custom takes a
 surface color and an accent color as hex values and generates the rest of the
 palette from them: every text, border, hover, and status tone is solved against
-a contrast target, and the surface's own lightness decides whether the result is
+a contrast target across paper, hover surfaces, and input fields. Text, including
+unread counts, has at least 4.5:1 contrast; surface steps shrink when necessary
+to preserve legibility. The surface's own luminance decides whether the result is
 light or dark. These preferences stay in this browser; they do not change the
 server configuration. The theme is resolved from browser storage in the entry
 module, before the app renders.

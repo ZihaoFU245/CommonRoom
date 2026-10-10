@@ -62,6 +62,10 @@ const seeds = [
   ["a pale surface with a pale yellow accent", "#fdf6e3", "#ffe066"],
   ["a plum surface with a magenta accent", "#2a0d24", "#ff2fb3"],
   ["a mid grey surface", "#808080", "#cc7d5e"],
+  ["a grey below the foreground crossover", "#757575", "#888888"],
+  ["a grey at the foreground crossover", "#767676", "#ffffff"],
+  ["a saturated blue surface", "#006dff", "#000000"],
+  ["a saturated red surface", "#ff0000", "#777777"],
   ["a dark surface with a near-black accent", "#1b1e24", "#33261f"],
 ];
 
@@ -77,12 +81,15 @@ for (const [name, base, accent] of seeds) {
     };
     floor("body text on paper", tokens.ink, tokens.paper, 4.5);
     floor("body text on wash", tokens.ink, tokens.wash, 4.5);
+    floor("input text", tokens.ink, tokens.field, 4.5);
     floor("secondary label", tokens.muted, tokens.paper, 4.5);
+    floor("secondary label on wash", tokens.muted, tokens.wash, 4.5);
     floor("timestamps", tokens.subtle, tokens.paper, 4.5);
     floor("timestamps on wash", tokens.subtle, tokens.wash, 4.5);
     floor("placeholder on field", tokens.placeholder, tokens.field, 4.5);
     floor("placeholder on wash", tokens.placeholder, tokens.wash, 4.5);
     floor("error text", tokens.danger, tokens.paper, 4.5);
+    floor("invalid seed text", tokens.danger, tokens.field, 4.5);
     floor("accent label", tokens["accent-label"], tokens.accent, 4.5);
     floor(
       "accent label while hovered",
@@ -90,7 +97,12 @@ for (const [name, base, accent] of seeds) {
       tokens["accent-hover"],
       4.5,
     );
-    floor("accent glyph", tokens["accent-contrast"], tokens.accent, 3);
+    floor(
+      "unread count and buttons",
+      tokens["accent-contrast"],
+      tokens.accent,
+      4.5,
+    );
     floor("online dot", tokens.online, tokens.paper, 3);
     floor("offline dot", tokens.offline, tokens.paper, 3);
     floor("border", tokens.line, tokens.paper, 1.2);
@@ -113,6 +125,29 @@ test("hovering an accent button never loses its label", () => {
       contrast(tokens["accent-label"], tokens["accent-hover"]) >=
         contrast(tokens["accent-label"], tokens.accent),
       `hover must not reduce label contrast for ${accent}`,
+    );
+  }
+});
+
+test("text contrast holds across every three-digit seed colour", () => {
+  for (let value = 0; value <= 0xfff; value++) {
+    const base = `#${value.toString(16).padStart(3, "0")}`;
+    const accent = `#${(0xfff - value).toString(16).padStart(3, "0")}`;
+    const { tokens } = derivePalette(base, accent);
+    for (const surface of ["paper", "wash", "field"]) {
+      for (const text of ["ink", "muted", "subtle", "placeholder", "danger"]) {
+        assert.ok(
+          contrast(tokens[text], tokens[surface]) >= 4.5,
+          `${base}: ${text} on ${surface} must reach 4.5:1`,
+        );
+      }
+    }
+    for (const text of ["accent-label", "accent-contrast"]) {
+      assert.ok(contrast(tokens[text], tokens.accent) >= 4.5, accent);
+    }
+    assert.ok(
+      contrast(tokens["accent-label"], tokens["accent-hover"]) >= 4.5,
+      `${accent}: hovered label must reach 4.5:1`,
     );
   }
 });

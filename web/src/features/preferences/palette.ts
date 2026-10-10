@@ -34,7 +34,7 @@ export type Palette = Record<PaletteToken, string>;
 export type Polarity = "light" | "dark";
 
 /* Where black and white text cross over; below this a surface reads as dark. */
-const DARK_BELOW = 0.18;
+const DARK_BELOW = Math.sqrt(0.05 * 1.05) - 0.05;
 const HEX = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
 type Rgb = [number, number, number];
 
@@ -198,18 +198,35 @@ export function derivePalette(
 
   /* Surfaces keep the seed's own hue and saturation, so the whole interface
      stays in one color family; only lightness steps down or up. */
-  const surface = (delta: number) =>
-    hslToHex(baseHsl.h, baseHsl.s, clamp(baseHsl.l + delta, 0, 1));
+  const foreground = dark ? "#ffffff" : "#000000";
+  const surface = (delta: number) => {
+    /* Near the black/white crossover, a raised surface can make even the
+       strongest foreground unreadable. Reduce the step until it stays safe. */
+    for (let step = 0; step < 26; step++) {
+      const candidate = hslToHex(
+        baseHsl.h,
+        baseHsl.s,
+        clamp(baseHsl.l + delta / 2 ** step, 0, 1),
+      );
+      if (contrast(foreground, candidate) >= 4.5) return candidate;
+    }
+    return base;
+  };
 
   const paper = base;
   const wash = surface(dark ? 0.055 : -0.035);
   const field = surface(dark ? 0.038 : 0.018);
 
-  /* Text and borders land on paper and on the raised wash, and wash steps
-     toward the foreground in either polarity. Solving against wash therefore
-     guarantees the target on both surfaces rather than only on paper. */
+  /* Choose the surface nearest the foreground, including input fields. A
+     light field can be darker than a saturated paper despite its HSL step. */
+  const surfaces = [paper, wash, field];
+  const against = surfaces.reduce((closest, candidate) =>
+    contrast(foreground, candidate) < contrast(foreground, closest)
+      ? candidate
+      : closest,
+  );
   const solve = (target: number, lighter: boolean, h: number, s: number) =>
-    fitContrast(wash, target, lighter, h, s);
+    fitContrast(against, target, lighter, h, s);
   const edge = (target: number) =>
     solve(target, dark, baseHsl.h, Math.min(baseHsl.s, 0.4));
 
@@ -231,14 +248,14 @@ export function derivePalette(
   const online = solve(3.2, dark, 155, 0.55);
   const offline = solve(3, dark, baseHsl.h, 0.08);
 
-  /* Fills carry text at 4.5:1; the lighter glyph used on the send button and
-     unread badge is kept white whenever white is still a legal 3:1 graphic. */
+  /* Both labels and unread counts are text and need at least 4.5:1. */
   const accentLabel = onFill(accent, 4.6);
   const accentContrast =
-    contrast("#ffffff", accent) >= 3 ? "#ffffff" : onFill(accent, 3);
+    contrast("#ffffff", accent) >= 4.5 ? "#ffffff" : accentLabel;
   /* Hover must move away from the label, or the fill would lose contrast with
      its own text exactly when the pointer lands on it. */
-  const labelIsDark = relativeLuminance(accentLabel) < DARK_BELOW;
+  const labelIsDark =
+    relativeLuminance(accentLabel) < relativeLuminance(accent);
   const accentHover = hslToHex(
     accentHsl.h,
     accentHsl.s,
