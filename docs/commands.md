@@ -103,6 +103,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/man [command\|topic]` | Manual command grant | Read manuals: grant, revoke, permissions, groups, scopes, ownership, or any command |
 | `/whoami` | Accounts/stdin | Show name and group label (`user`, `admin`, `su`) |
 | `/console` | Web command grant | Open the Command view in this tab; does not add permissions |
+| `/sudo /command [arguments]` | Global `/sudo` and `x:command.sudo` grants | Execute one command with su authority while retaining the caller's identity |
 | `/permissions [scope]` | Accounts/stdin | Inspect effective grants; `@groups` lists predefined bundles, `@audit` requires su |
 | `/grant user group [room]` or `/grant user scope permission [minimum-age]` | Scoped grant/group managers | Assign a predefined group or add a direct action/command grant; `/man grant` explains |
 | `/revoke user group [room]` or `/revoke user scope permission` | Scoped grant/group managers | Remove a group assignment or direct permission; `/man revoke` explains |

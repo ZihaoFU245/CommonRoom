@@ -1,6 +1,6 @@
 use crate::{
     commands,
-    engine::hash_password,
+    engine::{hash_password, sudo_command},
     web::{App, Change},
 };
 use std::io::{self, BufRead};
@@ -16,7 +16,14 @@ pub fn start(app: App) {
                     break;
                 }
             };
-            let parts: Vec<_> = line.split_whitespace().collect();
+            let command = match sudo_command(&line) {
+                Ok(command) => command.unwrap_or(&line),
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    continue;
+                }
+            };
+            let parts: Vec<_> = command.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
             }
@@ -57,7 +64,7 @@ pub fn start(app: App) {
                 }
                 _ => app
                     .engine()
-                    .and_then(|mut engine| engine.execute(None, None, &line)),
+                    .and_then(|mut engine| engine.execute(None, None, command)),
             };
             match result {
                 Ok(reply) => {

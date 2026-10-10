@@ -30,6 +30,11 @@ The web sends `{id:number, room:string|null, text:string}`. Private views send
 
 The canonical frontend declarations and runtime guards are in `web/src/api/protocol.ts`; Rust serialization types are in `server/src/engine/models.rs`. Change both together. Unknown JSON is validated before entering application state. Malformed frames are ignored and malformed successful HTTP responses become explicit errors. The integration harness validates actual server frames with these same guards.
 
+`/sudo /command [arguments]` uses the same outbound frame and acknowledgement.
+It requires `/sudo` and `x:command.sudo` at global scope and elevates only the
+wrapped command. Snapshots retain the caller's actual groups and permissions.
+Password commands recheck sudo authorization after asynchronous hashing.
+
 Each message contains `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted

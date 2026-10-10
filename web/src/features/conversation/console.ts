@@ -108,8 +108,18 @@ export function privateMessages(
   );
 }
 export function redactCommand(text: string) {
-  if (/^\/passwd(?:\s|$)/.test(text)) return "/passwd •••• ••••";
-  return text.replace(/^(\/(?:user|reset)\s+\S+\s+)\S+/, "$1••••");
+  let prefix = "";
+  let sudo = text.match(/^\/sudo\s+/u)?.[0];
+  while (sudo) {
+    prefix += sudo;
+    text = text.slice(sudo.length);
+    sudo = text.match(/^\/sudo\s+/u)?.[0];
+  }
+  if (/^\/passwd(?:\s|$)/.test(text)) return prefix + "/passwd •••• ••••";
+  return prefix + text.replace(/^(\/(?:user|reset)\s+\S+\s+)\S+/, "$1••••");
+}
+export function commandText(text: string) {
+  return text.trim().replace(/^\/sudo\s+/u, "");
 }
 export function helpSections(text: string) {
   const groups: {
@@ -153,6 +163,18 @@ export function suggestions(
   }
   const spec = commands.find((c) => c.name === name);
   if (!spec) return [];
+  if (name === "/sudo") {
+    return suggestions(
+      draft.replace(/^\/sudo\s+/u, ""),
+      commands.filter((command) => command.name !== "/sudo"),
+      users,
+      rooms,
+    ).map((hint) => ({
+      ...hint,
+      label: `/sudo ${hint.label}`,
+      value: hint.value ? `/sudo ${hint.value}` : null,
+    }));
+  }
   const position = parts.length - 1;
   const prefix = parts.at(-1) || "";
   if (["/grant", "/revoke"].includes(name)) {

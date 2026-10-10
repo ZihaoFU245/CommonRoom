@@ -15,6 +15,100 @@ fn fixture() -> Engine {
     e.execute(Some("alice"), None, "/add bob team").unwrap();
     e
 }
+
+#[test]
+fn sudo_requires_both_global_grants_and_never_persists_elevation() {
+    let mut e = fixture();
+    assert!(e.execute(Some("bob"), None, "/sudo /new elevated").is_err());
+    e.execute(None, None, "/grant bob @global /sudo").unwrap();
+    assert!(e.execute(Some("bob"), None, "/sudo /new elevated").is_err());
+    e.execute(None, None, "/revoke bob @global /sudo").unwrap();
+    e.execute(None, None, "/grant bob @global x:command.sudo")
+        .unwrap();
+    assert!(e.execute(Some("bob"), None, "/sudo /new elevated").is_err());
+    e.execute(None, None, "/grant bob team /sudo").unwrap();
+    // A room command grant cannot authorize global elevation.
+    assert!(
+        e.execute(Some("bob"), Some("team"), "/sudo /new elevated")
+            .is_err()
+    );
+    e.execute(None, None, "/grant bob @global /sudo").unwrap();
+    let assignments = e.data.policy.assignments.clone();
+    let grants = e.data.policy.grants.clone();
+    assert!(
+        e.execute(Some("bob"), None, "/sudo /whoami")
+            .unwrap()
+            .contains("Name: bob\nPermission: su")
+    );
+    assert!(e.data.policy.assignments == assignments);
+    assert!(e.data.policy.grants == grants);
+    assert!(!e.is_su(Some("bob")));
+    e.execute(Some("bob"), Some("team"), "/sudo /new elevated")
+        .unwrap();
+    assert_eq!(e.data.rooms["elevated"].owner_id, e.data.users["bob"].id);
+    assert_eq!(
+        e.data.policy.audit.back().unwrap().actor_id,
+        e.data.users["bob"].id
+    );
+    e.execute(
+        Some("bob"),
+        Some("team"),
+        "/sudo /tell eve elevated message",
+    )
+    .unwrap();
+    assert_eq!(
+        e.data.private["bob:eve"].messages.back().unwrap().from,
+        "bob"
+    );
+    assert!(!e.is_su(Some("bob")));
+    assert!(e.execute(Some("bob"), None, "/new denied").is_err());
+    for input in [
+        "/sudo",
+        "/sudo hello",
+        "/sudo /",
+        "/sudo /sudo /whoami",
+        "/sudo /unknown",
+    ] {
+        let before = e.data.clone();
+        assert!(e.execute(Some("bob"), None, input).is_err(), "{input}");
+        assert!(e.data == before);
+        assert!(!e.is_su(Some("bob")));
+    }
+    // A scoped action grant is insufficient even with the global command.
+    e.execute(None, None, "/revoke bob @global x:command.sudo")
+        .unwrap();
+    e.execute(None, None, "/grant bob team x:command.sudo")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("team"), "/sudo /whoami")
+            .is_err()
+    );
+    e.execute(None, None, "/disable bob").unwrap();
+    assert!(e.execute(Some("bob"), None, "/sudo /whoami").is_err());
+}
+
+#[test]
+fn sudo_restores_authority_after_storage_failure_and_preserves_policy_updates() {
+    let mut e = fixture();
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    let before = e.data.clone();
+    e.db.execute_batch("CREATE TRIGGER reject_sudo BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    assert!(e.execute(Some("bob"), None, "/sudo /new rejected").is_err());
+    assert!(e.data == before);
+    assert!(!e.is_su(Some("bob")));
+    e.db.execute_batch("DROP TRIGGER reject_sudo;").unwrap();
+    e.execute(Some("bob"), None, "/sudo /grant eve @global w:room.create")
+        .unwrap();
+    assert!(e.allows(Some("eve"), &Scope::Server, Action::CreateRoom));
+    assert!(!e.is_su(Some("bob")));
+    // Revoking the caller's sudo grant applies after the current command.
+    e.execute(Some("bob"), None, "/sudo /revoke bob @global /sudo")
+        .unwrap();
+    assert!(e.execute(Some("bob"), None, "/sudo /whoami").is_err());
+}
 #[test]
 fn su_is_a_grant_group_and_only_su_can_assign_it() {
     let mut e = fixture();
@@ -1307,6 +1401,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
     e.execute(None, None, "/revoke bob user team").unwrap();
     e.execute(None, None, "/revoke bob user").unwrap();
     let probes = [
+        "/sudo /whoami".into(),
         "/help".into(),
         "/console".into(),
         "/man grant".into(),

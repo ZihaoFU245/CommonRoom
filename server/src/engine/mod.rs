@@ -15,6 +15,7 @@ mod tests;
 mod trust_tests;
 
 use dispatch::CommandContext;
+pub use dispatch::sudo_command;
 use helpers::*;
 pub use helpers::{hash_password, verify_password};
 pub use models::*;

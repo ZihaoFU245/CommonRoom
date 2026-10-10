@@ -15,6 +15,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
     let definitions = [
         (
             "General",
+            "/sudo",
+            "/sudo /command [arguments]",
+            "Run one command with superuser authority",
+            true,
+        ),
+        (
+            "General",
             "/permissions",
             "/permissions [scope]",
             "Inspect effective grants",
@@ -258,6 +265,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
 /// Documentation only. Domain handlers remain the authority for each operation.
 pub fn requirements(command: &str) -> &'static str {
     match command {
+        "/sudo" => "x:command.sudo and /sudo at @global; temporary superuser authority",
         "/new" => "w:room.create at @global",
         "/user" => "x:account.create at @global; also x:group.admin.assign when creating an admin",
         "/configs" => "r:server.config at @global",

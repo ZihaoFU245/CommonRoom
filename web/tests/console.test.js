@@ -8,6 +8,7 @@ import {
   privateMessages,
   redactCommand,
   helpSections,
+  commandText,
 } from "../src/features/conversation/console.ts";
 
 test("passwords are masked and help groups retain their commands", () => {
@@ -23,6 +24,44 @@ test("passwords are masked and help groups retain their commands", () => {
       },
     ],
   );
+});
+
+test("sudo passwords stay masked and wrapped commands retain completion and UI routing", () => {
+  assert.equal(
+    redactCommand("/sudo /passwd old secret"),
+    "/sudo /passwd •••• ••••",
+  );
+  assert.equal(
+    redactCommand("/sudo /user bob secret user"),
+    "/sudo /user bob •••• user",
+  );
+  assert.equal(
+    redactCommand("/sudo /reset bob secret"),
+    "/sudo /reset bob ••••",
+  );
+  assert.equal(
+    redactCommand("/sudo /sudo /reset bob secret"),
+    "/sudo /sudo /reset bob ••••",
+  );
+  assert.equal(commandText(" /sudo /new team "), "/new team");
+  assert.equal(commandText("/retract message"), "/retract message");
+  const commands = [
+    {
+      name: "/sudo",
+      usage: "/sudo /command [arguments]",
+      description: "Elevate",
+    },
+    { name: "/tell", usage: "/tell user message", description: "Private" },
+  ];
+  assert.equal(
+    suggestions("/sudo /te", commands, ["bob"], ["team"])[0].value,
+    "/sudo /tell ",
+  );
+  assert.equal(
+    suggestions("/sudo /tell b", commands, ["bob"], ["team"])[0].value,
+    "/sudo /tell bob ",
+  );
+  assert.deepEqual(suggestions("/sudo /sudo ", commands, [], []), []);
 });
 
 test("local command output stays in its origin view", () => {

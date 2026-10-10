@@ -1,12 +1,13 @@
 import type { LocalOutput } from "../api/protocol.ts";
-import { helpSections } from "../features/conversation/console.ts";
+import { helpSections, commandText } from "../features/conversation/console.ts";
 import { Manual } from "./Manual.tsx";
 
 export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
-  const help = entry.command === "/help" && !entry.error && entry.result;
+  const command = commandText(entry.command);
+  const help = command === "/help" && !entry.error && entry.result;
   const manual =
     ["/man", "/permissions", "/grant", "/revoke"].includes(
-      entry.command.split(/\s+/u)[0] ?? "",
+      command.split(/\s+/u)[0] ?? "",
     ) &&
     !entry.error &&
     entry.result;

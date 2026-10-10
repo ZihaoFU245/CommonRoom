@@ -10,7 +10,11 @@ import type {
   Acknowledgement,
 } from "../api/protocol.ts";
 import { mentionSuggestions } from "../features/conversation/interactions.ts";
-import { suggestions, privatePeers } from "../features/conversation/console.ts";
+import {
+  suggestions,
+  privatePeers,
+  commandText,
+} from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
 import type { ValueRef } from "./refs.ts";
 interface Context {
@@ -205,7 +209,7 @@ export function useCommands({
       append(text, "Use a command or select a room to send a message.", true);
       return;
     }
-    if (text.split(/\s+/)[0] === "/retract" && !confirmed)
+    if (commandText(text).split(/\s+/u)[0] === "/retract" && !confirmed)
       return requestDelete(() => send(event, true));
     const id = ++serial.current;
     request.current = {
@@ -268,7 +272,9 @@ export function useCommands({
     if (!error && !current.action) {
       setDraft("");
       if (current.reply) setReplyTarget(null);
-      const [command, target] = current.text.trim().split(/\s+/);
+      const [command, target] = commandText(current.text).split(/\s+/u);
+      if (command === "/clear") clearView();
+      if (command === "/logout") logout();
       if (command === "/console") {
         desiredRoom.current = null;
         setSelected("@command");

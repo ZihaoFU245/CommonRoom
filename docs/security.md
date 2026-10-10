@@ -42,6 +42,30 @@ access to someone else's rooms. Password reset requires a separate grant.
 Ordinary admins cannot revoke, disable or delete the last active administrator;
 `su` can, since stdin provides recovery.
 
+## Temporary superuser commands
+
+`/sudo /command [arguments]` runs one command with su command and action
+permissions. Both `/sudo` and `x:command.sudo` must be granted at global scope:
+
+```text
+/grant bob @global /sudo
+/grant bob @global x:command.sudo
+/sudo /new support
+```
+
+Only su can grant global permissions. User and admin groups do not include sudo;
+su includes both grants. A room-scoped grant does not authorize elevation.
+The wrapped command needs no separate command or action grants. It retains the
+caller's name and stable identity in messages, ownership and audit entries.
+Elevation itself does not change persisted group assignments or permissions,
+and is cleared on success, rejection and storage failure. The command can still
+explicitly assign permanent privileges, so sudo delegates full superuser trust.
+
+Password commands release temporary authority before hashing and recheck the
+session, both sudo grants and target identity before committing. Revoking either
+grant rejects a queued operation. Nested sudo and ordinary message text are
+rejected. Read `/man sudo` for examples and revocation syntax.
+
 ## Resources and ownership
 
 Creation requires both `w:room.create` at server scope and permission to invoke
@@ -75,7 +99,7 @@ The permission catalog has individual actions in three families:
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.owner.transfer`, `history.clean`, `account.create`,
   `account.password.reset`, `account.disable`, `account.enable`, `account.delete`,
-  `group.admin.assign`, `group.su.assign`, `policy.change`.
+  `group.admin.assign`, `group.su.assign`, `policy.change`, `command.sudo`.
 
 Prefix the action with its family, for example `r:message.read`. A slash command
 name such as `/history` is a separate permission. No matching grant means denial.

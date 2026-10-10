@@ -2,7 +2,7 @@ use super::auth::token;
 use super::*;
 use crate::engine::{
     authorization::{Action, Scope},
-    hash_password, verify_password,
+    hash_password, sudo_command, verify_password,
 };
 use axum::http::HeaderMap;
 use serde::Deserialize;
@@ -19,16 +19,34 @@ pub(super) async fn execute_input(
     user: &str,
     input: &Input,
 ) -> Result<(String, bool), String> {
-    let parts: Vec<_> = input.text.split_whitespace().collect();
+    let elevated = sudo_command(&input.text)?;
+    let text = elevated.unwrap_or(&input.text);
+    let sudo = elevated.is_some();
+    let parts: Vec<_> = text.split_whitespace().collect();
+    if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
+        return app.engine()?.with_command_authority(
+            Some(user),
+            input.room.as_deref(),
+            true,
+            |_| {
+                if parts.len() != 1 {
+                    return Err(format!("Usage: {}", parts[0]));
+                }
+                Ok(("Done.".into(), false))
+            },
+        );
+    }
     if parts.first() == Some(&"/configs") {
-        let engine = app.engine()?;
-        engine.require_command(Some(user), input.room.as_deref(), "/configs")?;
-        engine.require_target_command(Some(user), &Scope::Server, "/configs")?;
-        engine.require(Some(user), &Scope::Server, Action::Config)?;
-        if parts.len() != 1 {
-            return Err("Usage: /configs".into());
-        }
-        return app.config.display().map(|text| (text, false));
+        let mut engine = app.engine()?;
+        return engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
+            engine.require_command(Some(user), input.room.as_deref(), "/configs")?;
+            engine.require_target_command(Some(user), &Scope::Server, "/configs")?;
+            engine.require(Some(user), &Scope::Server, Action::Config)?;
+            if parts.len() != 1 {
+                return Err("Usage: /configs".into());
+            }
+            app.config.display().map(|text| (text, false))
+        });
     }
     let passwd = parts.first() == Some(&"/passwd");
     if !passwd && !matches!(parts.first(), Some(&"/user") | Some(&"/reset")) {
@@ -58,32 +76,34 @@ pub(super) async fn execute_input(
         return Err("Role must be admin or user.".into());
     }
     let target_id = {
-        let engine = app.engine()?;
-        engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
-        if passwd {
-            let scope = engine.account_target(Some(user), user, Action::Password)?;
-            engine.require_target_command(Some(user), &scope, parts[0])?;
-            None
-        } else if reset {
-            let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
-            engine.require_target_command(Some(user), &scope, parts[0])?;
-            Some(
-                engine
-                    .data
-                    .users
-                    .get(parts[1])
-                    .ok_or("User not found.")?
-                    .id
-                    .clone(),
-            )
-        } else {
-            engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
-            engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
-            if parts.get(3) == Some(&"admin") {
-                engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
+        let mut engine = app.engine()?;
+        engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
+            engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
+            if passwd {
+                let scope = engine.account_target(Some(user), user, Action::Password)?;
+                engine.require_target_command(Some(user), &scope, parts[0])?;
+                Ok(None)
+            } else if reset {
+                let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
+                engine.require_target_command(Some(user), &scope, parts[0])?;
+                Ok(Some(
+                    engine
+                        .data
+                        .users
+                        .get(parts[1])
+                        .ok_or("User not found.")?
+                        .id
+                        .clone(),
+                ))
+            } else {
+                engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
+                engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
+                if parts.get(3) == Some(&"admin") {
+                    engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
+                }
+                Ok(None)
             }
-            None
-        }
+        })?
     };
     let expected = if passwd {
         Some(
@@ -123,41 +143,43 @@ pub(super) async fn execute_input(
     if engine.session(current).as_deref() != Some(user) {
         return Err("Please log in.".into());
     }
-    if passwd {
-        engine.require_command(Some(user), input.room.as_deref(), "/passwd")?;
-        let scope = engine.account_target(Some(user), user, Action::Password)?;
-        engine.require_target_command(Some(user), &scope, parts[0])?;
-        return engine
-            .change_password(
-                user,
-                expected.as_deref().ok_or("Account unavailable.")?,
+    engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
+        if passwd {
+            engine.require_command(Some(user), input.room.as_deref(), "/passwd")?;
+            let scope = engine.account_target(Some(user), user, Action::Password)?;
+            engine.require_target_command(Some(user), &scope, parts[0])?;
+            return engine
+                .change_password(
+                    user,
+                    expected.as_deref().ok_or("Account unavailable.")?,
+                    hash,
+                    current,
+                )
+                .map(|text| (text, true));
+        }
+        // Recheck the command, action and target identity after hashing.
+        engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
+        if reset {
+            let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
+            engine.require_target_command(Some(user), &scope, parts[0])?;
+            if engine.data.users.get(parts[1]).map(|u| &u.id) != target_id.as_ref() {
+                return Err("Account changed. Try again.".into());
+            }
+        } else {
+            engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
+            engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
+            if parts.get(3) == Some(&"admin") {
+                engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
+            }
+        }
+        engine
+            .provision_by(
+                Some(user),
+                parts[1],
                 hash,
-                current,
+                parts.get(3) == Some(&"admin"),
+                reset,
             )
-            .map(|text| (text, true));
-    }
-    // Recheck the command, action and target identity after hashing.
-    engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
-    if reset {
-        let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
-        engine.require_target_command(Some(user), &scope, parts[0])?;
-        if engine.data.users.get(parts[1]).map(|u| &u.id) != target_id.as_ref() {
-            return Err("Account changed. Try again.".into());
-        }
-    } else {
-        engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
-        engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
-        if parts.get(3) == Some(&"admin") {
-            engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
-        }
-    }
-    engine
-        .provision_by(
-            Some(user),
-            parts[1],
-            hash,
-            parts.get(3) == Some(&"admin"),
-            reset,
-        )
-        .map(|text| (text, true))
+            .map(|text| (text, true))
+    })
 }

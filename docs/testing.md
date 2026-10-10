@@ -107,3 +107,10 @@ These are behavioral and boundary checks, not a claim of 100% line/branch covera
 or a proof that every possible attack is excluded. Update this matrix and add
 positive/negative cases whenever new permissions, commands or resource types are
 introduced.
+
+Sudo regressions cover the two independent global grants, insufficient room
+grants, temporary authority on success/rejection/storage failure, caller identity
+in ownership/messages/audit, self-revocation, and denied nested commands. Password
+jobs additionally recheck both sudo grants, actor session/disabled status, and
+target identity after hashing. Frontend checks mask wrapped passwords and retain
+wrapped command completion and routing.

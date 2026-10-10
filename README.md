@@ -92,6 +92,17 @@ actions, command grants, and assignments. `@server` remains a compatibility alia
 for `@global`.
 
 Use `/man grant`, `/man revoke`, or `/man permissions` for syntax and examples.
+To delegate one-command superuser execution, su grants both permissions:
+
+```text
+/grant bob @global /sudo
+/grant bob @global x:command.sudo
+```
+
+Bob can then run `/sudo /new support` or another slash command. Temporary
+elevation retains Bob's identity and leaves his group assignments unchanged.
+Read `/man sudo` for details.
+
 Use `/console` to open the Command view, and select a conversation in the sidebar
 to return. `/rooms` lists rooms and their owners plus your own readable private
 conversations; it excludes other people's private pairs, even for su.

@@ -44,6 +44,7 @@ actions! {
     AssignAdmin => "x:group.admin.assign",
     AssignSu => "x:group.su.assign",
     PolicyWrite => "x:policy.change",
+    Sudo => "x:command.sudo",
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -182,6 +183,7 @@ const COMMANDS: &[&str] = &[
     "/man",
     "/owner",
     "/console",
+    "/sudo",
 ];
 fn direct_grant(parts: &[&str]) -> bool {
     parts.len() >= 4
@@ -434,6 +436,44 @@ impl CompiledPolicy {
     }
 }
 impl Engine {
+    /// Elevate only during a synchronous command phase. Never carry authority
+    /// across asynchronous work; callers must recheck at the commit phase.
+    pub fn with_command_authority<T>(
+        &mut self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        sudo: bool,
+        operation: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if !sudo {
+            return operation(self);
+        }
+        self.require_command(actor, view, "/sudo")?;
+        self.require_target_command(actor, &Scope::Server, "/sudo")?;
+        self.require(actor, &Scope::Server, Action::Sudo)?;
+        let id = self
+            .principal_id(actor)
+            .ok_or("Account unavailable.")?
+            .to_owned();
+        self.authorization
+            .groups
+            .entry(id.clone())
+            .or_default()
+            .insert(Group::Su);
+        self.authorization
+            .scopes
+            .entry(id)
+            .or_default()
+            .entry(Scope::Server)
+            .or_default()
+            .add(rights(Action::ALL, COMMANDS));
+        let result = operation(self);
+        // Rebuild from the actual persisted assignments, including policy
+        // changes performed by the command, on success and on rejection.
+        self.rebuild_authorization()?;
+        result
+    }
+
     pub(super) fn rebuild_authorization(&mut self) -> Result<(), String> {
         self.authorization = CompiledPolicy::compile(&self.data)?;
         Ok(())

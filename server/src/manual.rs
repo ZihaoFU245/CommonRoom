@@ -12,6 +12,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         "scopes" => SCOPES,
         "ownership" => OWNERSHIP,
         "console" => CONSOLE,
+        "sudo" => SUDO,
         _ => {
             let name = format!("/{topic}");
             let command = commands::available(true, false)
@@ -82,6 +83,7 @@ Command names work with or without a slash: `/man grant` and `/man /grant` are e
 - `/man groups` — compare user, admin, and su.
 - `/man scopes` — choose where access applies.
 - `/man ownership` — create rooms, invite people, and transfer ownership.
+- `/man sudo` — run one command with temporary superuser authority.
 
 ## Other commands
 
@@ -370,6 +372,56 @@ Inspect an existing private pair (grants issued by su):
 ```
 
 Command invocation still needs its own grant in the selected context. Use `/man grant` for the full rules."#;
+
+const SUDO: &str = r#"# /sudo
+
+Run one slash command with temporary superuser authority.
+
+## Usage
+
+```
+/sudo /command [arguments]
+```
+
+## Access required
+
+Both grants must apply at global scope. Only su can grant this authority:
+
+```
+/grant bob @global /sudo
+/grant bob @global x:command.sudo
+```
+
+Neither grant alone permits elevation. User and admin groups do not include sudo;
+the su group includes both grants.
+
+## Examples
+
+```
+/sudo /new support
+/sudo /reset alice new-password
+/sudo /permissions @audit
+```
+
+The wrapped command receives all su command and action permissions. It can manage
+su accounts and grant permanent privileges, so sudo delegates full superuser trust.
+The caller keeps their name and stable identity in messages, room ownership, and
+audit entries. Elevation does not itself change groups or persist any grants.
+Normal validation, storage rollback, and session checks still apply.
+
+For password commands, both sudo grants are rechecked after hashing. Nested sudo
+and ordinary message text are rejected. Browser-local clear and logout complete
+in the requesting tab after the server authorizes sudo.
+
+## Revoke
+
+```
+/revoke bob @global /sudo
+/revoke bob @global x:command.sudo
+```
+
+Revoking either grant blocks future sudo commands. Explicit group assignments and
+other additive grants still apply."#;
 
 const CONSOLE: &str = r#"# /console
 

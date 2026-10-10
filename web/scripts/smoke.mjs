@@ -244,6 +244,46 @@ try {
   await send(bob, "/grant bob", null, "error");
   await send(bob, "/configs", null, "error");
   await send(bob, "/clean 7d @all", null, "error");
+  const sudoTab = await connect(cookies.bob);
+  await send(sudoTab, "/sudo /configs", null, "error");
+  child.stdin.write("/grant bob @global /sudo\n");
+  await until(
+    () => sudoTab.snapshot.commands.some((command) => command.name === "/sudo"),
+    "sudo command grant delivery",
+  );
+  await send(sudoTab, "/sudo /configs", null, "error");
+  child.stdin.write("/grant bob @global x:command.sudo\n");
+  await until(
+    () => sudoTab.snapshot.permissions.includes("x:command.sudo"),
+    "sudo action grant delivery",
+  );
+  await send(sudoTab, "/sudo /configs");
+  await send(sudoTab, "/sudo /whoami");
+  assert.match(
+    sudoTab.frames.find((frame) => frame.id === sudoTab.serial).text,
+    /Name: bob\nPermission: su/,
+  );
+  assert.equal(sudoTab.snapshot.admin, false);
+  assert.deepEqual(sudoTab.snapshot.groups, ["user"]);
+  await send(sudoTab, "/configs", null, "error");
+  await send(sudoTab, "/sudo /sudo /configs", null, "error");
+  child.stdin.write("/revoke bob @global x:command.sudo\n");
+  await until(
+    () => !sudoTab.snapshot.permissions.includes("x:command.sudo"),
+    "sudo action revocation delivery",
+  );
+  await send(sudoTab, "/sudo /configs", null, "error");
+  child.stdin.write("/revoke bob @global /sudo\n");
+  await until(
+    () =>
+      !sudoTab.snapshot.commands.some((command) => command.name === "/sudo"),
+    "sudo command revocation delivery",
+  );
+  sudoTab.ws.close();
+  await until(
+    () => sudoTab.ws.readyState === WebSocket.CLOSED,
+    "sudo test tab closes",
+  );
   await send(alice, "/configs", null);
   const configs = JSON.parse(
     alice.frames.find((f) => f.id === alice.serial).text,

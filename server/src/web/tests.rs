@@ -181,6 +181,73 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
     );
 }
 
+#[tokio::test]
+async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision("actor", "hash".into(), false, false)
+        .unwrap();
+    engine
+        .provision("target", "hash".into(), false, false)
+        .unwrap();
+    engine.execute(None, None, "/grant target su").unwrap();
+    engine.execute(None, None, "/disable target").unwrap();
+    for permission in ["/sudo", "x:command.sudo"] {
+        engine
+            .execute(None, None, &format!("/grant actor @global {permission}"))
+            .unwrap();
+    }
+    engine
+        .login("fixture".into(), "actor", "hash", None)
+        .unwrap();
+    let (changes, _) = broadcast::channel(1);
+    let app = App {
+        engine: Arc::new(Mutex::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        stopping: Default::default(),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        HeaderValue::from_static("chat_session=fixture"),
+    );
+    for (text, changed) in [
+        ("/sudo /configs", false),
+        ("/sudo /reset target long-sudo-password", true),
+        ("/sudo /enable target", true),
+        ("/sudo /user created long-created-password admin", true),
+        ("/sudo /clear", false),
+        ("/sudo /logout", false),
+    ] {
+        let input = super::commands::Input {
+            id: 1,
+            room: None,
+            text: text.into(),
+        };
+        let (_, mutation) = super::commands::execute_input(&app, &headers, "actor", &input)
+            .await
+            .unwrap();
+        assert_eq!(mutation, changed, "{text}");
+        assert!(!app.engine().unwrap().is_su(Some("actor")));
+    }
+    let e = app.engine().unwrap();
+    assert!(crate::engine::verify_password(
+        "long-sudo-password",
+        &e.data.users["target"].hash
+    ));
+    assert!(e.is_su(Some("target")));
+    assert!(e.is_admin("created"));
+    assert_eq!(
+        e.data.policy.audit.back().unwrap().actor_id,
+        e.data.users["actor"].id
+    );
+    assert_eq!(e.groups(Some("actor")), vec!["user"]);
+}
+
 #[test]
 fn password_jobs_recheck_authority_session_and_target_after_hashing() {
     // Queue hashing behind a blocking worker, rather than relying on timing sleeps.
@@ -200,6 +267,11 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             "session",
             "disabled",
             "creation",
+            "sudo-action",
+            "sudo-command",
+            "sudo-disabled",
+            "sudo-session",
+            "sudo-target-replaced",
         ] {
             let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
             engine
@@ -221,6 +293,13 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             engine
                 .login("fixture".into(), "actor", "hash", None)
                 .unwrap();
+            if case.starts_with("sudo-") {
+                for permission in ["/sudo", "x:command.sudo"] {
+                    engine
+                        .execute(None, None, &format!("/grant actor @global {permission}"))
+                        .unwrap();
+                }
+            }
             let (changes, _) = broadcast::channel(1);
             let app = App {
                 engine: Arc::new(Mutex::new(engine)),
@@ -241,6 +320,8 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             let job_app = app.clone();
             let text = if case == "creation" {
                 "/user created long-fixture-password user"
+            } else if case.starts_with("sudo-") {
+                "/sudo /reset target long-fixture-password"
             } else {
                 "/reset target long-fixture-password"
             };
@@ -267,6 +348,14 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             let expected = {
                 let mut e = app.engine().unwrap();
                 match case {
+                    "sudo-action" => {
+                        e.execute(None, None, "/revoke actor @global x:command.sudo")
+                            .unwrap();
+                    }
+                    "sudo-command" => {
+                        e.execute(None, None, "/revoke actor @global /sudo")
+                            .unwrap();
+                    }
                     "action" => {
                         e.execute(
                             None,
@@ -286,7 +375,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                         e.execute(None, None, "/grant target su").unwrap();
                         e.execute(None, None, "/disable target").unwrap();
                     }
-                    "target-replaced" => {
+                    "target-replaced" | "sudo-target-replaced" => {
                         e.execute(None, None, "/deleteuser target").unwrap();
                         e.provision("target", "replacement-hash".into(), false, false)
                             .unwrap();
@@ -300,11 +389,11 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                         e.execute(None, None, "/grant actor @account:target /reset")
                             .unwrap();
                     }
-                    "session" => {
+                    "session" | "sudo-session" => {
                         e.provision("actor", "rotated-hash".into(), false, true)
                             .unwrap();
                     }
-                    "disabled" => {
+                    "disabled" | "sudo-disabled" => {
                         e.execute(None, None, "/disable actor").unwrap();
                     }
                     "creation" => {
@@ -318,11 +407,11 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             blocker.await.unwrap();
             let error = job.await.unwrap().unwrap_err();
             let expected_error = match case {
-                "action" => "Permission required",
-                "command" | "creation" => "Command not permitted",
+                "action" | "sudo-action" => "Permission required",
+                "command" | "creation" | "sudo-command" => "Command not permitted",
                 "target-su" | "target-disabled-su" => "Only su",
-                "target-replaced" => "Account changed",
-                "session" | "disabled" => "Please log in",
+                "target-replaced" | "sudo-target-replaced" => "Account changed",
+                "session" | "disabled" | "sudo-session" | "sudo-disabled" => "Please log in",
                 _ => "",
             };
             assert!(error.contains(expected_error), "{case}: {error}");

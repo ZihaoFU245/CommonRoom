@@ -1,5 +1,23 @@
 use super::*;
 
+pub fn sudo_command(input: &str) -> Result<Option<&str>, String> {
+    let input = input.trim();
+    if input.split_whitespace().next() != Some("/sudo") {
+        return Ok(None);
+    }
+    let command = input
+        .strip_prefix("/sudo")
+        .ok_or("Invalid command.")?
+        .trim_start();
+    if input.chars().count() > 4100 || !command.starts_with('/') || command == "/" {
+        return Err("Usage: /sudo /command [arguments]".into());
+    }
+    if command.split_whitespace().next() == Some("/sudo") {
+        return Err("Nested /sudo commands are not supported.".into());
+    }
+    Ok(Some(command))
+}
+
 pub(super) struct CommandContext<'a> {
     pub(super) actor: Option<&'a str>,
     pub(super) room: Option<&'a str>,
@@ -16,6 +34,11 @@ impl Engine {
         room: Option<&str>,
         input: &str,
     ) -> Result<String, String> {
+        if let Some(command) = sudo_command(input)? {
+            return self.with_command_authority(actor, room, true, |engine| {
+                engine.execute(actor, room, command)
+            });
+        }
         if input.split_whitespace().next() == Some("/deleteuser") {
             let parts: Vec<_> = input.split_whitespace().collect();
             require_len(&parts, 2, "/deleteuser user")?;
