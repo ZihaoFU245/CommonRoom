@@ -806,6 +806,85 @@ try {
     ["active", "added_elsewhere", "empty", "quiet"],
   );
   assert.deepEqual(reconnected.snapshot.private_peers, ["bob", "eve"]);
+  // Agents: role, invitation, a mention-driven answer, and credential handling.
+  // scripts/agent-check.mjs covers auto mode, renames, removal, and disabling.
+  await send(deviceOne, "/new agent-room", null);
+  await send(deviceOne, "/agent helper sk-invalid-smoke-key", null);
+  assert.equal(
+    deviceOne.snapshot.roles.helper,
+    "agent",
+    "an agent appears in the directory with the agent role",
+  );
+  // The value-only form configures the one agent this account owns.
+  await send(deviceOne, "/agent-reply auto helper");
+  await send(deviceOne, "/agent-reply mention");
+  assert.ok(
+    deviceOne.snapshot.commands.some(
+      (command) => command.name === "/agent-reply",
+    ),
+    "an agent owner is offered agent configuration commands",
+  );
+  await send(deviceOne, "/add helper agent-room");
+  await until(
+    () =>
+      deviceOne.snapshot.rooms
+        .find((room) => room.name === "agent-room")
+        .agents.includes("helper"),
+    "rooms report which members are agents",
+  );
+  assert.equal(
+    deviceOne.snapshot.online.includes("helper"),
+    false,
+    "agents hold no sessions and never appear online",
+  );
+  await send(deviceOne, "@helper are you there?", "agent-room");
+  await until(
+    () =>
+      deviceOne.snapshot.rooms
+        .find((room) => room.name === "agent-room")
+        .messages.some((message) => message.from === "helper"),
+    "a mention produces an agent message",
+  );
+  // An unusable provider key is reported in the conversation, and the key
+  // never reaches a browser or the server log.
+  const agentFailure = deviceOne.snapshot.rooms
+    .find((room) => room.name === "agent-room")
+    .messages.at(-1);
+  assert.equal(agentFailure.from, "helper");
+  assert.match(
+    agentFailure.text,
+    /^⚠ The model provider rejected|^⚠ The model provider could not/,
+  );
+  assert.ok(
+    !JSON.stringify(deviceOne.snapshot).includes("sk-invalid-smoke-key"),
+    "agent keys never reach a browser snapshot",
+  );
+  assert.ok(
+    !logs.includes("sk-invalid-smoke-key"),
+    "agent keys never appear in server logs",
+  );
+  // A regular account may create its own agent but never configure another.
+  const agentCookie = await login("eve");
+  const eveAgentDevice = await connect(agentCookie);
+  await send(eveAgentDevice, "/agent eve-helper sk-invalid-eve-key", null);
+  await until(
+    () => eveAgentDevice.snapshot.roles["eve-helper"] === "agent",
+    "a regular account may create an agent",
+  );
+  await send(eveAgentDevice, "/agent-key sk-stolen helper", null, "error");
+  assert.ok(
+    !logs.includes("sk-stolen"),
+    "a non-owner never changes another agent's key",
+  );
+  await send(deviceOne, "/agent-remove helper");
+  await until(
+    () => deviceOne.snapshot.roles.helper === undefined,
+    "an agent can be removed",
+  );
+  await send(eveAgentDevice, "/agent-remove helper", null, "error");
+  await send(deviceOne, "/agent-remove eve-helper");
+  for (let i = 0; i < 2; i++) await pause(10100); // honor the WebSocket rate limit
+  await send(deviceOne, "/delete agent-room");
   // Delete accounts through both command entry points. Existing sessions and
   // private histories must not become accessible to a replacement username.
   const bobCookie = await login("bob");
@@ -1085,7 +1164,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: online presence across tabs, room/private message retraction, agent roles and credential redaction, agent provider and personality settings, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

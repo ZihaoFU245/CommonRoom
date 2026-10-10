@@ -8,6 +8,8 @@
     "build": "pnpm check && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:integration": "node scripts/smoke.mjs",
+    "test:agents": "node scripts/agent-check.mjs",
+    "test:providers": "node scripts/provider-check.mjs",
     "test": "node --test tests/*.test.js",
     "typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint src vite.config.ts --max-warnings 0",
