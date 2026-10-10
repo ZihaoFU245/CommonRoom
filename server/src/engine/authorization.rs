@@ -187,6 +187,22 @@ const COMMANDS: &[&str] = &[
     "/owner",
     "/console",
     "/sudo",
+    // Agent commands, granted by name like every other command. Each command
+    // still enforces its own action inside the dispatcher, and the agent
+    // commands an account may run are limited to the agents it owns.
+    "/agent",
+    "/agent-key",
+    "/agent-reply",
+    "/agent-name",
+    "/agent-prompt",
+    "/agent-provider",
+    "/agent-base-url",
+    "/agent-model",
+    "/agent-search",
+    "/agent-search-key",
+    "/agent-sources",
+    "/agent-config",
+    "/agent-remove",
 ];
 fn direct_grant(parts: &[&str]) -> bool {
     parts.len() >= 4
@@ -261,6 +277,63 @@ fn manager_rights() -> Rights {
         ],
     )
 }
+/// The authority one agent account holds. An agent reads the conversations it
+/// belongs to and posts answers into them, and nothing else.
+///
+/// Zero commands on purpose: an agent cannot authenticate, so a command grant
+/// could only ever widen what a compromised or confused agent could do. No
+/// `Action::React` or `Action::RetractOwn` either, because an agent answers
+/// messages and does not manage them.
+fn agent_account_rights() -> Rights {
+    rights(
+        &[
+            Action::Discover,
+            Action::Read,
+            Action::Members,
+            Action::Send,
+        ],
+        &[],
+    )
+}
+
+/// Agent commands whose listing depends on owning an agent rather than on a
+/// grant alone. `/agent-config` is absent because it only reads.
+pub(super) const AGENT_OWNER_COMMANDS: &[&str] = &[
+    "/agent-key",
+    "/agent-reply",
+    "/agent-name",
+    "/agent-prompt",
+    "/agent-provider",
+    "/agent-base-url",
+    "/agent-model",
+    "/agent-search",
+    "/agent-search-key",
+    "/agent-sources",
+    "/agent-remove",
+];
+/// The commands one person needs to create and run their own agents. Creating
+/// an agent still needs `Action::CreateAccount`, which the creation path checks
+/// itself, so granting these commands never grants account creation.
+fn agent_owner_rights() -> Rights {
+    rights(
+        &[Action::Directory],
+        &[
+            "/agent",
+            "/agent-key",
+            "/agent-reply",
+            "/agent-name",
+            "/agent-prompt",
+            "/agent-provider",
+            "/agent-base-url",
+            "/agent-model",
+            "/agent-search",
+            "/agent-search-key",
+            "/agent-sources",
+            "/agent-config",
+            "/agent-remove",
+        ],
+    )
+}
 fn group_rights(group: Group, scope: &Scope) -> Rights {
     if group == Group::Su {
         return rights(Action::ALL, COMMANDS);
@@ -299,11 +372,12 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             "/console",
         ],
     );
+    r.add(agent_owner_rights());
     if group == Group::Admin {
         r.add(rights(
             &[
-                Action::CreateRoom,
                 Action::CreateAccount,
+                Action::CreateRoom,
                 Action::Disable,
                 Action::Enable,
                 Action::DeleteAccount,
@@ -527,6 +601,13 @@ impl Engine {
             );
         Scope::Private(id)
     }
+    /// The permission names one principal holds at a scope, for tests and for
+    /// command output.
+    pub(super) fn allowance(&self, actor: Option<&str>, scope: &Scope) -> Vec<String> {
+        let mut names = self.effective(actor, scope).names();
+        names.sort();
+        names
+    }
     pub fn effective(&self, actor: Option<&str>, scope: &Scope) -> Rights {
         let Some(id) = self.principal_id(actor) else {
             return Rights::default();
@@ -683,6 +764,11 @@ impl Engine {
                         .any(|key| private_peer(key, name).is_some())
             }) && member_rights().command(command))
     }
+    /// The commands one principal may run in one context.
+    ///
+    /// Agent configuration is listed only to an owner or an administrator,
+    /// because the grant that enables it says nothing about which agent is the
+    /// principal's own; the command itself makes the same decision again.
     pub fn commands_for(
         &self,
         actor: Option<&str>,
@@ -690,7 +776,15 @@ impl Engine {
     ) -> Vec<crate::commands::Command> {
         crate::commands::available(true, actor.is_none())
             .into_iter()
-            .filter(|c| self.require_command(actor, room, c.name).is_ok())
+            .filter(|c| {
+                if AGENT_OWNER_COMMANDS.contains(&c.name) {
+                    return match actor {
+                        Some(name) => self.is_admin(name) || self.owns_any_agent(name),
+                        None => false,
+                    };
+                }
+                self.require_command(actor, room, c.name).is_ok()
+            })
             .collect()
     }
     pub(super) fn assign(&mut self, account_id: String, group: Group, scope: Scope) {
@@ -739,6 +833,66 @@ impl Engine {
             permissions,
             minimum_age: 0,
         });
+    }
+    /// Record who owns one agent and give the agent itself the least authority
+    /// that lets it answer: read and write in the conversations it belongs to,
+    /// and no commands at all.
+    ///
+    /// Ownership is one owner grant on the agent's own account scope, with no
+    /// permissions attached: it grants no access by itself, it records who the
+    /// agent belongs to. It lives in the policy so it survives a restart with
+    /// the rest of the grants, and so an operator can revoke it with `/revoke`.
+    pub(super) fn add_agent_grants(&mut self, owner_id: String, agent_id: String) {
+        self.data.policy.grants.push(Grant {
+            owner: true,
+            subject: Subject::Account(owner_id),
+            scope: Scope::Account(agent_id.clone()),
+            permissions: BTreeSet::new(),
+            minimum_age: 0,
+        });
+        let rights = agent_account_rights();
+        let mut permissions: BTreeSet<_> = rights.names().into_iter().collect();
+        permissions.extend(
+            COMMANDS
+                .iter()
+                .filter(|c| rights.command(c))
+                .map(|c| (*c).to_owned()),
+        );
+        self.data.policy.grants.push(Grant {
+            owner: false,
+            subject: Subject::Account(agent_id),
+            scope: Scope::Server,
+            permissions,
+            minimum_age: 0,
+        });
+        self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
+    }
+    /// The principal that owns one agent, if any.
+    pub(super) fn agent_owner(&self, agent_id: &str) -> Option<&str> {
+        self.data
+            .policy
+            .grants
+            .iter()
+            .find(|grant| grant.owner && grant.scope == Scope::Account(agent_id.to_string()))
+            .and_then(|grant| match &grant.subject {
+                Subject::Account(id) => Some(id.as_str()),
+                Subject::Group(_) => None,
+            })
+    }
+    /// Whether one principal owns this agent.
+    pub(super) fn owns_agent(&self, actor: Option<&str>, agent_id: &str) -> bool {
+        self.principal_id(actor)
+            .is_some_and(|id| self.agent_owner(agent_id) == Some(id))
+    }
+    /// A human-readable owner name for `/agent-config`.
+    pub(super) fn agent_owner_name(&self, agent_id: &str) -> Option<String> {
+        let owner = self.agent_owner(agent_id)?;
+        self.data
+            .users
+            .iter()
+            .find(|(_, account)| account.id == owner)
+            .map(|(name, _)| name.clone())
+            .or_else(|| (owner == "console").then(|| "console".to_string()))
     }
     pub(super) fn audit(&mut self, actor: Option<&str>, operation: &str, target: &str) {
         let actor_id = self.principal_id(actor).unwrap_or("unavailable").to_owned();
@@ -1029,6 +1183,11 @@ impl Engine {
                     return Err("Usage: /grant user scope permission [minimum-age] or /revoke user scope permission".into());
                 }
                 let scope = self.parse_scope(parts[2])?;
+                // An agent cannot hold a direct grant either; its own grant is
+                // the minimal one written when the agent was created.
+                if self.is_agent(parts[1]) {
+                    return Err("Agents cannot hold a group or a direct grant.".into());
+                }
                 let label = self.scope_label(&scope);
                 self.require_target_command(actor, &scope, parts[0])?;
                 let target = self
@@ -1165,6 +1324,11 @@ impl Engine {
                     ));
                 }
                 let group = Group::parse(parts.get(2).copied().unwrap_or("admin"))?;
+                // An agent cannot hold a group: it is not a person, it never
+                // authenticates, and a group would silently widen its authority.
+                if self.is_agent(parts[1]) {
+                    return Err("Agents cannot hold a group or a direct grant.".into());
+                }
                 let scope = parts
                     .get(3)
                     .map(|room| self.room_scope(room))
