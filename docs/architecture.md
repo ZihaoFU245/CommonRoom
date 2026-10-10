@@ -11,7 +11,7 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | Module | Responsibility |
 | --- | --- |
 | `models.rs` | Persisted data and serialized snapshot/history types |
-| `storage.rs` | SQLite opening, migration, locking, writes, cursor persistence, and checkpointing |
+| `storage.rs` | SQLite opening, schema validation, locking, writes, cursor persistence, and checkpointing |
 | `authorization.rs` | Action/command grants, predefined group bundles, scope/ownership policies, compiled permission index, and audit |
 | `accounts.rs` | Account/session lifecycle, roles, provisioning, and account deletion |
 | `rooms.rs` | Room creation, deletion, invitations, joining, and leaving |

@@ -1,6 +1,118 @@
 use super::*;
 
 impl Engine {
+    pub(super) fn rename_user(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        new_name: &str,
+    ) -> Result<String, String> {
+        let own_scope = self
+            .data
+            .users
+            .get(name)
+            .map(|account| authorization::Scope::Account(account.id.clone()))
+            .ok_or("User not found.")?;
+        let action = if actor == Some(name)
+            && self.allows(actor, &own_scope, authorization::Action::RenameOwn)
+        {
+            authorization::Action::RenameOwn
+        } else {
+            authorization::Action::RenameAny
+        };
+        let scope = self.account_target(actor, name, action)?;
+        self.require_target_command(actor, &scope, "/rename")?;
+        if !valid_name(new_name) {
+            return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
+        }
+        if name == new_name {
+            return Ok("Username unchanged.".into());
+        }
+        if self.data.users.contains_key(new_name) {
+            return Err("Username already exists.".into());
+        }
+        let before = self.data.clone();
+        self.audit(actor, "/rename", &format!("{name} -> {new_name}"));
+        let account = self.data.users.remove(name).ok_or("User not found.")?;
+        self.data.users.insert(new_name.into(), account);
+        for session in self.data.sessions.values_mut() {
+            if session.username == name {
+                session.username = new_name.into();
+            }
+        }
+        let mut conversations = BTreeMap::new();
+        let old_private = std::mem::take(&mut self.data.private);
+        for (key, chat) in old_private {
+            let new_key = if let Some(peer) = private_peer(&key, name) {
+                private_key(new_name, peer)
+            } else {
+                key.clone()
+            };
+            if new_key != key {
+                conversations.insert(format!("dm:{key}"), format!("dm:{new_key}"));
+            }
+            self.data.private.insert(new_key, chat);
+        }
+        for room in self.data.rooms.values_mut() {
+            if room.members.remove(name) {
+                room.members.insert(new_name.into());
+            }
+        }
+        for (messages, revision) in self
+            .data
+            .rooms
+            .values_mut()
+            .map(|r| (&mut r.messages, &mut r.revision))
+            .chain(
+                self.data
+                    .private
+                    .values_mut()
+                    .map(|r| (&mut r.messages, &mut r.revision)),
+            )
+        {
+            for message in messages {
+                if message.from == name {
+                    message.from = new_name.into();
+                }
+                if message.to.as_deref() == Some(name) {
+                    message.to = Some(new_name.into());
+                }
+                if let Some(reply) = &mut message.reply
+                    && reply.from == name
+                {
+                    reply.from = new_name.into();
+                }
+                if message.mentions.remove(name) {
+                    message.mentions.insert(new_name.into());
+                }
+                for users in message.reactions.values_mut() {
+                    if users.remove(name) {
+                        users.insert(new_name.into());
+                    }
+                }
+            }
+            *revision = revision.wrapping_add(1);
+        }
+        if let Err(error) = self.store_account_rename(name, new_name, &conversations) {
+            self.data = before;
+            tracing::error!(error = %error, "Account rename failed");
+            return Err("Storage unavailable; rename was not applied.".into());
+        }
+        self.read_positions.remove(new_name);
+        if let Some(positions) = self.read_positions.remove(name) {
+            self.read_positions.insert(new_name.into(), positions);
+        }
+        for positions in self.read_positions.values_mut() {
+            for (old, new) in &conversations {
+                positions.remove(new);
+                if let Some(sequence) = positions.remove(old) {
+                    positions.insert(new.clone(), sequence);
+                }
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(format!("Renamed {name} to {new_name}."))
+    }
     pub fn is_admin(&self, name: &str) -> bool {
         self.has_group(Some(name), authorization::Group::Admin)
             || self.has_group(Some(name), authorization::Group::Su)
@@ -145,7 +257,6 @@ impl Engine {
                 name.into(),
                 Account {
                     hash,
-                    admin: false,
                     id: uuid::Uuid::new_v4().to_string(),
                     disabled: false,
                 },

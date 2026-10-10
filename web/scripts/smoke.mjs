@@ -227,6 +227,35 @@ try {
   const alice = await connect(cookies.alice),
     bob = await connect(cookies.bob),
     eve = await connect(cookies.eve);
+  // Rename must preserve both live sockets and the original session cookies.
+  const renameTab = await connect(cookies.bob);
+  await send(bob, "/rename 测试用户🙂");
+  await until(
+    () =>
+      bob.snapshot.username === "测试用户🙂" &&
+      renameTab.snapshot.username === "测试用户🙂",
+    "rename delivered to both authenticated sockets",
+  );
+  assert.equal(
+    (await (await request("me", cookies.bob)).json()).username,
+    "测试用户🙂",
+  );
+  await send(renameTab, "/whoami");
+  assert.match(
+    renameTab.frames.find((frame) => frame.id === renameTab.serial).text,
+    /Name: 测试用户🙂/,
+  );
+  await send(renameTab, "/rename bob");
+  await until(
+    () =>
+      bob.snapshot.username === "bob" && renameTab.snapshot.username === "bob",
+    "rename back preserves socket identity",
+  );
+  renameTab.ws.close();
+  await until(
+    () => renameTab.ws.readyState === WebSocket.CLOSED,
+    "rename test tab closed",
+  );
   await send(bob, "/whoami");
   assert.match(
     bob.frames.find((f) => f.id === bob.serial).text,

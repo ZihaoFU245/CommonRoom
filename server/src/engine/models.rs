@@ -4,8 +4,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
     pub hash: String,
-    #[serde(default, skip_serializing)]
-    pub admin: bool, // Legacy input only; authorization uses grants.
     #[serde(default)]
     pub id: String,
     pub disabled: bool,
@@ -58,8 +56,6 @@ pub struct PrivateChat {
 pub struct Data {
     pub users: BTreeMap<String, Account>,
     pub rooms: BTreeMap<String, Room>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub direct: Vec<Message>, // Legacy v1/v2 input; migrated once into private chats.
     #[serde(default)]
     pub private: BTreeMap<String, PrivateChat>,
     #[serde(default)]
@@ -110,6 +106,7 @@ pub struct Snapshot {
     pub username: String,
     pub groups: Vec<String>,
     pub permissions: Vec<String>,
+    pub account_access: Access,
     pub private_access: BTreeMap<String, Access>,
     pub private_permissions: Vec<String>,
     pub private_commands: Vec<crate::commands::Command>,

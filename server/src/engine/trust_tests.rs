@@ -739,57 +739,6 @@ fn policy_save_failures_preserve_compiled_permissions_and_creation_is_atomic() {
     assert_eq!(e.authorization.revision, revision);
 }
 #[test]
-fn migration_preserves_identities_grants_cursors_and_restarts_without_regranting() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    let raw = serde_json::json!({
-        "users": {"alice":{"hash":"hash","admin":true,"disabled":false},"bob":{"hash":"hash","admin":false,"disabled":false}},
-        "rooms": {"legacy":{"members":["bob"],"messages":[{"id":"old","from":"alice","to":null,"text":"retained","time":1,"sequence":1,"reactions":{},"reply":null,"mentions":[]}],"revision":1}},
-        "private": {}, "sessions": {}, "next_sequence":1
-    });
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE state (id INTEGER PRIMARY KEY, json TEXT); CREATE TABLE read_positions (username TEXT, conversation TEXT, sequence INTEGER, PRIMARY KEY(username,conversation)); PRAGMA user_version=3;").unwrap();
-        db.execute("INSERT INTO state VALUES(1,?1)", [raw.to_string()])
-            .unwrap();
-        db.execute(
-            "INSERT INTO read_positions VALUES('bob','room:legacy',0)",
-            [],
-        )
-        .unwrap();
-    }
-    let alice_id;
-    let room_id;
-    {
-        let mut e = Engine::open(&path).unwrap();
-        alice_id = e.data.users["alice"].id.clone();
-        room_id = e.data.rooms["legacy"].id.clone();
-        assert!(e.is_admin("alice"));
-        assert_eq!(e.snapshot("bob").unwrap().unread["legacy"].count, 1);
-        e.execute(Some("alice"), None, "/add alice legacy").unwrap();
-        e.execute(None, None, "/grant bob su").unwrap();
-        e.execute(None, None, "/revoke alice @global x:account.password.reset")
-            .unwrap();
-    }
-    let e = Engine::open(&path).unwrap();
-    assert_eq!(e.data.users["alice"].id, alice_id);
-    assert_eq!(e.data.rooms["legacy"].id, room_id);
-    assert!(e.is_su(Some("bob")));
-    assert!(!e.allows(Some("alice"), &Scope::Server, Action::Reset));
-    assert_eq!(
-        e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap(),
-        5
-    );
-    assert!(
-        e.data
-            .policy
-            .audit
-            .iter()
-            .all(|a| !a.target.contains("hash"))
-    );
-}
-#[test]
 #[ignore = "manual authorization microbenchmark"]
 fn permission_lookup_benchmark() {
     let mut e = fixture();
@@ -933,35 +882,6 @@ fn account_scoped_grants_do_not_apply_to_other_accounts() {
             .is_err()
     );
 }
-#[test]
-fn failed_migration_preserves_the_original_state_and_version() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    let raw =
-        r#"{"users":{"alice":{"hash":"hash","admin":true}},"rooms":{},"private":{},"sessions":{}}"#;
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch(
-            "CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT); PRAGMA user_version=3;",
-        )
-        .unwrap();
-        db.execute("INSERT INTO state VALUES(1,?1)", [raw]).unwrap();
-        db.execute_batch("CREATE TRIGGER reject_migration BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
-    }
-    assert!(Engine::open(&path).is_err());
-    let db = Connection::open(&path).unwrap();
-    assert_eq!(
-        db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
-            .unwrap(),
-        raw
-    );
-    assert_eq!(
-        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap(),
-        3
-    );
-}
-
 #[test]
 fn private_read_revocation_removes_payload_contacts_and_unread_state() {
     let mut e = fixture();
@@ -1118,77 +1038,6 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
     );
 }
 #[test]
-fn schema_four_command_migration_preserves_scope_identity_and_delegation_limits() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    let mut original = fixture().data.clone();
-    let owner = original.users["alice"].id.clone();
-    let scope = Scope::Room(original.rooms["team"].id.clone());
-    for grant in &mut original.policy.grants {
-        if grant.permissions.remove("/grant") {
-            grant.permissions.insert("/permit".into());
-        }
-        if grant.permissions.remove("/revoke") {
-            grant.permissions.insert("/unpermit".into());
-        }
-    }
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT); CREATE TABLE read_positions(username TEXT,conversation TEXT,sequence INTEGER,PRIMARY KEY(username,conversation)); PRAGMA user_version=4;").unwrap();
-        db.execute(
-            "INSERT INTO state VALUES(1,?1)",
-            [serde_json::to_string(&original).unwrap()],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO read_positions VALUES('bob','room:team',17)",
-            [],
-        )
-        .unwrap();
-    }
-    let mut e = Engine::open(&path).unwrap();
-    assert_eq!(e.data.users["alice"].id, owner);
-    assert_eq!(e.room_scope("team").unwrap(), scope);
-    assert_eq!(e.read_positions["bob"]["room:team"], 17);
-    assert_eq!(
-        e.data.policy.assignments.len(),
-        original.policy.assignments.len()
-    );
-    assert_eq!(e.data.policy.revision, original.policy.revision + 1);
-    e.execute(
-        Some("alice"),
-        Some("team"),
-        "/grant eve team r:message.read",
-    )
-    .unwrap();
-    assert!(
-        e.execute(Some("alice"), Some("team"), "/grant eve su")
-            .is_err()
-    );
-    assert!(
-        e.execute(
-            Some("alice"),
-            Some("team"),
-            "/grant eve team x:policy.change"
-        )
-        .is_err()
-    );
-    assert!(
-        e.data
-            .policy
-            .grants
-            .iter()
-            .all(|g| !g.permissions.contains("/permit") && !g.permissions.contains("/unpermit"))
-    );
-    let version: u32 =
-        e.db.query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-    assert_eq!(version, 5);
-    let migrated = e.data.clone();
-    drop(e);
-    assert!(Engine::open(&path).unwrap().data == migrated);
-}
-#[test]
 fn invitation_and_user_group_assignment_cannot_amplify_partial_authority() {
     let mut e = fixture();
     e.execute(Some("alice"), Some("team"), "/revoke bob user team")
@@ -1230,11 +1079,13 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
     let user = BTreeSet::from([
         "r:account.list",
         "w:account.password.own",
+        "w:account.rename.own",
         "w:private.create",
     ]);
     let admin = BTreeSet::from([
         "r:account.list",
         "w:account.password.own",
+        "w:account.rename.own",
         "w:private.create",
         "w:room.create",
         "x:account.create",
@@ -1408,6 +1259,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         "/permissions team".into(),
         "/debug on".into(),
         "/whoami".into(),
+        "/rename renamed".into(),
         "/passwd old new".into(),
         "/users".into(),
         "/user created password user".into(),
@@ -1469,34 +1321,144 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
     assert!(snapshot.commands.is_empty());
 }
 #[test]
-fn failed_schema_four_upgrade_preserves_policy_state_and_schema() {
+fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chat.sqlite");
-    let mut original = fixture().data.clone();
-    original.policy.grants[0]
-        .permissions
-        .insert("/permit".into());
-    let json = serde_json::to_string(&original).unwrap();
+    let id;
+    let private_id;
+    let sequence;
     {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch(
-            "CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT); PRAGMA user_version=4;",
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("管理员", "hash".into(), true, false).unwrap();
+        e.provision("用户🙂", "hash".into(), false, false).unwrap();
+        e.execute(Some("管理员"), None, "/new 测试").unwrap();
+        e.execute(Some("管理员"), None, "/add 用户🙂 测试").unwrap();
+        e.execute(Some("用户🙂"), Some("测试"), "hello @管理员")
+            .unwrap();
+        let message_id = e.data.rooms["测试"].messages[0].id.clone();
+        e.execute(
+            Some("管理员"),
+            Some("测试"),
+            &format!("/reply {message_id} @用户🙂"),
         )
         .unwrap();
-        db.execute("INSERT INTO state VALUES(1,?1)", [&json])
+        e.execute(
+            Some("用户🙂"),
+            Some("测试"),
+            &format!("/react {message_id} 👍"),
+        )
+        .unwrap();
+        e.execute(Some("管理员"), None, "/tell 用户🙂 hello")
             .unwrap();
-        db.execute_batch("CREATE TRIGGER reject_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+        sequence = e.data.private["用户🙂:管理员"].messages[0].sequence;
+        private_id = e.data.private["用户🙂:管理员"].id.clone();
+        e.mark_read("用户🙂", "@direct:管理员", sequence).unwrap();
+        e.login("session".into(), "用户🙂", "hash", None).unwrap();
+        id = e.data.users["用户🙂"].id.clone();
+        e.execute(Some("用户🙂"), None, "/rename 新名字🚀").unwrap();
+        assert_eq!(e.data.users["新名字🚀"].id, id);
+        assert_eq!(e.session("session").as_deref(), Some("新名字🚀"));
+        assert!(e.data.rooms["测试"].members.contains("新名字🚀"));
+        assert_eq!(e.data.rooms["测试"].messages[0].from, "新名字🚀");
+        assert_eq!(
+            e.data.rooms["测试"].messages[1]
+                .reply
+                .as_ref()
+                .unwrap()
+                .from,
+            "新名字🚀"
+        );
+        assert!(e.data.rooms["测试"].messages[0].reactions["👍"].contains("新名字🚀"));
+        assert!(
+            e.data.rooms["测试"].messages[1]
+                .mentions
+                .contains("新名字🚀")
+        );
+        assert_eq!(e.data.private["新名字🚀:管理员"].id, private_id);
+        assert_eq!(
+            e.data.private["新名字🚀:管理员"].messages[0].to.as_deref(),
+            Some("新名字🚀")
+        );
+        assert_eq!(e.read_positions["新名字🚀"]["dm:新名字🚀:管理员"], sequence);
+        e.execute(Some("新名字🚀"), None, "/tell 管理员 renamed")
+            .unwrap();
+        e.provision("用户🙂", "replacement".into(), false, false)
+            .unwrap();
+        assert!(e.snapshot("用户🙂").unwrap().direct.is_empty());
     }
-    assert!(Engine::open(&path).is_err());
-    let db = Connection::open(&path).unwrap();
-    assert_eq!(
-        db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
-            .unwrap(),
-        json
+    let e = Engine::open(&path).unwrap();
+    assert_eq!(e.data.users["新名字🚀"].id, id);
+    assert_eq!(e.session("session").as_deref(), Some("新名字🚀"));
+    assert_eq!(e.read_positions["新名字🚀"]["dm:新名字🚀:管理员"], sequence);
+    assert_eq!(e.data.private["新名字🚀:管理员"].id, private_id);
+}
+
+#[test]
+fn rename_requires_own_or_any_action_and_target_command_and_protects_su() {
+    let mut e = fixture();
+    assert!(e.execute(Some("bob"), None, "/rename eve stolen").is_err());
+    assert!(
+        e.execute(Some("alice"), None, "/rename bob stolen")
+            .is_err()
     );
-    assert_eq!(
-        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap(),
-        4
+    for name in ["alice", "bad:name", "@direct", "/bad", "", "x.y"] {
+        assert!(e.rename_user(Some("bob"), "bob", name).is_err());
+    }
+    assert!(valid_name(&"界".repeat(32)));
+    assert!(!valid_name(&"界".repeat(33)));
+    assert!(!valid_name("bad\u{0085}name"));
+    assert!(!valid_name("bad\u{0000}name"));
+    e.execute(None, None, "/grant alice @account:bob x:account.rename.any")
+        .unwrap();
+    e.execute(Some("alice"), None, "/rename bob 重命名")
+        .unwrap();
+    e.execute(None, None, "/grant eve su").unwrap();
+    e.execute(None, None, "/grant alice @account:eve x:account.rename.any")
+        .unwrap();
+    assert!(
+        e.execute(Some("alice"), None, "/rename eve protected")
+            .is_err()
     );
+    e.execute(None, None, "/rename eve 超级用户").unwrap();
+    e.execute(None, None, "/revoke 重命名 user").unwrap();
+    e.execute(
+        None,
+        None,
+        "/grant 重命名 @account:重命名 w:account.rename.own",
+    )
+    .unwrap();
+    assert!(e.execute(Some("重命名"), None, "/rename denied").is_err());
+    e.execute(None, None, "/grant 重命名 @account:重命名 /rename")
+        .unwrap();
+    let access = e.snapshot("重命名").unwrap().account_access;
+    assert!(access.permissions.contains(&"w:account.rename.own".into()));
+    assert!(
+        access
+            .commands
+            .iter()
+            .any(|command| command.name == "/rename")
+    );
+    assert!(
+        !access
+            .commands
+            .iter()
+            .any(|command| command.name == "/passwd")
+    );
+    e.execute(Some("重命名"), None, "/rename allowed").unwrap();
+}
+
+#[test]
+fn rename_storage_failure_rolls_back_account_and_read_positions() {
+    let mut e = fixture();
+    e.execute(Some("eve"), None, "/tell bob incoming").unwrap();
+    let sequence = e.data.private["bob:eve"].messages[0].sequence;
+    e.mark_read("bob", "@direct:eve", sequence).unwrap();
+    let before = e.data.clone();
+    let positions = e.read_positions.clone();
+    e.db.execute_batch("CREATE TRIGGER fail_rename BEFORE UPDATE ON state BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
+    assert!(e.execute(Some("bob"), None, "/rename 改名").is_err());
+    assert!(e.data == before);
+    assert_eq!(e.read_positions, positions);
+    e.db.execute_batch("DROP TRIGGER fail_rename;").unwrap();
+    e.execute(Some("bob"), None, "/rename 改名").unwrap();
 }

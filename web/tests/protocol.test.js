@@ -18,6 +18,7 @@ const snapshot = {
   username: "alice",
   groups: ["user"],
   permissions: [],
+  account_access: { id: "account-id", permissions: [], commands: [] },
   private_access: {},
   private_permissions: [],
   private_commands: [],
@@ -77,6 +78,15 @@ test("protocol rejects malformed nested data before it reaches UI state", () => 
   for (const invalid of [
     null,
     {},
+    { ...snapshot, account_access: null },
+    {
+      ...snapshot,
+      account_access: { id: "id", permissions: [123], commands: [] },
+    },
+    {
+      ...snapshot,
+      account_access: { id: "id", permissions: [], commands: [{}] },
+    },
     { ...snapshot, online: [123] },
     { ...snapshot, groups: [123] },
     { ...snapshot, policy_revision: -1 },

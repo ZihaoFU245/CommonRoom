@@ -22,104 +22,43 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 5 {
-            return Err("This data folder was written by a newer, incompatible server.".into());
+        if version != 0 && version != 5 {
+            return Err("Unsupported database schema; only current schema v5 is supported.".into());
         }
-        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);").map_err(|e| e.to_string())?;
-        let raw = db.query_row("SELECT json FROM state WHERE id=1", [], |r| {
-            r.get::<_, String>(0)
-        });
-        let mut data: Data = match raw {
-            Ok(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string())?,
-            Err(rusqlite::Error::QueryReturnedNoRows) => Data::default(),
-            Err(e) => return Err(e.to_string()),
-        };
-        db.execute_batch("CREATE TABLE IF NOT EXISTS read_positions (username TEXT NOT NULL, conversation TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY(username,conversation));").map_err(|e| e.to_string())?;
-        for message in data.direct.drain(..) {
-            let peer = message
-                .to
-                .as_deref()
-                .ok_or("Invalid legacy private message.")?;
-            data.private
-                .entry(private_key(&message.from, peer))
-                .or_default()
-                .messages
-                .push_back(message);
-        }
-        let mut messages: Vec<_> = data
-            .rooms
-            .values_mut()
-            .flat_map(|r| r.messages.iter_mut())
-            .chain(
-                data.private
-                    .values_mut()
-                    .flat_map(|r| r.messages.iter_mut()),
-            )
-            .collect();
-        messages.sort_by_key(|m| m.time);
-        data.next_sequence = data
-            .next_sequence
-            .max(messages.iter().map(|m| m.sequence).max().unwrap_or(0));
-        for message in messages {
-            if message.sequence == 0 {
-                data.next_sequence = data
-                    .next_sequence
-                    .checked_add(1)
-                    .filter(|n| *n <= i64::MAX as u64)
-                    .ok_or("Message sequence exhausted.")?;
-                message.sequence = data.next_sequence;
+        if version == 0 {
+            let existing: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%')", [], |r| r.get(0),
+            ).map_err(|e| e.to_string())?;
+            if existing {
+                return Err("Unversioned existing databases are not supported.".into());
             }
         }
-        if version < 3 {
-            for room in data.rooms.values_mut() {
-                room.messages.make_contiguous().sort_by_key(|m| m.sequence);
-            }
-            for chat in data.private.values_mut() {
-                chat.messages.make_contiguous().sort_by_key(|m| m.sequence);
-            }
-        }
-        // Migration and its read baselines are committed together. Existing
-        // history starts read; future messages receive monotonically larger IDs.
-        if version < 5 {
-            if version < 4 {
-                super::authorization::migrate(&mut data);
-            }
-            super::authorization::migrate_command_grants(&mut data);
-            let transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            if version < 3 {
-                for (name, room) in &data.rooms {
-                    if let Some(last) = room.messages.back() {
-                        for user in &room.members {
-                            transaction
-                                .execute(
-                                    "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
-                                    params![user, format!("room:{name}"), last.sequence],
-                                )
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
-                for (key, chat) in &data.private {
-                    let (a, b) = key.split_once(':').ok_or("Invalid private conversation.")?;
-                    if let Some(last) = chat.messages.back() {
-                        for user in [a, b] {
-                            transaction
-                                .execute(
-                                    "INSERT OR IGNORE INTO read_positions VALUES(?1,?2,?3)",
-                                    params![user, format!("dm:{key}"), last.sequence],
-                                )
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
-            }
+        db.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| e.to_string())?;
+        if version == 0 {
+            let mut data = Data::default();
+            data.policy
+                .assignments
+                .push(super::authorization::Assignment {
+                    account_id: "console".into(),
+                    group: super::authorization::Group::Su,
+                    scope: super::authorization::Scope::Server,
+                });
             let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
-            transaction.execute("INSERT INTO state(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![json]).map_err(|e| e.to_string())?;
+            let transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            transaction.execute_batch("CREATE TABLE state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL); CREATE TABLE read_positions (username TEXT NOT NULL, conversation TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY(username,conversation));").map_err(|e| e.to_string())?;
+            transaction
+                .execute("INSERT INTO state VALUES(1,?1)", params![json])
+                .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=5;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
+        let raw: String = db
+            .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let data: Data = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         {
             let mut query = db
@@ -229,6 +168,45 @@ impl Engine {
         self.db.execute("INSERT INTO read_positions VALUES(?1,?2,?3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
             params![user,key,through]).map_err(|e| { tracing::error!(error=%e,"Read position write failed"); "Storage unavailable; read position was not applied.".to_string() })?;
         Ok(())
+    }
+    /// Rename account state and every affected read cursor in one transaction.
+    pub(super) fn store_account_rename(
+        &mut self,
+        name: &str,
+        new_name: &str,
+        conversations: &BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(&self.data).map_err(|e| e.to_string())?;
+        let transaction = self.db.transaction().map_err(|e| e.to_string())?;
+        // A reused name must never inherit orphaned cursors from an old account.
+        transaction
+            .execute(
+                "DELETE FROM read_positions WHERE username=?1",
+                params![new_name],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction
+            .execute(
+                "UPDATE read_positions SET username=?1 WHERE username=?2",
+                params![new_name, name],
+            )
+            .map_err(|e| e.to_string())?;
+        for (old, new) in conversations {
+            transaction
+                .execute(
+                    "DELETE FROM read_positions WHERE conversation=?1",
+                    params![new],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE read_positions SET conversation=?1 WHERE conversation=?2",
+                    params![new, old],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        transaction.execute("INSERT INTO state(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![json]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
     }
     /// Account deletion and its cursor cleanup must commit atomically.
     pub(super) fn store_account_deletion(

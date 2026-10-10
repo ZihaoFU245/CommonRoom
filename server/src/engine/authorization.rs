@@ -29,6 +29,8 @@ actions! {
     RetractAny => "w:message.retract.any",
     CreateRoom => "w:room.create",
     Direct => "w:private.create",
+    RenameOwn => "w:account.rename.own",
+    RenameAny => "x:account.rename.any",
     Password => "w:account.password.own",
     Invite => "x:member.add",
     Kick => "x:member.remove",
@@ -152,6 +154,7 @@ impl Rights {
 const COMMANDS: &[&str] = &[
     "/help",
     "/whoami",
+    "/rename",
     "/passwd",
     "/users",
     "/rooms",
@@ -196,21 +199,6 @@ fn direct_grant(parts: &[&str]) -> bool {
                         .iter()
                         .any(|prefix| value.starts_with(prefix))
             }))
-}
-
-pub(super) fn migrate_command_grants(data: &mut Data) {
-    let mut changed = false;
-    for grant in &mut data.policy.grants {
-        for (old, new) in [("/permit", "/grant"), ("/unpermit", "/revoke")] {
-            if grant.permissions.remove(old) {
-                grant.permissions.insert(new.into());
-                changed = true;
-            }
-        }
-    }
-    if changed {
-        data.policy.revision = data.policy.revision.wrapping_add(1);
-    }
 }
 
 fn command_bit(name: &str) -> Option<u64> {
@@ -288,11 +276,17 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
         return Rights::default();
     }
     let mut r = rights(
-        &[Action::Directory, Action::Password, Action::Direct],
+        &[
+            Action::Directory,
+            Action::Password,
+            Action::RenameOwn,
+            Action::Direct,
+        ],
         &[
             "/help",
             "/man",
             "/whoami",
+            "/rename",
             "/passwd",
             "/users",
             "/rooms",
@@ -1252,96 +1246,5 @@ impl Engine {
             }
             _ => Err("Unknown policy command.".into()),
         }
-    }
-}
-
-pub(super) fn migrate(data: &mut Data) {
-    data.policy.assignments.push(Assignment {
-        account_id: "console".into(),
-        group: Group::Su,
-        scope: Scope::Server,
-    });
-    for user in data.users.values_mut() {
-        user.id = uuid::Uuid::new_v4().to_string();
-        data.policy.assignments.push(Assignment {
-            account_id: user.id.clone(),
-            group: if user.admin {
-                Group::Admin
-            } else {
-                Group::User
-            },
-            scope: Scope::Server,
-        });
-        if user.admin {
-            data.policy.grants.push(Grant {
-                owner: false,
-                subject: Subject::Account(user.id.clone()),
-                scope: Scope::Server,
-                permissions: BTreeSet::from([
-                    Action::Reset.name().into(),
-                    Action::Clean.name().into(),
-                    "/reset".into(),
-                    "/clean".into(),
-                ]),
-                minimum_age: 0,
-            });
-        }
-        user.admin = false;
-    }
-    for room in data.rooms.values_mut() {
-        room.id = uuid::Uuid::new_v4().to_string();
-        room.owner_id = "console".into();
-        for name in &room.members {
-            if let Some(user) = data.users.get(name) {
-                data.policy.assignments.push(Assignment {
-                    account_id: user.id.clone(),
-                    group: Group::User,
-                    scope: Scope::Room(room.id.clone()),
-                });
-            }
-        }
-        let mut r = manager_rights();
-        r.add(member_rights());
-        let mut permissions: BTreeSet<_> = r.names().into_iter().collect();
-        permissions.extend(
-            COMMANDS
-                .iter()
-                .filter(|c| r.command(c))
-                .map(|c| (*c).to_owned()),
-        );
-        data.policy.grants.push(Grant {
-            owner: false,
-            subject: Subject::Group(Group::Admin),
-            scope: Scope::Room(room.id.clone()),
-            permissions,
-            minimum_age: 0,
-        });
-    }
-    for (key, chat) in &mut data.private {
-        chat.id = key
-            .split_once(':')
-            .and_then(|(a, b)| data.users.get(a).zip(data.users.get(b)))
-            .map_or_else(
-                || uuid::Uuid::new_v4().to_string(),
-                |(a, b)| format!("{}:{}", a.id, b.id),
-            );
-        for message in &mut chat.messages {
-            message.private_id.clone_from(&chat.id);
-        }
-    }
-    for message in data
-        .rooms
-        .values_mut()
-        .flat_map(|r| r.messages.iter_mut())
-        .chain(
-            data.private
-                .values_mut()
-                .flat_map(|r| r.messages.iter_mut()),
-        )
-    {
-        message.author_id = data
-            .users
-            .get(&message.from)
-            .map_or_else(|| "deleted".into(), |u| u.id.clone());
     }
 }

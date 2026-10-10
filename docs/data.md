@@ -2,21 +2,9 @@
 
 ## Data upgrades
 
-Schema v5 automatically migrates v1/v2/v3/v4 data folders, preserving accounts,
-sessions, message IDs, replies, mentions, reactions, and existing read cursors.
-It adds stable resource/account identities, author IDs, room ownership, scoped
-grants, predefined group assignments, and bounded audit records. Existing admin
-powers become explicit grants; see [Security](security.md) for the migration policy.
-Migration of state, schema version, and legacy read baselines commits together.
-A failed migration does not replace the stored state or advance the schema.
+Only the current HEAD schema (v5) is supported. New empty databases are initialized as v5; existing v1–v4, unversioned, or newer databases are rejected without changing their stored state or version. Legacy upgrade code has been removed.
 
-Back up the entire data folder with the server stopped before upgrading. Older
-binaries cannot open v5. Restore that backup to roll back; there is no downgrade
-migration. Tests use isolated temporary data and never modify working `data/`.
-
-Schema v5 renames stored `/permit` and `/unpermit` command grants to `/grant`
-and `/revoke`. V4 identities, ownership, scopes, constraints, sessions and read
-cursors remain unchanged. Historical audit entries keep the command originally used.
+Back up the entire data folder with the server stopped before upgrading. Current v5 accounts, sessions, identities, grants, messages and read cursors remain compatible. Tests use isolated temporary data and never modify working `data/`.
 
 ## Move to another machine
 
@@ -43,11 +31,8 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. Compatible newer
-binaries read schemas v1/v2/v3/v4 and migrate them to v5 without discarding retained
-accounts or messages. Schema v3 added per-conversation private queues and durable
-read positions; schema v4 adds grant-based authorization and stable identities; older binaries reject unknown newer schema versions. Browser login sessions keep their original 12-hour expiry across
-restart and migration. Accounts, roles, memberships, message timestamps and
+the data folder. Only one process can use a folder at once. This binary supports only schema v5. Browser login sessions keep their original 12-hour expiry across
+restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
 
@@ -55,3 +40,4 @@ On Unix, startup restricts the data directory to its owner (`0700`). This
 folder contains private messages and active session credentials; keep
 backups private as well.
 
+Account renames use the existing v5 schema. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. No new schema migration is required.

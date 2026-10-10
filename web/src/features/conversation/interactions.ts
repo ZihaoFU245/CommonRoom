@@ -1,9 +1,19 @@
 import type { Message, Snapshot, Hint } from "../../api/protocol.ts";
+function nameCharacter(value: string): boolean {
+  return (
+    /^[A-Za-z0-9_-]$/u.test(value) ||
+    ((value.codePointAt(0) ?? 0) > 127 &&
+      !/[\p{White_Space}\p{Cc}]/u.test(value))
+  );
+}
 export function mentionSuggestions(draft: string, users: string[]): Hint[] {
   if (draft.startsWith("/")) return [];
-  const match = draft.match(/(?:^|[^\p{L}\p{N}_@-])@([A-Za-z0-9_-]*)$/u);
-  if (!match) return [];
-  const prefix = match[1] || "";
+  const index = draft.lastIndexOf("@");
+  if (index < 0) return [];
+  const preceding = Array.from(draft.slice(0, index)).at(-1);
+  if (preceding && (nameCharacter(preceding) || preceding === "@")) return [];
+  const prefix = draft.slice(index + 1);
+  if (!Array.from(prefix).every(nameCharacter)) return [];
   return users
     .filter((name) => name.startsWith(prefix))
     .map((name) => ({
@@ -44,11 +54,18 @@ export function mentionEvents(previous: Snapshot, next: Snapshot) {
 }
 export function mentionedText(text: string, mentions: string[] = []) {
   const names = new Set(mentions);
-  return text.split(/(@[A-Za-z0-9_-]+)/).map((part, index, parts) => ({
-    text: part,
-    mention:
-      part.startsWith("@") &&
-      names.has(part.slice(1)) &&
-      (!index || !/[\p{L}\p{N}_@-]$/u.test(parts[index - 1] || "")),
-  }));
+  return text
+    .split(
+      /(@(?:(?![\p{White_Space}\p{Cc}])[A-Za-z0-9_\-\u0080-\u{10ffff}])+)/u,
+    )
+    .map((part, index, parts) => ({
+      text: part,
+      mention:
+        part.startsWith("@") &&
+        names.has(part.slice(1)) &&
+        (!index ||
+          !Array.from(parts[index - 1] || "")
+            .slice(-1)
+            .some((value) => nameCharacter(value) || value === "@")),
+    }));
 }

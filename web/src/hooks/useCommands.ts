@@ -78,6 +78,34 @@ export function useCommands({
   const [hintDismissed, setHintDismissed] = useState(false);
   const request = useRef<PendingCommand | null>(null);
   const serial = useRef(0);
+  const accountResult = useRef<((data: Acknowledgement) => void) | null>(null);
+  function accountCommand(text: string): Promise<Acknowledgement> {
+    if (request.current)
+      return Promise.reject(new Error("Another command is pending."));
+    const connection = socket.current;
+    if (connection?.readyState !== WebSocket.OPEN)
+      return Promise.reject(
+        new Error("Disconnected. Wait for the connection to recover."),
+      );
+    const id = ++serial.current;
+    request.current = { id, text, room: "@command", key: null, action: true };
+    setPending(true);
+    return new Promise((resolve, reject) => {
+      accountResult.current = resolve;
+      try {
+        sendFrame(connection, { id, room: null, text });
+      } catch (error: unknown) {
+        request.current = null;
+        accountResult.current = null;
+        setPending(false);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Command could not be sent."),
+        );
+      }
+    });
+  }
   useEffect(() => {
     setReplyTarget(null);
   }, [selected]);
@@ -267,6 +295,12 @@ export function useCommands({
     request.current = null;
     setPending(false);
     const error = data.kind === "error";
+    if (accountResult.current) {
+      const resolve = accountResult.current;
+      accountResult.current = null;
+      resolve(data);
+      return;
+    }
     if (current.key) complete(current.key, data.text || "Done.", error);
     else if (error) append(current.text, data.text, true, current.room);
     if (!error && !current.action) {
@@ -301,13 +335,17 @@ export function useCommands({
       const current = request.current;
       const error =
         "Connection lost before confirmation. Check history before sending again.";
-      if (current.key) complete(current.key, error, true);
+      if (accountResult.current) {
+        accountResult.current({ kind: "error", id: current.id, text: error });
+        accountResult.current = null;
+      } else if (current.key) complete(current.key, error, true);
       else append(current.text, error, true, current.room);
       request.current = null;
       setPending(false);
     }
   }
   return {
+    accountCommand,
     permissions,
     availableCommands,
     debug: debug && canDebug,

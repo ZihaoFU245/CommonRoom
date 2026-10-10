@@ -52,6 +52,21 @@ struct Presence {
     app: App,
     user: String,
 }
+impl Presence {
+    fn authenticate(&mut self, headers: &HeaderMap) -> Result<String, ApiError> {
+        let current = authenticate(&self.app, headers)?;
+        if current != self.user {
+            let mut engine = self
+                .app
+                .engine()
+                .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+            engine.disconnect(&self.user);
+            engine.connect(&current);
+            self.user.clone_from(&current);
+        }
+        Ok(current)
+    }
+}
 impl Drop for Presence {
     fn drop(&mut self) {
         if let Ok(mut engine) = self.app.engine() {
@@ -60,13 +75,18 @@ impl Drop for Presence {
         let _ = self.app.changes.send(Change::All);
     }
 }
-pub(super) async fn connection(app: App, headers: HeaderMap, user: String, mut socket: WebSocket) {
+pub(super) async fn connection(
+    app: App,
+    headers: HeaderMap,
+    mut user: String,
+    mut socket: WebSocket,
+) {
     let mut changes = app.changes.subscribe();
     match app.engine() {
         Ok(mut engine) => engine.connect(&user),
         Err(_) => return,
     }
-    let _presence = Presence {
+    let mut presence = Presence {
         app: app.clone(),
         user: user.clone(),
     };
@@ -80,12 +100,14 @@ pub(super) async fn connection(app: App, headers: HeaderMap, user: String, mut s
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                if authenticate(&app, &headers).is_err() || last_seen.elapsed() > Duration::from_secs(75) { break; }
+                if presence.authenticate(&headers).is_err() { break; }
+                if last_seen.elapsed() > Duration::from_secs(75) { break; }
                 if !send(&mut socket, Message::Ping(Vec::new().into())).await { break; }
             },
             change = changes.recv() => {
+                user = match presence.authenticate(&headers) { Ok(user) => user, Err(_) => break };
                 if matches!(&change, Ok(Change::Read(name)) if name != &user) { continue; }
-                if matches!(change, Err(broadcast::error::RecvError::Closed)) || authenticate(&app, &headers).is_err() { break; }
+                if matches!(change, Err(broadcast::error::RecvError::Closed)) { break; }
                 if matches!(change, Ok(Change::Read(_))) {
                     let unread = match app.engine() { Ok(engine) => engine.unreads(&user), Err(_) => break };
                     if !send(&mut socket, Message::Text(json!({"kind":"read", "unread":unread}).to_string().into())).await { break; }
@@ -94,7 +116,7 @@ pub(super) async fn connection(app: App, headers: HeaderMap, user: String, mut s
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else { break; };
                 last_seen = Instant::now();
-                if authenticate(&app, &headers).is_err() { break; }
+                user = match presence.authenticate(&headers) { Ok(user) => user, Err(_) => break };
                 match message {
                     Message::Text(raw) => {
                         if budget.0.elapsed() > Duration::from_secs(10) { budget = (Instant::now(), 0); }

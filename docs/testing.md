@@ -47,7 +47,7 @@ rtk pnpm --dir web format
 
 ## Coverage
 
-Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, migrations, restart/move persistence, and failed-write rollback.
+Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
 
 Web helper tests cover local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
@@ -55,13 +55,13 @@ Build tests verify that both modes skip checks and that release packaging
 contains the `dist/` directory with its files. Rust tests also verify that a poisoned engine
 returns an unavailable response and never reuses potentially partial state.
 
-`web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, migration/restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
+`web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
 invitation-only rooms, per-chat command gates, read-only grants, cleanup age
 constraints, cross-target authorization, private inspection, stable IDs,
-ownership transfer, migration/cursor preservation,
+ownership transfer, rename/cursor preservation,
 owner delegation and revocation of invitations without enabling other management
 permissions, loss of that delegation authority after ownership transfer,
 and compiled-policy rollback. Output regressions verify that @global and its
@@ -95,7 +95,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures and v1–v5 migration/restart behavior.
+cleanup constraints, persistence failures and v5 restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),

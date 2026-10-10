@@ -465,82 +465,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     assert!(e.snapshot("eve").unwrap().direct.is_empty());
 }
 #[test]
-fn schema_one_migration_keeps_accounts_history_and_sessions() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY, json TEXT NOT NULL); PRAGMA user_version=1;").unwrap();
-        let legacy = serde_json::json!({
-            "users":{"alice":{"hash":"hash", "admin":true, "disabled":false}},
-            "rooms":{"room":{"members":["alice"], "messages":[{"id":"old", "from":"alice", "to":null, "text":"旧消息", "time":1}]}},
-            "direct":[], "sessions":{"token":{"username":"alice", "expires":now()+43200}}
-        });
-        db.execute(
-            "INSERT INTO state(id,json) VALUES(1,?1)",
-            params![legacy.to_string()],
-        )
-        .unwrap();
-    }
-    let e = Engine::open(&path).unwrap();
-    assert!(e.is_admin("alice"));
-    assert_eq!(e.session("token"), Some("alice".into()));
-    assert_eq!(e.data.rooms["room"].messages[0].text, "旧消息");
-    assert!(e.data.rooms["room"].messages[0].reactions.is_empty());
-    assert!(e.data.rooms["room"].messages[0].reply.is_none());
-}
-#[test]
-fn schema_two_migrates_private_pairs_without_losing_features() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("chat.sqlite");
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY, json TEXT NOT NULL); PRAGMA user_version=2;").unwrap();
-        let account = serde_json::json!({"hash":"hash","admin":false,"disabled":false});
-        let legacy = serde_json::json!({
-            "users":{"alice":account,"bob":account,"eve":account}, "rooms":{},
-            "direct":[
-                {"id":"dm1","from":"alice","to":"bob","text":"你好","time":1,"reactions":{"🙂":["bob"]},"mentions":["bob"]},
-                {"id":"dm2","from":"bob","to":"alice","text":"reply","time":2,"reply":{"id":"dm1","from":"alice","text":"你好"}},
-                {"id":"dm3","from":"alice","to":"eve","text":"independent","time":3}
-            ],"sessions":{"token":{"username":"bob","expires":now()+43200}}
-        });
-        db.execute(
-            "INSERT INTO state VALUES(1,?1)",
-            params![legacy.to_string()],
-        )
-        .unwrap();
-    }
-    {
-        let mut e = Engine::open(&path).unwrap();
-        assert!(e.data.direct.is_empty());
-        assert_eq!(e.session("token").as_deref(), Some("bob"));
-        let messages = e.history("bob", "@direct:alice").unwrap().messages;
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].id, "dm1");
-        assert!(messages[0].reactions["🙂"].contains("bob"));
-        assert!(messages[0].mentions.contains("bob"));
-        assert_eq!(messages[1].reply.as_ref().unwrap().id, "dm1");
-        assert!(messages[0].sequence < messages[1].sequence);
-        assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 0);
-        e.execute(Some("alice"), None, "/tell bob new").unwrap();
-        assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
-    }
-    let e = Engine::open(&path).unwrap();
-    assert_eq!(e.history("bob", "@direct:alice").unwrap().messages.len(), 3);
-    assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
-    assert_eq!(
-        e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap(),
-        5
-    );
-}
-#[test]
-fn message_features_migrate_persist_and_rollback() {
-    let legacy: Message =
-        serde_json::from_str(r#"{"id":"old","from":"alice","to":null,"text":"legacy","time":1}"#)
-            .unwrap();
-    assert!(legacy.reply.is_none() && legacy.mentions.is_empty() && legacy.reactions.is_empty());
+fn message_features_persist_and_rollback() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chat.sqlite");
     {
@@ -1051,4 +976,39 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
             .unwrap();
     }
     assert!(e.execute(None, None, "/retract missing").is_err());
+}
+
+#[test]
+fn old_and_unversioned_databases_are_rejected_without_modification() {
+    for version in [0, 1, 2, 3, 4, 6] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(&format!("CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT); PRAGMA user_version={version};")).unwrap();
+            db.execute("INSERT INTO state VALUES(1,'untouched')", [])
+                .unwrap();
+        }
+        assert!(Engine::open(&path).is_err(), "schema {version}");
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap(),
+            version
+        );
+        assert_eq!(
+            db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+                .unwrap(),
+            "untouched"
+        );
+        assert_eq!(
+            db.query_row::<usize, _, _>(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
 }

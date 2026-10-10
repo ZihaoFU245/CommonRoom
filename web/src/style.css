@@ -1215,15 +1215,20 @@ button:focus-visible {
   transform: translateX(1px);
 }
 .settings-dialog {
-  width: min(380px, calc(100vw - 32px));
+  width: min(680px, calc(100vw - 32px));
+  height: min(680px, calc(100dvh - 40px));
   max-height: calc(100dvh - 40px);
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 22px;
   background: var(--paper);
   color: var(--ink);
   box-shadow: var(--shadow-dialog);
+}
+.settings-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .settings-dialog::backdrop {
   background: var(--scrim);
@@ -1479,4 +1484,107 @@ button:focus-visible {
   margin: 0;
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+.settings-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 24px;
+}
+.settings-navigation {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-right: 1px solid var(--line);
+  padding-right: 16px;
+}
+.settings-navigation button {
+  text-align: left;
+  padding: 10px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.settings-navigation button[aria-current="page"] {
+  background: var(--wash);
+  color: var(--ink);
+  font-weight: 600;
+}
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+.settings-content > * {
+  flex-shrink: 0;
+}
+.settings-content h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+.account-summary {
+  color: var(--muted);
+  margin: 0 0 16px;
+  overflow-wrap: anywhere;
+}
+.account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.account-form input {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px;
+  background: var(--field);
+  color: var(--ink);
+}
+.account-form button {
+  align-self: flex-start;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-label);
+}
+.account-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.account-error {
+  color: var(--danger);
+}
+.account-feedback,
+.account-error {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 520px) {
+  .settings-dialog {
+    padding: 16px;
+  }
+  .settings-layout {
+    grid-template-columns: 100px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .settings-navigation {
+    padding-right: 8px;
+  }
+  .theme-choices {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .palette-seed {
+    grid-template-columns: 1fr auto;
+  }
+  .palette-hex {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
 }

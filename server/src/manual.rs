@@ -287,7 +287,7 @@ Groups are predefined bundles of grants. Their scope determines where the bundle
 
 ## user
 
-- At global scope: account directory, own password, new private chats, and general commands including `/man`.
+- At global scope: account directory, own password and rename, new private chats, and general commands including `/man`.
 - In a room: find/read/join, member list, send/reply/react, and retract your own messages.
 
 ## admin

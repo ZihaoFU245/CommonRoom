@@ -4,7 +4,7 @@ Start with [Development](development.md), then read [Architecture](architecture.
 
 - [Development](development.md): setup, daily workflow, coding conventions, and adding features.
 - [Architecture](architecture.md): module responsibilities, state ownership, and scaling limits.
-- [Security](security.md): grants, groups, ownership, delegation, and migration.
+- [Security](security.md): grants, groups, ownership, delegation, and persistence.
 - [Protocol](protocol.md): HTTP/WebSocket contracts and synchronization rules.
 - [Testing](testing.md): required checks and regression coverage.
 - [Commands](commands.md): command syntax, permissions, and behavior.

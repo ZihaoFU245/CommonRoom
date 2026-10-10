@@ -51,6 +51,7 @@ export interface Snapshot {
   username: string;
   groups: string[];
   permissions: string[];
+  account_access: Access;
   private_access: Record<string, Access>;
   private_permissions: string[];
   private_commands: Command[];
@@ -172,6 +173,10 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   typeof v.admin === "boolean" &&
   strings(v.groups) &&
   strings(v.permissions) &&
+  record(v.account_access) &&
+  typeof v.account_access.id === "string" &&
+  strings(v.account_access.permissions) &&
+  commands(v.account_access.commands) &&
   strings(v.private_permissions) &&
   record(v.private_access) &&
   Object.values(v.private_access).every(

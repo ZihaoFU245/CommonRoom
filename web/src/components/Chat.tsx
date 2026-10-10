@@ -127,6 +127,21 @@ export function Chat({
   const { state, currentState, status, socket } = useConnection(initial, {
     onLogout,
     onSnapshot(previous, data, baseline) {
+      const view = selectedRef.current;
+      const oldId =
+        previous.private_access[view]?.id ??
+        previous.rooms.find((room) => room.name === view)?.id;
+      if (
+        oldId &&
+        !data.private_access[view] &&
+        !data.rooms.some((room) => room.name === view)
+      ) {
+        const renamedView =
+          Object.keys(data.private_access).find(
+            (key) => data.private_access[key]?.id === oldId,
+          ) ?? data.rooms.find((room) => room.id === oldId)?.name;
+        if (renamedView) setSelected(renamedView);
+      }
       const contentChanged =
         previous.rooms !== data.rooms || previous.direct !== data.direct;
       if (contentChanged)
@@ -332,6 +347,9 @@ export function Chat({
       />
       {settingsOpen && (
         <Settings
+          state={state}
+          pending={commands.pending}
+          onAccountCommand={commands.accountCommand}
           fonts={fonts}
           theme={theme}
           seeds={seeds}

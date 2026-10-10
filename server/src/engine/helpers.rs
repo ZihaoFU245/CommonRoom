@@ -13,12 +13,14 @@ pub fn now() -> u64 {
         .as_secs()
 }
 pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 32
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    !name.is_empty() && name.chars().count() <= 32 && name.chars().all(name_character)
 }
+pub(super) fn name_character(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '-' | '_')
+        || (!c.is_ascii() && !c.is_whitespace() && !c.is_control())
+}
+
 pub fn hash_password(password: &str) -> Result<String, String> {
     if password.chars().count() < 3 || password.len() > 128 {
         return Err("Passwords must contain at least 3 characters and at most 128 bytes.".into());
@@ -86,13 +88,13 @@ pub(super) fn mentioned_names(text: &str) -> BTreeSet<String> {
             || text[..index]
                 .chars()
                 .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '@'))
+                .is_some_and(|c| name_character(c) || c == '@')
         {
             continue;
         }
         let name: String = text[index + 1..]
             .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .take_while(|c| name_character(*c))
             .collect();
         if valid_name(&name) {
             result.insert(name);

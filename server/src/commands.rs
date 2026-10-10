@@ -65,6 +65,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
         ),
         (
             "Account",
+            "/rename",
+            "/rename [user] new-name",
+            "Rename yourself or an authorized account",
+            false,
+        ),
+        (
+            "Account",
             "/passwd",
             "/passwd old new",
             "Change your password; sign out other sessions",
@@ -270,6 +277,9 @@ pub fn requirements(command: &str) -> &'static str {
         "/user" => "x:account.create at @global; also x:group.admin.assign when creating an admin",
         "/configs" => "r:server.config at @global",
         "/users" => "r:account.list at @global",
+        "/rename" => {
+            "w:account.rename.own on your account or x:account.rename.any on the target; only su can manage su accounts"
+        }
         "/passwd" => "w:account.password.own on your account",
         "/reset" => {
             "x:account.password.reset on the target account; only su can manage su accounts"

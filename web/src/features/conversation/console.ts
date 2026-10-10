@@ -205,6 +205,7 @@ export function suggestions(
       "/revoke",
       "/add",
       "/kick",
+      "/rename",
       "/reset",
       "/disable",
       "/enable",

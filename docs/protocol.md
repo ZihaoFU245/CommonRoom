@@ -25,7 +25,7 @@ The web sends `{id:number, room:string|null, text:string}`. Private views send
 `@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
-- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
+- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
 The canonical frontend declarations and runtime guards are in `web/src/api/protocol.ts`; Rust serialization types are in `server/src/engine/models.rs`. Change both together. Unknown JSON is validated before entering application state. Malformed frames are ignored and malformed successful HTTP responses become explicit errors. The integration harness validates actual server frames with these same guards.
@@ -85,3 +85,5 @@ legacy alias. `/permissions`, `/grant`, and `/revoke` notices use the same
 structured text format as manuals. Command metadata includes optional string
 `requirements` for documentation and completion; older snapshots may omit it.
 This field describes action requirements and never authorizes an operation.
+
+`account_access` contains the signed-in account’s stable ID, effective account-scope permissions and target-authorized commands. Account settings use it for rename/password controls, including account-scoped grants.

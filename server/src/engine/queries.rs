@@ -150,13 +150,26 @@ impl Engine {
         }
     }
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
-        self.data.users.get(name).filter(|u| !u.disabled)?;
+        let account = self.data.users.get(name).filter(|u| !u.disabled)?;
+        let account_scope = Scope::Account(account.id.clone());
         Some(Snapshot {
             kind: "snapshot",
             username: name.into(),
             admin: self.is_admin(name),
             groups: self.groups(Some(name)),
             permissions: self.effective(Some(name), &Scope::Server).names(),
+            account_access: Access {
+                id: account.id.clone(),
+                permissions: self.effective(Some(name), &account_scope).names(),
+                commands: self
+                    .commands_for(Some(name), None)
+                    .into_iter()
+                    .filter(|command| {
+                        self.require_target_command(Some(name), &account_scope, command.name)
+                            .is_ok()
+                    })
+                    .collect(),
+            },
             private_access: self
                 .data
                 .private

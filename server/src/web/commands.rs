@@ -51,6 +51,13 @@ pub(super) async fn execute_input(
     let passwd = parts.first() == Some(&"/passwd");
     if !passwd && !matches!(parts.first(), Some(&"/user") | Some(&"/reset")) {
         let mut engine = app.engine()?;
+        if token(headers)
+            .and_then(|token| engine.session(token))
+            .as_deref()
+            != Some(user)
+        {
+            return Err("Please log in.".into());
+        }
         let before = engine.revision;
         let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
         return Ok((reply, engine.revision != before));

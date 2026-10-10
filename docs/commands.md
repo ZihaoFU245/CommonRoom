@@ -109,6 +109,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/revoke user group [room]` or `/revoke user scope permission` | Scoped grant/group managers | Remove a group assignment or direct permission; `/man revoke` explains |
 | `/owner user [room]` | Room management grants | Transfer room ownership |
 | `/debug on\|off` | Metadata grant | Toggle expandable details for readable messages in this tab |
+| `/rename [user] new-name` | Own/any rename grant | Rename yourself, or an authorized target; preserve identity, history, sessions and read positions |
 | `/passwd old new` | Own-password grant | Change password and sign out other sessions |
 | `/rooms` | Accounts/stdin | List discoverable rooms with their owners, then your own readable private pairs; one entry per line. Other users' pairs are excluded even for su |
 | `/users` | Directory grant | List active accounts and groups |
@@ -135,7 +136,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/deleteuser name` | Account-delete grant | Delete account and private pairs; retain room messages with deleted-author label |
 
 See [Security](security.md) for permission names, group bundles, scope syntax,
-read-only access, delegation limits, ownership and migration examples.
+read-only access, delegation limits, ownership and persistence.
 
 `/deleteuser bob` permanently removes Bob's account and private conversations
 for both participants. Shared room messages and reply quotes remain, with their
@@ -159,4 +160,6 @@ There is no runtime configuration setter: `/configs` shows the loaded settings,
 and editing `data/config.json` takes effect after restart.
 Ordinary web admins do not receive private
 messages between other users. Web accounts in `su` can inspect every private pair. `/tell` opens the private-message view in the UI.
-Names contain 1–32 ASCII letters, digits, `_`, or `-`.
+Names contain 1–32 Unicode characters, including Chinese, accents, combining marks and emoji. Whitespace, control characters and ASCII punctuation other than `_` and `-` are excluded to keep command, mention and conversation syntax unambiguous. Limits count Unicode characters rather than UTF-8 bytes.
+
+Settings opens the Account section by default, with username and password forms that execute `/rename` and `/passwd`. Appearance contains the existing theme, palette and font controls. `/rename new-name` changes your own username; `/rename user new-name` targets another account. Regular users and admins receive `w:account.rename.own`; renaming another account requires an explicit `x:account.rename.any` grant on the target, plus `/rename`. Only su can rename a su account.

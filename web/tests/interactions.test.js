@@ -67,3 +67,20 @@ test("notifications include only new mentions, not own messages, reactions, join
     "@direct:bob",
   );
 });
+
+test("Unicode usernames complete and highlight Chinese, combining marks and emoji", () => {
+  for (const name of ["测试", "Zoë", "e\u0301", "用户🙂", "👩‍💻"]) {
+    assert.equal(
+      mentionSuggestions(`hi @${name}`, [name])[0].value,
+      `hi @${name} `,
+    );
+    assert.deepEqual(
+      mentionedText(`hi @${name}!`, [name])
+        .filter((part) => part.mention)
+        .map((part) => part.text),
+      [`@${name}`],
+    );
+  }
+  assert.deepEqual(mentionSuggestions("hi @测试\u3000", ["测试"]), []);
+  assert.deepEqual(mentionSuggestions("🙂@测试", ["测试"]), []);
+});

@@ -18,7 +18,7 @@ The three predefined groups are fixed grant bundles, not authorization bypasses:
 
 | Group and assignment | Grants |
 | --- | --- |
-| `user` at server scope | Account directory, own password, private sends, general commands |
+| `user` at server scope | Account directory, own password and rename, private sends, general commands |
 | `admin` at server scope | User grants, room/account creation, enable/disable/delete accounts, admin group assignment, config inspection |
 | `user` at room scope | Discover/read/join the room, member list, send/reply/react, retract own messages, corresponding commands |
 | `admin` at room scope | Room user grants plus room management and grant inspection |
@@ -95,11 +95,12 @@ The permission catalog has individual actions in three families:
 - `r`: `room.discover`, `message.read`, `message.metadata`, `member.list`,
   `account.list`, `server.config`, `policy.read`.
 - `w`: `message.create`, `message.react`, `message.retract.own`,
-  `message.retract.any`, `room.create`, `private.create`, `account.password.own`.
+  `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`.
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.owner.transfer`, `history.clean`, `account.create`,
   `account.password.reset`, `account.disable`, `account.enable`, `account.delete`,
-  `group.admin.assign`, `group.su.assign`, `policy.change`, `command.sudo`.
+  `group.admin.assign`, `group.su.assign`, `policy.change`, `command.sudo`,
+  `account.rename.any`.
 
 Prefix the action with its family, for example `r:message.read`. A slash command
 name such as `/history` is a separate permission. No matching grant means denial.
@@ -185,16 +186,7 @@ and scoped direct grants with constraints when the requester can inspect policy.
 
 ## Persistence and revocation
 
-Schema v5 renames stored `/permit` and `/unpermit` command permissions to `/grant`
-and `/revoke`, preserving scopes, constraints, ownership, identities and read cursors.
-The old commands are no longer accepted. Audit records retain their original names.
-
-Schema v4 migrates old memberships to room user assignments and old admin flags to
-server admin assignments. Existing rooms become console-owned with explicit
-legacy admin management/content grants, preserving the old ability to join them.
-Old admins' password-reset and global cleanup powers become explicit account
-grants that `su` can remove. Newly created rooms do not inherit legacy grants.
-A v3 migration preserves read cursors; only v1/v2 migrations create read baselines.
+Only schema v5 is supported. Existing v5 grants, assignments, identities and read cursors are loaded directly; older schema files are rejected without migration.
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -208,3 +200,5 @@ password work. Revocation cannot erase content already delivered to a client.
 
 The server operator and `su` remain fully trusted. Messages and sessions remain in
 the server database; this change is access control, not end-to-end encryption.
+
+Account rename preserves stable account and private conversation IDs and all scoped grants. Sessions, memberships, message display authors, reply authors, recipients, reactions, mention metadata, private keys and read cursors move to the new name atomically. Historical message text and audit records retain their original contents. Own rename is included in user/admin groups; any-account rename requires explicit delegation or su.

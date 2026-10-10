@@ -39,6 +39,16 @@ impl Engine {
                 engine.execute(actor, room, command)
             });
         }
+        if input.split_whitespace().next() == Some("/rename") {
+            let parts: Vec<_> = input.split_whitespace().collect();
+            self.require_command(actor, room, "/rename")?;
+            let (name, new_name) = match parts.as_slice() {
+                [_, new_name] => (actor.ok_or("Usage: /rename user new-name")?, *new_name),
+                [_, name, new_name] => (*name, *new_name),
+                _ => return Err("Usage: /rename [user] new-name".into()),
+            };
+            return self.rename_user(actor, name, new_name);
+        }
         if input.split_whitespace().next() == Some("/deleteuser") {
             let parts: Vec<_> = input.split_whitespace().collect();
             require_len(&parts, 2, "/deleteuser user")?;
