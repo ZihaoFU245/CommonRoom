@@ -3,7 +3,7 @@ use super::*;
 use crate::engine::{
     AGENT_ERROR_PREFIX, AgentJob,
     authorization::{Action, Scope},
-    hash_password, sudo_command, verify_password,
+    hash_password, resolve_command, sudo_command, verify_password,
 };
 use axum::http::HeaderMap;
 use serde::Deserialize;
@@ -22,9 +22,23 @@ pub(super) async fn run_input(
     user: &str,
     input: &Input,
 ) -> Result<Outcome, String> {
+    // The `/sudo` prefix is kept for the engine call, because elevation for a
+    // generic command happens inside `Engine::execute`; the stripping form is
+    // only used for the account commands this handler runs itself.
     let elevated = sudo_command(&input.text)?;
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
+    // Creating an account hashes a password before the engine call, so it is
+    // handled here. `/new user` is the unified spelling of the same command, so
+    // the line is rewritten once and every later step reads the canonical form.
+    let canonical = resolve_command(text)?;
+    let resolved = canonical.as_deref().unwrap_or(text).to_string();
+    let engine_text = if sudo {
+        format!("/sudo {resolved}")
+    } else {
+        resolved.clone()
+    };
+    let text = resolved.as_str();
     let parts: Vec<_> = text.split_whitespace().collect();
     if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
         return app.engine()?.with_command_authority(
@@ -67,7 +81,7 @@ pub(super) async fn run_input(
                 return Err("Please log in.".into());
             }
             let before = engine.revision;
-            let execution = engine.run(Some(user), input.room.as_deref(), &input.text)?;
+            let execution = engine.run(Some(user), input.room.as_deref(), &engine_text)?;
             Outcome {
                 reply: execution.reply,
                 changed: engine.revision != before,

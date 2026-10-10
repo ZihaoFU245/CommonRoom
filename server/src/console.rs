@@ -1,6 +1,6 @@
 use crate::{
     commands,
-    engine::{hash_password, sudo_command},
+    engine::{hash_password, resolve_command, sudo_command},
     web::{App, Change},
 };
 use std::io::{self, BufRead};
@@ -23,7 +23,21 @@ pub fn start(app: App) {
                     continue;
                 }
             };
-            let parts: Vec<_> = command.split_whitespace().collect();
+            // Account creation hashes a password before the engine call, so it
+            // is handled here. `/new user` is the unified spelling of the same
+            // command, so it is rewritten before the branches below read it. The
+            // rewrite is not applied to the line the engine receives, because
+            // the engine resolves aliases itself and doing it twice would read a
+            // canonical name as if it were still typed.
+            let canonical = match resolve_command(command) {
+                Ok(canonical) => canonical,
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    continue;
+                }
+            };
+            let account_command = canonical.as_deref().unwrap_or(command);
+            let parts: Vec<_> = account_command.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
             }

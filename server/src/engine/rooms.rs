@@ -11,8 +11,10 @@ impl Engine {
             ..
         } = *context;
         match parts[0] {
-            "/new" => {
-                self.require_target_command(actor, &Scope::Server, parts[0])?;
+            // `/new room` is the same command as `/new`; the alias layer
+            // resolves the kind word and dispatches under `/new-room`.
+            "/new" | "/new-room" => {
+                self.require_target_command(actor, &Scope::Server, "/new")?;
                 self.require(actor, &Scope::Server, Action::CreateRoom)?;
                 require_len(parts, 2, "/new room")?;
                 let name = parts[1];
