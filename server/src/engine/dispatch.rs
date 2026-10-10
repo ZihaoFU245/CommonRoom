@@ -28,6 +28,26 @@ pub(super) struct CommandContext<'a> {
     pub(super) author: &'a str,
 }
 impl Engine {
+    /// Run one input and return its console text plus any agent work the caller
+    /// must perform after releasing the engine lock.
+    pub fn run(
+        &mut self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        input: &str,
+    ) -> Result<Execution, String> {
+        self.agent_queue.clear();
+        let reply = self.execute(actor, room, input)?;
+        Ok(Execution {
+            reply,
+            agents: std::mem::take(&mut self.agent_queue),
+        })
+    }
+    /// Run one input and return its console text.
+    ///
+    /// This is the single-phase entry point callers that never need agent work
+    /// use, such as the console and the test suites. Anything that may trigger
+    /// an agent reply goes through `run`, which also returns the queued jobs.
     pub fn execute(
         &mut self,
         actor: Option<&str>,
@@ -112,42 +132,19 @@ impl Engine {
         if actor.is_some_and(|name| !self.active(name)) {
             return Err("Account unavailable.".into());
         }
-        let author = actor.unwrap_or("console");
         let parts: Vec<&str> = input.split_whitespace().collect();
         if !input.starts_with('/') {
             if input.chars().count() > 4000 {
                 return Err("Messages support at most 4000 characters.".into());
             }
             let room = room.ok_or("Select a room first.")?;
-            if let Some(key) = room.strip_prefix("@private:") {
-                self.require(actor, &self.private_scope(key), authorization::Action::Send)?;
-                let (_, recipient) = key.split_once(':').ok_or("Invalid private conversation.")?;
-                if !self.data.private.contains_key(key) {
-                    return Err("Private conversation not found.".into());
-                }
-                let mut message = self.message(actor, Some(recipient), input)?;
-                message
-                    .mentions
-                    .retain(|name| key.split(':').any(|p| p == name));
-                return self.push_private_to(key, message).map(|()| String::new());
-            }
-
-            self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
-            let mut message = self.message(actor, None, input)?;
-            let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
-            if target.messages.len() == self.max_messages {
-                target.messages.pop_front();
-            }
-            message
-                .mentions
-                .retain(|name| target.members.contains(name));
-            target.messages.push_back(message);
-            target.revision = target.revision.wrapping_add(1);
+            self.send_room(actor, room, input)?;
             return Ok(String::new());
         }
         self.require_command(actor, room, parts[0])?;
         let view = room;
         let scope = self.command_scope(actor, room)?;
+        let author = actor.unwrap_or("console");
         let room = room.filter(|name| !name.starts_with('@'));
         let context = CommandContext {
             actor,
@@ -167,6 +164,11 @@ impl Engine {
             "/react" | "/reply" | "/retract" | "/clean" | "/tell" => self.apply_messages(&context),
             "/debug" | "/help" | "/man" | "/whoami" | "/console" | "/rooms" | "/users"
             | "/members" | "/history" => self.apply_queries(&context),
+            "/agent" | "/agent-key" | "/agent-reply" | "/agent-name" | "/agent-remove"
+            | "/agent-search" | "/agent-search-key" | "/agent-sources" | "/agent-prompt"
+            | "/agent-provider" | "/agent-base-url" | "/agent-model" | "/agent-config" => {
+                self.apply_agents(&context)
+            }
             "/user" | "/reset" => Err("Account provisioning is console-only.".into()),
             _ => Err("Unknown command. Try /help.".into()),
         }
