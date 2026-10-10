@@ -31,6 +31,11 @@ pub fn hash_password(password: &str) -> Result<String, String> {
         .map_err(|_| "Password hashing failed.".into())
 }
 pub fn verify_password(password: &str, hash: &str) -> bool {
+    // Empty input can never match: an agent account stores no hash, and an
+    // empty hash must not authenticate any password.
+    if password.is_empty() || hash.is_empty() {
+        return false;
+    }
     PasswordHash::new(hash).is_ok_and(|h| {
         Argon2::default()
             .verify_password(password.as_bytes(), &h)
