@@ -96,10 +96,12 @@ input,
 textarea {
   outline-offset: 4px;
 }
-button:focus-visible,
-input:focus-visible,
-textarea:focus-visible {
+button:focus-visible {
   outline: 2px solid var(--ink);
+}
+input:focus,
+textarea:focus {
+  outline: none;
 }
 button {
   color: inherit;
@@ -1398,4 +1400,20 @@ button:focus-visible {
 }
 .send-button {
   border-radius: 50%;
+}
+
+.message-debug {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.25rem 0.75rem;
+  font-size: 0.8em;
+  margin: 0.5rem 0;
+}
+.message-debug dt {
+  font-weight: 600;
+}
+.message-debug dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
 }

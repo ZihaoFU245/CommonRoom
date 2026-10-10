@@ -969,3 +969,86 @@ fn retract_persists_and_failed_writes_restore_message_and_quotes() {
     assert!(e.data.private["alice:bob"].messages[0].reply.is_none());
     assert!(e.snapshot("alice").unwrap().online.is_empty());
 }
+
+#[test]
+fn debug_is_admin_only_and_read_only() {
+    let mut e = engine();
+    let revision = e.revision;
+    for mode in ["on", "off"] {
+        let command = format!("/debug {mode}");
+        assert_eq!(
+            e.execute(Some("alice"), None, &command).unwrap(),
+            format!("Debug {mode}.")
+        );
+        assert!(e.execute(Some("bob"), None, &command).is_err());
+        assert!(e.execute(None, None, &command).is_err());
+    }
+    for command in ["/debug", "/debug yes", "/debug on extra"] {
+        assert!(e.execute(Some("alice"), None, command).is_err());
+    }
+    assert_eq!(e.revision, revision);
+    assert!(
+        crate::commands::available(true, false)
+            .iter()
+            .any(|c| c.name == "/debug")
+    );
+    assert!(
+        !crate::commands::available(false, false)
+            .iter()
+            .any(|c| c.name == "/debug")
+    );
+}
+
+#[test]
+fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
+    let mut e = engine();
+    assert_eq!(
+        e.execute(None, None, "/whoami").unwrap(),
+        "Name: su\nPermission: su"
+    );
+    assert!(
+        crate::commands::available(true, true)
+            .iter()
+            .any(|c| c.name == "/retract")
+    );
+    for room in [Some("lobby"), None] {
+        e.execute(
+            Some("bob"),
+            room,
+            if room.is_some() {
+                "original"
+            } else {
+                "/tell alice original"
+            },
+        )
+        .unwrap();
+        let id = if room.is_some() {
+            e.data.rooms["lobby"].messages[0].id.clone()
+        } else {
+            e.data.private["alice:bob"].messages[0].id.clone()
+        };
+        e.execute(Some("alice"), room, &format!("/reply {id} reply"))
+            .unwrap();
+        assert!(
+            e.execute(Some("alice"), room, &format!("/retract {id}"))
+                .is_err()
+        );
+        let before = e.data.clone();
+        e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+        assert!(e.execute(None, None, &format!("/retract {id}")).is_err());
+        assert!(e.data == before);
+        e.db.execute_batch("PRAGMA query_only=OFF;").unwrap();
+        e.execute(None, None, &format!("/retract {id}")).unwrap();
+        let messages = if room.is_some() {
+            &e.data.rooms["lobby"].messages
+        } else {
+            &e.data.private["alice:bob"].messages
+        };
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].reply.is_none());
+        let reply_id = messages[0].id.clone();
+        e.execute(Some("alice"), room, &format!("/retract {reply_id}"))
+            .unwrap();
+    }
+    assert!(e.execute(None, None, "/retract missing").is_err());
+}

@@ -49,11 +49,22 @@ impl Engine {
         match parts[0] {
             "/retract" => {
                 require_len(parts, 2, "/retract message-id")?;
-                let user = actor.ok_or("Message actions require a user account.")?;
                 let id = parts[1];
-                let (messages, revision) = if let Some(name) = room {
+                let room = room.map(str::to_owned).or_else(|| {
+                    actor
+                        .is_none()
+                        .then(|| {
+                            self.data
+                                .rooms
+                                .iter()
+                                .find(|(_, target)| target.messages.iter().any(|m| m.id == id))
+                                .map(|(name, _)| name.clone())
+                        })
+                        .flatten()
+                });
+                let (messages, revision) = if let Some(name) = room.as_deref() {
                     let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
-                    if !target.members.contains(user) {
+                    if actor.is_some_and(|user| !target.members.contains(user)) {
                         return Err("You are not a member of this room.".into());
                     }
                     (&mut target.messages, &mut target.revision)
@@ -62,7 +73,9 @@ impl Engine {
                         .data
                         .private
                         .iter_mut()
-                        .filter(|(key, _)| private_peer(key, user).is_some())
+                        .filter(|(key, _)| {
+                            actor.is_none_or(|user| private_peer(key, user).is_some())
+                        })
                         .map(|(_, chat)| chat)
                         .find(|chat| chat.messages.iter().any(|m| m.id == id))
                         .ok_or("Message not found in this conversation.")?;
@@ -72,7 +85,7 @@ impl Engine {
                     .iter()
                     .find(|m| m.id == id)
                     .ok_or("Message not found in this conversation (it may have expired).")?;
-                if original.from != user {
+                if actor.is_some_and(|user| original.from != user) {
                     return Err("You can only delete your own messages.".into());
                 }
                 messages.retain(|m| m.id != id);

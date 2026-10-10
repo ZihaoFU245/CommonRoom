@@ -12,6 +12,7 @@ interface Props {
   entries: TimelineEntry[];
   username: string;
   pending: boolean;
+  debug: boolean;
   unreadBoundary: number | null;
   onReact: (message: Message, value: string) => void;
   onReply: (message: Message) => void;
@@ -24,6 +25,7 @@ export const MessageList = memo(function MessageList({
   entries,
   username,
   pending,
+  debug,
   unreadBoundary,
   onReact,
   onReply,
@@ -60,6 +62,7 @@ export const MessageList = memo(function MessageList({
             date={date}
             grouped={grouped && !entry.message.reply}
             pending={pending}
+            debug={debug}
             onReact={(value) => onReact(entry.message, value)}
             onDelete={() => onDelete(entry.message)}
             onReply={() => {
@@ -69,7 +72,16 @@ export const MessageList = memo(function MessageList({
         </div>
       );
     });
-  }, [entries, username, pending, unreadBoundary, onReact, onReply, onDelete]);
+  }, [
+    entries,
+    username,
+    pending,
+    debug,
+    unreadBoundary,
+    onReact,
+    onReply,
+    onDelete,
+  ]);
   return (
     <section
       ref={historyElement}

@@ -22,7 +22,7 @@ impl Engine {
         }
         if matches!(
             input.split_whitespace().next(),
-            Some("/help" | "/whoami" | "/rooms" | "/users" | "/members" | "/history")
+            Some("/debug" | "/help" | "/whoami" | "/rooms" | "/users" | "/members" | "/history")
         ) {
             return self.apply(actor, room, input);
         }
@@ -102,7 +102,7 @@ impl Engine {
                 self.apply_rooms(&context)
             }
             "/react" | "/reply" | "/retract" | "/clean" | "/tell" => self.apply_messages(&context),
-            "/help" | "/whoami" | "/rooms" | "/users" | "/members" | "/history" => {
+            "/debug" | "/help" | "/whoami" | "/rooms" | "/users" | "/members" | "/history" => {
                 self.apply_queries(&context)
             }
             "/user" | "/reset" => Err("Account provisioning is console-only.".into()),

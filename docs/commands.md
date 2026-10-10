@@ -36,7 +36,10 @@ The compact top bar shows a green Connected dot and an online count. Open the
 count to see connected accounts; a user remains online while any tab or device
 is connected.
 
-Message actions appear on hover (always on touch devices). Use **Reply** to
+Message actions appear on hover (always on touch devices). Web admins can use
+`/debug on` to reveal a **⋯** button beside **+**; click it to expand selectable
+message details, including the message ID. `/debug off` hides the details. Debug
+is off after refresh and when admin permission is revoked; it stays local to the tab. Use **Reply** to
 quote a message in the composer, **Delete** to retract your own message for
 everyone in the conversation (including its retained reply previews) after
 confirmation, or **+** to choose an emoji/custom UTF-8
@@ -88,7 +91,8 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | Command | Who | Behavior |
 | --- | --- | --- |
 | `/help` | Everyone | Show the command reference |
-| `/whoami` | Everyone | Show your name and permission (`user` or `admin`) |
+| `/whoami` | Everyone | Show your name and permission (`user`, `admin`, or stdin `su`) |
+| `/debug on\|off` | Web admins | Toggle expandable message details in this tab, including message ID, sender, recipient, timestamp, and sequence |
 | `/passwd old new` | Web users | Verify your old password, change it, and sign out other sessions; current session stays logged in |
 | `/rooms` | Everyone | List your rooms; admins can discover all rooms |
 | `/users` | Everyone | List active account names and permissions |
@@ -98,7 +102,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/leave [room]` | Everyone | Leave the specified or selected room; an admin must add regular users back |
 | `/tell user message` | Everyone | Private message, visible only to sender and recipient |
 | `/react message-id reaction` | Web users | Toggle your reaction on a retained message in the selected room or your private history |
-| `/retract message-id` | Web users | Delete your own retained room/private message for everyone; remove its retained reply previews |
+| `/retract message-id` | Everyone | Web users (including admins) delete only their own retained room/private messages; stdin `su` can delete any retained message by ID. Removes retained reply previews |
 | `/reply message-id message` | Web users | Reply in the selected room, or to the other participant of a private message |
 | `/new room` | Admin or stdin | Create a room; the web admin becomes its first member |
 | `/add user [room]` | Admin or stdin | Add an existing account; defaults to the selected room in the web UI |
@@ -126,7 +130,7 @@ for a reversible account suspension.
 
 There is no default room. Existing rooms are preserved, including rooms named
 `lobby`, which can be deleted like any other room. Rooms are invitation-only for regular users;
-admins explicitly control membership. Stdin is the superuser and can manage
+admins explicitly control membership. Stdin is `su` and can manage
 all rooms; specify the room on stdin. Account command passwords, including both `/passwd` arguments, are masked in local output and never logged.
 `/clean 7d room-name` cleans one room; `/clean 24h @private` cleans private messages;
 `/clean 7d @all` cleans all rooms and private messages. Without a scope it uses

@@ -10,6 +10,7 @@ export function ConsoleMessage({
   date,
   grouped,
   pending,
+  debug,
   onReact,
   onReply,
   onDelete,
@@ -19,10 +20,12 @@ export function ConsoleMessage({
   date: MessageDate;
   grouped: boolean;
   pending: boolean;
+  debug: boolean;
   onReact: (value: string) => void;
   onReply: () => void;
   onDelete: () => void;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [reaction, setReaction] = useState("");
   const [reactionOpen, setReactionOpen] = useState(false);
   const placement = useReactionPlacement(reactionOpen);
@@ -101,6 +104,24 @@ export function ConsoleMessage({
             ),
           )}
         </p>
+        {debug && detailsOpen && (
+          <dl id={`details-${message.id}`} class="message-debug">
+            <dt>Message ID</dt>
+            <dd>
+              <code>{message.id}</code>
+            </dd>
+            <dt>Sender</dt>
+            <dd>{message.from}</dd>
+            <dt>Recipient</dt>
+            <dd>{message.to ?? "Room"}</dd>
+            <dt>Timestamp</dt>
+            <dd>
+              {date.full} ({message.time})
+            </dd>
+            <dt>Sequence</dt>
+            <dd>{message.sequence}</dd>
+          </dl>
+        )}
         <div class="message-reactions">
           {Object.entries(message.reactions || {}).map(([value, users]) => (
             <button
@@ -117,7 +138,9 @@ export function ConsoleMessage({
           ))}
         </div>
       </div>
-      <div class={`message-actions ${reactionOpen ? "open" : ""}`}>
+      <div
+        class={`message-actions ${reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
+      >
         <button
           type="button"
           disabled={pending}
@@ -188,6 +211,17 @@ export function ConsoleMessage({
             </form>
           </div>
         </details>
+        {debug && (
+          <button
+            type="button"
+            aria-label="Show message details"
+            aria-expanded={detailsOpen}
+            aria-controls={`details-${message.id}`}
+            onClick={() => setDetailsOpen(!detailsOpen)}
+          >
+            ⋯
+          </button>
+        )}
       </div>
     </article>
   );

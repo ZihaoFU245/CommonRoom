@@ -12,6 +12,13 @@ pub struct Command {
 
 pub fn available(admin: bool, console: bool) -> Vec<Command> {
     let definitions = [
+        (
+            "General",
+            "/debug",
+            "/debug on|off",
+            "Toggle message details in this browser tab",
+            true,
+        ),
         ("General", "/help", "/help", "List commands", false),
         (
             "General",
@@ -178,14 +185,18 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
                 && (!console
                     || ![
                         "/passwd", "/join", "/leave", "/tell", "/history", "/react", "/reply",
-                        "/retract",
+                        "/debug",
                     ]
                     .contains(name))
         })
         .map(|(section, name, usage, description, admin)| Command {
             name,
             usage,
-            description,
+            description: if console && name == "/retract" {
+                "Delete any retained message by ID"
+            } else {
+                description
+            },
             section,
             admin,
             console: false,

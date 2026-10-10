@@ -194,6 +194,17 @@ impl Engine {
             ..
         } = *context;
         match parts[0] {
+            "/debug" => {
+                require_admin(admin)?;
+                if actor.is_none() {
+                    return Err("Debug details are available in the web UI only.".into());
+                }
+                require_len(parts, 2, "/debug on|off")?;
+                if !["on", "off"].contains(&parts[1]) {
+                    return Err("Usage: /debug on|off".into());
+                }
+                Ok(format!("Debug {}.", parts[1]))
+            }
             "/help" => {
                 require_len(parts, 1, "/help")?;
                 Ok(crate::commands::help(admin, actor.is_none()))
@@ -201,9 +212,10 @@ impl Engine {
             "/whoami" => {
                 require_len(parts, 1, "/whoami")?;
                 Ok(format!(
-                    "Name: {author}\nPermission: {}",
+                    "Name: {}\nPermission: {}",
+                    actor.unwrap_or("su"),
                     if actor.is_none() {
-                        "superuser"
+                        "su"
                     } else if admin {
                         "admin"
                     } else {

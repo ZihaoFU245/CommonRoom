@@ -45,4 +45,10 @@ on restart. It is separate from the registered account directory in `users`.
 `/retract message-id` deletes only the requesting author’s retained message in the
 selected room or their private history. It increments the conversation revision
 and clears quotes of that message in retained replies. Snapshots and history
-resynchronization remove the message and quotes on other devices.
+resynchronization remove the message and quotes on other devices. Web admins
+follow the same ownership restriction. Stdin `su` can retract any retained room or
+private message by ID without selecting a conversation.
+
+`/debug on|off` is a read-only, web-admin command; a successful acknowledgement
+toggles message details locally in the requesting tab. It does not change persisted
+state or expose messages outside the admin’s authorized conversations.

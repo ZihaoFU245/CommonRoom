@@ -52,6 +52,10 @@ export function useCommands({
   clearView,
   logout,
 }: Context) {
+  const [debug, setDebug] = useState(false);
+  useEffect(() => {
+    if (!state.admin) setDebug(false);
+  }, [state.admin]);
   const [draft, setDraft] = useState("");
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [pending, setPending] = useState(false);
@@ -242,6 +246,7 @@ export function useCommands({
           desiredRoom.current = null;
         }
       }
+      if (command === "/debug" && state.admin) setDebug(target === "on");
       if (command === "/tell" && target) {
         desiredRoom.current = `@direct:${target}`;
         if (privatePeers(currentState.current).includes(target)) {
@@ -263,6 +268,7 @@ export function useCommands({
     }
   }
   return {
+    debug: debug && state.admin,
     draft,
     pending,
     replyTarget,

@@ -421,6 +421,7 @@ export function Chat({
           </div>
         )}
         <MessageList
+          debug={commands.debug}
           entries={entries}
           username={state.username}
           pending={pending}
