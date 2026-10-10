@@ -28,7 +28,10 @@ rtk pnpm --dir web test:integration
 `auto/build.sh` installs dependencies, bundles the UI, and compiles Rust without
 running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
-`auto/debug.sh` only runs the existing debug binary.
+`auto/debug.sh` runs the existing debug binary and previews `web/dist-debug/`
+at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild.
+`auto/clean.sh` removes server/UI build artifacts and Vite caches, preserving
+data, dependencies, and lockfiles.
 
 The standalone `pnpm --dir web build` runs TypeScript, ESLint, and formatting
 checks before Vite. Vite's transpilation is not a substitute for type checking.

@@ -34,11 +34,19 @@ rtk proxy ./auto/build.sh debug
 rtk proxy ./auto/debug.sh
 ```
 
-Serve `web/dist-debug/` with Nginx, or use Vite at http://localhost:5173. `debug.sh` runs the existing artifact; it does not rebuild. Rebuild the relevant artifact after changing web assets or Rust code. Release
+`debug.sh` runs the existing server binary and serves `web/dist-debug/` with
+Vite preview at http://127.0.0.1:5173, proxying `/api` and `/ws` to
+`127.0.0.1:3000`. The server's stdin console remains available. Ctrl + C or
+either process exiting stops both. This uses the default root hosting and
+backend port; use Nginx for other saved listener/base-path or production settings.
+It does not rebuild. Rebuild the relevant artifact after changing web assets or Rust code. Release
 packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat` and
 `./ui.tar.xz` (containing `dist/`).
 
 All shell scripts live in `auto/` and locate the repository root themselves.
+Run `rtk proxy ./auto/clean.sh` to remove `target/`, both UI bundles, Vite
+caches, `./chat`, and `./ui.tar.xz`. Stop running debug processes first.
+Cleaning preserves `data/`, installed dependencies, and lockfiles.
 Both build modes skip source checks and tests. Run `rtk proxy ./auto/check.sh`
 separately before deploying.
 

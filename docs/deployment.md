@@ -28,7 +28,13 @@ Rust builds have no frontend dependency: `rtk cargo build --release --locked`
 works without web assets or Node. Debug builds (`./auto/build.sh debug`) produce
 `target/debug/chat` and `web/dist-debug/`; serve that UI directory with Nginx or
 use Vite at http://localhost:5173 during development. `auto/debug.sh` runs the
-existing server binary only.
+existing server binary and serves `web/dist-debug/` with Vite preview at
+http://127.0.0.1:5173, proxying API/WebSocket requests to `127.0.0.1:3000`.
+It preserves the stdin console and stops both processes on Ctrl + C or when
+either exits. This assumes root hosting and the default backend port;
+use Nginx for custom listener/base-path or production settings.
+`auto/clean.sh` removes `target/`, `web/dist/`, `web/dist-debug/`, Vite caches,
+`./chat`, and `./ui.tar.xz`, preserving `data/`, dependencies, and lockfiles.
 
 First production start:
 
