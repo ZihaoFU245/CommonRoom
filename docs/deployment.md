@@ -10,18 +10,25 @@ rtk proxy ./auto/check.sh
 rtk pnpm --dir web build
 rtk cargo build --release
 rtk proxy cp target/release/chat ./chat
+rtk proxy tar -cJf ui.tar.xz -C web dist
 ```
 
-Builds can also use `rtk proxy ./auto/build.sh`. Release builds first run the full
-source check/test suite from `auto/check.sh`; failure stops bundling and packaging.
-Debug builds (`./auto/build.sh debug`) skip that suite. All shell scripts live in
-`auto/` and work from any current directory. The script generates
-missing lockfiles on its first run and uses frozen/locked dependencies on
-subsequent runs. Both lockfiles are included for reproducible builds. The script
-itself uses ordinary commands; RTK only wraps your invocation. Release compilation requires a built
-frontend. Assets are embedded into `chat`, so neither `web/` nor Node
-is needed on the destination server. A debug binary embeds assets if they
-exist at compile time; normally development uses Vite instead.
+Builds can also use `rtk proxy ./auto/build.sh` (release by default). All shell
+scripts live in `auto/` and work from any current directory. The build script
+installs dependencies and builds without running source checks or tests; run
+`rtk proxy ./auto/check.sh` separately. It generates missing lockfiles on its
+first run and uses frozen/locked dependencies subsequently. Release builds
+produce `./chat` and `./ui.tar.xz`; the archive contains the `dist/` folder from
+`web/dist/`. Extract it with `tar -xJf ui.tar.xz -C /srv/commonroom` (create that
+directory first), then point Nginx at `/srv/commonroom/dist/`. Node and pnpm are
+not needed on the destination server. Deploy the binary and UI independently,
+keeping their protocol versions compatible.
+
+Rust builds have no frontend dependency: `rtk cargo build --release --locked`
+works without web assets or Node. Debug builds (`./auto/build.sh debug`) produce
+`target/debug/chat` and `web/dist-debug/`; serve that UI directory with Nginx or
+use Vite at http://localhost:5173 during development. `auto/debug.sh` runs the
+existing server binary only.
 
 First production start:
 
@@ -35,12 +42,18 @@ location-only include for `/commonroom/`. Place it inside your existing HTTPS
 inside `http`. Your existing server supplies TLS certificates and HTTP-to-HTTPS
 redirection. Match `base_url` to the location prefix. The example preserves
 the prefix when forwarding; do not add a trailing slash to `proxy_pass`.
-For root hosting, set `base_url` to `/` and use a single `location /` proxy.
+Nginx serves `/commonroom/` and its static files directly from the extracted
+`dist/` folder. It proxies `/commonroom/api/` and the exact `/commonroom/ws`
+endpoint to Rust. Unknown static files return 404. Keep the trailing-slash
+redirect so relative asset and API URLs resolve correctly. For root hosting,
+set `base_url` to `/`, change the locations to `/api/`, `/ws`, and `/`, and
+remove the `/commonroom` redirect.
 Validate with `rtk proxy nginx -t` before reloading Nginx.
 
 Release binaries require HTTPS, check request origins, set secure HttpOnly
-cookies scoped to `base_url`, send HSTS and CSP, and reject requests without
-`X-Forwarded-Proto: https`. The frontend redirects HTTP to HTTPS and uses
+cookies scoped to `base_url`, send HSTS and CSP on backend responses, and reject
+requests without `X-Forwarded-Proto: https`. Nginx supplies the security headers
+for static UI responses. The frontend redirects HTTP to HTTPS and uses
 `wss:` in production. The proxy must overwrite forwarded headers. Production
 requests must arrive from the exact socket-peer IP configured in `trust`;
 forwarded headers cannot override that check. Keep the backend listener private
@@ -66,13 +79,15 @@ on the same machine:
 }
 ```
 
-`bind` is the single HTTP listener: it serves the embedded frontend, `/api/`
-endpoints, and WebSockets at `/ws` on the same port (3000 by default).
-`base_url` prefixes all these paths at runtime without rebuilding the frontend:
-`/commonroom/`, `/commonroom/api/login`, `/commonroom/ws`. It defaults to `/`
-and accepts path segments containing letters, digits, `-`, and `_`; a trailing
+`bind` is the backend HTTP listener: it serves `/api/` endpoints and WebSockets
+at `/ws` on the same port (3000 by default), with no static UI routes.
+`base_url` prefixes backend paths at runtime: `/commonroom/api/login` and
+`/commonroom/ws`. Serve the UI under the same prefix through Nginx; relative
+URLs let the same UI build work at `/` or `/commonroom/`. `base_url` defaults
+to `/` and accepts path segments containing letters, digits, `-`, and `_`; a trailing
 slash is added automatically. It is a path, not a full URL. Nginx
-exposes HTTPS and WSS on port 443 and forwards both to this listener.
+exposes HTTPS and WSS on port 443, serves UI files, and forwards API/WebSocket
+requests to this listener.
 `trust` is a single proxy IP address, defaulting to `127.0.0.1`; use the load
 balancer's actual source IP for a remote proxy, and bind to a reachable private
 address. Trust is enforced in production. Existing config files without
@@ -91,14 +106,6 @@ still serialize the retained application state. Read positions use a separate
 SQLite table with indexed, monotonic updates and do not rewrite message data.
 Restart after editing these values.
 
-### Cloudflare Tunnel (without Nginx)
-
-Cloudflare Tunnel can connect directly to this HTTP server and supports the
-same WebSocket endpoint. For a named tunnel, map your public hostname to
-`http://127.0.0.1:3000`. Use [deploy/cloudflared.yml](../deploy/cloudflared.yml)
-for a locally managed tunnel, or enter that service URL in the Cloudflare dashboard.
-Run `cloudflared` on the same machine with:
-
 ```json
 {
   "production": true,
@@ -114,12 +121,9 @@ Run `cloudflared` on the same machine with:
 
 Set the public hostname to your actual domain. Enable HTTPS redirects at
 Cloudflare (Always Use HTTPS) and keep WebSockets enabled. The backend checks
-`X-Forwarded-Proto: https`, which Cloudflare supplies for HTTPS visitors;
-its own connection from `cloudflared` remains HTTP. No separate WebSocket route
-or TLS certificate is needed on this server. Use `127.0.0.1` rather than
-`localhost` in the service URL so the socket peer matches `trust`. If your
-connector is on another machine or in a container, adjust `bind` and `trust`
-to the reachable address and actual connector source IP.
+`X-Forwarded-Proto: https`, which Nginx supplies on its proxied requests.
+Set backend `trust` to Nginx's actual socket-peer IP, and keep the Rust listener
+private. The tunnel origin uses HTTPS so Nginx supplies the correct scheme.
 
 Cloudflare Tunnel preserves request paths. For `/commonroom/`, set that
 `base_url` and forward the path unchanged. Do not cache `/api/*` or `/ws`

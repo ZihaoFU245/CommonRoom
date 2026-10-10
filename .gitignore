@@ -4,6 +4,7 @@
 /web/dist-debug/
 /data/
 /chat
+/ui.tar.xz
 *.sqlite*
 .DS_Store
 .env

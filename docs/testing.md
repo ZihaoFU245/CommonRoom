@@ -25,10 +25,9 @@ rtk proxy ./auto/build.sh release
 rtk pnpm --dir web test:integration
 ```
 
-`auto/build.sh release` installs frozen dependencies, runs `auto/check.sh`, then
-bundles the web and compiles/packages Rust. Any failed check stops the process
-before replacing web/release artifacts. `auto/build.sh debug` skips source checks
-and tests for quick iteration; run `auto/check.sh` separately when needed.
+`auto/build.sh` installs dependencies, bundles the UI, and compiles Rust without
+running source checks or tests in either mode. Release builds package `./chat`
+and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 `auto/debug.sh` only runs the existing debug binary.
 
 The standalone `pnpm --dir web build` runs TypeScript, ESLint, and formatting
@@ -49,12 +48,11 @@ Rust tests cover configuration validation, proxy trust, account permissions and 
 
 Web helper tests cover local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
-Build tests inject failures at every release check stage in disposable fixtures,
-verify that later stages never run and existing artifacts remain intact, and check
-that debug builds skip checks. Rust tests also verify that a poisoned engine
+Build tests verify that both modes skip checks and that release packaging
+contains the `dist/` directory with its files. Rust tests also verify that a poisoned engine
 returns an unavailable response and never reuses potentially partial state.
 
-`web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, migration/restart, embedded assets, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
+`web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, migration/restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
 ## UI verification
 

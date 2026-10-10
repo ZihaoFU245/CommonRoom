@@ -25,21 +25,22 @@ Run the web development server in another terminal:
 rtk pnpm --dir web dev
 ```
 
-Open http://localhost:5173. Vite proxies `/api` and `/ws` to the Rust listener at `127.0.0.1:3000`. Development uses plain WS; release assets use HTTPS/WSS. The default Vite proxy assumes root hosting. To verify a configured base path, use the embedded build or adjust the development proxy.
+Open http://localhost:5173. Vite proxies `/api` and `/ws` to the Rust listener at `127.0.0.1:3000`. Development uses plain WS; release assets use HTTPS/WSS. The default Vite proxy assumes root hosting. To verify a configured base path, serve the built UI with Nginx or adjust the development proxy.
 
-For an embedded debug build:
+To build the debug server and UI:
 
 ```sh
 rtk proxy ./auto/build.sh debug
 rtk proxy ./auto/debug.sh
 ```
 
-Open http://localhost:3000. `debug.sh` runs the existing artifact; it does not rebuild. Rebuild after changing web assets or Rust code. Release packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat`.
+Serve `web/dist-debug/` with Nginx, or use Vite at http://localhost:5173. `debug.sh` runs the existing artifact; it does not rebuild. Rebuild the relevant artifact after changing web assets or Rust code. Release
+packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat` and
+`./ui.tar.xz` (containing `dist/`).
 
 All shell scripts live in `auto/` and locate the repository root themselves.
-Debug builds skip source checks and tests; release builds must pass the full
-`auto/check.sh` suite before bundling/packaging. Run `rtk proxy ./auto/check.sh`
-for a manual check during development.
+Both build modes skip source checks and tests. Run `rtk proxy ./auto/check.sh`
+separately before deploying.
 
 Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` contains real account credentials, sessions, and private history; do not delete or modify it for tests. Tests create their own temporary folders. Stop a server before copying its entire data folder.
 

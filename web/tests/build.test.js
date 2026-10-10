@@ -7,6 +7,7 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
+  existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +48,6 @@ const tool = path.basename(process.argv[1]);
 const args = process.argv.slice(2);
 const command = tool + ' ' + args.join(' ');
 fs.appendFileSync('calls.log', command + '\\n');
-if (command === process.env.FAIL_CHECK) process.exit(42);
 if (tool === 'cargo' && args[0] === 'build') {
   const output = path.join('target', args.includes('--release') ? 'release' : 'debug');
   fs.mkdirSync(output, { recursive: true });
@@ -58,14 +58,13 @@ if (tool === 'cargo' && args[0] === 'build') {
     writeFileSync(join(root, "bin", tool), stub, { mode: 0o755 });
   return {
     root,
-    build(mode, failure = "") {
+    build(mode) {
       const result = spawnSync("sh", ["./auto/build.sh", mode], {
         cwd: root,
         encoding: "utf8",
         env: {
           ...process.env,
           PATH: `${join(root, "bin")}:${process.env.PATH}`,
-          FAIL_CHECK: failure,
         },
       });
       assert.ifError(result.error);
@@ -77,53 +76,53 @@ if (tool === 'cargo' && args[0] === 'build') {
   };
 }
 
-for (const failure of checks) {
-  test(
-    `build stops at failed ${failure} and preserves existing artifacts`,
-    { skip: process.platform === "win32" },
-    (t) => {
-      const { root, build } = fixture(t);
-      const { status, calls } = build("release", failure);
-      assert.equal(status, 42);
-      assert.equal(calls.at(-1), failure);
-      assert.ok(
-        !calls.some(
-          (command) =>
-            command.startsWith("cargo build") ||
-            command.includes("exec vite build"),
-        ),
-      );
-      assert.equal(
-        readFileSync(join(root, "chat"), "utf8"),
-        "existing release artifact",
-      );
-      for (const mode of ["dist", "dist-debug"])
-        assert.equal(
-          readFileSync(join(root, "web", mode, "index.html"), "utf8"),
-          "existing web artifact",
-        );
-    },
-  );
-}
 for (const mode of ["debug", "release"]) {
   test(
-    `${mode} build ${mode === "release" ? "checks all sources first" : "skips checks"}`,
+    `${mode} build skips checks and packages the expected artifacts`,
     { skip: process.platform === "win32" },
     (t) => {
       const { root, build } = fixture(t);
       const { status, stdout, stderr, calls } = build(mode);
       assert.equal(status, 0, stdout + stderr);
-      const stages = mode === "release" ? checks : [];
-      assert.deepEqual(calls.slice(1, 1 + stages.length), stages);
-      if (mode === "debug")
-        assert.ok(!calls.some((command) => checks.includes(command)));
-      assert.match(calls[1 + stages.length], /^pnpm --dir web exec vite build/);
-      assert.match(calls[2 + stages.length], /^cargo build/);
-      if (mode === "release")
+      assert.ok(!calls.some((command) => checks.includes(command)));
+      assert.deepEqual(calls, [
+        "pnpm --dir web install --frozen-lockfile",
+        mode === "debug"
+          ? "pnpm --dir web exec vite build --mode development --outDir dist-debug"
+          : "pnpm --dir web exec vite build",
+        mode === "debug"
+          ? "cargo build --locked"
+          : "cargo build --release --locked",
+      ]);
+      assert.equal(existsSync(join(root, "ui.tar.xz")), mode === "release");
+      if (mode === "release") {
         assert.equal(
           readFileSync(join(root, "chat"), "utf8"),
           "new compiled artifact",
         );
+        const archive = spawnSync("tar", ["-tJf", "ui.tar.xz"], {
+          cwd: root,
+          encoding: "utf8",
+        });
+        assert.equal(archive.status, 0, archive.stderr);
+        assert.deepEqual(archive.stdout.trim().split("\n").sort(), [
+          "dist/",
+          "dist/index.html",
+        ]);
+        const extracted = join(root, "extracted");
+        mkdirSync(extracted);
+        const extraction = spawnSync("tar", [
+          "-xJf",
+          join(root, "ui.tar.xz"),
+          "-C",
+          extracted,
+        ]);
+        assert.equal(extraction.status, 0);
+        assert.equal(
+          readFileSync(join(extracted, "dist", "index.html"), "utf8"),
+          "existing web artifact",
+        );
+      }
     },
   );
 }

@@ -14,9 +14,6 @@ fi
 if [ ! -f Cargo.lock ]; then
     cargo generate-lockfile
 fi
-if [ "$mode" = release ]; then
-    ./auto/check.sh
-fi
 if [ "$mode" = debug ]; then
     NODE_ENV=development pnpm --dir web exec vite build --mode development --outDir dist-debug
 else
@@ -28,5 +25,6 @@ if [ "$mode" = debug ]; then
 else
     cargo build --release --locked
     cp target/release/chat ./chat
-    printf '%s\n' 'Built ./chat with the frontend embedded.'
+    tar -cJf ui.tar.xz -C web dist
+    printf '%s\n' 'Built ./chat and ./ui.tar.xz (contains dist/).'
 fi
