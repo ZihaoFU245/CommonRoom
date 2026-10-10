@@ -133,6 +133,97 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "Remove a group assignment or direct permission; /man revoke explains",
             true,
         ),
+        (
+            "Agents",
+            "/agent",
+            "/agent name api-key",
+            "Create an AI agent; you own and configure it",
+            true,
+        ),
+        (
+            "Agents",
+            "/agent-key",
+            "/agent-key api-key [agent-name]",
+            "Replace an agent's provider key",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-reply",
+            "/agent-reply [auto|mention] [agent-name]",
+            "Reply to every message (auto) or mentions only (mention)",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-name",
+            "/agent-name new-name [agent-name]",
+            "Rename an agent and its retained messages",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-remove",
+            "/agent-remove [agent-name]",
+            "Delete an agent and its private conversations",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-search",
+            "/agent-search [on|off] [agent-name]",
+            "Let the agent search the web before answering",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-search-key",
+            "/agent-search-key search-api-key [agent-name]",
+            "Set the agent's web-search key",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-sources",
+            "/agent-sources [auto|always|never] [agent-name]",
+            "Let the model decide its sources (auto), always list them, or never",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-prompt",
+            "/agent-prompt <personality text> [agent-name]",
+            "Set the agent's personality; no text shows it, - clears it",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-provider",
+            "/agent-provider provider-name [agent-name]",
+            "Choose the model provider, e.g. openrouter or openai",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-base-url",
+            "/agent-base-url https://host/path [agent-name]",
+            "Point the agent at a gateway or a self-hosted model",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-model",
+            "/agent-model model-id [agent-name]",
+            "Choose the model id, e.g. z-ai/glm-4.6",
+            false,
+        ),
+        (
+            "Agents",
+            "/agent-config",
+            "/agent-config [agent-name]",
+            "Show everything one agent is configured with",
+            false,
+        ),
         ("Rooms", "/rooms", "/rooms", "List rooms and owners", false),
         (
             "Rooms",
@@ -154,7 +245,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "Rooms",
             "/add",
             "/add user [room]",
-            "Invite a user to a room",
+            "Invite a user or agent to a room",
             true,
         ),
         (
@@ -227,8 +318,31 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             (!privileged || admin)
                 && (!console
                     || ![
-                        "/passwd", "/join", "/leave", "/tell", "/history", "/react", "/reply",
-                        "/debug", "/console",
+                        "/passwd",
+                        "/join",
+                        "/leave",
+                        "/tell",
+                        "/history",
+                        "/react",
+                        "/reply",
+                        "/debug",
+                        "/console",
+                        // Agent configuration needs an owning account, so the
+                        // console never advertises it. /retract stays: the
+                        // console may delete any retained message by ID.
+                        "/agent",
+                        "/agent-key",
+                        "/agent-reply",
+                        "/agent-name",
+                        "/agent-remove",
+                        "/agent-search",
+                        "/agent-search-key",
+                        "/agent-sources",
+                        "/agent-prompt",
+                        "/agent-provider",
+                        "/agent-base-url",
+                        "/agent-model",
+                        "/agent-config",
                     ]
                     .contains(name))
         })
@@ -325,16 +439,18 @@ pub fn help(admin: bool, console: bool) -> String {
 }
 
 pub fn help_for(commands: &[Command]) -> String {
-    ["General", "Account", "Rooms", "Messages", "Server"]
-        .into_iter()
-        .filter_map(|section| {
-            let lines: Vec<_> = commands
-                .iter()
-                .filter(|c| c.section == section)
-                .map(|c| format!("{} — {}", c.usage, c.description))
-                .collect();
-            (!lines.is_empty()).then(|| format!("[{section}]\n{}", lines.join("\n")))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    [
+        "General", "Account", "Agents", "Rooms", "Messages", "Server",
+    ]
+    .into_iter()
+    .filter_map(|section| {
+        let lines: Vec<_> = commands
+            .iter()
+            .filter(|c| c.section == section)
+            .map(|c| format!("{} — {}", c.usage, c.description))
+            .collect();
+        (!lines.is_empty()).then(|| format!("[{section}]\n{}", lines.join("\n")))
+    })
+    .collect::<Vec<_>>()
+    .join("\n\n")
 }

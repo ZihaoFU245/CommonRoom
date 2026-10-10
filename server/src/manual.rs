@@ -51,7 +51,9 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
     }
     text.push_str("\n\n## Command grants");
     let catalog = commands::available(true, false);
-    for section in ["General", "Account", "Rooms", "Messages", "Server"] {
+    for section in [
+        "General", "Account", "Agents", "Rooms", "Messages", "Server",
+    ] {
         let names = catalog
             .iter()
             .filter(|command| command.section == section)
