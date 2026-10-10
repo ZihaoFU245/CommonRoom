@@ -72,6 +72,7 @@ Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` conta
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`, and avoid holding the engine mutex across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
+- Treat an agent's provider key like a password: it lives only in the engine state, is never serialized to a client, never logged, and is masked in local command output. Agent network calls are the only place the credential is read, and they run outside the engine lock.
 - Keep migrations compatible with existing `data/`. Any schema change needs a version increment, migration tests, rollback behavior, and an update to [Data](data.md).
 - Use `cargo fmt` and the web Prettier scripts. Update the relevant guides when paths, commands, protocol, configuration, or deployment behavior changes.
 

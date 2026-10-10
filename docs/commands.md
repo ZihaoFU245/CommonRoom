@@ -64,7 +64,163 @@ the original message expires. The quote jumps to the original if it is loaded.
 Type `@username` to mention a room member or the other private-chat participant;
 name completion appears as you type. Names are case-sensitive. The server
 records mentions only for participants in that conversation; email addresses
-are not treated as mentions. Text and custom reactions remain UTF-8.
+are not treated as mentions. Text and custom reactions remain UTF-8. Mentioning
+an agent member asks it for an answer.
+
+## Agents
+
+An agent is an account with the `agent` role. Agents cannot log in, never appear
+online, hold no password, and can never hold administrator permission. Each
+agent has one provider API key and one reply mode:
+
+- `mention` (default) answers only messages that mention the agent.
+- `auto` answers every message in a conversation the agent belongs to.
+- An agent never answers another agent, so agents cannot hold a conversation
+  with each other. One trigger produces exactly one answer.
+
+```text
+/agent helper sk-your-deepseek-key   # create an agent you own
+/add helper lobby                    # invite it like any account
+@helper summarise today's standup    # ask it in the room
+/agent-reply auto                    # answer every room message instead
+/agent-reply mention                 # go back to mentions only
+/agent-key sk-a-new-key              # replace the provider key
+/agent-name assistant                # rename it and its retained messages
+/agent-remove                        # delete it and its private conversations
+/agent-prompt 你是一条大肥鱼 🐟 多说 emoji   # write its personality
+```
+
+The value comes first and the agent name is optional. An account that owns one
+agent may omit it; an account that owns several, or an administrator acting on
+an agent it does not own, names the target as the last argument, for example
+`/agent-reply auto helper` or `/agent-key sk-a-new-key helper`. Only the owner,
+or an administrator, may change an agent.
+
+### Personality
+
+An owner can give an agent a personality. The text is added to the agent''s own
+rules, so a personality cannot drop the language, length, or formatting behavior
+the chat relies on, and it applies to every answer that agent writes.
+
+```text
+/agent-prompt <personality text> [agent-name]   # write or replace it
+/agent-prompt [agent-name]                      # show what is set
+/agent-prompt -                                 # clear it
+```
+
+`/agent prompt <text>` is the same command. The personality may contain spaces,
+punctuation, newlines, and emoji, and holds up to 4000 characters; it is only
+trimmed of surrounding whitespace. Because the text is free-form, the agent name
+is only recognised as the final word when it matches an existing agent, so
+`/agent-prompt 写诗 writer` sets `写诗` on `writer`. Naming an agent on its own
+reads that agent rather than writing its name as a personality. An administrator
+may edit any agent; everyone else may edit the agents they created.
+
+The sidebar button next to Settings opens the same field as a dialog with a
+character counter, which is easier than a one-line command for long text.
+Personality text is visible to every signed-in account, in the snapshot and
+through the command, because agents act on it and it can be inferred from their
+answers either way; it is never a place for a key.
+
+### Provider and model
+
+An agent answers through a model provider. The default is DeepSeek; an owner can
+move one agent to another provider, to a gateway, or to a self-hosted model
+without touching the others.
+
+```text
+/agent-provider openrouter            # deepseek, openrouter, openai, groq,
+                                     # together, mistral, xai, or - for the default
+/agent-model z-ai/glm-4.6            # any model id the provider serves
+/agent-base-url https://host/v1      # a gateway or a self-hosted endpoint
+/agent-config                        # show everything one agent is set to
+```
+
+Every supported provider speaks the OpenAI chat-completions shape, so one
+request builder serves all of them, and switching provider never changes the
+agent's key: a new provider needs its own key from `/agent-key`. A base URL wins
+over the provider name, which lets an owner point a single agent at a proxy
+without naming it; the URL must be `https://`, and a plain root, a trailing
+slash, and the endpoint path itself all normalise to the same value. A model id
+is passed through unchanged, so namespaced ids such as `z-ai/glm-4.6`,
+`anthropic/claude-sonnet-4`, or `meta-llama/Llama-3.3-70B-Instruct-Turbo` work as
+given. `-` returns any of the three settings to its default.
+
+Thinking controls are provider-specific, so they are sent only to providers that
+accept them. Point an agent at a gateway whose model rejects unknown fields and
+that agent sends neither `thinking` nor `reasoning_effort`.
+
+Answers always come back in the chat-completions shape, so a provider that
+answers in a different shape (Anthropic Messages, OpenAI Responses) is not
+supported yet: point the agent at a gateway that translates instead, such as
+OpenRouter.
+
+### Web search
+
+An agent can search the web before answering, so it can report facts that
+changed after its training data. Search is off until an owner turns it on, and
+every agent needs its own search key:
+
+```text
+/agent-search-key tvly-dev-xxxxxxxx  # store this agent's search key
+/agent-search on                     # let it search before answering
+/agent-search off                    # answer from knowledge only
+/agent-sources auto                  # the model decides which results to cite
+/agent-sources always                # always list the results that were used
+/agent-sources never                 # never list sources
+```
+
+With search on, each question first asks the model whether it needs current
+information. Releases, prices, schedules, and news become a search; greetings,
+definitions, and arithmetic do not.
+
+`sources` decides what an answer shows, and every search never dumps its result
+set into the message:
+
+- `auto` (default) ends the answer with a `来源：` list of only the results the
+  model says it relied on, in the order it used them. A result the search
+  returned but the answer did not need never appears, and an answer that cites
+  nothing gets no list at all, so an everyday reply stays short.
+- `always` lists the results the search returned.
+- `never` lists nothing, even when the answer used the results.
+
+Each source shows a shortened page title as a clickable link, never a raw
+address; the full address stays in the link and in its tooltip. Only `http` and `https` addresses become links, and a bare address in a
+message is shown as its host and path.
+
+The model never receives an address, in either the conversation or the search
+results, because a model that copies a long percent-encoded URL back into an
+answer mangles the encoding. It cites a result by number and the server appends
+the links. A search failure posts a `⚠` message in the
+conversation, exactly like a provider failure. The search key is never logged,
+never shown in command output, and never sent to a browser, and it is passed to
+the search call only while search is on. `CHAT_SEARCH_URL` overrides the search
+endpoint and is ignored unless it starts with `https://`.
+
+Answers use the last 20 retained messages of the conversation as context. The
+message being answered is marked in that transcript, so an agent with several
+open questions replies to the one it was mentioned in rather than to an earlier
+one, and it asks for clarification instead of answering a stale question.
+Messages that start with the `⚠` fault marker are excluded, so an agent never
+reacts to its own failure. Each agent call uses `deepseek-flash`
+(DeepSeek-V4.1-Flash) with thinking mode off, because DeepSeek counts
+chain-of-thought tokens against the output limit and a long reasoning pass can
+consume the whole budget before the answer begins. Answers are limited to 4096
+tokens with a 60-second timeout, and at most four provider calls run at once.
+Set `CHAT_AGENT_THINKING=low` to enable thinking mode for answers; the low
+reasoning tier is used when it is on, and a reasoning-only reply is retried once
+without thinking instead of failing. A failed call posts a short `⚠` message in
+the conversation instead of an answer, and the provider status is reported
+there; the key itself is never logged, never shown in command output, and never
+sent to a browser. Agent answers are ordinary messages: they count as unread, can be
+reacted to, quoted, and retracted, and are removed by `/clean` like any other
+message. Removing an agent cleans up its memberships, its private
+conversations, and its read positions. Disabling an agent with `/disable` keeps
+the account but removes its room memberships, so it stops answering until an
+admin adds it back.
+
+Provider traffic leaves the server, so a room's retained messages become part of
+the request sent to the configured provider when an agent answers in that room.
 
 For desktop Chrome notifications, click the bell next to your profile and
 allow notifications in the browser prompt. Production needs HTTPS; localhost
@@ -134,9 +290,25 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/disable name` | Account-disable grant | Disable, revoke sessions and remove room access |
 | `/enable name` | Account-enable grant | Enable without restoring room access |
 | `/deleteuser name` | Account-delete grant | Delete account and private pairs; retain room messages with deleted-author label |
+| `/agent name api-key` | Accounts with the `/agent` command | Create an agent you own; it starts in `mention` mode |
+| `/agent-key api-key [agent-name]` | Owner or admin | Replace the agent's provider key |
+| `/agent-reply [auto\|mention] [agent-name]` | Owner or admin | Choose which messages the agent answers |
+| `/agent-name new-name [agent-name]` | Owner or admin | Rename the agent and relabel its retained messages |
+| `/agent-prompt [personality text] [agent-name]` | Owner or admin | Write, show, or clear the agent's personality; `-` clears it |
+| `/agent-provider provider-name [agent-name]` | Owner or admin | Choose the model provider, or `-` for the default |
+| `/agent-base-url https://host/path [agent-name]` | Owner or admin | Point the agent at a gateway or self-hosted model; must be HTTPS |
+| `/agent-model model-id [agent-name]` | Owner or admin | Choose the model id, or `-` for the default |
+| `/agent-search [on\|off] [agent-name]` | Owner or admin | Search the web before answering; needs a search key first |
+| `/agent-search-key search-api-key [agent-name]` | Owner or admin | Store the agent's web-search key; search stays off until enabled |
+| `/agent-sources [auto\|always\|never] [agent-name]` | Owner or admin | Choose whether a searched answer lists its sources |
+| `/agent-config [agent-name]` | Owner or admin | Show owner, provider, model, reply mode, search, sources, and the agent's own access |
+| `/agent-remove [agent-name]` | Owner or admin | Delete the agent, its private conversations, and its grants |
 
 See [Security](security.md) for permission names, group bundles, scope syntax,
-read-only access, delegation limits, ownership and persistence.
+read-only access, delegation limits, ownership and migration examples.
+
+Accounts with the /rename command may rename themselves; the target may also
+be renamed by an account holding authority over its account scope.
 
 `/deleteuser bob` permanently removes Bob's account and private conversations
 for both participants. Shared room messages and reply quotes remain, with their
