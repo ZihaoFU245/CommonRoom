@@ -23,7 +23,7 @@ pub use agents::{
     AGENT_ERROR_PREFIX, DEFAULT_MODEL, KNOWN_PROVIDERS, agent_system_prompt, resolve_provider,
 };
 use dispatch::CommandContext;
-pub use dispatch::sudo_command;
+pub use dispatch::{resolve_command, sudo_command};
 use helpers::*;
 pub use helpers::{hash_password, verify_password};
 pub use models::*;

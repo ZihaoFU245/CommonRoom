@@ -167,6 +167,8 @@ const COMMANDS: &[&str] = &[
     "/retract",
     "/reply",
     "/new",
+    "/new-room",
+    "/list",
     "/add",
     "/kick",
     "/delete",
@@ -187,10 +189,15 @@ const COMMANDS: &[&str] = &[
     "/owner",
     "/console",
     "/sudo",
-    // Agent commands, granted by name like every other command. Each command
-    // still enforces its own action inside the dispatcher, and the agent
-    // commands an account may run are limited to the agents it owns.
+    // Agent commands, granted by name like every other command. `/list` and
+    // `/new` are the unified spellings and carry the authority of the command
+    // each one resolves to, so `/list user` also needs the `/users` grant and
+    // `/new user` the `/user` grant. The agent settings an account may run stay
+    // limited to the agents it owns.
+    "/list",
     "/agent",
+    "/agent-create",
+    "/agent-list",
     "/agent-key",
     "/agent-reply",
     "/agent-name",
@@ -299,6 +306,9 @@ fn agent_account_rights() -> Rights {
 /// Agent commands whose listing depends on owning an agent rather than on a
 /// grant alone. `/agent-config` is absent because it only reads.
 pub(super) const AGENT_OWNER_COMMANDS: &[&str] = &[
+    "/agent",
+    "/list",
+    "/agent-list",
     "/agent-key",
     "/agent-reply",
     "/agent-name",
@@ -319,6 +329,9 @@ fn agent_owner_rights() -> Rights {
         &[Action::Directory],
         &[
             "/agent",
+            "/list",
+            "/agent-create",
+            "/agent-list",
             "/agent-key",
             "/agent-reply",
             "/agent-name",
@@ -387,6 +400,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             ],
             &[
                 "/new",
+                "/new-room",
                 "/user",
                 "/disable",
                 "/enable",

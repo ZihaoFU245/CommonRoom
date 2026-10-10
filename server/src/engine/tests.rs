@@ -88,7 +88,8 @@ fn private_rings_are_independent_and_read_positions_persist() {
                 .unwrap();
         }
         e.set_limits(64, 64, 3).unwrap();
-        e.run(Some("alice"), None, "/new room").unwrap();
+        // The room is named "room"; the kind word comes first.
+        e.run(Some("alice"), None, "/new room room").unwrap();
         e.run(Some("alice"), None, "/add bob room").unwrap();
         for n in 0..5 {
             e.run(Some("alice"), None, &format!("/tell bob 私信 {n} 🙂"))
@@ -470,7 +471,7 @@ fn message_features_persist_and_rollback() {
     {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
-        e.run(Some("alice"), None, "/new room").unwrap();
+        e.run(Some("alice"), None, "/new room room").unwrap();
         e.run(Some("alice"), Some("room"), "@alice 中文").unwrap();
         let id = e.data.rooms["room"].messages[0].id.clone();
         e.run(Some("alice"), Some("room"), &format!("/reply {id} reply"))
@@ -757,7 +758,7 @@ fn history_tail_members_and_account_recovery() {
     );
     assert!(e.run(Some("bob"), Some("lobby"), "/history 1001").is_err());
     assert!(
-        e.run(Some("bob"), Some("lobby"), "/members")
+        e.run(Some("bob"), Some("lobby"), "/list member")
             .unwrap()
             .reply
             .contains("alice — admin")
@@ -852,7 +853,7 @@ fn retract_persists_and_failed_writes_restore_message_and_quotes() {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
         e.provision("bob", "hash".into(), false, false).unwrap();
-        e.run(Some("alice"), None, "/new room").unwrap();
+        e.run(Some("alice"), None, "/new room room").unwrap();
         for room in [Some("room"), None] {
             e.run(
                 Some("alice"),
@@ -986,22 +987,59 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
     }
     assert!(e.execute(None, None, "/retract missing").is_err());
 }
+/// Leave `name` able to create accounts without holding the admin group.
+///
+/// Creating an agent creates an account, so it needs `x:account.create`. The
+/// engine bootstraps with the console identity as su, so the grant is made
+/// through that identity and the temporary elevation is dropped again. The
+/// result is the ordinary case this file tests: an account that owns an agent
+/// is not an administrator.
+fn allow_account_creation(e: &mut Engine, name: &str) {
+    let name = name.to_string();
+    // An account that is already an administrator needs nothing: it holds
+    // x:account.create and every agent command already.
+    if e.is_admin(&name) {
+        return;
+    }
+    e.with_command_authority(None, None, true, |engine| {
+        engine.data.policy.grants.push(authorization::Grant {
+            owner: false,
+            subject: authorization::Subject::Account(engine.data.users[&name].id.clone()),
+            scope: authorization::Scope::Server,
+            permissions: BTreeSet::from([authorization::Action::CreateAccount.name().to_string()]),
+            minimum_age: 0,
+        });
+        engine.data.policy.revision = engine.data.policy.revision.wrapping_add(1);
+        Ok(())
+    })
+    .unwrap();
+    assert!(!e.is_admin(&name), "{name} must not be an administrator");
+    assert!(
+        e.allows(
+            Some(&name),
+            &authorization::Scope::Server,
+            authorization::Action::CreateAccount
+        ),
+        "{name} may create an account"
+    );
+}
 /// Provision an agent owned by `owner` and invite it to `room`.
 fn agent_engine(room: &str, owner: &str, reply: AgentReply) -> Engine {
     let mut e = engine();
-    e.run(Some(owner), None, "/agent helper sk-test-secret")
+    allow_account_creation(&mut e, owner);
+    e.run(Some(owner), None, "/new agent helper sk-test-secret")
         .unwrap();
     e.run(Some(owner), None, &format!("/add helper {room}"))
         .unwrap();
     if reply != AgentReply::default() {
-        e.run(Some(owner), None, "/agent-reply auto").unwrap();
+        e.run(Some(owner), None, "/agent reply auto").unwrap();
     }
     e
 }
 #[test]
 fn agent_accounts_are_roles_that_cannot_log_in_or_act_as_admins() {
     let mut e = engine();
-    e.run(Some("alice"), None, "/agent helper sk-test-secret")
+    e.run(Some("alice"), None, "/new agent helper sk-test-secret")
         .unwrap();
     let account = e.data.users["helper"].clone();
     assert!(account.is_agent() && !account.is_human() && !account.disabled);
@@ -1043,7 +1081,7 @@ fn agent_accounts_are_roles_that_cannot_log_in_or_act_as_admins() {
     assert!(!e.is_admin("helper"));
     assert!(e.run(Some("helper"), None, "/new sneaky").is_err());
     assert!(e.run(Some("helper"), None, "/clean 7d @all").is_err());
-    assert!(e.run(Some("helper"), None, "/users").is_err());
+    assert!(e.run(Some("helper"), None, "/list user").is_err());
     // An agent cannot be handed a group, so the last-admin guard never has to
     // consider one.
     assert!(e.run(Some("alice"), None, "/grant helper admin").is_err());
@@ -1068,12 +1106,12 @@ fn agent_keys_stay_out_of_snapshots_history_help_and_errors() {
     }
     // Usage and validation errors never echo the supplied credential.
     let denied = e
-        .run(Some("bob"), None, "/agent-key another-sk-secret")
+        .run(Some("bob"), None, "/agent key another-sk-secret")
         .map(|execution| execution.reply);
     assert!(denied.is_err(), "bob owns no agent and may not set a key");
     assert!(!denied.unwrap_or_default().contains("another-sk-secret"));
     let usage = e
-        .run(Some("bob"), None, "/agent-key")
+        .run(Some("bob"), None, "/agent key")
         .map(|execution| execution.reply);
     assert!(usage.is_err(), "a key command needs a key argument");
     assert!(!usage.unwrap_or_default().contains("another-sk-secret"));
@@ -1082,46 +1120,54 @@ fn agent_keys_stay_out_of_snapshots_history_help_and_errors() {
 #[test]
 fn agent_creation_requires_a_name_and_a_key() {
     let mut e = engine();
+    allow_account_creation(&mut e, "bob");
     for command in [
         "/agent",
-        "/agent helper",
-        "/agent helper sk-key extra",
-        "/agent bad/name sk-key",
-        "/agent helper sk key",
-        "/agent helper \"quoted\"",
+        "/new agent helper",
+        "/new agent helper sk-key extra",
+        "/new agent bad/name sk-key",
+        "/new agent helper sk key",
+        "/new agent helper \"quoted\"",
     ] {
         assert!(e.run(Some("alice"), None, command).is_err(), "{command}");
     }
     assert!(e.data.users.is_empty() || !e.data.users.contains_key("helper"));
-    // Any signed-in account may create an agent and becomes its owner.
-    e.run(Some("bob"), None, "/agent helper sk-key").unwrap();
+    // An account that may create an account may create an agent, and it owns
+    // what it creates.
+    e.run(Some("bob"), None, "/new agent helper sk-key")
+        .unwrap();
     assert!(e.owns_any_agent("bob"));
     assert!(
-        e.run(Some("alice"), None, "/agent helper sk-other")
+        e.run(Some("alice"), None, "/new agent helper sk-other")
             .is_err(),
         "names are unique"
     );
     assert!(
-        e.run(Some("alice"), None, "/agent helper sk-other")
+        e.run(Some("alice"), None, "/new agent helper sk-other")
             .is_err()
     );
     // Console input has no owning account.
-    assert!(e.run(None, None, "/agent console-agent sk-key").is_err());
+    assert!(
+        e.run(None, None, "/new agent console-agent sk-key")
+            .is_err()
+    );
 }
 #[test]
 fn owners_and_admins_configure_agents_within_their_scope() {
     let mut e = engine();
-    e.run(Some("bob"), None, "/agent helper sk-first").unwrap();
+    allow_account_creation(&mut e, "bob");
+    e.run(Some("bob"), None, "/new agent helper sk-first")
+        .unwrap();
     assert!(e.owns_any_agent("bob"));
     // Web search starts off and needs its own key.
     assert!(!e.data.users["helper"].search);
     assert!(e.data.users["helper"].search_key.is_empty());
     assert!(
-        e.run(Some("bob"), None, "/agent-search on").is_err(),
+        e.run(Some("bob"), None, "/agent search on").is_err(),
         "search cannot be enabled before a key exists"
     );
     assert!(
-        e.run(Some("bob"), None, "/agent-search-key tvly-dev-bob")
+        e.run(Some("bob"), None, "/agent search-key tvly-dev-bob")
             .is_ok()
     );
     assert_eq!(e.data.users["helper"].search_key, "tvly-dev-bob");
@@ -1129,68 +1175,68 @@ fn owners_and_admins_configure_agents_within_their_scope() {
         !e.data.users["helper"].search,
         "setting a key does not enable search"
     );
-    e.run(Some("bob"), None, "/agent-search on").unwrap();
+    e.run(Some("bob"), None, "/agent search on").unwrap();
     assert!(e.data.users["helper"].search);
-    e.run(Some("bob"), None, "/agent-search off").unwrap();
+    e.run(Some("bob"), None, "/agent search off").unwrap();
     assert!(!e.data.users["helper"].search);
-    assert!(e.run(Some("bob"), None, "/agent-search maybe").is_err());
+    assert!(e.run(Some("bob"), None, "/agent search maybe").is_err());
     // The source policy starts at auto and is validated like a reply mode.
     assert_eq!(e.data.users["helper"].sources, SourceMode::Auto);
-    e.run(Some("bob"), None, "/agent-sources never").unwrap();
+    e.run(Some("bob"), None, "/agent sources never").unwrap();
     assert_eq!(e.data.users["helper"].sources, SourceMode::Never);
-    e.run(Some("bob"), None, "/agent-sources ALWAYS").unwrap();
+    e.run(Some("bob"), None, "/agent sources ALWAYS").unwrap();
     assert_eq!(e.data.users["helper"].sources, SourceMode::Always);
-    assert!(e.run(Some("bob"), None, "/agent-sources maybe").is_err());
+    assert!(e.run(Some("bob"), None, "/agent sources maybe").is_err());
     assert_eq!(
         e.data.users["helper"].sources,
         SourceMode::Always,
         "a rejected value changes nothing"
     );
-    assert!(e.run(Some("eve"), None, "/agent-sources never").is_err());
-    e.run(Some("bob"), None, "/agent-sources auto").unwrap();
+    assert!(e.run(Some("eve"), None, "/agent sources never").is_err());
+    e.run(Some("bob"), None, "/agent sources auto").unwrap();
     // The owner edits its own agent.
-    e.run(Some("bob"), None, "/agent-key sk-second").unwrap();
+    e.run(Some("bob"), None, "/agent key sk-second").unwrap();
     assert_eq!(e.data.users["helper"].api_key, "sk-second");
-    e.run(Some("bob"), None, "/agent-reply AUTO").unwrap();
+    e.run(Some("bob"), None, "/agent reply AUTO").unwrap();
     assert_eq!(e.data.users["helper"].reply, AgentReply::Auto);
-    e.run(Some("bob"), None, "/agent-reply mention").unwrap();
+    e.run(Some("bob"), None, "/agent reply mention").unwrap();
     assert_eq!(e.data.users["helper"].reply, AgentReply::Mention);
-    assert!(e.run(Some("bob"), None, "/agent-reply silent").is_err());
+    assert!(e.run(Some("bob"), None, "/agent reply silent").is_err());
     assert_eq!(e.data.users["helper"].reply, AgentReply::Mention);
     // Other users may not touch it; an admin may.
-    assert!(e.run(Some("eve"), None, "/agent-key sk-stolen").is_err());
-    assert!(e.run(Some("eve"), None, "/agent-reply auto").is_err());
-    assert!(e.run(Some("eve"), None, "/agent-search on").is_err());
+    assert!(e.run(Some("eve"), None, "/agent key sk-stolen").is_err());
+    assert!(e.run(Some("eve"), None, "/agent reply auto").is_err());
+    assert!(e.run(Some("eve"), None, "/agent search on").is_err());
     assert!(
-        e.run(Some("eve"), None, "/agent-search-key tvly-dev-stolen")
+        e.run(Some("eve"), None, "/agent search-key tvly-dev-stolen")
             .is_err()
     );
-    assert!(e.run(Some("eve"), None, "/agent-prompt be rude").is_err());
+    assert!(e.run(Some("eve"), None, "/agent prompt be rude").is_err());
     assert_eq!(e.data.users["helper"].search_key, "tvly-dev-bob");
     assert_eq!(e.data.users["helper"].api_key, "sk-second");
-    e.run(Some("alice"), None, "/agent-key sk-admin helper")
+    e.run(Some("alice"), None, "/agent key sk-admin helper")
         .unwrap();
     assert_eq!(e.data.users["helper"].api_key, "sk-admin");
-    e.run(Some("alice"), None, "/agent-reply auto helper")
+    e.run(Some("alice"), None, "/agent reply auto helper")
         .unwrap();
     assert_eq!(e.data.users["helper"].reply, AgentReply::Auto);
     assert!(
-        e.run(Some("alice"), None, "/agent-key sk-x missing")
+        e.run(Some("alice"), None, "/agent key sk-x missing")
             .is_err(),
         "an admin cannot configure a name that is not an agent"
     );
     // Non-agents and missing agents are rejected.
     assert!(
-        e.run(Some("alice"), None, "/agent-name renamed bob")
+        e.run(Some("alice"), None, "/agent name renamed bob")
             .is_err()
     );
-    e.run(Some("bob"), None, "/agent-remove helper").unwrap();
+    e.run(Some("bob"), None, "/agent remove helper").unwrap();
     assert!(!e.data.users.contains_key("helper"));
     // A name that is not an agent is never a silent fallback to the caller's
     // own agent, and a rename never fabricates one.
-    assert!(e.run(Some("bob"), None, "/agent-remove other").is_err());
+    assert!(e.run(Some("bob"), None, "/agent remove other").is_err());
     assert!(
-        e.run(Some("bob"), None, "/agent-name other renamed")
+        e.run(Some("bob"), None, "/agent name other renamed")
             .is_err()
     );
     assert!(e.data.users.is_empty() || !e.data.users.contains_key("other"));
@@ -1199,7 +1245,7 @@ fn owners_and_admins_configure_agents_within_their_scope() {
 fn search_credentials_travel_only_for_agents_that_may_search() {
     let mut e = agent_engine("lobby", "alice", AgentReply::Auto);
     // Disabled search means no search credential reaches the caller at all.
-    e.run(Some("alice"), None, "/agent-search-key tvly-dev-alice")
+    e.run(Some("alice"), None, "/agent search-key tvly-dev-alice")
         .unwrap();
     let job = e.run(Some("bob"), Some("lobby"), "hello").unwrap();
     assert_eq!(job.agents.len(), 1);
@@ -1209,36 +1255,43 @@ fn search_credentials_travel_only_for_agents_that_may_search() {
         "a disabled search never carries the credential"
     );
     // Enabled search carries it, and the key stays out of every client view.
-    e.run(Some("alice"), None, "/agent-search on").unwrap();
+    e.run(Some("alice"), None, "/agent search on").unwrap();
     let job = e.run(Some("bob"), Some("lobby"), "hello again").unwrap();
     assert!(job.agents[0].search);
     assert_eq!(job.agents[0].search_key, "tvly-dev-alice");
     let snapshot = serde_json::to_string(&e.snapshot("alice").unwrap()).unwrap();
     assert!(!snapshot.contains("tvly-dev-alice") && !snapshot.contains("search_key"));
     assert!(!format!("{:?}", job.agents[0]).contains("tvly-dev-alice"));
-    assert_eq!(
-        crate::commands::help(true, false)
-            .matches("/agent-search")
-            .count(),
-        2,
-        "help lists the search toggle and its key command"
+    // An owner sees the agent-setting command, whose usage names both the search
+    // toggle and its key.
+    assert!(
+        e.snapshot("alice")
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| command.name == "/agent"
+                && command.usage.contains("search")
+                && command.usage.contains("search-key")),
+        "an owner is told about the search settings"
     );
 }
 #[test]
 fn personalities_are_free_text_and_never_replace_the_base_rules() {
     let mut e = engine();
-    e.run(Some("bob"), None, "/agent helper sk-key").unwrap();
+    allow_account_creation(&mut e, "bob");
+    e.run(Some("bob"), None, "/new agent helper sk-key")
+        .unwrap();
     // A new agent has no personality, and asking shows that.
     assert!(e.data.users["helper"].prompt.is_empty());
-    let shown = e.run(Some("bob"), None, "/agent-prompt").unwrap().reply;
+    let shown = e.run(Some("bob"), None, "/agent prompt").unwrap().reply;
     assert!(shown.contains("no personality yet"), "{shown}");
     // The text may contain spaces, punctuation, emoji and newlines, and it is
     // only trimmed of surrounding whitespace.
     let persona = "你是一条大肥鱼 🐟\n每句话都要有 emoji ✨ 而且要提到水";
-    e.run(Some("bob"), None, &format!("/agent-prompt {persona}"))
+    e.run(Some("bob"), None, &format!("/agent prompt {persona}"))
         .unwrap();
     assert_eq!(e.data.users["helper"].prompt, persona);
-    let shown = e.run(Some("bob"), None, "/agent-prompt").unwrap().reply;
+    let shown = e.run(Some("bob"), None, "/agent prompt").unwrap().reply;
     assert!(shown.contains("你是一条大肥鱼 🐟"), "{shown}");
     // The base rules survive, and the persona is added after them.
     let prompt = agent_system_prompt("helper", "room:lobby", false, persona);
@@ -1255,20 +1308,21 @@ fn personalities_are_free_text_and_never_replace_the_base_rules() {
         "blank personality text is the same as none"
     );
     // `-` clears it, and an owner with several agents may name the target.
-    e.run(Some("bob"), None, "/agent-prompt -").unwrap();
+    e.run(Some("bob"), None, "/agent prompt -").unwrap();
     assert!(e.data.users["helper"].prompt.is_empty());
     // A bare agent name reads that agent instead of becoming its personality,
     // because agent names are unique accounts.
-    e.run(Some("bob"), None, "/agent-prompt helper").unwrap();
+    e.run(Some("bob"), None, "/agent prompt helper").unwrap();
     assert!(
         e.data.users["helper"].prompt.is_empty(),
         "naming one agent does not write its name as a personality"
     );
-    e.run(Some("bob"), None, "/agent-prompt 写诗 writer")
+    e.run(Some("bob"), None, "/agent prompt 写诗 writer")
         .unwrap();
     assert_eq!(e.data.users["helper"].prompt, "写诗 writer");
-    e.run(Some("bob"), None, "/agent writer sk-two").unwrap();
-    e.run(Some("bob"), None, "/agent-prompt 只写诗 writer")
+    e.run(Some("bob"), None, "/new agent writer sk-two")
+        .unwrap();
+    e.run(Some("bob"), None, "/agent prompt 只写诗 writer")
         .unwrap();
     assert_eq!(e.data.users["writer"].prompt, "只写诗");
     assert_eq!(
@@ -1281,14 +1335,14 @@ fn personalities_are_free_text_and_never_replace_the_base_rules() {
         e.run(
             Some("bob"),
             None,
-            &format!("/agent-prompt {too_long} helper")
+            &format!("/agent prompt {too_long} helper")
         )
         .is_err()
     );
     e.run(
         Some("bob"),
         None,
-        &format!("/agent-prompt {} helper", "字".repeat(4000)),
+        &format!("/agent prompt {} helper", "字".repeat(4000)),
     )
     .unwrap();
     assert_eq!(e.data.users["helper"].prompt.chars().count(), 4000);
@@ -1297,14 +1351,14 @@ fn personalities_are_free_text_and_never_replace_the_base_rules() {
     e.run(
         Some("bob"),
         None,
-        &format!("/agent-prompt {two_lines} helper"),
+        &format!("/agent prompt {two_lines} helper"),
     )
     .unwrap();
     assert_eq!(e.data.users["helper"].prompt, two_lines);
     // An unnamed command with several owned agents asks for the name rather
     // than guessing which personality to change.
     let ambiguous = e
-        .run(Some("bob"), None, "/agent-prompt 随便")
+        .run(Some("bob"), None, "/agent prompt 随便")
         .map(|e| e.reply);
     assert!(ambiguous.is_err(), "an ambiguous target is refused");
     assert_eq!(e.data.users["helper"].prompt, two_lines);
@@ -1320,14 +1374,15 @@ fn personalities_are_free_text_and_never_replace_the_base_rules() {
         .reply;
     assert!(shown.contains("只说鱼话"), "{shown}");
     // `/agent` with a name that is not `prompt` still creates an agent.
-    e.run(Some("bob"), None, "/agent second sk-three").unwrap();
+    e.run(Some("bob"), None, "/new agent second sk-three")
+        .unwrap();
     assert!(e.data.users["second"].is_agent());
     // A personality the owner did not write can still be cleared by an admin.
-    e.run(Some("alice"), None, "/agent-prompt - writer")
+    e.run(Some("alice"), None, "/agent prompt - writer")
         .unwrap();
     assert!(e.data.users["writer"].prompt.is_empty());
     // The personality reaches the job that produces the answer.
-    e.run(Some("bob"), None, "/agent-reply auto helper")
+    e.run(Some("bob"), None, "/agent reply auto helper")
         .unwrap();
     e.run(Some("alice"), None, "/add helper lobby").unwrap();
     let asked = e.run(Some("bob"), Some("lobby"), "hello").unwrap();
@@ -1345,7 +1400,9 @@ fn personalities_are_free_text_and_never_replace_the_base_rules() {
 #[test]
 fn provider_settings_are_validated_and_resolve_to_an_endpoint() {
     let mut e = engine();
-    e.run(Some("bob"), None, "/agent helper sk-key").unwrap();
+    allow_account_creation(&mut e, "bob");
+    e.run(Some("bob"), None, "/new agent helper sk-key")
+        .unwrap();
     // An agent starts on the built-in provider and model.
     let provider = resolve_provider("", "", "").unwrap();
     assert_eq!(provider.name, "deepseek");
@@ -1355,17 +1412,17 @@ fn provider_settings_are_validated_and_resolve_to_an_endpoint() {
         "https://api.deepseek.com/chat/completions"
     );
     // Switching provider keeps the key and records the canonical name.
-    e.run(Some("bob"), None, "/agent-provider OpenRouter")
+    e.run(Some("bob"), None, "/agent provider OpenRouter")
         .unwrap();
     assert_eq!(
         e.data.users["helper"].provider, "openrouter",
         "the stored name is canonical"
     );
-    e.run(Some("bob"), None, "/agent-model z-ai/glm-4.6")
+    e.run(Some("bob"), None, "/agent model z-ai/glm-4.6")
         .unwrap();
     assert_eq!(e.data.users["helper"].model, "z-ai/glm-4.6");
     e.run(Some("alice"), None, "/add helper lobby").unwrap();
-    e.run(Some("alice"), None, "/agent-reply auto helper")
+    e.run(Some("alice"), None, "/agent reply auto helper")
         .unwrap();
     let asked = e.run(Some("bob"), Some("lobby"), "hi").unwrap();
     assert_eq!(asked.agents.len(), 1);
@@ -1387,12 +1444,8 @@ fn provider_settings_are_validated_and_resolve_to_an_endpoint() {
         "https://gateway.example.com/v1/",
         "https://gateway.example.com/v1/chat/completions",
     ] {
-        e.run(
-            Some("bob"),
-            None,
-            &format!("/agent-base-url {spelling} helper"),
-        )
-        .unwrap();
+        e.run(Some("bob"), None, &format!("/agent url {spelling} helper"))
+            .unwrap();
         assert_eq!(
             e.data.users["helper"].base_url, "https://gateway.example.com/v1",
             "{spelling}"
@@ -1403,17 +1456,17 @@ fn provider_settings_are_validated_and_resolve_to_an_endpoint() {
         e.run(
             Some("bob"),
             None,
-            "/agent-provider https://openrouter.ai/api/v1 helper"
+            "/agent provider https://openrouter.ai/api/v1 helper"
         )
         .is_err()
     );
     // Invalid values are refused and change nothing.
     for bad in [
-        "/agent-provider notaprovider helper",
-        "/agent-base-url http://plain.example.com helper",
-        "/agent-base-url gateway.example.com helper",
-        "/agent-model has space helper",
-        "/agent-model bad;chars helper",
+        "/agent provider notaprovider helper",
+        "/agent url http://plain.example.com helper",
+        "/agent url gateway.example.com helper",
+        "/agent model has space helper",
+        "/agent model bad;chars helper",
     ] {
         assert!(e.run(Some("bob"), None, bad).is_err(), "{bad}");
     }
@@ -1423,29 +1476,28 @@ fn provider_settings_are_validated_and_resolve_to_an_endpoint() {
     );
     assert_eq!(e.data.users["helper"].model, "z-ai/glm-4.6");
     // `-` returns each setting to its default.
-    e.run(Some("bob"), None, "/agent-base-url - helper")
+    e.run(Some("bob"), None, "/agent url - helper").unwrap();
+    e.run(Some("bob"), None, "/agent model default helper")
         .unwrap();
-    e.run(Some("bob"), None, "/agent-model default helper")
-        .unwrap();
-    e.run(Some("bob"), None, "/agent-provider - helper")
+    e.run(Some("bob"), None, "/agent provider - helper")
         .unwrap();
     assert!(e.data.users["helper"].base_url.is_empty());
     assert!(e.data.users["helper"].model.is_empty());
     assert!(e.data.users["helper"].provider.is_empty());
     // Only the owner or an admin may change the provider.
     assert!(
-        e.run(Some("eve"), None, "/agent-provider openai helper")
+        e.run(Some("eve"), None, "/agent provider openai helper")
             .is_err()
     );
     assert!(
-        e.run(Some("eve"), None, "/agent-model gpt-4.1 helper")
+        e.run(Some("eve"), None, "/agent model gpt-4.1 helper")
             .is_err()
     );
     // The summary reports the selection without any credential.
-    e.run(Some("bob"), None, "/agent-provider openrouter helper")
+    e.run(Some("bob"), None, "/agent provider openrouter helper")
         .unwrap();
     let summary = e
-        .run(Some("bob"), None, "/agent-config helper")
+        .run(Some("bob"), None, "/agent config helper")
         .unwrap()
         .reply;
     assert!(summary.contains("openrouter · deepseek-flash"), "{summary}");
@@ -1466,7 +1518,8 @@ fn provider_settings_are_validated_and_resolve_to_an_endpoint() {
 #[test]
 fn rename_carries_membership_history_mentions_replies_and_reactions() {
     let mut e = engine();
-    e.run(Some("alice"), None, "/agent helper sk-key").unwrap();
+    e.run(Some("alice"), None, "/new agent helper sk-key")
+        .unwrap();
     e.run(Some("alice"), None, "/add helper lobby").unwrap();
     e.run(Some("alice"), Some("lobby"), "hello @helper")
         .unwrap();
@@ -1499,7 +1552,7 @@ fn rename_carries_membership_history_mentions_replies_and_reactions() {
         .entry("🎉".into())
         .or_default()
         .insert("helper".into());
-    e.run(Some("alice"), None, "/agent-name assistant").unwrap();
+    e.run(Some("alice"), None, "/agent name assistant").unwrap();
     assert!(!e.data.users.contains_key("helper"));
     assert!(e.data.users["assistant"].is_agent());
     {
@@ -1551,7 +1604,7 @@ fn rename_carries_membership_history_mentions_replies_and_reactions() {
     assert!(private.messages.iter().all(|m| m.from != "helper"));
     assert_eq!(private.messages[1].text, "private answer");
     // A rename onto an existing account is refused.
-    assert!(e.run(Some("alice"), None, "/agent-name bob").is_err());
+    assert!(e.run(Some("alice"), None, "/agent name bob").is_err());
     assert!(e.data.users.contains_key("assistant"));
     // The renamed agent still answers its new mention.
     let queued = e.run(Some("bob"), Some("lobby"), "hey @assistant").unwrap();
@@ -1578,15 +1631,16 @@ fn mentions_trigger_agents_and_other_messages_do_not() {
     e.run(Some("alice"), None, "/add helper lobby").unwrap();
     // An agent is never answered by an agent, with or without a mention, so
     // two agents cannot hold an unbounded conversation.
-    e.run(Some("alice"), None, "/agent buddy sk-buddy").unwrap();
+    e.run(Some("alice"), None, "/new agent buddy sk-buddy")
+        .unwrap();
     e.run(Some("alice"), None, "/add buddy lobby").unwrap();
     let cross = e
         .run(Some("buddy"), Some("lobby"), "hello @helper")
         .unwrap();
     assert!(cross.agents.is_empty(), "a mention does not cross agents");
     // Alice owns both agents, so the command must name its target.
-    assert!(e.run(Some("alice"), None, "/agent-reply auto").is_err());
-    e.run(Some("alice"), None, "/agent-reply auto helper")
+    assert!(e.run(Some("alice"), None, "/agent reply auto").is_err());
+    e.run(Some("alice"), None, "/agent reply auto helper")
         .unwrap();
     assert_eq!(
         e.data.users["helper"].reply,
@@ -1758,7 +1812,7 @@ fn agent_replies_persist_across_restart_and_roll_back_on_write_failure() {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
         e.run(Some("alice"), None, "/new lobby").unwrap();
-        e.run(Some("alice"), None, "/agent helper sk-persisted")
+        e.run(Some("alice"), None, "/new agent helper sk-persisted")
             .unwrap();
         e.run(Some("alice"), None, "/add helper lobby").unwrap();
         e.insert_agent_reply("helper", "room:lobby", "restart me")
@@ -1806,46 +1860,51 @@ fn accounts_saved_before_agents_load_as_humans_with_defaults() {
 #[test]
 fn help_lists_agent_commands_only_for_the_owner_or_admins() {
     let mut e = engine();
-    let plain = e.run(Some("bob"), None, "/help").unwrap().reply;
-    assert!(!plain.contains("/agent-key") && !plain.contains("/agent-reply"));
-    e.run(Some("bob"), None, "/agent helper sk-key").unwrap();
+    allow_account_creation(&mut e, "bob");
+    // Eve owns nothing, so the agent commands are not listed for her.
+    let plain = e.run(Some("eve"), None, "/help").unwrap().reply;
+    assert!(!plain.contains("/agent key") && !plain.contains("/list room|user"));
+    e.run(Some("bob"), None, "/new agent helper sk-key")
+        .unwrap();
     let owner = e.run(Some("bob"), None, "/help").unwrap().reply;
-    assert!(owner.contains("/agent-key api-key [agent-name]"));
-    assert!(owner.contains("/agent-reply [auto|mention] [agent-name]"));
-    assert!(owner.contains("/agent-name new-name [agent-name]"));
+    assert!(owner.contains("/agent key|reply|name|prompt"));
+    assert!(owner.contains("/list room|user|agent|member"));
+    // `/new` needs an administrator, so it appears wherever the registry is
+    // shown in full rather than in this owner's listing.
+    assert!(crate::commands::help(true, false).contains("/new room|user|agent"));
     assert!(
         e.snapshot("bob")
             .unwrap()
             .commands
             .iter()
-            .any(|c| c.name == "/agent-reply")
+            .any(|c| c.name == "/agent" || c.name == "/list")
     );
     assert!(
         !e.snapshot("eve")
             .unwrap()
             .commands
             .iter()
-            .any(|c| c.name == "/agent-reply")
+            .any(|c| c.name == "/agent" || c.name == "/list")
     );
     assert!(
         e.snapshot("alice")
             .unwrap()
             .commands
             .iter()
-            .any(|c| c.name == "/agent-key")
+            .any(|c| c.name == "/agent" || c.name == "/list")
     );
     // The console never advertises owner-scoped agent configuration.
-    assert!(!crate::commands::help(true, true).contains("/agent-key"));
+    assert!(!crate::commands::help(true, true).contains("/agent key"));
 }
 #[test]
 fn users_and_members_report_the_agent_role() {
     let mut e = agent_engine("lobby", "alice", AgentReply::Mention);
-    let users = e.run(Some("alice"), None, "/users").unwrap().reply;
+    let users = e.run(Some("alice"), None, "/list user").unwrap().reply;
     assert!(users.contains("helper — agent"));
     assert!(users.contains("alice — admin"));
     assert!(users.contains("bob — user"));
     let members = e
-        .run(Some("alice"), Some("lobby"), "/members")
+        .run(Some("alice"), Some("lobby"), "/list member")
         .unwrap()
         .reply;
     assert!(members.contains("helper — agent"));

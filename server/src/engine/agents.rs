@@ -10,20 +10,38 @@ pub(crate) enum AgentScope<'a> {
 /// the agent name is optional, because an account usually owns one agent.
 fn agent_usage(command: &str) -> &'static str {
     match command {
-        "/agent-key" => "/agent-key api-key [agent-name]",
-        "/agent-reply" => "/agent-reply [auto|mention] [agent-name]",
-        "/agent-name" => "/agent-name new-name [agent-name]",
-        "/agent-prompt" => "/agent-prompt <personality text> [agent-name]",
-        "/agent-search" => "/agent-search [on|off] [agent-name]",
-        "/agent-search-key" => "/agent-search-key search-api-key [agent-name]",
-        "/agent-sources" => "/agent-sources [auto|always|never] [agent-name]",
-        "/agent-provider" => "/agent-provider provider-name [agent-name]",
-        "/agent-base-url" => "/agent-base-url https://host/path [agent-name]",
-        "/agent-model" => "/agent-model model-id [agent-name]",
-        "/agent-config" => "/agent-config [agent-name]",
-        _ => "/agent-remove [agent-name]",
+        "/agent-key" => "/agent key api-key [agent-name]",
+        "/agent-reply" => "/agent reply [auto|mention] [agent-name]",
+        "/agent-name" => "/agent name new-name [agent-name]",
+        "/agent-prompt" => "/agent prompt <personality text> [agent-name]",
+        "/agent-search" => "/agent search [on|off] [agent-name]",
+        "/agent-search-key" => "/agent search-key search-api-key [agent-name]",
+        "/agent-sources" => "/agent sources [auto|always|never] [agent-name]",
+        "/agent-provider" => "/agent provider provider-name [agent-name]",
+        "/agent-base-url" => "/agent url https://host/path [agent-name]",
+        "/agent-model" => "/agent model model-id [agent-name]",
+        "/agent-config" => "/agent config [agent-name]",
+        _ => "/agent remove [agent-name]",
     }
 }
+
+/// Words that `/agent <word>` reads as a setting rather than as an agent name.
+/// An agent may not be named after one, because it could never be configured.
+pub(super) const RESERVED_AGENT_NAMES: &[&str] = &[
+    "key",
+    "reply",
+    "name",
+    "prompt",
+    "provider",
+    "url",
+    "model",
+    "search",
+    "search-key",
+    "sources",
+    "config",
+    "remove",
+    "owner",
+];
 
 /// Characters of personality text one agent may carry.
 const MAX_PROMPT: usize = 4000;
@@ -383,22 +401,23 @@ impl Engine {
             ..
         } = *context;
         match parts[0] {
-            "/agent" => {
-                // Any signed-in account may create an agent and becomes its
-                // owner; creation itself still needs x:account.create, checked
-                // where the account is created.
+            // `/new agent name api-key`, after the alias rewrite.
+            "/agent-create" => {
                 let owner = actor.ok_or("Create agents from a signed-in account.")?;
-                // `/agent prompt <text>` is the same command as `/agent-prompt`.
-                if parts.get(1) == Some(&"prompt") {
-                    let (name, text) = self.prompt_target(owner, input, parts, 2)?;
-                    self.agent_for_update(&name, owner)?;
-                    return match text {
-                        Some(text) => self.set_agent_prompt(&name, &text),
-                        None => self.show_agent_prompt(&name),
-                    };
-                }
-                require_len(parts, 3, "/agent name api-key")?;
+                require_len(parts, 3, "/new agent name api-key")?;
                 self.create_agent(owner, parts[1], parts[2])
+            }
+            // `/list agent [name]`: the same read as `/agent config [name]`,
+            // without a name it lists every agent this account can configure.
+            "/agent-list" => {
+                let actor = actor.ok_or("Agent configuration requires a user account.")?;
+                match parts.get(1) {
+                    Some(name) => {
+                        self.agent_for_update(name, actor)?;
+                        self.show_agent_config(name)
+                    }
+                    None => self.list_agents(actor),
+                }
             }
             "/agent-prompt" => {
                 let actor = actor.ok_or("Agent configuration requires a user account.")?;
@@ -613,7 +632,7 @@ impl Engine {
             .map(|(name, _)| name.clone());
         let first = owned
             .next()
-            .ok_or("Create an agent with /agent name api-key first.")?;
+            .ok_or("Create an agent with /new agent name api-key first.")?;
         if owned.next().is_some() {
             return Err(
                 "You own several agents; name one, e.g. /agent-reply mention agent-name.".into(),
@@ -623,18 +642,34 @@ impl Engine {
     }
     /// Create an agent owned by `owner`, with the least authority it needs.
     ///
-    /// The dispatcher already checked the `/agent` command grant, and every
-    /// signed-in account holds it, so any account may create an agent it owns.
-    /// Creating one does not need `x:account.create`: an agent cannot
-    /// authenticate, so it is not a login anyone can use. `max_users` bounds how
-    /// many accounts exist, and the new agent gets read and write in its
-    /// conversations and no commands at all.
-    fn create_agent(&mut self, owner: &str, name: &str, api_key: &str) -> Result<String, String> {
+    /// Creating an agent creates an account, so it needs `x:account.create`
+    /// exactly like `/new user` does; an admin holds it and a plain user does
+    /// not. Creating an agent does not need `/new` or the `/agent` grant,
+    /// because those carry administrator authority that owning an agent should
+    /// not require. The new agent gets read and write in its conversations and
+    /// no commands at all, and the owner gets the agent commands through an
+    /// owner grant.
+    pub(super) fn create_agent(
+        &mut self,
+        owner: &str,
+        name: &str,
+        api_key: &str,
+    ) -> Result<String, String> {
+        self.require(
+            Some(owner),
+            &authorization::Scope::Server,
+            authorization::Action::CreateAccount,
+        )?;
         if !self.active(owner) {
             return Err("Account unavailable.".into());
         }
         if !valid_name(name) {
             return Err("Invalid agent name.".into());
+        }
+        if RESERVED_AGENT_NAMES.contains(&name) {
+            // `/agent <setting>` reads the word after `/agent` as a setting, so
+            // an agent named after one could never be configured.
+            return Err(format!("{name} is an agent setting. Choose another name."));
         }
         if self.data.users.contains_key(name) {
             return Err("Name already exists.".into());
@@ -787,6 +822,37 @@ impl Engine {
             }
         ))
     }
+    /// Every agent this account may configure, one line each.
+    fn list_agents(&self, actor: &str) -> Result<String, String> {
+        let admin = self.is_admin(actor);
+        let mut lines: Vec<String> = Vec::new();
+        for (name, account) in &self.data.users {
+            if !account.agent {
+                continue;
+            }
+            let owned = self.owns_agent(Some(actor), &account.id);
+            if !admin && !owned {
+                continue;
+            }
+            lines.push(format!(
+                "{name} — {} · {} · {}",
+                match account.reply {
+                    AgentReply::Auto => "auto",
+                    AgentReply::Mention => "mention",
+                },
+                if account.search {
+                    "search on"
+                } else {
+                    "search off"
+                },
+                if owned { "yours" } else { "administered" },
+            ));
+        }
+        if lines.is_empty() {
+            return Ok("No agents. Create one with /new agent name api-key.".into());
+        }
+        Ok(format!("Agents:\n{}", lines.join("\n")))
+    }
     /// Everything one agent is configured with, without any credential.
     fn show_agent_config(&self, name: &str) -> Result<String, String> {
         let account = self.data.users.get(name).ok_or("Agent not found.")?;
@@ -872,6 +938,11 @@ impl Engine {
     fn rename_agent(&mut self, name: &str, new_name: &str) -> Result<String, String> {
         if !valid_name(new_name) {
             return Err("Invalid agent name.".into());
+        }
+        if RESERVED_AGENT_NAMES.contains(&new_name) {
+            return Err(format!(
+                "{new_name} is an agent setting. Choose another name."
+            ));
         }
         if self.data.users.contains_key(new_name) {
             return Err("Name already exists.".into());
