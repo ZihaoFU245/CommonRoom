@@ -64,7 +64,8 @@ pub fn start(app: App) {
                 }
                 _ => app
                     .engine()
-                    .and_then(|mut engine| engine.execute(None, None, command)),
+                    .and_then(|mut engine| engine.run(None, None, &line))
+                    .map(|execution| execution.reply),
             };
             match result {
                 Ok(reply) => {

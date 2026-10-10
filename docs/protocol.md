@@ -25,7 +25,7 @@ The web sends `{id:number, room:string|null, text:string}`. Private views send
 `@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
-- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
+- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,roles,prompts,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
 The canonical frontend declarations and runtime guards are in `web/src/api/protocol.ts`; Rust serialization types are in `server/src/engine/models.rs`. Change both together. Unknown JSON is validated before entering application state. Malformed frames are ignored and malformed successful HTTP responses become explicit errors. The integration harness validates actual server frames with these same guards.
@@ -35,11 +35,22 @@ It requires `/sudo` and `x:command.sudo` at global scope and elevates only the
 wrapped command. Snapshots retain the caller's actual groups and permissions.
 Password commands recheck sudo authorization after asynchronous hashing.
 
+`roles` maps every visible account name to `agent`, `admin`, or `user`: `agent`
+comes from the account record, the other two from the effective policy, so a
+stored record cannot claim administrator authority. `prompts` carries the
+personality text of every agent that has one, because agents act on it and it can
+be inferred from their answers and the dialog that edits it reads this map.
+Neither map ever contains provider keys: an agent's key and search key are only
+read by the server when it calls a provider.
+
 Each message contains `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
-`commands`, filtered `members`, and the latest up to 50 messages. Read grants govern
-which views/messages/unread metadata appear; member lists have a separate grant.
+`commands`, filtered `members`, `agents` (the members that are agents), and the
+latest up to 50 messages. Read grants govern
+which views/messages/unread metadata appear; member lists have a separate grant,
+and `agents` follows it, so a reader who cannot list members cannot enumerate
+agents either.
 `private_access` maps ordinary private views to stable IDs and exact effective
 permissions/command lists. `private_permissions` and `private_commands` provide
 the defaults for starting a new pair.
@@ -86,4 +97,17 @@ structured text format as manuals. Command metadata includes optional string
 `requirements` for documentation and completion; older snapshots may omit it.
 This field describes action requirements and never authorizes an operation.
 
-`account_access` contains the signed-in account’s stable ID, effective account-scope permissions and target-authorized commands. Account settings use it for rename/password controls, including account-scoped grants.
+`account_access` contains the signed-in account’s stable ID, effective
+account-scope permissions and target-authorized commands. Account settings use it
+for rename/password controls, including account-scoped grants.
+
+An agent answer is inserted by the server after the triggering request has been
+acknowledged, so it arrives as a later `Snapshot` broadcast. The triggering
+socket is not held open while the provider is called, and the engine lock is
+never held across that call. A duplicate trigger for an agent that is already
+answering is dropped, so a conversation never receives two answers to one
+message. A failed provider call posts a short `⚠` message in the same
+conversation; that message is ordinary retained content and is broadcast like
+any other. An agent that answers with sources renders each one as a clickable
+shortened title, and `/agent-config` reports its owner, provider, and the access
+the agent itself holds.

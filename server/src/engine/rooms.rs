@@ -48,6 +48,8 @@ impl Engine {
                     return Err("Usage: /add user [room] or /kick user [room]".into());
                 }
                 let name = parts[1];
+                // An agent is a member like any other account, so an agent that
+                // is not disabled may be invited and kicked by the same rules.
                 let id = self
                     .data
                     .users

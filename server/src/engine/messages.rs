@@ -2,6 +2,9 @@ use super::*;
 use authorization::{Action, Scope};
 
 impl Engine {
+    /// Build a message and consume the next sequence number. A caller that
+    /// does not persist the message must restore the previous state, as
+    /// `commit` does for agent answers.
     pub(super) fn message(
         &mut self,
         actor: Option<&str>,
@@ -20,6 +23,53 @@ impl Engine {
             .map_or_else(|| "console".into(), |u| u.id.clone());
         message.sequence = self.data.next_sequence;
         Ok(message)
+    }
+    /// Post a plain message to a room view and queue the agent replies it
+    /// triggers. Private views are written by their own command path, which
+    /// checks the pair's scope first.
+    ///
+    /// `actor` is the signed-in account, or `None` for the console, whose
+    /// identity is deliberately not an account. The `room` view may also be an
+    /// `@private:` view, which is how a web client has an inbox open.
+    pub(super) fn send_room(
+        &mut self,
+        actor: Option<&str>,
+        room: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        let author = actor.unwrap_or("console");
+        if let Some(key) = room.strip_prefix("@private:") {
+            if actor.is_none() {
+                return Err("Send private messages with /tell user message.".into());
+            }
+            self.require(actor, &self.private_scope(key), Action::Send)?;
+            let (_, recipient) = key.split_once(':').ok_or("Invalid private conversation.")?;
+            if !self.data.private.contains_key(key) {
+                return Err("Private conversation not found.".into());
+            }
+            let mut message = self.message(actor, Some(recipient), text)?;
+            message
+                .mentions
+                .retain(|name| key.split(':').any(|part| part == name));
+            self.trigger_agents(author, AgentScope::Private(recipient), &message);
+            return self.push_private_to(key, message);
+        }
+        self.require(actor, &self.room_scope(room)?, Action::Send)?;
+        let target = self.data.rooms.get(room).ok_or("Room not found.")?;
+        if actor.is_some() && !target.members.contains(author) {
+            return Err("You are not a member of this room.".into());
+        }
+        let members = target.members.clone();
+        let mut message = self.message(actor, None, text)?;
+        message.mentions.retain(|name| members.contains(name));
+        let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
+        if target.messages.len() == self.max_messages {
+            target.messages.pop_front();
+        }
+        target.messages.push_back(message.clone());
+        target.revision = target.revision.wrapping_add(1);
+        self.trigger_agents(author, AgentScope::Room(room), &message);
+        Ok(())
     }
     pub(super) fn push_private(&mut self, message: Message) -> Result<(), String> {
         let key = private_key(
@@ -54,6 +104,82 @@ impl Engine {
         chat.messages.push_back(message);
         chat.revision = chat.revision.wrapping_add(1);
         Ok(())
+    }
+    /// Publish an agent answer in the conversation that triggered it.
+    /// Returns the stored message ID once it is persisted.
+    pub fn insert_agent_reply(
+        &mut self,
+        agent: &str,
+        view: &str,
+        text: &str,
+    ) -> Result<String, String> {
+        self.check_agent_reply(agent, view, text)?;
+        // Snapshot before the message consumes a sequence number, so a failed
+        // write leaves no trace of the answer.
+        let previous = self.data.clone();
+        let result = self.write_agent_reply(agent, view, text);
+        if result.is_err() {
+            self.data = previous;
+        }
+        result
+    }
+    /// Reject an answer the conversation cannot accept before anything mutates.
+    fn check_agent_reply(&self, agent: &str, view: &str, text: &str) -> Result<(), String> {
+        if !self.is_agent(agent) {
+            return Err("Agent not found.".into());
+        }
+        if text.trim().is_empty() {
+            return Err("Empty agent reply.".into());
+        }
+        if text.chars().count() > 4000 {
+            return Err("Messages support at most 4000 characters.".into());
+        }
+        if let Some(room) = view.strip_prefix("room:")
+            && !self
+                .data
+                .rooms
+                .get(room)
+                .ok_or("Room not found.")?
+                .members
+                .contains(agent)
+        {
+            return Err("The agent is not a member of this room.".into());
+        }
+        Ok(())
+    }
+    fn write_agent_reply(&mut self, agent: &str, view: &str, text: &str) -> Result<String, String> {
+        if let Some(room) = view.strip_prefix("room:") {
+            let members = self
+                .data
+                .rooms
+                .get(room)
+                .ok_or("Room not found.")?
+                .members
+                .clone();
+            let mut message = self.message(Some(agent), None, text)?;
+            message.mentions.retain(|name| members.contains(name));
+            let stored = message.id.clone();
+            let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
+            if target.messages.len() == self.max_messages {
+                target.messages.pop_front();
+            }
+            target.messages.push_back(message);
+            target.revision = target.revision.wrapping_add(1);
+            self.save()?;
+            return Ok(stored);
+        }
+        let key = view.strip_prefix("dm:").ok_or("Unknown conversation.")?;
+        let peer = private_peer(key, agent)
+            .ok_or("Unknown conversation.")?
+            .to_string();
+        let mut message = self.message(Some(agent), Some(&peer), text)?;
+        message
+            .mentions
+            .retain(|name| name == agent || name == &peer);
+        let stored = message.id.clone();
+        self.push_private(message)?;
+        self.save()?;
+        Ok(stored)
     }
     pub(super) fn apply_messages(
         &mut self,
@@ -277,19 +403,32 @@ impl Engine {
                     text: original.text.chars().take(160).collect(),
                 });
                 if let Some(name) = room {
+                    let members = self
+                        .data
+                        .rooms
+                        .get(name)
+                        .ok_or("Room not found.")?
+                        .members
+                        .clone();
+                    message.mentions.retain(|name| members.contains(name));
                     let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
-                    message
-                        .mentions
-                        .retain(|name| target.members.contains(name));
                     if target.messages.len() == self.max_messages {
                         target.messages.pop_front();
                     }
-                    target.messages.push_back(message);
+                    target.messages.push_back(message.clone());
                     target.revision = target.revision.wrapping_add(1);
+                    self.trigger_agents(user, AgentScope::Room(name), &message);
                 } else {
                     message
                         .mentions
                         .retain(|name| name == user || Some(name.as_str()) == recipient);
+                    self.trigger_agents(
+                        user,
+                        AgentScope::Private(recipient.ok_or("Private message has no recipient.")?),
+                        &message,
+                    );
+                    // The scope lookup above already resolved this pair, so the
+                    // message is written to whichever key holds it.
                     let key = self
                         .data
                         .private
@@ -434,6 +573,7 @@ impl Engine {
                 message
                     .mentions
                     .retain(|name| name == author || name == recipient);
+                self.trigger_agents(author, AgentScope::Private(recipient), &message);
                 self.push_private(message)?;
                 Ok(format!("Private message sent to {recipient}."))
             }

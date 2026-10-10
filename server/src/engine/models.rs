@@ -1,12 +1,75 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// How an agent decides which messages to answer.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentReply {
+    /// Answer every message in a conversation the agent belongs to.
+    Auto,
+    /// Answer only messages that mention the agent. This is the default.
+    #[default]
+    Mention,
+}
+
+/// How an agent decides whether an answer shows its search sources.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceMode {
+    /// The model decides, and only the results it cites become links. An
+    /// everyday answer such as today's weather usually cites nothing.
+    #[default]
+    Auto,
+    /// Always list the results the answer used.
+    Always,
+    /// Never list sources, even after a search.
+    Never,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
     pub hash: String,
     #[serde(default)]
     pub id: String,
     pub disabled: bool,
+    #[serde(default)]
+    pub agent: bool,
+    /// Provider credential used only by the server; never serialized to a client.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+    #[serde(default)]
+    pub reply: AgentReply,
+    /// Web-search credential used only by the server; never sent to a client.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub search_key: String,
+    /// Whether this agent may search the web. Off until an owner enables it.
+    #[serde(default)]
+    pub search: bool,
+    /// How this agent decides which sources an answer shows.
+    #[serde(default)]
+    pub sources: SourceMode,
+    /// Extra personality text the owner wrote, appended to the base rules.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
+    /// Provider name, or empty for the default provider.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// Provider base URL when the agent uses a gateway or a custom host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_url: String,
+    /// Model id, or empty for the default model.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+}
+impl Account {
+    /// Accounts that can hold a session and act as a person.
+    pub fn is_human(&self) -> bool {
+        !self.agent
+    }
+    /// Agents never receive administrator permission.
+    pub fn is_agent(&self) -> bool {
+        self.agent
+    }
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
@@ -78,6 +141,8 @@ pub struct RoomView {
     pub commands: Vec<crate::commands::Command>,
     pub name: String,
     pub members: BTreeSet<String>,
+    /// Room members that are agents, so clients can label them.
+    pub agents: BTreeSet<String>,
     pub messages: Vec<Message>,
 }
 #[derive(Serialize)]
@@ -113,6 +178,10 @@ pub struct Snapshot {
     pub policy_revision: u64,
     pub admin: bool,
     pub users: Vec<String>,
+    /// Account name to `admin`, `user` or `agent`, for directory labels.
+    pub roles: BTreeMap<String, &'static str>,
+    /// Personality text per agent. Agents act on it, so it is not a secret.
+    pub prompts: BTreeMap<String, String>,
     pub online: Vec<String>,
     pub rooms: Vec<RoomView>,
     pub direct: Vec<Message>,

@@ -185,6 +185,8 @@ Environment settings:
 | `CHAT_TRUST` | Trusted proxy IP; defaults to `127.0.0.1`, saved when overridden |
 | `CHAT_BASE_URL` | Hosting path; defaults to `/`, saved when overridden |
 | `CHAT_PRODUCTION=1` | Exercise production security in a debug binary |
+| `CHAT_AGENT_THINKING=low` | Enable provider thinking mode for agent answers; off by default, not saved |
+| `CHAT_SEARCH_URL` | Search endpoint override; must start with `https://` or it is ignored |
 | `RUST_LOG` | Log filter; defaults to `chat=info,tower_http=info` |
 
 Changing `CHAT_BIND`, `CHAT_TRUST`, `CHAT_BASE_URL`, or `CHAT_ORIGIN` persists the change.
@@ -192,6 +194,19 @@ Environment overrides take precedence over saved values. Production settings
 cannot be silently downgraded by running a debug binary. A release binary
 always enforces production security, including when upgrading a development
 data folder; provide `CHAT_ORIGIN` the first time you upgrade it.
+
+Agent answers are the only outbound network traffic. The service calls the model
+provider each agent is configured with — `https://api.deepseek.com` by default,
+or the provider or gateway named by `/agent-provider` and `/agent-base-url` — plus
+`https://api.tavily.com` for an agent whose owner enabled web search. The host
+needs outbound HTTPS to every provider in use; no inbound port is opened for any
+of them. A base URL must be HTTPS, so a gateway reached over plain HTTP or an
+internal hostname without a certificate will be refused. Thinking mode
+stays off because DeepSeek bills chain-of-thought tokens against the answer's
+output limit, and a long reasoning pass can consume that limit before the answer
+starts and return an empty reply. Set `CHAT_AGENT_THINKING=low` only after
+checking that answers still arrive, since the value is read per request and
+needs no restart.
 
 Logs go to stdout. To redirect them while preserving the stdin console:
 

@@ -17,6 +17,10 @@ import {
 } from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
 import type { ValueRef } from "./refs.ts";
+/** Agent accounts in this directory, offered when a command names an agent. */
+function knownAgents(state: Snapshot): string[] {
+  return state.users.filter((name) => state.roles?.[name] === "agent");
+}
 interface Context {
   selected: string;
   direct: boolean;
@@ -174,6 +178,7 @@ export function useCommands({
               availableCommands,
               state.users,
               state.available_rooms || state.rooms.map((r) => r.name),
+              knownAgents(state),
             )
           : mentionSuggestions(
               draft,
@@ -196,7 +201,14 @@ export function useCommands({
   }
   function send(event: Event, confirmed = false) {
     event.preventDefault();
-    const text = draft.trim();
+    submit(draft, confirmed);
+  }
+  /**
+   * Send one line of text, from the composer or from a dialog. `confirmed`
+   * skips the delete confirmation, which only the composer asks for.
+   */
+  function submit(value: string, confirmed = false) {
+    const text = value.trim();
     if (!text || pending) return;
     if (!text.startsWith("/") && Array.from(text).length > 4000) {
       append(text, "Messages support at most 4000 characters.", true);
@@ -237,8 +249,10 @@ export function useCommands({
       append(text, "Use a command or select a room to send a message.", true);
       return;
     }
+    // A /sudo prefix wraps the command, so the confirmation decision reads
+    // through it.
     if (commandText(text).split(/\s+/u)[0] === "/retract" && !confirmed)
-      return requestDelete(() => send(event, true));
+      return requestDelete(() => submit(text, true));
     const id = ++serial.current;
     request.current = {
       id,
@@ -250,9 +264,9 @@ export function useCommands({
     setPending(true);
     setHintDismissed(true);
     let wireText =
-      peer && !text.startsWith("/") ? `/tell ${peer} ${text}` : draft;
+      peer && !text.startsWith("/") ? `/tell ${peer} ${text}` : text;
     if (replyTarget && !text.startsWith("/"))
-      wireText = `/reply ${replyTarget.id} ${draft}`;
+      wireText = `/reply ${replyTarget.id} ${text}`;
     if (peer && /^\/history(?:\s+\d+)?$/.test(text))
       wireText = `${text === "/history" ? "/history 50" : text} ${peer}`;
     sendFrame(socket.current, {
@@ -356,6 +370,7 @@ export function useCommands({
     hints,
     activeHint,
     send,
+    submit,
     edit,
     keydown,
     acceptHint,

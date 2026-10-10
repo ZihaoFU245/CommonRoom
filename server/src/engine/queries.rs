@@ -215,31 +215,74 @@ impl Engine {
                 })
                 .map(|(n, _)| n.clone())
                 .collect(),
+            // The client labels directory entries and message authors from this
+            // map. Account records decide "agent"; the policy decides whether an
+            // account is an administrator, so a stored record cannot claim it.
+            roles: self
+                .data
+                .users
+                .iter()
+                .filter(|(_, u)| self.is_su(Some(name)) || !u.disabled)
+                .map(|(n, u)| {
+                    (
+                        n.clone(),
+                        if u.agent {
+                            "agent"
+                        } else if self.is_admin(n) {
+                            "admin"
+                        } else {
+                            "user"
+                        },
+                    )
+                })
+                .collect(),
+            prompts: self
+                .data
+                .users
+                .iter()
+                .filter(|(_, u)| u.agent && !u.prompt.is_empty())
+                .map(|(n, u)| (n.clone(), u.prompt.clone()))
+                .collect(),
             rooms: self
                 .data
                 .rooms
                 .iter()
                 .filter(|(_, r)| self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read))
-                .map(|(n, r)| RoomView {
-                    id: r.id.clone(),
-                    owner: self.room_owner_name(&r.owner_id).into(),
-                    permissions: self
-                        .effective(Some(name), &Scope::Room(r.id.clone()))
-                        .names(),
-                    commands: self.commands_for(Some(name), Some(n)),
-                    name: n.clone(),
-                    members: if self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Members)
-                    {
-                        r.members.clone()
-                    } else {
-                        BTreeSet::new()
-                    },
-                    messages: r
-                        .messages
-                        .iter()
-                        .skip(r.messages.len().saturating_sub(VISIBLE_HISTORY))
-                        .cloned()
-                        .collect(),
+                .map(|(n, r)| {
+                    // Members and agents follow the same permission, so a reader
+                    // who cannot list members cannot enumerate agents through
+                    // the snapshot either.
+                    let listed =
+                        self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Members);
+                    RoomView {
+                        id: r.id.clone(),
+                        owner: self.room_owner_name(&r.owner_id).into(),
+                        permissions: self
+                            .effective(Some(name), &Scope::Room(r.id.clone()))
+                            .names(),
+                        commands: self.commands_for(Some(name), Some(n)),
+                        name: n.clone(),
+                        members: if listed {
+                            r.members.clone()
+                        } else {
+                            BTreeSet::new()
+                        },
+                        agents: if listed {
+                            r.members
+                                .iter()
+                                .filter(|member| self.is_agent(member))
+                                .cloned()
+                                .collect()
+                        } else {
+                            BTreeSet::new()
+                        },
+                        messages: r
+                            .messages
+                            .iter()
+                            .skip(r.messages.len().saturating_sub(VISIBLE_HISTORY))
+                            .cloned()
+                            .collect(),
+                    }
                 })
                 .chain(
                     self.data
@@ -260,6 +303,14 @@ impl Engine {
                                 commands: self.commands_for(Some(name), Some(&view)),
                                 members: if self.allows(Some(name), &scope, Action::Members) {
                                     key.split(':').map(str::to_owned).collect()
+                                } else {
+                                    BTreeSet::new()
+                                },
+                                agents: if self.allows(Some(name), &scope, Action::Members) {
+                                    key.split(':')
+                                        .filter(|participant| self.is_agent(participant))
+                                        .map(str::to_owned)
+                                        .collect()
                                 } else {
                                     BTreeSet::new()
                                 },
@@ -356,6 +407,8 @@ impl Engine {
             }
             "/help" => {
                 require_len(parts, 1, "/help")?;
+                // The list follows what this account may actually run in this
+                // context, so agent commands appear only for an owner.
                 Ok(crate::commands::help_for(
                     &self.commands_for(actor, context.view),
                 ))
@@ -414,7 +467,7 @@ impl Engine {
                         .filter(|(_, u)| self.is_su(actor) || !u.disabled)
                         .map(|(n, u)| format!(
                             "{n} — {}{}",
-                            self.permission_label(Some(n)),
+                            self.role(n),
                             if u.disabled { " (disabled)" } else { "" }
                         ))
                         .collect::<Vec<_>>()
@@ -453,7 +506,7 @@ impl Engine {
                 Ok(target
                     .members
                     .iter()
-                    .map(|n| format!("{n} — {}", self.permission_label(Some(n))))
+                    .map(|n| format!("{n} — {}", self.role(n)))
                     .collect::<Vec<_>>()
                     .join("\n"))
             }

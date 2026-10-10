@@ -47,15 +47,42 @@ rtk pnpm --dir web format
 
 ## Coverage
 
-Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
+Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, agent roles and the minimal access an agent account holds, agent triggers, ownership through policy grants, renames, provider resolution, web-search configuration, credential redaction, provider reply parsing, search result formatting, prompts, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
 
-Web helper tests cover local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
+Web helper tests cover local command ordering, redaction, suggestions, Unicode mentions, link tokenizing, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
 Build tests verify that both modes skip checks and that release packaging
 contains the `dist/` directory with its files. Rust tests also verify that a poisoned engine
 returns an unavailable response and never reuses potentially partial state.
 
-`web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
+`web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, agent roles and credential redaction, agent provider and personality settings, privacy, second-device directories, bounded room/private history, read cursors, account deletion, schema rejection, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
+
+`web/scripts/agent-check.mjs` drives one throwaway server through the agent
+lifecycle: `/agent` creation, `/add` invitations, mention and auto replies in
+rooms and private conversations, renames, permission boundaries, disabling,
+removal, web-search configuration, restart persistence, and credential handling.
+It always exercises the failure paths with unusable keys, and adds real provider
+and search round trips when the keys below are set:
+
+```sh
+rtk pnpm --dir web test:agents
+rtk proxy env CHAT_LIVE_AGENT_KEY=sk-... CHAT_LIVE_SEARCH_KEY=tvly-dev-... \
+    pnpm --dir web test:agents
+```
+
+`web/scripts/provider-check.mjs` proves the provider selection: it starts one
+throwaway server, moves an agent to another provider and model, and checks the
+stored settings, the reported summary, the request destination, and that no
+credential is exposed. The unreachable-base-URL case asserts the failure message
+rather than contacting the address, and one request to a real provider host with
+a deliberately invalid key asserts the rejection path, so the check needs
+outbound HTTPS.
+
+A live check spends a small amount of credit on the configured provider account
+and a search credit on the configured search account. With a live search key it
+also asserts that a question about current releases is answered with linked
+sources and that a question needing no search is answered without them.
+Both scripts need `target/debug/chat`; the release smoke phase also needs `./chat`.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -64,8 +91,11 @@ constraints, cross-target authorization, private inspection, stable IDs,
 ownership transfer, rename/cursor preservation,
 owner delegation and revocation of invitations without enabling other management
 permissions, loss of that delegation authority after ownership transfer,
-and compiled-policy rollback. Output regressions verify that @global and its
-legacy alias resolve to the same scope, command requirements do not grant actions,
+and compiled-policy rollback. Every registered command, including every agent
+command, must appear in the denial probe, so a new command cannot ship without a
+test that an account without its grants is refused. Output regressions verify that
+@global and its legacy
+alias resolve to the same scope, command requirements do not grant actions,
 and assignment privacy and conditional cleanup limits survive formatting. The room
 directory excludes other users' private pairs even with explicit inspection grants
 or su membership. `/console` checks scoped grants, rejects extra arguments, and

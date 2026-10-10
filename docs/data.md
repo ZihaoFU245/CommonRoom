@@ -36,6 +36,16 @@ restart and moving the folder. Accounts, roles, memberships, message timestamps 
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
 
+Agent accounts, their provider keys, their optional web-search keys, and their
+personality text are stored in the same state document, so they move with the
+folder and survive a restart. Agents are additive: a folder
+written before agents existed loads unchanged, and accounts then default to
+ordinary people in `mention` mode. A provider key is a credential: keep the
+data folder and its backups private, and rotate a key with `/agent-key` if it is
+exposed. Renaming an agent rewrites its memberships, its retained message
+labels, and its private-conversation keys, which is what keeps a rename
+consistent across a restart.
+
 On Unix, startup restricts the data directory to its owner (`0700`). This
 folder contains private messages and active session credentials; keep
 backups private as well.

@@ -14,6 +14,24 @@ import {
 test("passwords are masked and help groups retain their commands", () => {
   assert.equal(redactCommand("/passwd old secret"), "/passwd •••• ••••");
   assert.equal(redactCommand("/user bob secret user"), "/user bob •••• user");
+  assert.equal(
+    redactCommand("/agent helper sk-9f6bce6e3fcd4e2889d1a8e858adfef7"),
+    "/agent helper ••••",
+  );
+  assert.equal(redactCommand("/agent helper"), "/agent helper");
+  assert.equal(
+    redactCommand("/agent-key sk-9f6bce6e3fcd4e2889d1a8e858adfef7"),
+    "/agent-key ••••",
+  );
+  assert.equal(
+    redactCommand("/agent-key sk-9f6bce6e3fcd4e2889d1a8e858adfef7 helper"),
+    "/agent-key •••• helper",
+  );
+  assert.equal(
+    redactCommand("/agent-reply auto helper"),
+    "/agent-reply auto helper",
+  );
+  assert.equal(redactCommand("/agent-name helper"), "/agent-name helper");
   assert.deepEqual(
     helpSections("[General]\n/help — Help\n\n[Rooms]\n/kick user — Kick"),
     [
@@ -254,5 +272,46 @@ test("command and grant hints disclose all action requirements without granting 
       (hint) => hint.value === "/grant bob @server ",
     ),
     false,
+  );
+});
+
+test("agent hints complete reply modes first and agent names second", () => {
+  const commands = [
+    {
+      name: "/agent-reply",
+      usage: "/agent-reply [auto|mention] [agent-name]",
+      description: "Reply mode",
+    },
+    {
+      name: "/agent-remove",
+      usage: "/agent-remove [agent-name]",
+      description: "Remove agent",
+    },
+  ];
+  assert.deepEqual(
+    suggestions("/agent-reply ", commands, [], [], ["helper", "writer"]).map(
+      (h) => h.value,
+    ),
+    ["/agent-reply auto ", "/agent-reply mention "],
+  );
+  assert.deepEqual(
+    suggestions(
+      "/agent-reply mention ",
+      commands,
+      [],
+      [],
+      ["helper", "writer"],
+    ).map((h) => h.value),
+    ["/agent-reply mention helper ", "/agent-reply mention writer "],
+  );
+  assert.deepEqual(
+    suggestions("/agent-remove w", commands, [], [], ["helper", "writer"]).map(
+      (h) => h.value,
+    ),
+    ["/agent-remove writer "],
+  );
+  assert.equal(
+    suggestions("/agent-remove ", commands, [], [], [])[0].value,
+    null,
   );
 });

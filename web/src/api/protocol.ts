@@ -23,6 +23,8 @@ export interface Room {
   commands: Command[];
   name: string;
   members: string[];
+  /** Room members that are AI agents, not people. */
+  agents: string[];
   messages: Message[];
 }
 export interface Command {
@@ -58,6 +60,10 @@ export interface Snapshot {
   policy_revision: number;
   admin: boolean;
   users: string[];
+  /** Account name to `admin`, `user` or `agent`. */
+  roles: Record<string, string>;
+  /** Personality text per agent; agents act on it, so it is not a secret. */
+  prompts: Record<string, string>;
   online: string[];
   rooms: Room[];
   direct: Message[];
@@ -189,6 +195,10 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   commands(v.private_commands) &&
   integer(v.policy_revision) &&
   strings(v.users) &&
+  record(v.roles) &&
+  Object.values(v.roles).every((role) => typeof role === "string") &&
+  record(v.prompts) &&
+  Object.values(v.prompts).every((prompt) => typeof prompt === "string") &&
   strings(v.online) &&
   Array.isArray(v.rooms) &&
   v.rooms.every(
@@ -200,6 +210,7 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
       strings(r.permissions) &&
       commands(r.commands) &&
       strings(r.members) &&
+      strings(r.agents) &&
       messages(r.messages),
   ) &&
   messages(v.direct) &&

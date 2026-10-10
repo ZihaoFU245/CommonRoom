@@ -1287,6 +1287,21 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         "/owner bob team".into(),
         "/clear".into(),
         "/logout".into(),
+        // Agent commands: a plain user must be denied every one of them, and
+        // an owner must still be confined to the agents they own.
+        "/agent helper sk-denied".into(),
+        "/agent-key sk-denied".into(),
+        "/agent-reply auto".into(),
+        "/agent-name renamed".into(),
+        "/agent-prompt denied personality".into(),
+        "/agent-provider openrouter".into(),
+        "/agent-base-url https://gateway.example.com/v1".into(),
+        "/agent-model some/model".into(),
+        "/agent-search on".into(),
+        "/agent-search-key tvly-dev-denied".into(),
+        "/agent-sources never".into(),
+        "/agent-config".into(),
+        "/agent-remove".into(),
     ];
     let catalog: BTreeSet<_> = crate::commands::available(true, false)
         .iter()

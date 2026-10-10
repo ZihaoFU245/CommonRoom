@@ -113,6 +113,9 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
         Ok(format!("Renamed {name} to {new_name}."))
     }
+    /// Administrator authority comes from the policy, so an account cannot be
+    /// made an administrator by editing its stored record. An agent never holds
+    /// a group, so it can never pass this check.
     pub fn is_admin(&self, name: &str) -> bool {
         self.has_group(Some(name), authorization::Group::Admin)
             || self.has_group(Some(name), authorization::Group::Su)
@@ -166,11 +169,12 @@ impl Engine {
         expected_hash: &str,
         old: Option<&str>,
     ) -> Result<(), String> {
-        if !self
-            .data
-            .users
-            .get(username)
-            .is_some_and(|u| !u.disabled && u.hash == expected_hash)
+        // Only a human account with a stored password hash may hold a session;
+        // agents and other hashless accounts can never log in.
+        if expected_hash.is_empty()
+            || !self.data.users.get(username).is_some_and(|u| {
+                !u.disabled && u.is_human() && !u.hash.is_empty() && u.hash == expected_hash
+            })
         {
             return Err("Account changed. Please try again.".into());
         }
@@ -259,6 +263,16 @@ impl Engine {
                     hash,
                     id: uuid::Uuid::new_v4().to_string(),
                     disabled: false,
+                    agent: false,
+                    api_key: String::new(),
+                    reply: AgentReply::default(),
+                    search_key: String::new(),
+                    search: false,
+                    sources: SourceMode::default(),
+                    prompt: String::new(),
+                    provider: String::new(),
+                    base_url: String::new(),
+                    model: String::new(),
                 },
             );
         }

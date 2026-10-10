@@ -91,6 +91,8 @@ impl Engine {
             max_users: 64,
             max_rooms: 64,
             max_messages: 1000,
+            agent_pending: BTreeSet::new(),
+            agent_queue: Vec::new(),
             db,
             _lock: lock,
         })

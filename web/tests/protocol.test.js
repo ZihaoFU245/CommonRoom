@@ -25,6 +25,8 @@ const snapshot = {
   policy_revision: 0,
   admin: true,
   users: ["alice", "bob"],
+  roles: { alice: "admin", bob: "user" },
+  prompts: { helper: "你是一条大肥鱼 🐟" },
   online: ["alice"],
   rooms: [
     {
@@ -34,6 +36,7 @@ const snapshot = {
       commands: [],
       name: "room",
       members: ["alice", "bob"],
+      agents: [],
       messages: [message],
     },
   ],
@@ -101,6 +104,11 @@ test("protocol rejects malformed nested data before it reaches UI state", () => 
     { ...snapshot, rooms: [{ ...snapshot.rooms[0], permissions: [123] }] },
     { ...snapshot, rooms: [{ ...snapshot.rooms[0], commands: [{}] }] },
     { ...snapshot, rooms: [{ ...snapshot.rooms[0], members: "alice" }] },
+    { ...snapshot, roles: { alice: 1 } },
+    { ...snapshot, prompts: { helper: 1 } },
+    { ...snapshot, prompts: ["helper"] },
+    { ...snapshot, roles: ["alice"] },
+    { ...snapshot, rooms: [{ ...snapshot.rooms[0], agents: "helper" }] },
     { ...snapshot, direct: [{ ...message, reactions: { "👍": "bob" } }] },
     { ...snapshot, direct: [{ ...message, reply: { id: "old" } }] },
     { ...snapshot, unread: { room: { ...snapshot.unread.room, count: -1 } } },
