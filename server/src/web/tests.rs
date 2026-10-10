@@ -5,21 +5,28 @@ use super::{
 };
 use axum::http::{HeaderMap, HeaderValue, header};
 
-#[test]
-#[allow(clippy::panic)] // Deliberately simulate a panic during a state mutation.
-fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
+/// App fixture with no provider traffic: agent calls need a live network.
+fn fixture(config: Config) -> App {
     let (changes, _) = broadcast::channel(1);
-    let app = App {
+    App {
         engine: Arc::new(Mutex::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
         attempts: Default::default(),
         changes,
-        config: Arc::new(Config::default()),
+        config: Arc::new(config),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        agent_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+        http: reqwest::Client::new(),
         stopping: Default::default(),
-    };
+    }
+}
+
+#[test]
+#[allow(clippy::panic)] // Deliberately simulate a panic during a state mutation.
+fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
+    let app = fixture(Config::default());
     let engine = app.engine.clone();
     assert!(
         std::thread::spawn(move || {
@@ -55,18 +62,7 @@ fn cookies_are_http_only_and_secure_in_production() {
         production: true,
         ..Config::default()
     };
-    let (changes, _) = broadcast::channel(1);
-    let app = App {
-        engine: Arc::new(Mutex::new(
-            Engine::open(std::path::Path::new(":memory:")).unwrap(),
-        )),
-        attempts: Default::default(),
-        changes,
-        config: Arc::new(config),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
-        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
-        stopping: Default::default(),
-    };
+    let app = fixture(config);
     let value = cookie(&app, "token", 43200);
     assert!(value.contains("HttpOnly"));
     assert!(value.contains("; Secure"));
@@ -134,6 +130,8 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         config: Arc::new(Config::default()),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        agent_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+        http: reqwest::Client::new(),
         stopping: Default::default(),
     };
     async fn attempt(app: &App, peer: &str, forwarded: &str) -> StatusCode {
@@ -208,6 +206,8 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         config: Arc::new(Config::default()),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        agent_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+        http: reqwest::Client::new(),
         stopping: Default::default(),
     };
     let mut headers = HeaderMap::new();
@@ -228,10 +228,10 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
             room: None,
             text: text.into(),
         };
-        let (_, mutation) = super::commands::execute_input(&app, &headers, "actor", &input)
+        let outcome = super::commands::run_input(&app, &headers, "actor", &input)
             .await
             .unwrap();
-        assert_eq!(mutation, changed, "{text}");
+        assert_eq!(outcome.changed_state(), changed, "{text}");
         assert!(!app.engine().unwrap().is_su(Some("actor")));
     }
     let e = app.engine().unwrap();
@@ -308,6 +308,8 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                 config: Arc::new(Config::default()),
                 connections: Arc::new(tokio::sync::Semaphore::new(128)),
                 password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+                agent_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+                http: reqwest::Client::new(),
                 stopping: Default::default(),
             };
             let (release, wait) = std::sync::mpsc::channel();
@@ -336,7 +338,9 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                     room: None,
                     text: text.into(),
                 };
-                super::commands::execute_input(&job_app, &headers, "actor", &input).await
+                super::commands::run_input(&job_app, &headers, "actor", &input)
+                    .await
+                    .map(|outcome| outcome.reply())
             });
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 while app.password_jobs.available_permits() == 2 {
