@@ -79,22 +79,25 @@ agent has one provider API key and one reply mode:
   with each other. One trigger produces exactly one answer.
 
 ```text
-/agent helper sk-your-deepseek-key   # create an agent you own
-/add helper lobby                    # invite it like any account
-@helper summarise today's standup    # ask it in the room
-/agent-reply auto                    # answer every room message instead
-/agent-reply mention                 # go back to mentions only
-/agent-key sk-a-new-key              # replace the provider key
-/agent-name assistant                # rename it and its retained messages
-/agent-remove                        # delete it and its private conversations
-/agent-prompt 你是一条大肥鱼 🐟 多说 emoji   # write its personality
+/new agent helper sk-your-deepseek-key  # create an agent you own
+/add helper lobby                       # invite it like any account
+@helper summarise today's standup       # ask it in the room
+/agent reply auto                       # answer every room message instead
+/agent reply mention                    # go back to mentions only
+/agent key sk-a-new-key                 # replace the provider key
+/agent name assistant                   # rename it and its retained messages
+/agent remove                           # delete it and its private conversations
+/agent prompt 你是一条大肥鱼 🐟 多说 emoji   # write its personality
+/agent config                           # show everything it is set to
+/list agent                             # list the agents you may configure
 ```
 
-The value comes first and the agent name is optional. An account that owns one
-agent may omit it; an account that owns several, or an administrator acting on
-an agent it does not own, names the target as the last argument, for example
-`/agent-reply auto helper` or `/agent-key sk-a-new-key helper`. Only the owner,
-or an administrator, may change an agent.
+`/agent` takes one setting word and then that setting's value. The value comes
+first and the agent name is optional: an account that owns one agent may omit it;
+an account that owns several, or an administrator acting on an agent it does not
+own, names the target as the last argument, for example `/agent reply auto helper`
+or `/agent key sk-a-new-key helper`. Only the owner, or an administrator, may
+change an agent.
 
 ### Personality
 
@@ -103,16 +106,16 @@ rules, so a personality cannot drop the language, length, or formatting behavior
 the chat relies on, and it applies to every answer that agent writes.
 
 ```text
-/agent-prompt <personality text> [agent-name]   # write or replace it
-/agent-prompt [agent-name]                      # show what is set
-/agent-prompt -                                 # clear it
+/agent prompt <personality text> [agent-name]   # write or replace it
+/agent prompt [agent-name]                      # show what is set
+/agent prompt -                                 # clear it
 ```
 
 `/agent prompt <text>` is the same command. The personality may contain spaces,
 punctuation, newlines, and emoji, and holds up to 4000 characters; it is only
 trimmed of surrounding whitespace. Because the text is free-form, the agent name
 is only recognised as the final word when it matches an existing agent, so
-`/agent-prompt 写诗 writer` sets `写诗` on `writer`. Naming an agent on its own
+`/agent prompt 写诗 writer` sets `写诗` on `writer`. Naming an agent on its own
 reads that agent rather than writing its name as a personality. An administrator
 may edit any agent; everyone else may edit the agents they created.
 
@@ -129,16 +132,16 @@ move one agent to another provider, to a gateway, or to a self-hosted model
 without touching the others.
 
 ```text
-/agent-provider openrouter            # deepseek, openrouter, openai, groq,
+/agent provider openrouter            # deepseek, openrouter, openai, groq,
                                      # together, mistral, xai, or - for the default
-/agent-model z-ai/glm-4.6            # any model id the provider serves
-/agent-base-url https://host/v1      # a gateway or a self-hosted endpoint
-/agent-config                        # show everything one agent is set to
+/agent model z-ai/glm-4.6            # any model id the provider serves
+/agent url https://host/v1      # a gateway or a self-hosted endpoint
+/agent config                        # show everything one agent is set to
 ```
 
 Every supported provider speaks the OpenAI chat-completions shape, so one
 request builder serves all of them, and switching provider never changes the
-agent's key: a new provider needs its own key from `/agent-key`. A base URL wins
+agent's key: a new provider needs its own key from `/agent key`. A base URL wins
 over the provider name, which lets an owner point a single agent at a proxy
 without naming it; the URL must be `https://`, and a plain root, a trailing
 slash, and the endpoint path itself all normalise to the same value. A model id
@@ -162,12 +165,12 @@ changed after its training data. Search is off until an owner turns it on, and
 every agent needs its own search key:
 
 ```text
-/agent-search-key tvly-dev-xxxxxxxx  # store this agent's search key
-/agent-search on                     # let it search before answering
-/agent-search off                    # answer from knowledge only
-/agent-sources auto                  # the model decides which results to cite
-/agent-sources always                # always list the results that were used
-/agent-sources never                 # never list sources
+/agent search-key tvly-dev-xxxxxxxx  # store this agent's search key
+/agent search on                     # let it search before answering
+/agent search off                    # answer from knowledge only
+/agent sources auto                  # the model decides which results to cite
+/agent sources always                # always list the results that were used
+/agent sources never                 # never list sources
 ```
 
 With search on, each question first asks the model whether it needs current
@@ -267,9 +270,9 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/debug on\|off` | Metadata grant | Toggle expandable details for readable messages in this tab |
 | `/rename [user] new-name` | Own/any rename grant | Rename yourself, or an authorized target; preserve identity, history, sessions and read positions |
 | `/passwd old new` | Own-password grant | Change password and sign out other sessions |
-| `/rooms` | Accounts/stdin | List discoverable rooms with their owners, then your own readable private pairs; one entry per line. Other users' pairs are excluded even for su |
-| `/users` | Directory grant | List active accounts and groups |
-| `/members [room]` | Member-list grant | List authorized conversation participants |
+| `/list room` | Accounts/stdin | List discoverable rooms with their owners, then your own readable private pairs; one entry per line. Other users' pairs are excluded even for su |
+| `/list user` | Directory grant | List active accounts and groups |
+| `/list member [room]` | Member-list grant | List authorized conversation participants |
 | `/history [count] [user\|@private:a:b]` | Read and command grants | Read retained history, default up to 50 |
 | `/join room` | Read/join grants | Open an authorized room; does not create membership |
 | `/leave [room]` | Accounts | Remove own room access; owners must transfer first |
@@ -277,7 +280,7 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/react message-id reaction` | Read/reaction grants | Toggle a reaction on a message in the selected conversation |
 | `/retract message-id` | Read/retract grants | Retract own messages; su has permission to retract any message |
 | `/reply message-id message` | Read/write grants | Reply within the selected conversation |
-| `/new room` | Room-create grant | Create an invitation-only room with creator ownership/grants |
+| `/new room name` | Room-create grant | Create an invitation-only room with creator ownership/grants |
 | `/add user [room]` | Room-invite grant | Add participant with room user grants |
 | `/kick user [room]` | Room-remove grant | Remove participant and direct room grants |
 | `/delete room` | Room-delete grant | Delete room, history and scoped grants |
@@ -286,23 +289,24 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/clear` | Web command grant | Clear visible local history; refresh restores persisted history |
 | `/logout` | Web | Sign out |
 | `/user name password [admin\|user]` | Account-create grant | Create account; admin assignment needs its own permission |
+| `/new user name password [admin\|user]` | Account-create grant | The unified spelling of `/user` |
 | `/reset name password` | Explicit password-reset grant | Reset password and revoke sessions; ordinary admins have no default reset grant |
 | `/disable name` | Account-disable grant | Disable, revoke sessions and remove room access |
 | `/enable name` | Account-enable grant | Enable without restoring room access |
 | `/deleteuser name` | Account-delete grant | Delete account and private pairs; retain room messages with deleted-author label |
-| `/agent name api-key` | Accounts with the `/agent` command | Create an agent you own; it starts in `mention` mode |
-| `/agent-key api-key [agent-name]` | Owner or admin | Replace the agent's provider key |
-| `/agent-reply [auto\|mention] [agent-name]` | Owner or admin | Choose which messages the agent answers |
-| `/agent-name new-name [agent-name]` | Owner or admin | Rename the agent and relabel its retained messages |
-| `/agent-prompt [personality text] [agent-name]` | Owner or admin | Write, show, or clear the agent's personality; `-` clears it |
-| `/agent-provider provider-name [agent-name]` | Owner or admin | Choose the model provider, or `-` for the default |
-| `/agent-base-url https://host/path [agent-name]` | Owner or admin | Point the agent at a gateway or self-hosted model; must be HTTPS |
-| `/agent-model model-id [agent-name]` | Owner or admin | Choose the model id, or `-` for the default |
-| `/agent-search [on\|off] [agent-name]` | Owner or admin | Search the web before answering; needs a search key first |
-| `/agent-search-key search-api-key [agent-name]` | Owner or admin | Store the agent's web-search key; search stays off until enabled |
-| `/agent-sources [auto\|always\|never] [agent-name]` | Owner or admin | Choose whether a searched answer lists its sources |
-| `/agent-config [agent-name]` | Owner or admin | Show owner, provider, model, reply mode, search, sources, and the agent's own access |
-| `/agent-remove [agent-name]` | Owner or admin | Delete the agent, its private conversations, and its grants |
+| `/new agent name api-key` | Account-create grant | Create an agent you own; it starts in `mention` mode |
+| `/list agent [name]` | Owner or admin | List the agents you may configure, or show one |
+| `/agent key api-key [agent-name]` | Owner or admin | Replace the agent's provider key |
+| `/agent reply [auto\|mention] [agent-name]` | Owner or admin | Choose which messages the agent answers |
+| `/agent name new-name [agent-name]` | Owner or admin | Rename the agent and relabel its retained messages |
+| `/agent prompt [personality text] [agent-name]` | Owner or admin | Write, show, or clear the agent's personality; `-` clears it |
+| `/agent provider provider-name [agent-name]` | Owner or admin | Choose the model provider, or `-` for the default |
+| `/agent url https://host/path [agent-name]` | Owner or admin | Point the agent at a gateway or self-hosted model; must be HTTPS |
+| `/agent model model-id [agent-name]` | Owner or admin | Choose the model id, or `-` for the default |
+| `/agent search [on\|off] [agent-name]` | Owner or admin | Search the web before answering; needs a search key first |
+| `/agent search-key search-api-key [agent-name]` | Owner or admin | Store the agent's web-search key; search stays off until enabled |
+| `/agent sources [auto\|always\|never] [agent-name]` | Owner or admin | Choose whether a searched answer lists its sources |
+| `/agent config [agent-name]` | Owner or admin | Show owner, provider, model, reply mode, search, sources, and the agent's own access || `/agent remove [agent-name]` | Owner or admin | Delete the agent, its private conversations, and its grants |
 
 See [Security](security.md) for permission names, group bundles, scope syntax,
 read-only access, delegation limits, ownership and migration examples.

@@ -197,7 +197,7 @@ data folder; provide `CHAT_ORIGIN` the first time you upgrade it.
 
 Agent answers are the only outbound network traffic. The service calls the model
 provider each agent is configured with — `https://api.deepseek.com` by default,
-or the provider or gateway named by `/agent-provider` and `/agent-base-url` — plus
+or the provider or gateway named by `/agent provider` and `/agent url` — plus
 `https://api.tavily.com` for an agent whose owner enabled web search. The host
 needs outbound HTTPS to every provider in use; no inbound port is opened for any
 of them. A base URL must be HTTPS, so a gateway reached over plain HTTP or an

@@ -109,5 +109,5 @@ answering is dropped, so a conversation never receives two answers to one
 message. A failed provider call posts a short `⚠` message in the same
 conversation; that message is ordinary retained content and is broadcast like
 any other. An agent that answers with sources renders each one as a clickable
-shortened title, and `/agent-config` reports its owner, provider, and the access
+shortened title, and `/agent config` reports its owner, provider, and the access
 the agent itself holds.

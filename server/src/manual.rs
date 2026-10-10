@@ -400,7 +400,7 @@ the su group includes both grants.
 ## Examples
 
 ```
-/sudo /new support
+/sudo /new room support
 /sudo /reset alice new-password
 /sudo /permissions @audit
 ```
@@ -452,10 +452,11 @@ The person who creates a room owns it and receives participant and management gr
 ## Create and invite
 
 Creating a room requires `w:room.create` at global scope and the `/new` command grant.
+`/new room name` is the unified spelling; `/new name` names the same thing.
 Creation saves the room, stable identity, ownership, and grants together.
 
 ```
-/new support
+/new room support
 /add bob support
 ```
 

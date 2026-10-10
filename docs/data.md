@@ -41,7 +41,7 @@ personality text are stored in the same state document, so they move with the
 folder and survive a restart. Agents are additive: a folder
 written before agents existed loads unchanged, and accounts then default to
 ordinary people in `mention` mode. A provider key is a credential: keep the
-data folder and its backups private, and rotate a key with `/agent-key` if it is
+data folder and its backups private, and rotate a key with `/agent key` if it is
 exposed. Renaming an agent rewrites its memberships, its retained message
 labels, and its private-conversation keys, which is what keeps a rename
 consistent across a restart.
