@@ -1,6 +1,6 @@
 # Architecture
 
-CommonRoom remains one Rust executable with embedded static web assets and one portable data folder. The web is a Preact application written in strict TypeScript. Node and pnpm are development/build dependencies, not production services.
+CommonRoom has one Rust API/WebSocket executable, a separately built static UI served by Nginx, and one portable data folder. The web is a Preact application written in strict TypeScript. Node and pnpm are development/build dependencies, not production services.
 
 ## Server ownership
 
@@ -22,7 +22,7 @@ CommonRoom remains one Rust executable with embedded static web assets and one p
 
 `commands.rs` outside the engine is the role-aware help/completion registry. The domain dispatcher executes commands; the registry does not authorize them.
 
-`web/mod.rs` owns route construction and `App`. Its child modules separate assets, proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` handles asynchronous account commands and configuration output. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage module.
+`web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` handles asynchronous account commands and configuration output. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage module.
 
 One `Arc<Mutex<Engine>>` serializes state changes. Never hold its lock across `.await`. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
 

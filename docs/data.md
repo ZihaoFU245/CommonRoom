@@ -15,13 +15,15 @@ binaries cannot open the upgraded schema.
 2. Copy the **entire `data/` folder** to the new machine, preserving it privately.
 3. Place a compatible `chat` binary built for that machine's OS/architecture
    beside `data/`. Start it from that directory with `rtk proxy ./chat`.
-4. Route the same public HTTPS hostname to the new machine and keep the proxy
-   configuration equivalent. If the hostname changes, set `CHAT_ORIGIN` on
+4. Deploy the matching UI `dist/` folder to Nginx (extract `ui.tar.xz`) and
+   configure static serving plus API/WebSocket proxying as described in
+   [Deployment](deployment.md). Route the same public HTTPS hostname to the new
+   machine and keep the proxy configuration equivalent. If the hostname changes, set `CHAT_ORIGIN` on
    the next start; browser cookies are tied to the original hostname.
 
 ```text
 service/
-├── chat                 # destination-platform binary, includes frontend
+├── chat                 # destination-platform backend binary
 └── data/
     ├── config.json      # listener, public origin, production mode
     ├── chat.sqlite      # accounts, password hashes, rooms, memberships,

@@ -807,8 +807,7 @@ try {
     headers: { "X-Forwarded-Proto": "https" },
     redirect: "manual",
   });
-  assert.equal(bare.status, 308);
-  assert.equal(bare.headers.get("location"), "/commonroom/");
+  assert.equal(bare.status, 404);
   assert.equal(
     (
       await fetch(new URL("/api/health", base), {
@@ -826,25 +825,17 @@ try {
     400,
   );
   assert.equal((await request("health")).status, 200);
-  const page = await fetch(`${base}/`, {
-    headers: { "X-Forwarded-Proto": "https" },
-  });
-  assert.equal(page.status, 200);
-  assert.match(page.headers.get("strict-transport-security"), /max-age=/);
+  const health = await request("health");
+  assert.match(health.headers.get("strict-transport-security"), /max-age=/);
   assert.match(
-    page.headers.get("content-security-policy"),
+    health.headers.get("content-security-policy"),
     /wss:\/\/chat\.example\.com/,
   );
-  const html = await page.text();
-  const assets = [...html.matchAll(/(?:src|href)="(\.\/assets\/[^\"]+)"/g)];
-  assert.ok(assets.length >= 2, "binary must serve embedded JS and CSS");
-  assert.ok(html.includes('<base href="/commonroom/">'));
-  for (const [, path] of assets) {
-    const asset = await fetch(new URL(path, `${base}/`), {
+  for (const path of ["/", "/index.html", "/assets/app.js"]) {
+    const response = await fetch(`${base}${path}`, {
       headers: { "X-Forwarded-Proto": "https" },
     });
-    assert.equal(asset.status, 200);
-    assert.ok((await asset.text()).length > 0);
+    assert.equal(response.status, 404, "server must not serve UI assets");
   }
   child.stdin.write("/user alice alice-long-password admin\n");
   await until(
@@ -899,7 +890,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, embedded assets, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

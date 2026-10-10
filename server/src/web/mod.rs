@@ -1,4 +1,3 @@
-mod assets;
 mod auth;
 mod commands;
 mod history;
@@ -13,7 +12,6 @@ use axum::{
     Json, Router,
     http::StatusCode,
     middleware,
-    response::Redirect,
     routing::{get, post},
 };
 use serde_json::json;
@@ -60,26 +58,17 @@ fn error(code: StatusCode, message: &str) -> ApiError {
 
 pub fn router(app: App) -> Router {
     let routes = Router::new()
-        .route("/", get(assets::assets))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
         .route("/api/history", get(history::history))
         .route("/api/read", post(history::read))
         .route("/api/health", get(|| async { Json(json!({ "ok": true })) }))
-        .route("/ws", get(socket::upgrade))
-        .fallback(assets::assets);
+        .route("/ws", get(socket::upgrade));
     let routes = if app.config.base_url == "/" {
         routes
     } else {
-        let base_url = app.config.base_url.clone();
-        let prefix = base_url.trim_end_matches('/').to_owned();
-        Router::new()
-            .route(
-                &prefix,
-                get(move || async move { Redirect::permanent(&base_url) }),
-            )
-            .nest(&app.config.base_url, routes)
+        Router::new().nest(app.config.base_url.trim_end_matches('/'), routes)
     };
     routes
         .layer(axum::extract::DefaultBodyLimit::max(4096))

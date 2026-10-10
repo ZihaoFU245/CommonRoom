@@ -1,6 +1,6 @@
 # HTTP and WebSocket protocol
 
-All paths are relative to the configured `base_url`. HTTP, web assets, and WebSockets share the server's single listener. At root hosting the endpoints are:
+All paths are relative to the configured `base_url`. Nginx serves web assets and proxies HTTP API requests and WebSockets to the server's single backend listener. At root hosting the endpoints are:
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
