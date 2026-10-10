@@ -17,6 +17,8 @@ interface Props {
   permissions: string[];
   commands: Command[];
   unreadBoundary: number | null;
+  /** Account names that are AI agents, so their messages can be labelled. */
+  agents: string[];
   onReact: (message: Message, value: string) => void;
   onReply: (message: Message) => void;
   onDelete: (message: Message) => void;
@@ -32,6 +34,7 @@ export const MessageList = memo(function MessageList({
   permissions,
   commands,
   unreadBoundary,
+  agents,
   onReact,
   onReply,
   onDelete,
@@ -39,6 +42,7 @@ export const MessageList = memo(function MessageList({
   end,
   onScroll,
 }: Props) {
+  const agentNames = useMemo(() => new Set(agents), [agents]);
   const renderedEntries = useMemo(() => {
     let lastDay: string | null = null;
     return entries.map((entry, index) => {
@@ -77,6 +81,7 @@ export const MessageList = memo(function MessageList({
             canReact={actions.react}
             canReply={actions.reply}
             canDelete={actions.retract}
+            agent={agentNames.has(entry.message.from)}
             onReact={(value) => onReact(entry.message, value)}
             onDelete={() => onDelete(entry.message)}
             onReply={() => {
@@ -94,6 +99,7 @@ export const MessageList = memo(function MessageList({
     permissions,
     commands,
     unreadBoundary,
+    agentNames,
     onReact,
     onReply,
     onDelete,

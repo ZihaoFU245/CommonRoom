@@ -108,6 +108,8 @@ export function privateMessages(
   );
 }
 export function redactCommand(text: string) {
+  // Any number of /sudo prefixes may precede the command that holds the
+  // secret, so they are kept and the redaction applies to the rest.
   let prefix = "";
   let sudo = text.match(/^\/sudo\s+/u)?.[0];
   while (sudo) {
@@ -116,6 +118,11 @@ export function redactCommand(text: string) {
     sudo = text.match(/^\/sudo\s+/u)?.[0];
   }
   if (/^\/passwd(?:\s|$)/.test(text)) return prefix + "/passwd •••• ••••";
+  // The provider key is the first argument of /agent and /agent-key.
+  if (/^\/agent(?:\s|$)/.test(text) && !/^\/agent-/u.test(text))
+    return prefix + text.replace(/^(\/agent\s+\S+\s+)\S+/, "$1••••");
+  if (/^\/agent-key(?:\s|$)/.test(text))
+    return prefix + text.replace(/^(\/agent-key\s+)\S+/, "$1••••");
   return prefix + text.replace(/^(\/(?:user|reset)\s+\S+\s+)\S+/, "$1••••");
 }
 export function commandText(text: string) {
@@ -144,6 +151,7 @@ export function suggestions(
   commands: Command[],
   users: string[],
   rooms: string[],
+  agents: string[] = [],
 ): Hint[] {
   if (!draft.startsWith("/") || draft.includes("\n")) return [];
   const parts = draft.split(/\s+/);
@@ -252,6 +260,23 @@ export function suggestions(
     ];
   if (name === "/clean" && position === 2)
     values = [...rooms, "@private", "@all"];
+  // Agent configuration takes its value first and may name the agent after it.
+  if (name === "/agent-reply" && position === 1) {
+    return ["auto", "mention"]
+      .filter((value) => value.startsWith(prefix))
+      .map((value) => ({
+        label: `/agent-reply ${value}`,
+        description: spec.description,
+        value: `/agent-reply ${value} `,
+      }));
+  }
+  if (
+    ["/agent-reply", "/agent-name", "/agent-remove", "/agent-key"].includes(
+      name,
+    ) &&
+    position >= 1
+  )
+    values = agents;
   if (values.length)
     return values
       .filter((value) => value.startsWith(prefix))

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
-import { mentionedText } from "../features/conversation/interactions.ts";
+import { messageTokens } from "../features/conversation/interactions.ts";
 import type { MessageDate } from "../features/conversation/messages.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
 
@@ -14,6 +14,7 @@ export function ConsoleMessage({
   canReact,
   canReply,
   canDelete,
+  agent,
   onReact,
   onReply,
   onDelete,
@@ -27,6 +28,8 @@ export function ConsoleMessage({
   canReact: boolean;
   canReply: boolean;
   canDelete: boolean;
+  /** The author is an AI agent rather than a person. */
+  agent: boolean;
   onReact: (value: string) => void;
   onReply: () => void;
   onDelete: () => void;
@@ -59,12 +62,12 @@ export function ConsoleMessage({
     };
   }, [reactionOpen, placement.anchor]);
   const reply = message.reply;
-  const text = mentionedText(message.text, message.mentions);
+  const tokens = messageTokens(message.text, message.mentions);
   return (
     <article
       id={`message-${message.id}`}
       data-sequence={message.sequence}
-      class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""}`}
+      class={`chat-message ${message.from === self ? "own" : ""} ${agent ? "agent" : ""} ${grouped ? "grouped" : ""}`}
       title={date.full}
     >
       {grouped && (
@@ -80,6 +83,7 @@ export function ConsoleMessage({
         {!grouped && (
           <header class="message-meta">
             <strong class="message-author">{message.from}</strong>
+            {agent && <span class="agent-badge">agent</span>}
             <time dateTime={date.iso} title={date.full} aria-label={date.full}>
               {date.time}
             </time>
@@ -100,13 +104,23 @@ export function ConsoleMessage({
           </button>
         )}
         <p dir="auto">
-          {text.map((part, index) =>
-            part.mention ? (
+          {tokens.map((token, index) =>
+            token.mention ? (
               <mark key={index} class="mention">
-                {part.text}
+                {token.text}
               </mark>
+            ) : token.href ? (
+              <a
+                key={index}
+                href={token.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={token.href}
+              >
+                {token.label || token.text}
+              </a>
             ) : (
-              part.text
+              token.text
             ),
           )}
         </p>

@@ -69,3 +69,123 @@ export function mentionedText(text: string, mentions: string[] = []) {
             .some((value) => nameCharacter(value) || value === "@")),
     }));
 }
+
+/** One run of message text: a mention, a clickable link, or plain text. */
+export interface Token {
+  text: string;
+  mention: boolean;
+  /** Address to open, or null for plain text. */
+  href: string | null;
+  /** Text to show; equals `text` for plain runs. */
+  label: string;
+}
+
+// Trailing punctuation is trimmed by `linkHref`. Parentheses are excluded so a
+// markdown link `[title](url)` does not swallow its own closing bracket; a URL
+// that genuinely contains parentheses is therefore truncated at the first one.
+const URL_PATTERN = /https?:\/\/[^\s<>"'`()]+/g;
+// `[title](url)` as written by the server when it appends answer sources.
+const MARKDOWN_LINK = /\[([^\]\n]{1,120})\]\((https?:\/\/[^\s)]+)\)/g;
+/** Characters of a link label kept before it is elided. */
+const LABEL = 48;
+
+/**
+ * The `href` for a link, or null when a client should not follow it. Only
+ * http(s) URLs are links; everything else stays visible text.
+ */
+export function linkHref(value: string): string | null {
+  // Trailing sentence punctuation is not part of the address.
+  const trimmed = value.replace(/[.,;:!?)\]}'"»”]+$/, "");
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Shorten a link label so a long title does not dominate the message. */
+function shortLabel(value: string): string {
+  const label = value.split(/\s+/).filter(Boolean).join(" ");
+  if (label.length <= LABEL) return label;
+  return `${label.slice(0, LABEL).trimEnd()}…`;
+}
+
+/** A bare address shown as its own host and path rather than in full. */
+function addressLabel(value: string): string {
+  const trimmed = value.replace(/[.,;:!?)\]}'"»”]+$/, "");
+  try {
+    const url = new URL(trimmed);
+    const path = url.pathname === "/" ? "" : url.pathname;
+    return shortLabel(`${url.host}${path}${url.search ? "…" : ""}`);
+  } catch {
+    return shortLabel(value);
+  }
+}
+
+function plainTokens(text: string): Token[] {
+  const tokens: Token[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    const href = linkHref(match[0]);
+    if (!href) continue;
+    if (start > cursor) {
+      const plain = text.slice(cursor, start);
+      tokens.push({ text: plain, mention: false, href: null, label: plain });
+    }
+    tokens.push({
+      text: match[0],
+      mention: false,
+      href,
+      label: addressLabel(match[0]),
+    });
+    cursor = start + match[0].length;
+  }
+  if (cursor < text.length) {
+    const plain = text.slice(cursor);
+    tokens.push({ text: plain, mention: false, href: null, label: plain });
+  }
+  return tokens;
+}
+
+/**
+ * Message text as mentions, links, and plain runs. Links come from agent
+ * answers citing search results, so they must be validated before rendering,
+ * and a labelled link shows its title instead of its address.
+ */
+export function messageTokens(text: string, mentions: string[] = []): Token[] {
+  const tokens: Token[] = [];
+  for (const part of mentionedText(text, mentions)) {
+    if (part.mention) {
+      tokens.push({
+        text: part.text,
+        mention: true,
+        href: null,
+        label: part.text,
+      });
+      continue;
+    }
+    let cursor = 0;
+    for (const match of part.text.matchAll(MARKDOWN_LINK)) {
+      const start = match.index ?? 0;
+      const title = match[1] || "";
+      const href = linkHref(match[2] || "");
+      if (!href) continue;
+      if (start > cursor)
+        tokens.push(...plainTokens(part.text.slice(cursor, start)));
+      tokens.push({
+        text: match[0],
+        mention: false,
+        href,
+        label: shortLabel(title),
+      });
+      cursor = start + match[0].length;
+    }
+    if (cursor < part.text.length)
+      tokens.push(...plainTokens(part.text.slice(cursor)));
+  }
+  return tokens.filter((token) => token.text.length > 0);
+}

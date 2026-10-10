@@ -16,6 +16,7 @@ import {
 import { DeleteConfirmation } from "./DeleteConfirmation.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Settings } from "./Settings.tsx";
+import { AgentPrompt } from "./AgentPrompt.tsx";
 import { Composer } from "./Composer.tsx";
 import { MessageList } from "./MessageList.tsx";
 import { useConnection } from "../hooks/useConnection.ts";
@@ -37,6 +38,7 @@ export function Chat({
   const [fonts, setFonts] = useFonts();
   const { theme, setTheme, seeds, setSeeds } = appearance;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
   const [selected, setSelected] = useState(() => {
     const requested =
       new URLSearchParams(location.hash.slice(1)).get("room") || "";
@@ -182,6 +184,14 @@ export function Chat({
     () => privatePeers(state),
     [state.private_peers, state.direct, state.username],
   );
+  // Agent directory for labels: room members plus known private peers.
+  const agents = useMemo(() => {
+    const known = new Set([
+      ...state.rooms.flatMap((entry) => entry.agents),
+      ...peers,
+    ]);
+    return [...known].filter((name) => state.roles?.[name] === "agent");
+  }, [state.rooms, state.roles, peers]);
   const direct = selected === "@direct" || selected.startsWith("@direct:");
   const peer = selected.startsWith("@direct:") ? selected.slice(8) : null;
   const consoleView = selected === "@command";
@@ -232,6 +242,7 @@ export function Chat({
     hints,
     activeHint,
     send,
+    submit,
     edit,
     keydown,
     acceptHint,
@@ -336,7 +347,9 @@ export function Chat({
         peer={peer}
         closeMenu={closeMenu}
         choose={choose}
+        roles={state.roles || {}}
         openSettings={() => setSettingsOpen(true)}
+        openPrompt={() => setPromptOpen(true)}
         toggleNotifications={() => {
           toggleNotifications().catch(reportUnexpectedError);
         }}
@@ -345,6 +358,13 @@ export function Chat({
           logout().catch(reportUnexpectedError);
         }}
       />
+      {promptOpen && (
+        <AgentPrompt
+          state={state}
+          onSend={submit}
+          onClose={() => setPromptOpen(false)}
+        />
+      )}
       {settingsOpen && (
         <Settings
           state={state}
@@ -404,6 +424,7 @@ export function Chat({
                     <span key={name}>
                       {name}
                       {name === state.username ? " (you)" : ""}
+                      {state.roles?.[name] === "agent" ? " (agent)" : ""}
                     </span>
                   ))
                 ) : (
@@ -451,6 +472,7 @@ export function Chat({
           username={state.username}
           pending={pending}
           unreadBoundary={unreadBoundary}
+          agents={agents}
           onReact={handleReact}
           onReply={handleReply}
           onDelete={handleDelete}

@@ -7,9 +7,12 @@ interface Props {
   selected: string;
   peers: string[];
   peer: string | null;
+  /** Account name to `admin`, `user` or `agent`. */
+  roles: Record<string, string>;
   closeMenu: () => void;
   choose: (name: string) => void;
   openSettings: () => void;
+  openPrompt: () => void;
   toggleNotifications: () => void;
   notifications: boolean;
   logout: () => void;
@@ -20,9 +23,11 @@ export function Sidebar({
   selected,
   peers,
   peer,
+  roles,
   closeMenu,
   choose,
   openSettings,
+  openPrompt,
   toggleNotifications,
   notifications,
   logout,
@@ -76,6 +81,9 @@ export function Sidebar({
               >
                 <span class="hash">↗</span>
                 {name}
+                {roles[name] === "agent" && (
+                  <span class="agent-badge">agent</span>
+                )}
                 <UnreadBadge
                   count={state.unread[`@direct:${name}`]?.count ?? 0}
                 />
@@ -92,9 +100,25 @@ export function Sidebar({
             <small>
               {state.groups.includes("su")
                 ? "su"
-                : state.groups.join(", ") || "user"}
+                : state.groups.join(", ") ||
+                  roles[state.username] ||
+                  (state.admin ? "admin" : "user")}
             </small>
           </div>
+          {(state.admin ||
+            state.users.some((name) => roles[name] === "agent")) && (
+            <button
+              class="prompt-toggle"
+              onClick={openPrompt}
+              aria-label="Agent personality"
+              title="Agent personality"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h16v10H9l-5 4V5Z" />
+                <path d="M8 9h8M8 12h5" />
+              </svg>
+            </button>
+          )}
           <button
             class="settings-toggle"
             onClick={openSettings}
