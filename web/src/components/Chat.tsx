@@ -22,16 +22,20 @@ import { useConnection } from "../hooks/useConnection.ts";
 import { useHistory } from "../hooks/useHistory.ts";
 import { useComposerResize } from "../hooks/useComposerResize.ts";
 import { useFonts } from "../hooks/useFonts.ts";
+import type { useTheme } from "../hooks/useTheme.ts";
 import { useEvent } from "../hooks/useEvent.ts";
 
 export function Chat({
   initial,
   onLogout,
+  appearance,
 }: {
   initial: Snapshot;
   onLogout: () => void;
+  appearance: ReturnType<typeof useTheme>;
 }) {
   const [fonts, setFonts] = useFonts();
+  const { theme, setTheme, seeds, setSeeds } = appearance;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState(() => {
     const requested =
@@ -324,7 +328,11 @@ export function Chat({
       {settingsOpen && (
         <Settings
           fonts={fonts}
+          theme={theme}
+          seeds={seeds}
           onChange={setFonts}
+          onThemeChange={setTheme}
+          onSeedsChange={setSeeds}
           onClose={() => setSettingsOpen(false)}
         />
       )}

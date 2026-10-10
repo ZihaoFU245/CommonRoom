@@ -1,13 +1,31 @@
 :root {
   --chat-header-height: 64px;
   --chat-footer-height: 80px;
-  --accent: #cc7d5e;
+  /* Light appearance. Every themed surface reads from this palette. */
   --paper: #f9f9f7;
   --ink: #2d2d2b;
   --muted: #2d2d2b;
+  --subtle: #666661;
   --line: #e5e1db;
   --wash: #efefec;
+  --accent: #cc7d5e;
+  --accent-hover: #ba6c4f;
   --accent-ink: #2d2d2b;
+  --field: #ffffffb8;
+  --placeholder: #918c85;
+  --danger: #a04135;
+  --online: #22a06b;
+  --offline: #bbb2a8;
+  --scrim: #2d2d2b55;
+  --hairline: #9c9c95;
+  --shadow-float: 0 6px 20px #00000012;
+  --shadow-pop: 0 4px 15px #2d2d2b12;
+  --shadow-dialog: 0 12px 50px #2d2d2b20;
+  /* Text on --accent stays dark in both themes: the fill itself is unchanged. */
+  --accent-label: #2d2d2b;
+  --accent-contrast: #fff;
+  color-scheme: light;
+  caret-color: var(--ink);
   font-family:
     Inter,
     -apple-system,
@@ -20,6 +38,40 @@
   font-weight: 400;
   font-size: var(--ui-font-size, 14px);
   line-height: 1.5;
+}
+/* Dark appearance. bootAppearance sets data-theme before the first frame;
+   the app-level useTheme keeps it current afterwards. The surfaces are a
+   blue-tinted near-black (the blue channel leads the red) rather than a warm
+   charcoal, following the ChatGPT/Codex dark family. --accent itself is
+   shared: the brand fill does not change, only the foregrounds tuned for it. */
+:root[data-theme="dark"] {
+  --paper: #181c26;
+  --ink: #e5e9f2;
+  --muted: #a3abbd;
+  --subtle: #959fb3;
+  --line: #2f3646;
+  --wash: #232838;
+  --accent-hover: #d98a66;
+  --accent-ink: #e5e9f2;
+  --accent-label: #1f1d1a;
+  --field: #1f2430;
+  --placeholder: #8892a6;
+  --danger: #f08c7f;
+  --online: #2fbf8f;
+  --offline: #6b7280;
+  --scrim: #000000a6;
+  --hairline: #3d4557;
+  --shadow-float: 0 6px 20px #00000059;
+  --shadow-pop: 0 4px 15px #00000059;
+  --shadow-dialog: 0 12px 50px #00000073;
+  color-scheme: dark;
+  scrollbar-color: var(--line) transparent;
+}
+/* The platform selection blue sits close to this surface hue, so dark tints it
+   with the accent instead; light keeps the default it has always had. */
+:root[data-theme="dark"] ::selection {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--ink);
 }
 * {
   box-sizing: border-box;
@@ -151,13 +203,13 @@ textarea {
 .login-card input {
   height: 48px;
   border: 1px solid var(--line);
-  background: #ffffffb8;
+  background: var(--field);
   border-radius: 8px;
   padding: 0 14px;
   margin-bottom: 19px;
 }
 .login-card input::placeholder {
-  color: #918c85;
+  color: var(--placeholder);
 }
 .primary {
   display: flex;
@@ -166,7 +218,7 @@ textarea {
   padding: 14px 17px;
   background: var(--accent);
   border-radius: 8px;
-  color: #fff;
+  color: var(--accent-label);
   font-weight: 500;
   margin-top: 5px;
 }
@@ -174,11 +226,11 @@ textarea {
   font-size: 1.42857rem;
 }
 .primary:hover {
-  background: #ba6c4f;
+  background: var(--accent-hover);
 }
 
 .form-error {
-  color: #a04135;
+  color: var(--danger);
   font-size: 0.85714rem;
   padding-bottom: 12px;
 }
@@ -223,7 +275,7 @@ textarea {
   overflow-wrap: anywhere;
 }
 .room-link:hover {
-  background: #efefec;
+  background: var(--wash);
 }
 .room-link.selected {
   background: var(--wash);
@@ -334,10 +386,10 @@ textarea {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #bbb2a8;
+  background: var(--offline);
 }
 .connection.online i {
-  background: #22a06b;
+  background: var(--online);
 }
 
 .message-list {
@@ -377,7 +429,7 @@ textarea {
   line-height: 1.5;
 }
 .composer textarea::placeholder {
-  color: #918c85;
+  color: var(--placeholder);
 }
 .send-button {
   width: 32px;
@@ -385,7 +437,7 @@ textarea {
   flex-shrink: 0;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   font-size: 1.57143rem;
   line-height: 1;
 }
@@ -430,7 +482,7 @@ textarea {
     display: block;
     position: fixed;
     inset: 0;
-    background: #2d2d2b55;
+    background: var(--scrim);
     z-index: 19;
     width: 100%;
     height: 100%;
@@ -507,7 +559,7 @@ textarea {
   overflow-wrap: anywhere;
 }
 .console-output.error pre {
-  color: #a04f3c;
+  color: var(--danger);
 }
 .help-list {
   list-style: none;
@@ -621,7 +673,7 @@ textarea {
   transform: rotate(90deg);
 }
 .nav-group summary:hover {
-  background: #efefec;
+  background: var(--wash);
 }
 .nav-group summary:focus-visible {
   outline: 2px solid var(--ink);
@@ -638,9 +690,6 @@ textarea {
 }
 .nav-items .room-link {
   font-size: 0.92857rem;
-}
-.primary {
-  color: var(--ink);
 }
 @media (prefers-reduced-motion: reduce) {
   .nav-group summary::before {
@@ -781,7 +830,7 @@ button:focus-visible {
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 8px;
-  box-shadow: 0 6px 20px #00000012;
+  box-shadow: var(--shadow-float);
 }
 .online-list span {
   display: block;
@@ -833,7 +882,7 @@ button:focus-visible {
 .continuation-time {
   font-size: 0.78571rem;
   line-height: 1.4;
-  color: #666661;
+  color: var(--subtle);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -857,7 +906,7 @@ button:focus-visible {
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #666661;
+  color: var(--subtle);
 }
 .message-day::before,
 .message-day::after {
@@ -923,7 +972,7 @@ button:focus-visible {
 }
 .message-actions > button:hover,
 .message-actions summary:hover {
-  background: var(--line);
+  background: var(--wash);
 }
 .message-actions details {
   position: relative;
@@ -938,7 +987,7 @@ button:focus-visible {
   border: 1px solid var(--line);
   background: var(--paper);
   border-radius: 8px;
-  box-shadow: 0 4px 15px #2d2d2b12;
+  box-shadow: var(--shadow-pop);
 }
 .reaction-picker.above {
   top: auto;
@@ -967,10 +1016,11 @@ button:focus-visible {
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 6px;
-  background: #fff;
+  background: var(--field);
 }
 .reaction-picker form button {
   background: var(--accent);
+  color: var(--accent-label);
   padding: 5px 8px;
   border-radius: 4px;
 }
@@ -1014,7 +1064,7 @@ button:focus-visible {
   border-left: 4px solid var(--ink);
   font-size: 0.92857rem;
   line-height: 1.5;
-  color: #666661;
+  color: var(--subtle);
   text-align: left;
 }
 .reply-quote strong {
@@ -1040,7 +1090,7 @@ button:focus-visible {
   min-width: 0;
 }
 .reply-composer p {
-  color: #666661;
+  color: var(--subtle);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1108,10 +1158,10 @@ button:focus-visible {
   padding: 22px;
   background: var(--paper);
   color: var(--ink);
-  box-shadow: 0 12px 50px #2d2d2b20;
+  box-shadow: var(--shadow-dialog);
 }
 .settings-dialog::backdrop {
-  background: #2d2d2b55;
+  background: var(--scrim);
 }
 .settings-heading {
   display: flex;
@@ -1124,6 +1174,112 @@ button:focus-visible {
   font-size: 1.28571rem;
   font-weight: 600;
 }
+.theme-setting {
+  min-width: 0;
+  margin: 0 0 20px;
+  padding: 0;
+  border: 0;
+}
+.theme-setting legend {
+  padding: 0;
+  font-size: 0.85714rem;
+  font-weight: 600;
+}
+.theme-choices {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+  margin-top: 7px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--wash);
+}
+.theme-choice {
+  position: relative;
+  display: block;
+}
+.theme-choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.theme-choice span {
+  display: grid;
+  place-items: center;
+  min-height: 30px;
+  border-radius: 5px;
+  font-size: 0.85714rem;
+  color: var(--muted);
+}
+.theme-choice input:checked + span {
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+.theme-choice input:not(:checked):hover + span {
+  color: var(--ink);
+}
+.theme-choice input:focus-visible + span {
+  outline: 2px solid var(--accent);
+}
+.palette-seeds {
+  display: grid;
+  gap: 9px;
+  margin: 0 0 20px;
+}
+.palette-seed {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 9px;
+}
+.palette-seed label {
+  font-size: 0.85714rem;
+  font-weight: 600;
+}
+.palette-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  appearance: none;
+}
+.palette-swatch::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.palette-swatch::-webkit-color-swatch,
+.palette-swatch::-moz-color-swatch {
+  border: 0;
+  border-radius: 4px;
+}
+.palette-hex {
+  width: 96px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85714rem;
+  text-transform: lowercase;
+}
+.palette-hex[aria-invalid="true"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.palette-divider {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
 .font-setting {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1131,7 +1287,7 @@ button:focus-visible {
   margin-bottom: 20px;
 }
 .font-setting output {
-  color: #666661;
+  color: var(--subtle);
   font-size: 0.85714rem;
   font-variant-numeric: tabular-nums;
 }
@@ -1141,16 +1297,9 @@ button:focus-visible {
   margin: 0;
   accent-color: var(--ink);
 }
-.font-preview {
-  border-left: 4px solid var(--ink);
-  padding: 5px 10px;
-  margin-bottom: 20px;
-  font-size: var(--chat-font-size, 16px);
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-}
 .settings-reset {
   background: var(--accent);
+  color: var(--accent-label);
   border-radius: 6px;
   padding: 8px 12px;
 }
@@ -1168,8 +1317,8 @@ button:focus-visible {
   border-radius: 10px;
   display: grid;
   place-items: center;
-  background: #cc7d5e;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-contrast);
   font: 600 0.71429rem/1 sans-serif;
 }
 .unread-bar,
@@ -1185,8 +1334,8 @@ button:focus-visible {
 }
 .unread-bar button,
 .history-error button {
-  background: #cc7d5e;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-contrast);
   border: 0;
   border-radius: 6px;
   padding: 6px 10px;
@@ -1199,14 +1348,14 @@ button:focus-visible {
   align-items: center;
   margin: 16px 0;
   font-size: 0.78571rem;
-  color: #666661;
+  color: var(--subtle);
 }
 .unread-divider::before,
 .unread-divider::after {
   content: "";
   flex: 1;
   height: 1px;
-  background: #9c9c95;
+  background: var(--hairline);
 }
 
 .delete-confirmation {
@@ -1218,7 +1367,7 @@ button:focus-visible {
   background: var(--paper);
 }
 .delete-confirmation::backdrop {
-  background: #00000055;
+  background: var(--scrim);
 }
 .delete-confirmation h2 {
   margin: 0 0 12px;
@@ -1241,7 +1390,7 @@ button:focus-visible {
 .delete-confirmation-actions .confirm-delete {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--ink);
+  color: var(--accent-label);
 }
 
 .mobile-menu[hidden] {
