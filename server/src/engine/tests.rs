@@ -1,5 +1,5 @@
 use super::*;
-fn engine() -> Engine {
+pub(super) fn engine() -> Engine {
     let mut e = Engine::open(Path::new(":memory:")).unwrap();
     for (name, admin) in [("alice", true), ("bob", false), ("eve", false)] {
         e.provision(name, "test-hash".into(), admin, false).unwrap();
@@ -321,13 +321,11 @@ fn room_ring_keeps_newest_messages_across_restart_and_limit_changes() {
                 .unwrap()
                 .contains("消息 7")
         );
-        // The on-disk representation stays a JSON array, compatible with older data folders.
-        let raw: String =
-            e.db.query_row("SELECT json FROM state", [], |r| r.get(0))
-                .unwrap();
-        assert!(
-            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["rooms"]["one"]["messages"]
-                .is_array()
+        // Each retained message has its own indexed row.
+        assert_eq!(
+            e.db.query_row::<usize, _, _>("SELECT count(*) FROM messages", [], |r| r.get(0))
+                .unwrap(),
+            4
         );
     }
     {
@@ -497,7 +495,7 @@ fn message_features_persist_and_rollback() {
     assert_eq!(
         e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        5
+        6
     );
 }
 #[test]
@@ -981,7 +979,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 6] {
+    for version in [0, 1, 2, 3, 4, 7] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1029,6 +1027,33 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
         e.execute(Some("alice"), None, "/add bob team").unwrap();
         e.execute(Some("alice"), Some("team"), "retained history")
             .unwrap();
+        let message_id = e.data.rooms["team"].messages[0].id.clone();
+        e.execute(
+            Some("alice"),
+            Some("team"),
+            &format!("/react {message_id} 🙂"),
+        )
+        .unwrap();
+        e.execute(
+            Some("alice"),
+            Some("team"),
+            &format!("/reply {message_id} quoted"),
+        )
+        .unwrap();
+        e.execute(Some("alice"), None, "/tell bob retained private")
+            .unwrap();
+        let private_id = e.data.private["alice:bob"].messages[0].id.clone();
+        e.execute(Some("bob"), None, &format!("/react {private_id} 🙂"))
+            .unwrap();
+        e.execute(
+            Some("bob"),
+            None,
+            &format!("/reply {private_id} private quote"),
+        )
+        .unwrap();
+        let private_sequence = e.data.private["alice:bob"].messages[0].sequence;
+        e.mark_read("bob", "@direct:alice", private_sequence)
+            .unwrap();
         e.login("session".into(), "bob", "hash", None).unwrap();
         let sequence = e.data.rooms["team"].messages[0].sequence;
         e.mark_read("bob", "team", sequence).unwrap();
@@ -1051,6 +1076,7 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
                 .collect(),
             minimum_age: 0,
         });
+        e.db.execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
         e.db.execute(
             "UPDATE state SET json=?1 WHERE id=1",
             params![serde_json::to_string(&before).unwrap()],
@@ -1080,7 +1106,9 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
         let stored: String =
             e.db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
                 .unwrap();
-        assert!(serde_json::from_str::<Data>(&stored).unwrap() == expected);
+        let mut saved: Data = serde_json::from_str(&stored).unwrap();
+        super::storage::load_entities(&e.db, &mut saved).unwrap();
+        assert!(saved == expected);
     }
     let e = Engine::open(&path).unwrap();
     assert!(e.data == expected);
@@ -1111,6 +1139,7 @@ fn command_family_upgrade_leaves_database_intact_on_validation_or_write_failure(
                 minimum_age: 0,
             });
             original = serde_json::to_string(&data).unwrap();
+            e.db.execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
             e.db.execute("UPDATE state SET json=?1 WHERE id=1", params![original])
                 .unwrap();
             if !invalid {
@@ -1128,5 +1157,128 @@ fn command_family_upgrade_leaves_database_intact_on_validation_or_write_failure(
                 .unwrap(),
             5
         );
+        assert_eq!(db.query_row::<usize,_,_>("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('entities','messages','reactions','counters')",[],|r| r.get(0)).unwrap(),0);
     }
+}
+
+fn stored_data(e: &Engine) -> Data {
+    let raw: String =
+        e.db.query_row("SELECT json FROM state", [], |r| r.get(0))
+            .unwrap();
+    let mut data: Data = serde_json::from_str(&raw).unwrap();
+    super::storage::load_entities(&e.db, &mut data).unwrap();
+    data
+}
+
+#[test]
+fn hot_mutations_write_constant_rows_and_leave_unrelated_history_untouched() {
+    let mut e = engine();
+    e.set_limits(64, 64, 1).unwrap();
+    e.execute(Some("alice"), Some("lobby"), "room retained")
+        .unwrap();
+    e.execute(Some("alice"), None, "/tell bob private retained")
+        .unwrap();
+    let room_id = e.data.rooms["lobby"].id.clone();
+    e.db.execute_batch(&format!("CREATE TRIGGER untouched_room BEFORE UPDATE ON messages WHEN OLD.conversation='{room_id}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END; CREATE TRIGGER untouched_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'unrelated policy'); END;")).unwrap();
+    let changes = e.db.total_changes();
+    e.execute(Some("alice"), None, "/tell bob new private")
+        .unwrap();
+    assert_eq!(e.db.total_changes() - changes, 4); // insert, evict, counter, revision
+    let id = e.data.private["alice:bob"].messages[0].id.clone();
+    e.db.execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
+    let changes = e.db.total_changes();
+    e.execute(Some("alice"), None, &format!("/react {id} 🙂"))
+        .unwrap();
+    assert_eq!(e.db.total_changes() - changes, 2); // membership and revision
+    assert!(stored_data(&e) == e.data);
+    let changes = e.db.total_changes();
+    let sequence = e.data.private["alice:bob"].messages[0].sequence;
+    e.mark_read("bob", "@direct:alice", sequence).unwrap();
+    e.execute(Some("alice"), None, "/help").unwrap();
+    assert_eq!(e.db.total_changes() - changes, 1);
+}
+
+#[test]
+fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
+    for private in [false, true] {
+        for stage in ["insert", "delete", "counter", "revision", "reaction"] {
+            let mut e = engine();
+            e.set_limits(64, 64, 1).unwrap();
+            let view = if private { None } else { Some("lobby") };
+            let send = if private {
+                "/tell bob retained"
+            } else {
+                "retained"
+            };
+            e.execute(Some("alice"), view, send).unwrap();
+            let id = if private {
+                &e.data.private["alice:bob"].messages[0].id
+            } else {
+                &e.data.rooms["lobby"].messages[0].id
+            }
+            .clone();
+            let before = e.data.clone();
+            let revision = e.revision;
+            let trigger = match stage {
+                "insert" => "BEFORE INSERT ON messages",
+                "delete" => "BEFORE DELETE ON messages",
+                "counter" => "BEFORE UPDATE ON counters",
+                "revision" => "BEFORE UPDATE ON entities",
+                _ => "BEFORE INSERT ON reactions",
+            };
+            e.db.execute_batch(&format!("CREATE TRIGGER reject_hot {trigger} BEGIN SELECT RAISE(ABORT,'injected failure'); END;")).unwrap();
+            let input = if stage == "reaction" {
+                format!("/react {id} ok")
+            } else {
+                send.into()
+            };
+            assert!(e.execute(Some("alice"), view, &input).is_err(), "{stage}");
+            assert!(e.data == before, "{stage}");
+            assert!(stored_data(&e) == before, "{stage}");
+            assert_eq!(e.revision, revision);
+        }
+    }
+    let mut e = engine();
+    let before = e.data.clone();
+    e.db.execute_batch("CREATE TRIGGER reject_new BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'new chat failure'); END;").unwrap();
+    assert!(e.execute(Some("alice"), None, "/tell bob first").is_err());
+    assert!(e.data == before);
+    assert!(stored_data(&e) == before);
+}
+
+#[test]
+fn invalid_legacy_cursor_aborts_migration_before_schema_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chat.sqlite");
+    let data = engine().data;
+    let json = serde_json::to_string(&data).unwrap();
+    {
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT NOT NULL); CREATE TABLE read_positions(username TEXT,conversation TEXT,sequence INTEGER,PRIMARY KEY(username,conversation)); PRAGMA user_version=5;").unwrap();
+        db.execute("INSERT INTO state VALUES(1,?1)", params![json])
+            .unwrap();
+        db.execute("INSERT INTO read_positions VALUES('bob','lobby',-1)", [])
+            .unwrap();
+    }
+    assert!(Engine::open(&path).is_err());
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+            .unwrap(),
+        json
+    );
+    assert_eq!(
+        db.query_row::<usize, _, _>(
+            "SELECT count(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        2
+    );
 }

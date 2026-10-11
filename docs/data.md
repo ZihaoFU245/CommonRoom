@@ -2,16 +2,16 @@
 
 ## Data upgrades
 
-Only the current HEAD schema (v5) is supported. New empty databases are initialized as v5; existing v1–v4, unversioned, or newer databases are rejected without changing their stored state or version. Older-schema migrations are not supported.
+The current schema is v6. New empty databases are initialized as v6. Existing v5 databases migrate automatically in one transaction after validating accounts, policy, and cursor decoding. Schema creation, retained messages/reactions, entities, counters, command-grant updates, and the version change commit together. Failures preserve the v5 state and schema. Existing v1–v4, unversioned, or newer databases are rejected without changing stored state or version.
 
-Back up the entire data folder with the server stopped before upgrading. Current v5 accounts, sessions, identities, grants, messages and read cursors remain compatible. Tests use isolated temporary data and never modify working `data/`.
+Back up the entire data folder with the server stopped before upgrading. The v5 → v6 migration preserves accounts, sessions, identities, grants, messages, reactions, reply quotes, conversation revisions, sequences, and read cursors. A v5-only binary cannot open the upgraded folder; restoring the stopped-server backup is the downgrade path. Tests use isolated temporary data and never modify working `data/`.
 
 The command-family rework updates persisted v5 command grants once at startup:
 `/delete` and `/deleteuser` become `/rm`, `/user` becomes `/new`, and `/rooms`
 and `/users` become `/ls`. Action permissions, scopes, ownership, accounts,
 sessions, history, and read cursors are preserved. The policy revision advances
 once, and validation or write failures leave the saved state unchanged. This is
-a data update within v5; old command syntax remains unsupported.
+included atomically when migrating v5 to v6; old command syntax remains unsupported.
 
 ## Move to another machine
 
@@ -38,7 +38,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary supports only schema v5. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary supports v6 and automatic migration from v5. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -47,4 +47,30 @@ On Unix, startup restricts the data directory to its owner (`0700`). This
 folder contains private messages and active session credentials; keep
 backups private as well.
 
-Account renames use the existing v5 schema. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. No new schema migration is required.
+Account renames use the v6 schema. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. No new schema migration is required.
+
+
+## Storage layout and costs
+
+`entities` stores one account, session, room metadata, or private-conversation
+metadata per row. `messages` is keyed by stable conversation ID and sequence;
+`reactions` stores individual reaction memberships and cascades when a message is
+deleted. The small `state` row contains policy/audit data, and `counters` contains
+the global sequence. Room/private revisions are separate columns, so a send does
+not serialize memberships or policy. Composite tables use `WITHOUT ROWID` to avoid
+a redundant row index; cursor cleanup also has a conversation index.
+
+Sends/replies insert one message, optionally delete one oldest message, and update
+the counter and conversation revision atomically. A reaction toggles one membership
+and updates one revision. Their rollback data holds at most one old message;
+unrelated histories are neither cloned nor rewritten. SQLite B-tree lookup/writes
+are O(log n), with a constant number of affected rows. Queue append/eviction is
+O(1). Message-ID lookup currently scans retained queues; authorization, snapshots,
+and broadcasts have their own costs.
+
+Administrative operations, retention-limit changes, cleanup, and retraction can
+affect multiple records. They retain full in-memory rollback and reconcile stored
+rows transactionally, scanning/serializing retained data but updating only changed
+payloads. These operations are not O(1). Startup loads retained history into memory;
+this release does not implement lazy history loading. See
+[the benchmark report](storage-benchmarks.md) for measured costs and limits.

@@ -9,4 +9,5 @@ Start with [Development](development.md), then read [Architecture](architecture.
 - [Testing](testing.md): required checks and regression coverage.
 - [Commands](commands.md): command syntax, permissions, and behavior.
 - [Data](data.md): persistence, upgrades, backups, and moving the service.
+- [Storage benchmarks](storage-benchmarks.md): mutation latency, write volume, memory, and remaining scaling costs.
 - [Deployment](deployment.md): separate server/UI builds, configuration, Nginx.

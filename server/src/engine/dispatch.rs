@@ -74,6 +74,22 @@ impl Engine {
         ) {
             return self.apply(actor, room, input);
         }
+        if let Some(change) = self.message_change(actor, room, &parts, input) {
+            let result = self.apply(actor, room, input);
+            match result {
+                Ok(reply) => {
+                    if let Err(error) = self.save_message_change(&change) {
+                        self.restore_message_change(change);
+                        return Err(error);
+                    }
+                    return Ok(reply);
+                }
+                Err(error) => {
+                    self.restore_message_change(change);
+                    return Err(error);
+                }
+            }
+        }
         let before = self.data.clone();
         let result = self.apply(actor, room, input);
         match result {
@@ -193,6 +209,135 @@ impl Engine {
             | "/history" => self.apply_queries(&context),
             "/reset" => Err("Account provisioning is console-only.".into()),
             _ => Err("Unknown command. Try /help.".into()),
+        }
+    }
+}
+
+// A send holds only the evicted message; a reaction holds only its old message.
+// No retained conversation or unrelated entity is cloned for rollback.
+pub(super) struct MessageChange {
+    pub(super) key: String,
+    pub(super) private: bool,
+    pub(super) reaction: bool,
+    pub(super) index: Option<usize>,
+    pub(super) previous: Option<Message>,
+    pub(super) sequence: u64,
+    revision: Option<u64>,
+}
+impl MessageChange {
+    pub(super) fn new_conversation(&self) -> bool {
+        self.revision.is_none()
+    }
+}
+impl Engine {
+    fn message_change(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        parts: &[&str],
+        input: &str,
+    ) -> Option<MessageChange> {
+        let command = *parts.first()?;
+        let reaction = command == "/react";
+        if input.trim_start().starts_with('/') && !matches!(command, "/tell" | "/reply" | "/react")
+        {
+            return None;
+        }
+        let (private, key) = if command == "/tell" {
+            (true, private_key(actor?, parts.get(1)?))
+        } else if let Some(room) = view.filter(|v| !v.starts_with('@')) {
+            (false, room.to_owned())
+        } else if !input.trim_start().starts_with('/') {
+            (true, view?.strip_prefix("@private:")?.to_owned())
+        } else {
+            let id = parts.get(1)?;
+            let scope = self.command_scope(actor, view).ok()?;
+            let key = self
+                .data
+                .private
+                .iter()
+                .find(|(key, chat)| {
+                    self.allows(actor, &self.private_scope(key), authorization::Action::Read)
+                        && !matches!(&scope,authorization::Scope::Private(id) if *id != chat.id)
+                        && chat.messages.iter().any(|m| m.id == *id)
+                })?
+                .0
+                .clone();
+            (true, key)
+        };
+        let conversation = if private {
+            self.data
+                .private
+                .get(&key)
+                .map(|c| (&c.messages, c.revision))
+        } else {
+            self.data.rooms.get(&key).map(|r| (&r.messages, r.revision))
+        };
+        let index = if reaction {
+            Some(
+                conversation?
+                    .0
+                    .iter()
+                    .position(|m| Some(m.id.as_str()) == parts.get(1).copied())?,
+            )
+        } else {
+            None
+        };
+        let previous = conversation.and_then(|(messages, _)| {
+            if let Some(index) = index {
+                messages.get(index).cloned()
+            } else {
+                (messages.len() == self.max_messages)
+                    .then(|| messages.front().cloned())
+                    .flatten()
+            }
+        });
+        Some(MessageChange {
+            key,
+            private,
+            reaction,
+            index,
+            previous,
+            sequence: self.data.next_sequence,
+            revision: conversation.map(|(_, r)| r),
+        })
+    }
+    fn restore_message_change(&mut self, change: MessageChange) {
+        self.data.next_sequence = change.sequence;
+        if change.private && change.revision.is_none() {
+            self.data.private.remove(&change.key);
+            return;
+        }
+        let conversation = if change.private {
+            self.data
+                .private
+                .get_mut(&change.key)
+                .map(|c| (&mut c.messages, &mut c.revision))
+        } else {
+            self.data
+                .rooms
+                .get_mut(&change.key)
+                .map(|r| (&mut r.messages, &mut r.revision))
+        };
+        if let Some((messages, revision)) = conversation {
+            if let Some(old_revision) = change.revision {
+                *revision = old_revision;
+            }
+            if change.reaction {
+                if let (Some(index), Some(previous)) = (change.index, change.previous)
+                    && let Some(message) = messages.get_mut(index)
+                {
+                    *message = previous;
+                }
+            } else if messages
+                .back()
+                .is_some_and(|m| m.sequence > change.sequence)
+            {
+                messages.pop_back();
+                if let Some(previous) = change.previous {
+                    messages.push_front(previous);
+                }
+            }
         }
     }
 }

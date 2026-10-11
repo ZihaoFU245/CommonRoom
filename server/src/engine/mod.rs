@@ -1,5 +1,8 @@
 mod accounts;
 pub mod authorization;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod benchmarks;
 mod dispatch;
 mod helpers;
 mod messages;

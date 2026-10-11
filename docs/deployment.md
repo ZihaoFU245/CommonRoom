@@ -128,8 +128,8 @@ accounts and rooms while preventing new creation until the count is below it.
 private conversation. Each new message evicts the oldest when that conversation
 is full, keeping the newest messages. A busy private conversation does not
 evict another person's history. Lowering this limit trims and saves both room
-and private histories at startup. Queue append/eviction is O(1); message saves
-still serialize the retained application state. Read positions use a separate
+and private histories at startup. Queue append/eviction is O(1); v6 message sends use constant-row targeted
+transactions with O(log n) SQLite index operations. Read positions use a separate
 SQLite table with indexed, monotonic updates and do not rewrite message data.
 Restart after editing these values.
 

@@ -57,7 +57,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Stored command-grant update tests cover v5 restart, state/cursor preservation, idempotence, and validation/write failures. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Stored command-grant update and migration tests cover v5 → v6 upgrade and v6 restart, state/cursor preservation, idempotence, and validation/write failures. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -97,7 +97,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures and v5 restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v5 migration and v6 restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -116,3 +116,17 @@ in ownership/messages/audit, self-revocation, and denied nested commands. Passwo
 jobs additionally recheck both sudo grants, actor session/disabled status, and
 target identity after hashing. Frontend checks mask wrapped passwords and retain
 wrapped command completion and routing.
+
+
+## Persistence benchmark
+
+Run `rtk proxy python3 auto/benchmark-storage.py` to build the baseline commit and
+current code against identical isolated fixtures. It prints send/reaction p50/p95,
+separate snapshot/serialization timings, WAL bytes, changed-row counts, and isolated
+process peak RSS. It uses temporary databases, never `data/`. See
+[Storage benchmarks](storage-benchmarks.md) for methodology and recorded results.
+Targeted-write tests reject unrelated payload/policy updates and inject failures at
+message insertion/eviction, counter/revision changes, reaction insertion, and new
+private-conversation creation; disk state, cache, sequences and revisions must all
+roll back. Migration tests verify successful state/cursor preservation and that
+validation, cursor decoding, or write failures leave v5 tables and version intact.
