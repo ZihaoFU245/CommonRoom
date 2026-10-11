@@ -52,11 +52,10 @@ with tempfile.TemporaryDirectory(prefix='chatroom-storage-benchmark-') as direct
     modules = engine / 'mod.rs'
     modules.write_text(modules.read_text() + '\n#[cfg(test)]\n#[allow(clippy::unwrap_used, clippy::expect_used)]\nmod benchmarks;\n')
     benchmark = (ROOT / 'server/src/engine/benchmarks.rs').read_text()
-    # The old Engine does not initialize the row-based schema; its fixture needs
-    # only the v5 state table. Everything timed is the identical benchmark source.
-    benchmark = benchmark.replace('e.db = Engine::open(&path).unwrap().db;',
-        'e.db = Connection::open(&path).unwrap();\n'
-        'e.db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT NOT NULL);").unwrap();')
+    # Adapt only fixture access to the old lock/layout; timed commands are identical.
+    benchmark = benchmark.replace('.db.lock().unwrap()', '.db').replace('.db.lock()\n            .unwrap()', '.db')
+    benchmark = benchmark.replace('super::tests::room_messages(&e, "room0")', 'e.data.rooms["room0"].messages')
+    benchmark = benchmark.replace('super::tests::private_messages(&e, "alice:peer0")', 'e.data.private["alice:peer0"].messages')
     (engine / 'benchmarks.rs').write_text(benchmark)
     run_benchmark(baseline, 'baseline')
     run_benchmark(ROOT, 'current')

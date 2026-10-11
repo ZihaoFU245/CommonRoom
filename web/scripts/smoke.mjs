@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { parseFrame } from "../src/api/protocol.ts";
+import { applyConversation } from "../src/features/conversation/historyCache.ts";
+import { parseFrame, isHistory } from "../src/api/protocol.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const binary = join(
@@ -138,6 +139,10 @@ async function connect(cookie) {
     );
     client.frames.push(frame);
     if (frame.kind === "snapshot") client.snapshot = frame;
+    if (frame.kind === "conversation") {
+      client.snapshot = applyConversation(client.snapshot, frame);
+      assert.ok(client.snapshot);
+    }
     if (frame.kind === "read")
       client.snapshot = { ...client.snapshot, unread: frame.unread };
   });
@@ -1071,6 +1076,89 @@ try {
     "logout disconnects socket",
   );
   await stop();
+  // Exercise bounded history through real HTTP and WebSocket transport.
+  const paginated = join(temporary, "paginated");
+  await mkdir(paginated);
+  await writeFile(
+    join(paginated, "config.json"),
+    JSON.stringify({
+      bind: "127.0.0.1:0",
+      origins: [origin],
+      production: false,
+      max_messages: 2000,
+    }),
+  );
+  await start(paginated);
+  child.stdin.write(
+    "/new user alice alice-long-password admin\n/new user bob bob-long-password user\n/new room paged\n/add alice paged\n",
+  );
+  await until(
+    () => logs.includes("alice added to #paged."),
+    "pagination fixture membership",
+  );
+  const pagingCookie = await login("alice");
+  const pagingClient = await connect(pagingCookie);
+  for (let i = 1; i <= 12; i++) await send(pagingClient, `page ${i}`, "paged");
+  const fetchPage = async (query) => {
+    const response = await request(`history?view=paged&${query}`, pagingCookie);
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json();
+    assert.ok(isHistory(result));
+    return result;
+  };
+  const latest = await fetchPage("limit=5");
+  assert.deepEqual(
+    latest.messages.map((m) => m.sequence),
+    [8, 9, 10, 11, 12],
+  );
+  assert.ok(latest.has_before && !latest.has_after);
+  const concurrent = await Promise.all(
+    Array.from({ length: 8 }, () => fetchPage("start=6&end=9&limit=3")),
+  );
+  for (const result of concurrent)
+    assert.deepEqual(
+      result.messages.map((m) => m.sequence),
+      [6, 7, 8],
+    );
+  assert.deepEqual(
+    (await fetchPage("before=8&limit=3")).messages.map((m) => m.sequence),
+    [5, 6, 7],
+  );
+  assert.deepEqual(
+    (await fetchPage("after=8&limit=3")).messages.map((m) => m.sequence),
+    [9, 10, 11],
+  );
+  assert.deepEqual(
+    (await fetchPage("around=6&limit=5")).messages.map((m) => m.sequence),
+    [4, 5, 6, 7, 8],
+  );
+  for (const invalid of [
+    "limit=0",
+    "limit=101",
+    "start=9&end=3",
+    "before=8&after=2",
+    "around=3&start=1",
+    "start=9007199254740992",
+    "start=abc",
+  ])
+    assert.equal(
+      (await request(`history?view=paged&${invalid}`, pagingCookie)).status,
+      400,
+    );
+  const deniedCookie = await login("bob");
+  assert.equal(
+    (await request("history?view=paged&start=6&end=9", deniedCookie)).status,
+    403,
+  );
+  await send(pagingClient, "/configs");
+  const pagingConfigs = JSON.parse(
+    pagingClient.frames.find((f) => f.id === pagingClient.serial).text,
+  );
+  assert.ok(pagingConfigs.history_cache.hits > 0);
+  assert.ok(pagingConfigs.history_cache.messages <= 1000);
+  await request("logout", pagingCookie, {});
+  assert.equal((await request("history?view=paged", pagingCookie)).status, 401);
+  await stop();
   await start(join(temporary, "untrusted-proxy"), true, "10.0.0.2");
   const spoofed = await fetch(`${base}/api/health`, {
     headers: {
@@ -1085,7 +1173,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

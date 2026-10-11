@@ -28,7 +28,13 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
   globalThis.fetch = async (url, options) => {
     request = { url: String(url), options };
     return new Response(
-      JSON.stringify({ view: "@direct:bob", messages: [], revision: 0 }),
+      JSON.stringify({
+        view: "@direct:bob",
+        messages: [],
+        revision: 0,
+        has_before: false,
+        has_after: false,
+      }),
     );
   };
   await api.history("@direct:bob", controller.signal);
@@ -38,6 +44,18 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
   );
   assert.equal(request.options.signal, controller.signal);
   assert.equal(request.options.method, "GET");
+  for (const range of [
+    { start: 0, end: 1099, limit: 100 },
+    { before: 1000 },
+    { after: 1099 },
+    { around: 1000 },
+  ]) {
+    await api.history("@direct:bob", controller.signal, range);
+    const url = new URL(request.url);
+    for (const [key, value] of Object.entries(range))
+      assert.equal(url.searchParams.get(key), String(value));
+    assert.equal(request.options.signal, controller.signal);
+  }
   globalThis.fetch = async () => new Response(JSON.stringify({ rooms: [] }));
   await assert.rejects(api.me(), /Invalid server response/);
   globalThis.fetch = async () =>

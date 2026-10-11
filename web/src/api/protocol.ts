@@ -70,6 +70,23 @@ export interface History {
   view: string;
   messages: Message[];
   revision: number;
+  has_before: boolean;
+  has_after: boolean;
+}
+export interface HistoryRange {
+  around?: number;
+  start?: number;
+  end?: number;
+  before?: number;
+  after?: number;
+  limit?: number;
+}
+export interface ConversationUpdate {
+  kind: "conversation";
+  view: string;
+  id: string;
+  messages: Message[];
+  unread: Unread;
 }
 export interface Acknowledgement {
   kind: "notice" | "error";
@@ -77,7 +94,10 @@ export interface Acknowledgement {
   text: string;
 }
 export type ServerFrame =
-  Snapshot | Acknowledgement | { kind: "read"; unread: Record<string, Unread> };
+  | Snapshot
+  | ConversationUpdate
+  | Acknowledgement
+  | { kind: "read"; unread: Record<string, Unread> };
 export interface ClientFrame {
   id: number;
   room: string | null;
@@ -211,7 +231,10 @@ export const isHistory = (v: unknown): v is History =>
   record(v) &&
   typeof v.view === "string" &&
   integer(v.revision) &&
-  messages(v.messages);
+  typeof v.has_before === "boolean" &&
+  typeof v.has_after === "boolean" &&
+  messages(v.messages) &&
+  v.messages.length <= 100;
 export const isOk = (v: unknown): v is { ok: true } =>
   record(v) && v.ok === true;
 export function parseFrame(raw: string): ServerFrame | null {
@@ -223,6 +246,21 @@ export function parseFrame(raw: string): ServerFrame | null {
   }
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
+  if (
+    value.kind === "conversation" &&
+    typeof value.view === "string" &&
+    typeof value.id === "string" &&
+    messages(value.messages) &&
+    value.messages.length <= 50 &&
+    unread(value.unread)
+  )
+    return {
+      kind: "conversation",
+      view: value.view,
+      id: value.id,
+      messages: value.messages,
+      unread: value.unread,
+    };
   if (value.kind === "read" && unreads(value.unread))
     return { kind: "read", unread: value.unread };
   if (

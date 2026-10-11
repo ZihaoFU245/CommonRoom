@@ -43,7 +43,10 @@ pub fn start(app: App) {
             };
             let result = match (parts[0], provision) {
                 ("/help", _) if parts.len() == 1 => Ok(commands::help(true, true)),
-                ("/configs", _) if parts.len() == 1 => app.config.display(),
+                ("/configs", _) if parts.len() == 1 => app.engine_read().and_then(|engine| {
+                    app.config
+                        .display_with_history(engine.history_store.stats()?)
+                }),
                 ("/configs", _) => Err("Usage: /configs".into()),
                 (_, Some(account)) => hash_password(account.password).and_then(|hash| {
                     app.engine()?

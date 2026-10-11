@@ -35,12 +35,94 @@ impl Engine {
         room: Option<&str>,
         input: &str,
     ) -> Result<String, String> {
+        if actor.is_some_and(|user| !self.active(user)) {
+            return Err("Account unavailable.".into());
+        }
+        self.changed_conversation = None;
+        let result = self.execute_inner(actor, room, input);
+        // Working messages are transient. Durable history and bounded pages live in storage.
+        for room in self.data.rooms.values_mut() {
+            room.messages.clear();
+        }
+        for chat in self.data.private.values_mut() {
+            chat.messages.clear();
+        }
+        self.pending_deletes.clear();
+        self.pending_cleanups.clear();
+        result
+    }
+    fn load_command_message(
+        &mut self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        parts: &[&str],
+    ) -> Result<(), String> {
+        if !matches!(
+            parts.first().copied(),
+            Some("/react" | "/reply" | "/retract")
+        ) {
+            return Ok(());
+        }
+        let Some(message_id) = parts.get(1) else {
+            return Ok(());
+        };
+        self.require_command(actor, view, parts[0])?;
+        let scope = self.command_scope(actor, view)?;
+        let Some((id, message)) = self.history_store.locate(message_id)? else {
+            return Ok(());
+        };
+        if let Some(name) = view.filter(|v| !v.starts_with('@')) {
+            let target = self.room_scope(name)?;
+            self.require(actor, &target, authorization::Action::Read)?;
+            if target == authorization::Scope::Room(id) {
+                self.data
+                    .rooms
+                    .get_mut(name)
+                    .ok_or("Room not found.")?
+                    .messages
+                    .push_back(message);
+            }
+            return Ok(());
+        }
+        if let Some(key) = self
+            .data
+            .private
+            .iter()
+            .find(|(_, chat)| chat.id == id)
+            .map(|(key, _)| key.clone())
+        {
+            let target = self.private_scope(&key);
+            if self.allows(actor, &target, authorization::Action::Read)
+                && !matches!(&scope,authorization::Scope::Private(selected) if *selected!=id)
+            {
+                self.data
+                    .private
+                    .get_mut(&key)
+                    .ok_or("Private conversation not found.")?
+                    .messages
+                    .push_back(message);
+            }
+        } else if self.is_su(actor)
+            && scope == authorization::Scope::Server
+            && let Some(room) = self.data.rooms.values_mut().find(|room| room.id == id)
+        {
+            room.messages.push_back(message);
+        }
+        Ok(())
+    }
+    fn execute_inner(
+        &mut self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        input: &str,
+    ) -> Result<String, String> {
         if let Some(command) = sudo_command(input)? {
             return self.with_command_authority(actor, room, true, |engine| {
-                engine.execute(actor, room, command)
+                engine.execute_inner(actor, room, command)
             });
         }
         let parts: Vec<_> = input.split_whitespace().collect();
+        self.load_command_message(actor, room, &parts)?;
         if parts.first() == Some(&"/rename") {
             self.require_command(actor, room, "/rename")?;
             let (name, new_name) = match parts.as_slice() {

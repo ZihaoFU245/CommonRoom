@@ -18,35 +18,53 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Instant,
 };
 use tokio::sync::broadcast;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Change {
     All,
     Read(String),
+    Conversation(String),
 }
 
 #[derive(Clone)]
 pub struct App {
-    pub engine: Arc<Mutex<Engine>>,
+    pub engine: Arc<RwLock<Engine>>,
     pub attempts: Arc<Mutex<HashMap<SocketAddr, (Instant, u32)>>>,
     pub changes: broadcast::Sender<Change>,
     pub config: Arc<Config>,
     pub connections: Arc<tokio::sync::Semaphore>,
+    pub io_jobs: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 impl App {
+    pub fn io_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        self.io_jobs
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "Server busy; retry shortly.".into())
+    }
+
     // Fail closed after a panic; a poisoned engine may contain a partial mutation.
-    pub fn engine(&self) -> Result<std::sync::MutexGuard<'_, Engine>, String> {
+    pub fn engine(&self) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, String> {
         self.engine
-            .lock()
+            .write()
             .map_err(|_| "Server state unavailable; restart the service.".into())
     }
-    fn engine_api(&self) -> Result<std::sync::MutexGuard<'_, Engine>, ApiError> {
+    pub fn engine_read(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, String> {
+        self.engine
+            .read()
+            .map_err(|_| "Server state unavailable; restart the service.".into())
+    }
+    fn engine_read_api(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, ApiError> {
+        self.engine_read()
+            .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))
+    }
+    fn engine_api(&self) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, ApiError> {
         self.engine()
             .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))
     }

@@ -57,7 +57,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Stored command-grant update and migration tests cover v5 → v6 upgrade and v6 restart, state/cursor preservation, idempotence, and validation/write failures. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Stored command-grant update and migration tests cover v5/v6 → v7 upgrade and v7 restart, state/cursor preservation, idempotence, and validation/write failures. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -97,7 +97,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v5 migration and v6 restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v5/v6 migration and v7 restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -130,3 +130,28 @@ message insertion/eviction, counter/revision changes, reaction insertion, and ne
 private-conversation creation; disk state, cache, sequences and revisions must all
 roll back. Migration tests verify successful state/cursor preservation and that
 validation, cursor decoding, or write failures leave v5 tables and version intact.
+
+## Bounded history regressions
+
+`engine/history.rs` covers direct deep-range reads, ascending/descending traversal
+with sequence gaps, invalid bounds, empty-edge direction flags, large payload
+progress, around-anchor fallback, revision/cursor invalidation, retention changes,
+lazy startup, indexed deep-range query plans, streaming rename batches and name
+reuse, cache entry/byte/page budgets, transactional v6 upgrades, four
+simultaneous readers, and WAL reader/writer overlap. Existing regression suites
+also verify private history survives account renames and persistence failures.
+Web server tests check overlapping engine readers and bounded work admission.
+
+`web/tests/historyCache.test.js` covers scrolling beyond 1,000 messages and back,
+overlap/reaction replacement, directional byte eviction, LRU entry/view/byte
+budgets, bounded snapshot tails, incremental update isolation, stable identity
+rejection and private pair routing. `web/tests/virtualTimeline.test.js` exercises
+viewport/overscan bounds, exact variable-height boundaries, spacer totals and
+anchor preservation after measurement, prepend and opposite-edge eviction. These
+geometry tests do not replace browser DOM/ResizeObserver verification on devices.
+
+The HTTP/WebSocket smoke suite additionally exercises sequence ranges, before,
+after, around, concurrent page requests, malformed/unsafe bounds, authorization,
+logout and cache hits using isolated temporary databases. Run the required checks
+and integration suite after rebuilding both binaries. No line/branch coverage
+percentage or production load capacity is claimed by these behavioral tests.

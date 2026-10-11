@@ -65,7 +65,15 @@ test("protocol accepts complete Unicode snapshots, history, and every server fra
       ],
     }),
   );
-  assert.ok(isHistory({ view: "room", messages: [message], revision: 1 }));
+  assert.ok(
+    isHistory({
+      view: "room",
+      messages: [message],
+      revision: 1,
+      has_before: false,
+      has_after: false,
+    }),
+  );
   for (const frame of [
     snapshot,
     { kind: "read", unread: snapshot.unread },
@@ -127,5 +135,49 @@ test("protocol rejects malformed nested data before it reaches UI state", () => 
       messages: [{ ...message, text: null }],
     }),
     false,
+  );
+});
+
+test("history and incremental frames reject unsafe sequences and oversized pages", () => {
+  const history = {
+    view: "room",
+    revision: 1,
+    messages: [message],
+    has_before: true,
+    has_after: false,
+  };
+  assert.equal(isHistory(history), true);
+  assert.equal(
+    isHistory({ ...history, messages: Array(100).fill(message) }),
+    true,
+  );
+  for (const invalid of [
+    { ...history, messages: Array(101).fill(message) },
+    { ...history, has_before: 1 },
+    { ...history, has_after: undefined },
+    { ...history, revision: Number.MAX_SAFE_INTEGER + 1 },
+    {
+      ...history,
+      messages: [{ ...message, sequence: Number.MAX_SAFE_INTEGER + 1 }],
+    },
+  ])
+    assert.equal(isHistory(invalid), false);
+  const frame = {
+    kind: "conversation",
+    view: "room",
+    id: "stable",
+    messages: [message],
+    unread: snapshot.unread.room,
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
+  assert.equal(
+    parseFrame(JSON.stringify({ ...frame, messages: Array(51).fill(message) })),
+    null,
+  );
+  assert.equal(
+    parseFrame(
+      JSON.stringify({ ...frame, unread: { ...frame.unread, through: -1 } }),
+    ),
+    null,
   );
 });

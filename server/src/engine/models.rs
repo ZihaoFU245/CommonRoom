@@ -80,7 +80,7 @@ pub struct RoomView {
     pub members: BTreeSet<String>,
     pub messages: Vec<Message>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Unread {
     pub count: usize,
     pub first: Option<u64>,
@@ -93,6 +93,8 @@ pub struct History {
     pub view: String,
     pub messages: Vec<Message>,
     pub revision: u64,
+    pub has_before: bool,
+    pub has_after: bool,
 }
 #[derive(Serialize)]
 pub struct Access {

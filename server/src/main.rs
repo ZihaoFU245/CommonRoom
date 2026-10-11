@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     io,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 use tokio::sync::broadcast;
 use web::App;
@@ -41,11 +41,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (changes, _) = broadcast::channel(16);
     let app = App {
-        engine: Arc::new(Mutex::new(engine)),
+        engine: Arc::new(RwLock::new(engine)),
         attempts: Arc::new(Mutex::new(HashMap::new())),
         changes,
         config: Arc::new(config),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };

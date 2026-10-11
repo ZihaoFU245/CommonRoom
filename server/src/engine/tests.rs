@@ -9,6 +9,38 @@ pub(super) fn engine() -> Engine {
     e.execute(Some("alice"), None, "/add eve lobby").unwrap();
     e
 }
+pub(super) fn persisted_messages(e: &Engine, id: &str) -> VecDeque<Message> {
+    let db = e.db.lock().unwrap();
+    let mut query = db
+        .prepare("SELECT json FROM messages WHERE conversation=?1 ORDER BY sequence")
+        .unwrap();
+    let rows = query.query_map([id], |r| r.get::<_, String>(0)).unwrap();
+    rows.map(|row| {
+        let mut message: Message = serde_json::from_str(&row.unwrap()).unwrap();
+        super::history::load_reactions(&db, id, &mut message).unwrap();
+        message
+    })
+    .collect()
+}
+pub(super) fn room_messages(e: &Engine, name: &str) -> VecDeque<Message> {
+    persisted_messages(e, &e.data.rooms[name].id)
+}
+pub(super) fn private_messages(e: &Engine, key: &str) -> VecDeque<Message> {
+    persisted_messages(e, &e.data.private[key].id)
+}
+fn full_data(e: &Engine) -> Data {
+    let mut data = e.data.clone();
+    for room in data.rooms.values_mut() {
+        room.messages = persisted_messages(e, &room.id);
+    }
+    for chat in data.private.values_mut() {
+        chat.messages = persisted_messages(e, &chat.id);
+    }
+    data
+}
+fn age_first(e: &Engine, id: &str) {
+    e.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)",params![id,now()-8*86400]).unwrap();
+}
 #[test]
 fn cleanup_respects_age_scope_permissions_and_persistence() {
     let dir = tempfile::tempdir().unwrap();
@@ -21,12 +53,12 @@ fn cleanup_respects_age_scope_permissions_and_persistence() {
         e.execute(Some("alice"), None, "/new room two").unwrap();
         for room in ["one", "two"] {
             e.execute(Some("alice"), Some(room), "old").unwrap();
-            e.data.rooms.get_mut(room).unwrap().messages[0].time = now() - 8 * 86400;
+            age_first(&e, &e.data.rooms[room].id);
             e.execute(Some("alice"), Some(room), "new").unwrap();
         }
         e.execute(Some("alice"), None, "/tell bob old private")
             .unwrap();
-        e.data.private.get_mut("alice:bob").unwrap().messages[0].time = now() - 8 * 86400;
+        age_first(&e, &e.data.private["alice:bob"].id);
         e.execute(Some("alice"), None, "/tell bob new private")
             .unwrap();
         assert!(e.execute(Some("bob"), None, "/clean 7d @all").is_err());
@@ -37,15 +69,15 @@ fn cleanup_respects_age_scope_permissions_and_persistence() {
             );
         }
         e.execute(Some("alice"), Some("one"), "/clean 7d").unwrap();
-        assert_eq!(e.data.rooms["one"].messages.len(), 1);
-        assert_eq!(e.data.rooms["two"].messages.len(), 2);
-        assert_eq!(e.data.private["alice:bob"].messages.len(), 2);
+        assert_eq!(room_messages(&e, "one").len(), 1);
+        assert_eq!(room_messages(&e, "two").len(), 2);
+        assert_eq!(private_messages(&e, "alice:bob").len(), 2);
         e.execute(None, None, "/clean 7d @all").unwrap();
     }
     let e = Engine::open(&path).unwrap();
-    assert_eq!(e.data.rooms["two"].messages[0].text, "new");
-    assert_eq!(e.data.private["alice:bob"].messages[0].text, "new private");
-    assert_eq!(e.data.private["alice:bob"].messages.len(), 1);
+    assert_eq!(room_messages(&e, "two")[0].text, "new");
+    assert_eq!(private_messages(&e, "alice:bob")[0].text, "new private");
+    assert_eq!(private_messages(&e, "alice:bob").len(), 1);
 }
 #[test]
 fn password_change_keeps_current_session_and_rejects_stale_hashes() {
@@ -157,7 +189,10 @@ fn failed_read_and_private_eviction_writes_restore_state() {
         .unwrap();
     let before = e.data.clone();
     let through = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
-    e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=ON;")
+        .unwrap();
     assert!(e.mark_read("bob", "@direct:alice", through).is_err());
     assert_eq!(e.snapshot("bob").unwrap().unread["@direct:alice"].count, 1);
     assert!(e.execute(Some("alice"), None, "/tell bob failed").is_err());
@@ -257,7 +292,9 @@ fn permissions_and_private_delivery() {
     e.execute(Some("bob"), None, "/tell alice private").unwrap();
     e.execute(Some("bob"), None, "/tell eve other-private")
         .unwrap();
-    let history = e.execute(Some("bob"), None, "/history 20 alice").unwrap();
+    let history = e
+        .execute(Some("bob"), None, "/history 1 100 @direct:alice")
+        .unwrap();
     assert!(history.contains("private"));
     assert!(!history.contains("other-private"));
     assert_eq!(e.snapshot("alice").unwrap().direct.len(), 1);
@@ -290,7 +327,7 @@ fn bounded_history_and_disabled_users() {
     for _ in 0..210 {
         e.execute(Some("bob"), Some("lobby"), "hello").unwrap();
     }
-    assert_eq!(e.data.rooms["lobby"].messages.len(), 200);
+    assert_eq!(room_messages(&e, "lobby").len(), 200);
     e.execute(None, None, "/disable bob").unwrap();
     assert!(e.snapshot("bob").is_none());
 }
@@ -308,13 +345,12 @@ fn room_ring_keeps_newest_messages_across_restart_and_limit_changes() {
             e.execute(None, Some("one"), &format!("消息 {n} 🙂"))
                 .unwrap();
         }
-        let texts: Vec<_> = e.data.rooms["one"]
-            .messages
+        let texts: Vec<_> = room_messages(&e, "one")
             .iter()
-            .map(|m| m.text.as_str())
+            .map(|m| m.text.clone())
             .collect();
         assert_eq!(texts, ["消息 7 🙂", "消息 8 🙂", "消息 9 🙂"]);
-        assert_eq!(e.data.rooms["two"].messages.len(), 1);
+        assert_eq!(room_messages(&e, "two").len(), 1);
         assert!(e.execute(None, Some("one"), "/history 4").is_err());
         assert!(
             e.execute(None, Some("one"), "/history")
@@ -323,28 +359,27 @@ fn room_ring_keeps_newest_messages_across_restart_and_limit_changes() {
         );
         // Each retained message has its own indexed row.
         assert_eq!(
-            e.db.query_row::<usize, _, _>("SELECT count(*) FROM messages", [], |r| r.get(0))
+            e.db.lock()
+                .unwrap()
+                .query_row::<usize, _, _>("SELECT count(*) FROM messages", [], |r| r.get(0))
                 .unwrap(),
             4
         );
     }
     {
         let mut e = Engine::open(&path).unwrap();
-        assert_eq!(
-            e.data.rooms["one"].messages.front().unwrap().text,
-            "消息 7 🙂"
-        );
+        assert_eq!(room_messages(&e, "one").front().unwrap().text, "消息 7 🙂");
         e.set_limits(64, 64, 1).unwrap();
-        assert_eq!(e.data.rooms["one"].messages.len(), 1);
-        assert_eq!(e.data.rooms["one"].messages[0].text, "消息 9 🙂");
+        assert_eq!(room_messages(&e, "one").len(), 1);
+        assert_eq!(room_messages(&e, "one")[0].text, "消息 9 🙂");
         e.execute(None, Some("one"), "newest").unwrap();
-        assert_eq!(e.data.rooms["one"].messages[0].text, "newest");
+        assert_eq!(room_messages(&e, "one")[0].text, "newest");
         assert!(e.set_limits(64, 64, 0).is_err());
         assert_eq!(e.max_messages, 1);
     }
     let e = Engine::open(&path).unwrap();
-    assert_eq!(e.data.rooms["one"].messages.len(), 1);
-    assert_eq!(e.data.rooms["one"].messages[0].text, "newest");
+    assert_eq!(room_messages(&e, "one").len(), 1);
+    assert_eq!(room_messages(&e, "one")[0].text, "newest");
 }
 #[test]
 fn failed_writes_restore_evicted_messages_and_limits() {
@@ -354,7 +389,10 @@ fn failed_writes_restore_evicted_messages_and_limits() {
     e.execute(Some("alice"), Some("lobby"), "latest").unwrap();
     let previous = e.data.clone();
     let revision = e.revision;
-    e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=ON;")
+        .unwrap();
     assert!(e.execute(Some("alice"), Some("lobby"), "unsaved").is_err());
     assert!(e.data == previous);
     assert!(e.set_limits(1, 1, 1).is_err());
@@ -372,7 +410,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
         "你好 @bob! @eve and mail@alice.com",
     )
     .unwrap();
-    let original = e.data.rooms["lobby"].messages.back().unwrap().clone();
+    let original = room_messages(&e, "lobby").back().unwrap().clone();
     assert_eq!(
         original.mentions,
         BTreeSet::from(["bob".into(), "eve".into()])
@@ -380,10 +418,10 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     let react = format!("/react {} 好👍", original.id);
     e.execute(Some("bob"), Some("lobby"), &react).unwrap();
     e.execute(Some("alice"), Some("lobby"), &react).unwrap();
-    assert_eq!(e.data.rooms["lobby"].messages[0].reactions["好👍"].len(), 2);
+    assert_eq!(room_messages(&e, "lobby")[0].reactions["好👍"].len(), 2);
     e.execute(Some("bob"), Some("lobby"), &react).unwrap();
     assert_eq!(
-        e.data.rooms["lobby"].messages[0].reactions["好👍"],
+        room_messages(&e, "lobby")[0].reactions["好👍"],
         BTreeSet::from(["alice".into()])
     );
     assert!(
@@ -405,10 +443,10 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     let long_reaction = "🙂".repeat(128);
     let command = format!("/react {} {long_reaction}", original.id);
     e.execute(Some("bob"), Some("lobby"), &command).unwrap();
-    assert!(e.data.rooms["lobby"].messages[0].reactions[&long_reaction].contains("bob"));
+    assert!(room_messages(&e, "lobby")[0].reactions[&long_reaction].contains("bob"));
     e.execute(Some("bob"), Some("lobby"), &command).unwrap();
     assert!(
-        !e.data.rooms["lobby"].messages[0]
+        !room_messages(&e, "lobby")[0]
             .reactions
             .contains_key(&long_reaction)
     );
@@ -419,7 +457,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
         &format!("/reply {} @alice 回答", original.id),
     )
     .unwrap();
-    let reply = &e.data.rooms["lobby"].messages[0];
+    let reply = &room_messages(&e, "lobby")[0];
     assert_eq!(reply.reply.as_ref().unwrap().id, original.id);
     assert_eq!(reply.reply.as_ref().unwrap().text, original.text);
     assert_eq!(reply.mentions, BTreeSet::from(["alice".into()]));
@@ -427,7 +465,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     e.execute(Some("alice"), None, "/new room secret").unwrap();
     e.execute(Some("alice"), Some("secret"), "private-room")
         .unwrap();
-    let id = e.data.rooms["secret"].messages[0].id.clone();
+    let id = room_messages(&e, "secret")[0].id.clone();
     for action in ["react", "reply"] {
         assert!(
             e.execute(Some("eve"), Some("secret"), &format!("/{action} {id} nope"))
@@ -440,7 +478,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     }
     e.execute(Some("alice"), None, "/tell bob @bob @eve secret DM")
         .unwrap();
-    let dm = e.data.private["alice:bob"].messages.back().unwrap().clone();
+    let dm = private_messages(&e, "alice:bob").back().unwrap().clone();
     assert_eq!(dm.mentions, BTreeSet::from(["bob".into()]));
     assert!(
         e.execute(Some("eve"), None, &format!("/react {} 👍", dm.id))
@@ -453,8 +491,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     e.execute(Some("bob"), None, &format!("/reply {} @alice 好", dm.id))
         .unwrap();
     assert_eq!(
-        e.data.private["alice:bob"]
-            .messages
+        private_messages(&e, "alice:bob")
             .back()
             .unwrap()
             .to
@@ -473,13 +510,16 @@ fn message_features_persist_and_rollback() {
         e.execute(Some("alice"), None, "/new room room").unwrap();
         e.execute(Some("alice"), Some("room"), "@alice 中文")
             .unwrap();
-        let id = e.data.rooms["room"].messages[0].id.clone();
+        let id = room_messages(&e, "room")[0].id.clone();
         e.execute(Some("alice"), Some("room"), &format!("/reply {id} reply"))
             .unwrap();
         e.execute(Some("alice"), Some("room"), &format!("/react {id} 🙂"))
             .unwrap();
         let previous = e.data.clone();
-        e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+        e.db.lock()
+            .unwrap()
+            .execute_batch("PRAGMA query_only=ON;")
+            .unwrap();
         assert!(
             e.execute(Some("alice"), Some("room"), &format!("/react {id} 🙂"))
                 .is_err()
@@ -488,14 +528,16 @@ fn message_features_persist_and_rollback() {
     }
     let e = Engine::open(&path).unwrap();
     assert_eq!(
-        e.data.rooms["room"].messages[0].reactions["🙂"],
+        room_messages(&e, "room")[0].reactions["🙂"],
         BTreeSet::from(["alice".into()])
     );
-    assert!(e.data.rooms["room"].messages[1].reply.is_some());
+    assert!(room_messages(&e, "room")[1].reply.is_some());
     assert_eq!(
-        e.db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+        e.db.lock()
+            .unwrap()
+            .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        6
+        7
     );
 }
 #[test]
@@ -529,7 +571,7 @@ fn moving_folder_preserves_sessions_and_permissions() {
     let mut e = Engine::open(&destination.path().join("chat.sqlite")).unwrap();
     assert_eq!(e.session("session-token"), Some("alice".into()));
     assert!(e.snapshot("alice").unwrap().admin);
-    assert_eq!(e.data.rooms["team"].messages[0].text, "before migration");
+    assert_eq!(room_messages(&e, "team")[0].text, "before migration");
     e.provision("alice", "new-hash".into(), false, true)
         .unwrap();
     assert!(e.session("session-token").is_none());
@@ -545,14 +587,20 @@ fn rejects_two_servers_and_unknown_schema() {
     let path = dir.path().join("chat.sqlite");
     let e = Engine::open(&path).unwrap();
     assert!(Engine::open(&path).is_err());
-    e.db.execute_batch("PRAGMA user_version=99;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA user_version=99;")
+        .unwrap();
     drop(e);
     assert!(Engine::open(&path).is_err());
 }
 #[test]
 fn failed_storage_rolls_back_changes() {
     let mut e = engine();
-    e.db.execute_batch("DROP TABLE state;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TABLE state;")
+        .unwrap();
     assert!(e.execute(Some("alice"), None, "/new room lost").is_err());
     assert!(!e.data.rooms.contains_key("lost"));
 }
@@ -583,7 +631,7 @@ fn delete_user_checks_permissions_and_cleans_references() {
     );
     e.execute(Some("bob"), Some("lobby"), "old room message")
         .unwrap();
-    let original = e.data.rooms["lobby"].messages[0].id.clone();
+    let original = room_messages(&e, "lobby")[0].id.clone();
     e.execute(
         Some("alice"),
         Some("lobby"),
@@ -620,7 +668,7 @@ fn delete_user_checks_permissions_and_cleans_references() {
     assert!(e.session("bob-one").is_none() && e.session("bob-two").is_none());
     assert_eq!(e.session("alice-session").as_deref(), Some("alice"));
     assert!(!e.data.rooms["lobby"].members.contains("bob"));
-    let messages = &e.data.rooms["lobby"].messages;
+    let messages = &room_messages(&e, "lobby");
     assert_eq!(messages[0].from, "bob (deleted)");
     assert_eq!(messages[0].id, original);
     assert_eq!(messages[0].text, "old room message");
@@ -640,7 +688,7 @@ fn delete_user_checks_permissions_and_cleans_references() {
             .get("alice")
             .is_none_or(|p| !p.contains_key("dm:alice:bob"))
     );
-    assert_eq!(e.db.query_row::<u64,_,_>("SELECT COUNT(*) FROM read_positions WHERE username='bob' OR conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),0);
+    assert_eq!(e.db.lock().unwrap().query_row::<u64,_,_>("SELECT COUNT(*) FROM read_positions WHERE username='bob' OR conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),0);
     e.provision("bob", "new-hash".into(), false, false).unwrap();
     let replacement = e.snapshot("bob").unwrap();
     assert!(
@@ -685,21 +733,28 @@ fn delete_user_rolls_back_database_and_cache_on_cleanup_failure() {
     let positions = e.read_positions.clone();
     let revision = e.revision;
     let disk: String =
-        e.db.query_row("SELECT json FROM state", [], |r| r.get(0))
+        e.db.lock()
+            .unwrap()
+            .query_row("SELECT json FROM state", [], |r| r.get(0))
             .unwrap();
-    e.db.execute_batch("CREATE TRIGGER fail_cleanup BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'test cleanup failure'); END;").unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_cleanup BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'test cleanup failure'); END;").unwrap();
     assert!(e.execute(Some("alice"), None, "/rm user bob").is_err());
     assert!(e.data == before);
     assert_eq!(e.read_positions, positions);
     assert_eq!(e.revision, revision);
     assert_eq!(e.session("bob-token").as_deref(), Some("bob"));
     assert_eq!(
-        e.db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+        e.db.lock()
+            .unwrap()
+            .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
             .unwrap(),
         disk
     );
-    assert_eq!(e.db.query_row::<u64,_,_>("SELECT sequence FROM read_positions WHERE username='bob' AND conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),through);
-    e.db.execute_batch("DROP TRIGGER fail_cleanup;").unwrap();
+    assert_eq!(e.db.lock().unwrap().query_row::<u64,_,_>("SELECT sequence FROM read_positions WHERE username='bob' AND conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),through);
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_cleanup;")
+        .unwrap();
     e.execute(Some("alice"), None, "/rm user bob").unwrap();
     assert!(e.session("bob-token").is_none());
 }
@@ -733,7 +788,7 @@ fn role_commands_are_authorized_and_not_chat_messages() {
     e.execute(Some("bob"), None, "/new room promoted").unwrap();
     e.execute(Some("alice"), None, "/revoke bob").unwrap();
     assert!(e.execute(Some("bob"), None, "/new room denied").is_err());
-    assert!(e.data.rooms["lobby"].messages.is_empty());
+    assert!(room_messages(&e, "lobby").is_empty());
     assert!(e.execute(Some("alice"), None, "/grant missing").is_err());
 }
 #[test]
@@ -747,7 +802,7 @@ fn history_tail_members_and_account_recovery() {
     assert_eq!(snapshot.rooms[0].messages.len(), 50);
     assert_eq!(snapshot.rooms[0].messages[0].text, "message-30");
     assert_eq!(
-        e.execute(Some("bob"), Some("lobby"), "/history 60")
+        e.execute(Some("bob"), Some("lobby"), "/history 21 80")
             .unwrap()
             .lines()
             .count(),
@@ -813,7 +868,7 @@ fn retract_enforces_ownership_membership_and_private_visibility() {
     let mut e = engine();
     e.execute(Some("bob"), Some("lobby"), "room original")
         .unwrap();
-    let id = e.data.rooms["lobby"].messages[0].id.clone();
+    let id = room_messages(&e, "lobby")[0].id.clone();
     let command = format!("/retract {id}");
     // Even administrators cannot retract another author's message.
     assert!(e.execute(Some("alice"), Some("lobby"), &command).is_err());
@@ -825,14 +880,14 @@ fn retract_enforces_ownership_membership_and_private_visibility() {
     let revision = e.data.rooms["lobby"].revision;
     e.execute(Some("bob"), Some("lobby"), &command).unwrap();
     assert_eq!(e.data.rooms["lobby"].revision, revision + 1);
-    assert_eq!(e.data.rooms["lobby"].messages.len(), 1);
-    assert!(e.data.rooms["lobby"].messages[0].reply.is_none());
+    assert_eq!(room_messages(&e, "lobby").len(), 1);
+    assert!(room_messages(&e, "lobby")[0].reply.is_none());
     assert!(e.execute(Some("bob"), Some("lobby"), &command).is_err());
     assert_eq!(e.snapshot("alice").unwrap().unread["lobby"].count, 0);
 
     e.execute(Some("bob"), None, "/tell alice private original")
         .unwrap();
-    let id = e.data.private["alice:bob"].messages[0].id.clone();
+    let id = private_messages(&e, "alice:bob")[0].id.clone();
     let command = format!("/retract {id}");
     assert!(e.execute(Some("eve"), None, &command).is_err());
     assert!(e.execute(Some("alice"), None, &command).is_err());
@@ -840,8 +895,8 @@ fn retract_enforces_ownership_membership_and_private_visibility() {
     e.execute(Some("alice"), None, &format!("/reply {id} reply"))
         .unwrap();
     e.execute(Some("bob"), None, &command).unwrap();
-    assert_eq!(e.data.private["alice:bob"].messages.len(), 1);
-    assert!(e.data.private["alice:bob"].messages[0].reply.is_none());
+    assert_eq!(private_messages(&e, "alice:bob").len(), 1);
+    assert!(private_messages(&e, "alice:bob")[0].reply.is_none());
 }
 
 #[test]
@@ -865,32 +920,38 @@ fn retract_persists_and_failed_writes_restore_message_and_quotes() {
             )
             .unwrap();
             let id = if room.is_some() {
-                e.data.rooms["room"].messages[0].id.clone()
+                room_messages(&e, "room")[0].id.clone()
             } else {
-                e.data.private["alice:bob"].messages[0].id.clone()
+                private_messages(&e, "alice:bob")[0].id.clone()
             };
             e.execute(Some("alice"), room, &format!("/reply {id} reply"))
                 .unwrap();
             let before = e.data.clone();
             let revision = e.revision;
-            e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+            e.db.lock()
+                .unwrap()
+                .execute_batch("PRAGMA query_only=ON;")
+                .unwrap();
             assert!(
                 e.execute(Some("alice"), room, &format!("/retract {id}"))
                     .is_err()
             );
             assert!(e.data == before);
             assert_eq!(e.revision, revision);
-            e.db.execute_batch("PRAGMA query_only=OFF;").unwrap();
+            e.db.lock()
+                .unwrap()
+                .execute_batch("PRAGMA query_only=OFF;")
+                .unwrap();
             e.execute(Some("alice"), room, &format!("/retract {id}"))
                 .unwrap();
         }
         e.connect("alice");
     }
     let e = Engine::open(&path).unwrap();
-    assert_eq!(e.data.rooms["room"].messages.len(), 1);
-    assert!(e.data.rooms["room"].messages[0].reply.is_none());
-    assert_eq!(e.data.private["alice:bob"].messages.len(), 1);
-    assert!(e.data.private["alice:bob"].messages[0].reply.is_none());
+    assert_eq!(room_messages(&e, "room").len(), 1);
+    assert!(room_messages(&e, "room")[0].reply.is_none());
+    assert_eq!(private_messages(&e, "alice:bob").len(), 1);
+    assert!(private_messages(&e, "alice:bob")[0].reply.is_none());
     assert!(e.snapshot("alice").unwrap().online.is_empty());
 }
 
@@ -947,9 +1008,9 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
         )
         .unwrap();
         let id = if room.is_some() {
-            e.data.rooms["lobby"].messages[0].id.clone()
+            room_messages(&e, "lobby")[0].id.clone()
         } else {
-            e.data.private["alice:bob"].messages[0].id.clone()
+            private_messages(&e, "alice:bob")[0].id.clone()
         };
         e.execute(Some("alice"), room, &format!("/reply {id} reply"))
             .unwrap();
@@ -958,15 +1019,21 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
                 .is_err()
         );
         let before = e.data.clone();
-        e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+        e.db.lock()
+            .unwrap()
+            .execute_batch("PRAGMA query_only=ON;")
+            .unwrap();
         assert!(e.execute(None, None, &format!("/retract {id}")).is_err());
         assert!(e.data == before);
-        e.db.execute_batch("PRAGMA query_only=OFF;").unwrap();
+        e.db.lock()
+            .unwrap()
+            .execute_batch("PRAGMA query_only=OFF;")
+            .unwrap();
         e.execute(None, None, &format!("/retract {id}")).unwrap();
         let messages = if room.is_some() {
-            &e.data.rooms["lobby"].messages
+            &room_messages(&e, "lobby")
         } else {
-            &e.data.private["alice:bob"].messages
+            &private_messages(&e, "alice:bob")
         };
         assert_eq!(messages.len(), 1);
         assert!(messages[0].reply.is_none());
@@ -979,7 +1046,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 7] {
+    for version in [0, 1, 2, 3, 4, 8] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1027,7 +1094,7 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
         e.execute(Some("alice"), None, "/add bob team").unwrap();
         e.execute(Some("alice"), Some("team"), "retained history")
             .unwrap();
-        let message_id = e.data.rooms["team"].messages[0].id.clone();
+        let message_id = room_messages(&e, "team")[0].id.clone();
         e.execute(
             Some("alice"),
             Some("team"),
@@ -1042,7 +1109,7 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
         .unwrap();
         e.execute(Some("alice"), None, "/tell bob retained private")
             .unwrap();
-        let private_id = e.data.private["alice:bob"].messages[0].id.clone();
+        let private_id = private_messages(&e, "alice:bob")[0].id.clone();
         e.execute(Some("bob"), None, &format!("/react {private_id} 🙂"))
             .unwrap();
         e.execute(
@@ -1051,15 +1118,15 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
             &format!("/reply {private_id} private quote"),
         )
         .unwrap();
-        let private_sequence = e.data.private["alice:bob"].messages[0].sequence;
+        let private_sequence = private_messages(&e, "alice:bob")[0].sequence;
         e.mark_read("bob", "@direct:alice", private_sequence)
             .unwrap();
         e.login("session".into(), "bob", "hash", None).unwrap();
-        let sequence = e.data.rooms["team"].messages[0].sequence;
+        let sequence = room_messages(&e, "team")[0].sequence;
         e.mark_read("bob", "team", sequence).unwrap();
         read_positions = e.read_positions.clone();
         expected = e.data.clone();
-        before = e.data.clone();
+        before = full_data(&e);
         // Model an existing v5 database, including the old owner command bundle.
         for grant in &mut before.policy.grants {
             if grant.permissions.remove("/rm") {
@@ -1076,12 +1143,14 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
                 .collect(),
             minimum_age: 0,
         });
-        e.db.execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
-        e.db.execute(
-            "UPDATE state SET json=?1 WHERE id=1",
-            params![serde_json::to_string(&before).unwrap()],
-        )
-        .unwrap();
+        e.db.lock().unwrap().execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
+        e.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE state SET json=?1 WHERE id=1",
+                params![serde_json::to_string(&before).unwrap()],
+            )
+            .unwrap();
     }
     let mut account_grant = before.policy.grants.last().unwrap().clone();
     account_grant.permissions = ["/new", "/rm", "/ls"]
@@ -1104,10 +1173,12 @@ fn command_family_upgrade_preserves_v5_state_and_runs_once() {
                 .is_err()
         );
         let stored: String =
-            e.db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
+            e.db.lock()
+                .unwrap()
+                .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
                 .unwrap();
         let mut saved: Data = serde_json::from_str(&stored).unwrap();
-        super::storage::load_entities(&e.db, &mut saved).unwrap();
+        super::storage::load_entities(&e.db.lock().unwrap(), &mut saved).unwrap();
         assert!(saved == expected);
     }
     let e = Engine::open(&path).unwrap();
@@ -1139,11 +1210,13 @@ fn command_family_upgrade_leaves_database_intact_on_validation_or_write_failure(
                 minimum_age: 0,
             });
             original = serde_json::to_string(&data).unwrap();
-            e.db.execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
-            e.db.execute("UPDATE state SET json=?1 WHERE id=1", params![original])
+            e.db.lock().unwrap().execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
+            e.db.lock()
+                .unwrap()
+                .execute("UPDATE state SET json=?1 WHERE id=1", params![original])
                 .unwrap();
             if !invalid {
-                e.db.execute_batch("CREATE TRIGGER fail_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'test upgrade failure'); END;").unwrap();
+                e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'test upgrade failure'); END;").unwrap();
             }
         }
         assert!(Engine::open(&path).is_err());
@@ -1163,10 +1236,12 @@ fn command_family_upgrade_leaves_database_intact_on_validation_or_write_failure(
 
 fn stored_data(e: &Engine) -> Data {
     let raw: String =
-        e.db.query_row("SELECT json FROM state", [], |r| r.get(0))
+        e.db.lock()
+            .unwrap()
+            .query_row("SELECT json FROM state", [], |r| r.get(0))
             .unwrap();
     let mut data: Data = serde_json::from_str(&raw).unwrap();
-    super::storage::load_entities(&e.db, &mut data).unwrap();
+    super::storage::load_entities(&e.db.lock().unwrap(), &mut data).unwrap();
     data
 }
 
@@ -1179,23 +1254,23 @@ fn hot_mutations_write_constant_rows_and_leave_unrelated_history_untouched() {
     e.execute(Some("alice"), None, "/tell bob private retained")
         .unwrap();
     let room_id = e.data.rooms["lobby"].id.clone();
-    e.db.execute_batch(&format!("CREATE TRIGGER untouched_room BEFORE UPDATE ON messages WHEN OLD.conversation='{room_id}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END; CREATE TRIGGER untouched_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'unrelated policy'); END;")).unwrap();
-    let changes = e.db.total_changes();
+    e.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER untouched_room BEFORE UPDATE ON messages WHEN OLD.conversation='{room_id}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END; CREATE TRIGGER untouched_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'unrelated policy'); END;")).unwrap();
+    let changes = e.db.lock().unwrap().total_changes();
     e.execute(Some("alice"), None, "/tell bob new private")
         .unwrap();
-    assert_eq!(e.db.total_changes() - changes, 4); // insert, evict, counter, revision
-    let id = e.data.private["alice:bob"].messages[0].id.clone();
-    e.db.execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
-    let changes = e.db.total_changes();
+    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 4); // insert, evict, counter, revision
+    let id = private_messages(&e, "alice:bob")[0].id.clone();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
+    let changes = e.db.lock().unwrap().total_changes();
     e.execute(Some("alice"), None, &format!("/react {id} 🙂"))
         .unwrap();
-    assert_eq!(e.db.total_changes() - changes, 2); // membership and revision
+    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 2); // membership and revision
     assert!(stored_data(&e) == e.data);
-    let changes = e.db.total_changes();
-    let sequence = e.data.private["alice:bob"].messages[0].sequence;
+    let changes = e.db.lock().unwrap().total_changes();
+    let sequence = private_messages(&e, "alice:bob")[0].sequence;
     e.mark_read("bob", "@direct:alice", sequence).unwrap();
     e.execute(Some("alice"), None, "/help").unwrap();
-    assert_eq!(e.db.total_changes() - changes, 1);
+    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 1);
 }
 
 #[test]
@@ -1212,9 +1287,9 @@ fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
             };
             e.execute(Some("alice"), view, send).unwrap();
             let id = if private {
-                &e.data.private["alice:bob"].messages[0].id
+                private_messages(&e, "alice:bob")[0].id.clone()
             } else {
-                &e.data.rooms["lobby"].messages[0].id
+                room_messages(&e, "lobby")[0].id.clone()
             }
             .clone();
             let before = e.data.clone();
@@ -1226,7 +1301,7 @@ fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
                 "revision" => "BEFORE UPDATE ON entities",
                 _ => "BEFORE INSERT ON reactions",
             };
-            e.db.execute_batch(&format!("CREATE TRIGGER reject_hot {trigger} BEGIN SELECT RAISE(ABORT,'injected failure'); END;")).unwrap();
+            e.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_hot {trigger} BEGIN SELECT RAISE(ABORT,'injected failure'); END;")).unwrap();
             let input = if stage == "reaction" {
                 format!("/react {id} ok")
             } else {
@@ -1240,7 +1315,7 @@ fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
     }
     let mut e = engine();
     let before = e.data.clone();
-    e.db.execute_batch("CREATE TRIGGER reject_new BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'new chat failure'); END;").unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_new BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'new chat failure'); END;").unwrap();
     assert!(e.execute(Some("alice"), None, "/tell bob first").is_err());
     assert!(e.data == before);
     assert!(stored_data(&e) == before);

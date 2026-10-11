@@ -7,7 +7,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `POST /api/login` | `{username,password}` | `{ok:true}` and HttpOnly session cookie |
 | `POST /api/logout` | `{}` | `{ok:true}` and cleared cookie |
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
-| `GET /api/history?view=...` | Room name or `@direct:peer` | `{view,messages,revision}` |
+| `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
@@ -26,6 +26,7 @@ The web sends `{id:number, room:string|null, text:string}`. Browser aliases expa
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
 - `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
+- `{kind:"conversation",view,id,messages,unread}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
 The canonical frontend declarations and runtime guards are in `web/src/api/protocol.ts`; Rust serialization types are in `server/src/engine/models.rs`. Change both together. Unknown JSON is validated before entering application state. Malformed frames are ignored and malformed successful HTTP responses become explicit errors. The integration harness validates actual server frames with these same guards.
@@ -38,7 +39,7 @@ Password commands recheck sudo authorization after asynchronous hashing.
 Each message contains `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
-`commands`, filtered `members`, and the latest up to 50 messages. Read grants govern
+`commands`, filtered `members`, and up to 50 latest messages (1,000 tail messages globally per snapshot; some tails may be empty). Read grants govern
 which views/messages/unread metadata appear; member lists have a separate grant.
 `private_access` maps ordinary private views to stable IDs and exact effective
 permissions/command lists. `private_permissions` and `private_commands` provide
@@ -46,13 +47,26 @@ the defaults for starting a new pair.
 Su and explicitly authorized accounts see other private pairs as room-like
 `@private:a:b` views, with the same history/read endpoints. `direct` contains up to 50 messages per private conversation involving the current account. `private_peers` is the persistent conversation directory, so conversations remain discoverable even when their snapshot tails are empty. Memberships/peers are loaded from server state on every login, independent of browser history.
 
-`unread` is keyed by room name or `@direct:peer`. Each value has `count`, nullable first incoming unread sequence in `first`, latest sequence in `through`, oldest retained sequence in `oldest`, and content `revision`. Fetch the selected conversation's full retained history on demand. Each room/private pair retains at most `max_messages` independently. `read` requires an existing retained sequence and only advances; own messages do not contribute to unread counts.
+`unread` is keyed by room name or `@direct:peer`. Each value has `count`, nullable first incoming unread sequence in `first`, latest sequence in `through`, oldest retained sequence in `oldest`, and content `revision`. Fetch the selected conversation in pages of at most 100 messages. Each room/private pair retains at most `max_messages` independently. `read` requires an existing retained sequence and only advances; own messages do not contribute to unread counts.
+
+## History pages
+
+`start` and `end` are inclusive **global message sequence numbers**, not array positions. Sequence gaps are normal. `before`/`after` are exclusive cursors; omit bounds for the latest page. `limit` defaults to 100 and accepts 1–100. `around` selects a page around a sequence (up to half a page before it); it cannot be combined with other bounds. `before` and `after` are mutually exclusive. Responses are always ascending.
+
+Examples:
+
+- `history?view=study&start=1000&end=1099`: read only the requested sequence range.
+- `history?view=study&before=1000`: load the preceding page.
+- `history?view=study&after=1099`: load the next page.
+- `history?view=study&around=1000`: load a visible/unread anchor directly.
+
+Use the first/last returned sequence with `has_before`/`has_after` to continue. The server never returns more than 100 records even for a wide range. Large messages can shorten a page at a 1 MiB payload target (one oversized message is still returned so paging can progress). Invalid bounds return 400; concurrent content changes return 409, prompting a fresh page request. Access/session/resource identity are rechecked after database I/O. A selected browser window retains at most 1,000 entries, evicts the opposite edge when scrolling, and reloads evicted pages when scrolling back. Message history is not persisted in browser storage.
 
 ## Synchronization rules
 
-The initial WebSocket snapshot and HTTP resync are baselines and do not trigger mention notifications. Subsequent live snapshots can notify about new mentions. HTTP refreshes run on reconnect/focus/pageshow/online and becoming visible. A generation guard prevents a delayed HTTP response from overwriting a newer socket snapshot or a signed-out session.
+The initial WebSocket snapshot and HTTP resync are baselines and do not trigger mention notifications. Subsequent conversation updates and live snapshots can notify about new mentions. HTTP refreshes run on reconnect/focus/pageshow/online and becoming visible. A generation guard prevents a delayed HTTP response from overwriting a newer socket snapshot or a signed-out session.
 
-History requests carry an abort signal and are accepted only for the current view and matching revision. Live snapshot tails replace cached messages by ID; cleanup, reactions, or gaps cause a fresh retained-history fetch. Read-only updates preserve message-array references to avoid re-rendering the transcript.
+History requests carry an abort signal and are accepted only for the current view, stable resource ID and matching revision. Live tails merge into the current window by ID; cleanup/reactions/gaps refresh the visible page around its anchor, never the complete retained history. Pure appends while browsing older pages advance metadata without moving the window. Read-only updates preserve message-array references to avoid re-rendering the transcript.
 
 Command output is bounded to the last 200 entries in tab memory, scoped to the originating view. Refresh removes it. `/clear` changes visible local history only. Unacknowledged requests are never resent automatically: after a disconnect, preserve the draft and ask the user to inspect history before resending.
 

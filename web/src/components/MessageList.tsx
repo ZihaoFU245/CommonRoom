@@ -1,5 +1,6 @@
 import type { RefObject } from "preact";
-import { useMemo } from "preact/hooks";
+import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
+import { useVirtualTimeline } from "../hooks/useVirtualTimeline.ts";
 import { memo } from "preact/compat";
 import type { Command, Message, TimelineEntry } from "../api/protocol.ts";
 import {
@@ -21,6 +22,7 @@ interface Props {
   onReply: (message: Message) => void;
   onDelete: (message: Message) => void;
   historyElement: RefObject<HTMLElement>;
+  virtualTimeline: RefObject<VirtualTimelineHandle>;
   end: RefObject<HTMLDivElement>;
   onScroll: () => void;
 }
@@ -36,68 +38,62 @@ export const MessageList = memo(function MessageList({
   onReply,
   onDelete,
   historyElement,
+  virtualTimeline,
   end,
   onScroll,
 }: Props) {
-  const renderedEntries = useMemo(() => {
-    let lastDay: string | null = null;
-    return entries.map((entry, index) => {
-      if (entry.kind !== "message")
-        return <ConsoleOutput key={entry.key} entry={entry} />;
-      const actions = messageActions(
-        entry.message,
-        username,
-        permissions,
-        commands,
-      );
-      const date = messageDate(entry.message.time);
-      const newDay = lastDay !== date.key;
-      lastDay = date.key;
-      const previous = entries[index - 1];
-      const isUnreadBoundary = entry.message.sequence === unreadBoundary;
-      const grouped =
-        !isUnreadBoundary &&
-        previous?.kind === "message" &&
-        groupedMessage(entry.message, previous.message);
+  const window = useVirtualTimeline(entries, historyElement, virtualTimeline);
+  const renderedEntries = window.visible.map((entry, localIndex) => {
+    const index = window.start + localIndex;
+    if (entry.kind !== "message")
       return (
-        <div key={entry.key}>
-          {newDay && (
-            <div class="message-day">
-              <time dateTime={date.iso}>{date.label}</time>
-            </div>
-          )}
-          {isUnreadBoundary && <div class="unread-divider">New messages</div>}
-          <ConsoleMessage
-            message={entry.message}
-            self={username}
-            date={date}
-            grouped={grouped && !entry.message.reply}
-            pending={pending}
-            debug={debug}
-            canReact={actions.react}
-            canReply={actions.reply}
-            canDelete={actions.retract}
-            onReact={(value) => onReact(entry.message, value)}
-            onDelete={() => onDelete(entry.message)}
-            onReply={() => {
-              onReply(entry.message);
-            }}
-          />
+        <div key={entry.key} data-virtual-key={entry.key}>
+          <ConsoleOutput entry={entry} />
         </div>
       );
-    });
-  }, [
-    entries,
-    username,
-    pending,
-    debug,
-    permissions,
-    commands,
-    unreadBoundary,
-    onReact,
-    onReply,
-    onDelete,
-  ]);
+    const actions = messageActions(
+      entry.message,
+      username,
+      permissions,
+      commands,
+    );
+    const date = messageDate(entry.message.time);
+    const previous = entries[index - 1];
+    const newDay =
+      previous?.kind !== "message" ||
+      messageDate(previous.message.time).key !== date.key;
+    const isUnreadBoundary = entry.message.sequence === unreadBoundary;
+    const grouped =
+      !isUnreadBoundary &&
+      previous?.kind === "message" &&
+      groupedMessage(entry.message, previous.message);
+    return (
+      <div key={entry.key} data-virtual-key={entry.key}>
+        {newDay && (
+          <div class="message-day">
+            <time dateTime={date.iso}>{date.label}</time>
+          </div>
+        )}
+        {isUnreadBoundary && <div class="unread-divider">New messages</div>}
+        <ConsoleMessage
+          message={entry.message}
+          self={username}
+          date={date}
+          grouped={grouped && !entry.message.reply}
+          pending={pending}
+          debug={debug}
+          canReact={actions.react}
+          canReply={actions.reply}
+          canDelete={actions.retract}
+          onReact={(value) => onReact(entry.message, value)}
+          onDelete={() => onDelete(entry.message)}
+          onReply={() => {
+            onReply(entry.message);
+          }}
+        />
+      </div>
+    );
+  });
   return (
     <section
       ref={historyElement}
@@ -106,7 +102,12 @@ export const MessageList = memo(function MessageList({
       aria-label="Conversation history"
       aria-live="polite"
     >
+      <div aria-hidden="true" style={{ height: window.top, flexShrink: 0 }} />
       {renderedEntries}
+      <div
+        aria-hidden="true"
+        style={{ height: window.bottom, flexShrink: 0 }}
+      />
       <div ref={end} />
     </section>
   );

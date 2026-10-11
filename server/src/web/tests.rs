@@ -10,20 +10,21 @@ use axum::http::{HeaderMap, HeaderValue, header};
 fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
-        engine: Arc::new(Mutex::new(
+        engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         stopping: Default::default(),
     };
     let engine = app.engine.clone();
     assert!(
         std::thread::spawn(move || {
-            let _guard = engine.lock().unwrap();
+            let _guard = engine.write().unwrap();
             panic!("simulated partial mutation");
         })
         .join()
@@ -57,13 +58,14 @@ fn cookies_are_http_only_and_secure_in_production() {
     };
     let (changes, _) = broadcast::channel(1);
     let app = App {
-        engine: Arc::new(Mutex::new(
+        engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
         attempts: Default::default(),
         changes,
         config: Arc::new(config),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         stopping: Default::default(),
     };
@@ -126,13 +128,14 @@ fn real_ip_requires_trusted_peer_and_one_valid_address() {
 async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
-        engine: Arc::new(Mutex::new(
+        engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         stopping: Default::default(),
     };
@@ -202,11 +205,12 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         .unwrap();
     let (changes, _) = broadcast::channel(1);
     let app = App {
-        engine: Arc::new(Mutex::new(engine)),
+        engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         stopping: Default::default(),
     };
@@ -231,7 +235,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         let (_, mutation) = super::commands::execute_input(&app, &headers, "actor", &input)
             .await
             .unwrap();
-        assert_eq!(mutation, changed, "{text}");
+        assert_eq!(mutation.is_some(), changed, "{text}");
         assert!(!app.engine().unwrap().is_su(Some("actor")));
     }
     let e = app.engine().unwrap();
@@ -250,10 +254,11 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
 
 #[test]
 fn password_jobs_recheck_authority_session_and_target_after_hashing() {
-    // Queue hashing behind a blocking worker, rather than relying on timing sleeps.
+    // One worker runs the command dispatcher; the other queues hashing behind
+    // this test barrier, rather than relying on timing sleeps.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
-        .max_blocking_threads(1)
+        .max_blocking_threads(2)
         .enable_all()
         .build()
         .unwrap();
@@ -302,11 +307,12 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             }
             let (changes, _) = broadcast::channel(1);
             let app = App {
-                engine: Arc::new(Mutex::new(engine)),
+                engine: Arc::new(RwLock::new(engine)),
                 attempts: Default::default(),
                 changes,
                 config: Arc::new(Config::default()),
                 connections: Arc::new(tokio::sync::Semaphore::new(128)),
+                io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
                 password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
                 stopping: Default::default(),
             };
@@ -421,4 +427,47 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             );
         }
     });
+}
+
+#[test]
+fn engine_readers_overlap_and_io_admission_is_bounded() {
+    let (changes, _) = broadcast::channel(1);
+    let app = App {
+        engine: Arc::new(RwLock::new(
+            Engine::open(std::path::Path::new(":memory:")).unwrap(),
+        )),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        stopping: Default::default(),
+    };
+    let reader = app.engine_read().unwrap();
+    let other = app.clone();
+    std::thread::spawn(move || {
+        let second_reader = other.engine_read().unwrap();
+        assert_eq!(second_reader.revision, 0);
+        assert!(other.engine.try_write().is_err());
+    })
+    .join()
+    .unwrap();
+    drop(reader);
+    assert!(app.engine.try_write().is_ok());
+    let permits: Vec<_> = (0..64).map(|_| app.io_permit().unwrap()).collect();
+    assert!(app.io_permit().is_err());
+    drop(permits);
+    assert!(app.io_permit().is_ok());
+}
+
+#[test]
+fn configs_with_cache_statistics_remain_one_json_document() {
+    let config = Config::default();
+    let stats = json!({"hits":42,"messages":100});
+    let result: serde_json::Value =
+        serde_json::from_str(&config.display_with_history(stats.clone()).unwrap()).unwrap();
+    assert_eq!(result["history_cache"], stats);
+    assert_eq!(result["max_messages"], 1000);
+    assert_eq!(result["bind"], config.bind);
 }

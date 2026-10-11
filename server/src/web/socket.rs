@@ -17,7 +17,16 @@ pub(super) async fn upgrade(
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     check_origin(&app, &headers)?;
-    let username = authenticate(&app, &headers)?;
+    let auth_app = app.clone();
+    let auth_headers = headers.clone();
+    let username = tokio::task::spawn_blocking(move || authenticate(&auth_app, &auth_headers))
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Session worker unavailable.",
+            )
+        })??;
     let permit = app
         .connections
         .clone()
@@ -32,11 +41,15 @@ pub(super) async fn upgrade(
         }))
 }
 pub(super) async fn snapshot(app: &App, user: &str, socket: &mut WebSocket) -> bool {
-    let value = app
-        .engine()
-        .ok()
-        .and_then(|engine| engine.snapshot(user))
-        .and_then(|snapshot| serde_json::to_string(&snapshot).ok());
+    let app = app.clone();
+    let user = user.to_owned();
+    let value = tokio::task::spawn_blocking(move || {
+        let snapshot = app.engine_read().ok()?.snapshot(&user)?;
+        serde_json::to_string(&snapshot).ok()
+    })
+    .await
+    .ok()
+    .flatten();
     match value {
         Some(value) => send(socket, Message::Text(value.into())).await,
         None => false,
@@ -53,26 +66,42 @@ struct Presence {
     user: String,
 }
 impl Presence {
-    fn authenticate(&mut self, headers: &HeaderMap) -> Result<String, ApiError> {
-        let current = authenticate(&self.app, headers)?;
-        if current != self.user {
-            let mut engine = self
-                .app
-                .engine()
-                .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-            engine.disconnect(&self.user);
-            engine.connect(&current);
-            self.user.clone_from(&current);
-        }
+    async fn authenticate(&mut self, headers: &HeaderMap) -> Result<String, ApiError> {
+        let app = self.app.clone();
+        let headers = headers.clone();
+        let old = self.user.clone();
+        let current = tokio::task::spawn_blocking(move || {
+            let current = authenticate(&app, &headers)?;
+            if current != old {
+                let mut engine = app
+                    .engine()
+                    .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+                engine.disconnect(&old);
+                engine.connect(&current);
+            }
+            Ok(current)
+        })
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Session worker unavailable.",
+            )
+        })??;
+        self.user.clone_from(&current);
         Ok(current)
     }
 }
 impl Drop for Presence {
     fn drop(&mut self) {
-        if let Ok(mut engine) = self.app.engine() {
-            engine.disconnect(&self.user);
-        }
-        let _ = self.app.changes.send(Change::All);
+        let app = self.app.clone();
+        let user = self.user.clone();
+        let _job = tokio::task::spawn_blocking(move || {
+            if let Ok(mut engine) = app.engine() {
+                engine.disconnect(&user);
+            }
+            let _ = app.changes.send(Change::All);
+        });
     }
 }
 pub(super) async fn connection(
@@ -82,9 +111,17 @@ pub(super) async fn connection(
     mut socket: WebSocket,
 ) {
     let mut changes = app.changes.subscribe();
-    match app.engine() {
-        Ok(mut engine) => engine.connect(&user),
-        Err(_) => return,
+    let presence_app = app.clone();
+    let presence_user = user.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || {
+            presence_app.engine()?.connect(&presence_user);
+            Ok::<_, String>(())
+        })
+        .await,
+        Ok(Ok(()))
+    ) {
+        return;
     }
     let mut presence = Presence {
         app: app.clone(),
@@ -100,23 +137,32 @@ pub(super) async fn connection(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                if presence.authenticate(&headers).is_err() { break; }
+                if presence.authenticate(&headers).await.is_err() { break; }
                 if last_seen.elapsed() > Duration::from_secs(75) { break; }
                 if !send(&mut socket, Message::Ping(Vec::new().into())).await { break; }
             },
             change = changes.recv() => {
-                user = match presence.authenticate(&headers) { Ok(user) => user, Err(_) => break };
+                user = match presence.authenticate(&headers).await { Ok(user) => user, Err(_) => break };
                 if matches!(&change, Ok(Change::Read(name)) if name != &user) { continue; }
                 if matches!(change, Err(broadcast::error::RecvError::Closed)) { break; }
                 if matches!(change, Ok(Change::Read(_))) {
-                    let unread = match app.engine() { Ok(engine) => engine.unreads(&user), Err(_) => break };
+                    let read_app=app.clone(); let read_user=user.clone();
+                    let unread=match tokio::task::spawn_blocking(move ||read_app.engine_read()?.unreads(&read_user)).await {Ok(Ok(unread))=>unread,_=>break};
                     if !send(&mut socket, Message::Text(json!({"kind":"read", "unread":unread}).to_string().into())).await { break; }
+                } else if let Ok(Change::Conversation(id))=change {
+                    let read_app=app.clone(); let read_user=user.clone();
+                    let update=tokio::task::spawn_blocking(move ||read_app.engine_read()?.conversation_update(&read_user,&id)).await;
+                    match update {
+                        Ok(Ok(Some(value)))=>{if !send(&mut socket,Message::Text(value.to_string().into())).await {break;}},
+                        Ok(Ok(None))=>{},
+                        _=>break,
+                    }
                 } else if !snapshot(&app, &user, &mut socket).await { break; }
             },
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else { break; };
                 last_seen = Instant::now();
-                user = match presence.authenticate(&headers) { Ok(user) => user, Err(_) => break };
+                user = match presence.authenticate(&headers).await { Ok(user) => user, Err(_) => break };
                 match message {
                     Message::Text(raw) => {
                         if budget.0.elapsed() > Duration::from_secs(10) { budget = (Instant::now(), 0); }
@@ -129,7 +175,7 @@ pub(super) async fn connection(
                         };
                         let reply = match &result { Ok((text, _)) => json!({ "kind": "notice", "id": id, "text": text }), Err(text) => json!({ "kind": "error", "id": id, "text": text }) };
                         if !send(&mut socket, Message::Text(reply.to_string().into())).await { break; }
-                        if matches!(result, Ok((_, true))) { let _ = app.changes.send(Change::All); }
+                        if let Ok((_,Some(change)))=result { let _=app.changes.send(change); }
                     },
                     Message::Close(_) => break,
                     Message::Binary(_) => break,

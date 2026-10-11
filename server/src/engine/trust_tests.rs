@@ -66,7 +66,10 @@ fn sudo_requires_both_global_grants_and_never_persists_elevation() {
     )
     .unwrap();
     assert_eq!(
-        e.data.private["bob:eve"].messages.back().unwrap().from,
+        super::tests::private_messages(&e, "bob:eve")
+            .back()
+            .unwrap()
+            .from,
         "bob"
     );
     assert!(!e.is_su(Some("bob")));
@@ -104,14 +107,17 @@ fn sudo_restores_authority_after_storage_failure_and_preserves_policy_updates() 
             .unwrap();
     }
     let before = e.data.clone();
-    e.db.execute_batch("CREATE TRIGGER reject_sudo BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_sudo BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
     assert!(
         e.execute(Some("bob"), None, "/sudo /new room rejected")
             .is_err()
     );
     assert!(e.data == before);
     assert!(!e.is_su(Some("bob")));
-    e.db.execute_batch("DROP TRIGGER reject_sudo;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_sudo;")
+        .unwrap();
     e.execute(Some("bob"), None, "/sudo /grant eve @global w:room.create")
         .unwrap();
     assert!(e.allows(Some("eve"), &Scope::Server, Action::CreateRoom));
@@ -492,7 +498,7 @@ fn global_scope_alias_and_command_hints_preserve_separate_permission_gates() {
 fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
     let mut e = fixture();
     e.execute(Some("alice"), Some("team"), "original").unwrap();
-    let id = e.data.rooms["team"].messages[0].id.clone();
+    let id = super::tests::room_messages(&e, "team")[0].id.clone();
     e.execute(Some("alice"), Some("team"), "/revoke bob user team")
         .unwrap();
     let reply = e
@@ -538,7 +544,7 @@ fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
 fn readonly_grants_filter_commands_content_members_and_unread_metadata() {
     let mut e = fixture();
     e.execute(Some("bob"), Some("team"), "original").unwrap();
-    let id = e.data.rooms["team"].messages[0].id.clone();
+    let id = super::tests::room_messages(&e, "team")[0].id.clone();
     e.execute(Some("alice"), None, "/revoke bob user team")
         .unwrap();
     assert!(e.snapshot("bob").unwrap().rooms.is_empty());
@@ -638,7 +644,7 @@ fn permissions_and_command_gates_are_independent_and_target_scoped() {
 fn su_can_read_and_retract_other_private_messages_without_granting_admin_access() {
     let mut e = fixture();
     e.execute(Some("bob"), None, "/tell eve secret").unwrap();
-    let id = e.data.private["bob:eve"].messages[0].id.clone();
+    let id = super::tests::private_messages(&e, "bob:eve")[0].id.clone();
     assert!(e.history("alice", "@private:bob:eve").is_err());
     assert!(
         !e.snapshot("alice")
@@ -667,15 +673,19 @@ fn su_can_read_and_retract_other_private_messages_without_granting_admin_access(
         &format!("/reply {id} moderation"),
     )
     .unwrap();
-    assert_eq!(e.data.private["bob:eve"].messages.len(), 2);
+    assert_eq!(super::tests::private_messages(&e, "bob:eve").len(), 2);
     e.execute(
         Some("alice"),
         Some("@private:bob:eve"),
         &format!("/retract {id}"),
     )
     .unwrap();
-    assert_eq!(e.data.private["bob:eve"].messages.len(), 1);
-    assert!(e.data.private["bob:eve"].messages[0].reply.is_none());
+    assert_eq!(super::tests::private_messages(&e, "bob:eve").len(), 1);
+    assert!(
+        super::tests::private_messages(&e, "bob:eve")[0]
+            .reply
+            .is_none()
+    );
     e.execute(None, None, "/revoke alice su").unwrap();
     assert!(e.history("alice", "@private:bob:eve").is_err());
     assert!(
@@ -690,7 +700,7 @@ fn private_message_actions_cannot_escape_selected_conversation() {
     let mut e = fixture();
     e.execute(Some("bob"), None, "/tell alice first").unwrap();
     e.execute(Some("bob"), None, "/tell eve second").unwrap();
-    let id = e.data.private["bob:eve"].messages[0].id.clone();
+    let id = super::tests::private_messages(&e, "bob:eve")[0].id.clone();
     for input in [
         format!("/retract {id}"),
         format!("/react {id} 👍"),
@@ -736,7 +746,10 @@ fn owner_transfer_and_deleted_resources_do_not_leave_inherited_grants() {
 fn policy_save_failures_preserve_compiled_permissions_and_creation_is_atomic() {
     let mut e = fixture();
     let before = e.data.clone();
-    e.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=ON;")
+        .unwrap();
     for input in [
         "/grant bob su",
         "/grant bob @global w:room.create",
@@ -749,7 +762,10 @@ fn policy_save_failures_preserve_compiled_permissions_and_creation_is_atomic() {
         assert!(!e.allows(Some("bob"), &Scope::Server, Action::CreateRoom));
     }
     assert!(!e.data.rooms.contains_key("lost"));
-    e.db.execute_batch("PRAGMA query_only=OFF;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=OFF;")
+        .unwrap();
     e.execute(None, None, "/grant bob su").unwrap();
     let revision = e.data.policy.revision;
     e.execute(Some("bob"), Some("team"), "ordinary message")
@@ -791,7 +807,7 @@ fn permission_lookup_benchmark() {
 fn explicit_private_grants_apply_to_actions_and_ui_controls() {
     let mut e = fixture();
     e.execute(Some("bob"), None, "/tell eve secret").unwrap();
-    let id = e.data.private["bob:eve"].messages[0].id.clone();
+    let id = super::tests::private_messages(&e, "bob:eve")[0].id.clone();
     for permission in [
         "r:message.read",
         "w:message.react",
@@ -818,8 +834,7 @@ fn explicit_private_grants_apply_to_actions_and_ui_controls() {
         &format!("/reply {id} permitted reply"),
     )
     .unwrap();
-    let reply = e.data.private["bob:eve"]
-        .messages
+    let reply = super::tests::private_messages(&e, "bob:eve")
         .back()
         .unwrap()
         .id
@@ -937,7 +952,7 @@ fn command_view_cannot_borrow_a_command_grant_from_another_target() {
     let mut e = fixture();
     e.execute(Some("alice"), None, "/new room other").unwrap();
     e.execute(Some("alice"), Some("other"), "target").unwrap();
-    let id = e.data.rooms["other"].messages[0].id.clone();
+    let id = super::tests::room_messages(&e, "other")[0].id.clone();
     e.execute(None, None, "/grant bob other r:message.read")
         .unwrap();
     e.execute(None, None, "/grant bob other w:message.react")
@@ -962,7 +977,7 @@ fn console_identity_cannot_be_claimed_by_an_account_with_the_same_display_name()
     e.provision("console", "hash".into(), false, false).unwrap();
     e.execute(Some("alice"), None, "/add console team").unwrap();
     e.execute(None, Some("team"), "stdin message").unwrap();
-    let message = &e.data.rooms["team"].messages[0];
+    let message = &super::tests::room_messages(&e, "team")[0];
     assert_eq!(message.author_id, "console");
     assert_ne!(message.author_id, e.data.users["console"].id);
     let id = message.id.clone();
@@ -1289,8 +1304,8 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
     e.execute(Some("bob"), Some("team"), "owned message")
         .unwrap();
     e.execute(Some("bob"), None, "/tell eve private").unwrap();
-    let id = e.data.rooms["team"].messages[0].id.clone();
-    let sequence = e.data.rooms["team"].messages[0].sequence;
+    let id = super::tests::room_messages(&e, "team")[0].id.clone();
+    let sequence = super::tests::room_messages(&e, "team")[0].sequence;
     e.execute(None, None, "/revoke bob user team").unwrap();
     e.execute(None, None, "/revoke bob user").unwrap();
     let probes = [
@@ -1377,7 +1392,7 @@ fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
         e.execute(Some("管理员"), None, "/add 用户🙂 测试").unwrap();
         e.execute(Some("用户🙂"), Some("测试"), "hello @管理员")
             .unwrap();
-        let message_id = e.data.rooms["测试"].messages[0].id.clone();
+        let message_id = super::tests::room_messages(&e, "测试")[0].id.clone();
         e.execute(
             Some("管理员"),
             Some("测试"),
@@ -1392,7 +1407,7 @@ fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
         .unwrap();
         e.execute(Some("管理员"), None, "/tell 用户🙂 hello")
             .unwrap();
-        sequence = e.data.private["用户🙂:管理员"].messages[0].sequence;
+        sequence = super::tests::private_messages(&e, "用户🙂:管理员")[0].sequence;
         private_id = e.data.private["用户🙂:管理员"].id.clone();
         e.mark_read("用户🙂", "@direct:管理员", sequence).unwrap();
         e.login("session".into(), "用户🙂", "hash", None).unwrap();
@@ -1401,24 +1416,26 @@ fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
         assert_eq!(e.data.users["新名字🚀"].id, id);
         assert_eq!(e.session("session").as_deref(), Some("新名字🚀"));
         assert!(e.data.rooms["测试"].members.contains("新名字🚀"));
-        assert_eq!(e.data.rooms["测试"].messages[0].from, "新名字🚀");
+        assert_eq!(super::tests::room_messages(&e, "测试")[0].from, "新名字🚀");
         assert_eq!(
-            e.data.rooms["测试"].messages[1]
+            super::tests::room_messages(&e, "测试")[1]
                 .reply
                 .as_ref()
                 .unwrap()
                 .from,
             "新名字🚀"
         );
-        assert!(e.data.rooms["测试"].messages[0].reactions["👍"].contains("新名字🚀"));
+        assert!(super::tests::room_messages(&e, "测试")[0].reactions["👍"].contains("新名字🚀"));
         assert!(
-            e.data.rooms["测试"].messages[1]
+            super::tests::room_messages(&e, "测试")[1]
                 .mentions
                 .contains("新名字🚀")
         );
         assert_eq!(e.data.private["新名字🚀:管理员"].id, private_id);
         assert_eq!(
-            e.data.private["新名字🚀:管理员"].messages[0].to.as_deref(),
+            super::tests::private_messages(&e, "新名字🚀:管理员")[0]
+                .to
+                .as_deref(),
             Some("新名字🚀")
         );
         assert_eq!(e.read_positions["新名字🚀"]["dm:新名字🚀:管理员"], sequence);
@@ -1493,15 +1510,18 @@ fn rename_requires_own_or_any_action_and_target_command_and_protects_su() {
 fn rename_storage_failure_rolls_back_account_and_read_positions() {
     let mut e = fixture();
     e.execute(Some("eve"), None, "/tell bob incoming").unwrap();
-    let sequence = e.data.private["bob:eve"].messages[0].sequence;
+    let sequence = super::tests::private_messages(&e, "bob:eve")[0].sequence;
     e.mark_read("bob", "@direct:eve", sequence).unwrap();
     let before = e.data.clone();
     let positions = e.read_positions.clone();
-    e.db.execute_batch("CREATE TRIGGER fail_rename BEFORE UPDATE ON state BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_rename BEFORE UPDATE ON state BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
     assert!(e.execute(Some("bob"), None, "/rename 改名").is_err());
     assert!(e.data == before);
     assert_eq!(e.read_positions, positions);
-    e.db.execute_batch("DROP TRIGGER fail_rename;").unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_rename;")
+        .unwrap();
     e.execute(Some("bob"), None, "/rename 改名").unwrap();
 }
 

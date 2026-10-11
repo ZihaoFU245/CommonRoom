@@ -18,7 +18,30 @@ pub(super) async fn execute_input(
     headers: &HeaderMap,
     user: &str,
     input: &Input,
-) -> Result<(String, bool), String> {
+) -> Result<(String, Option<Change>), String> {
+    let permit = app.io_permit()?;
+    let app = app.clone();
+    let headers = headers.clone();
+    let user = user.to_owned();
+    let input = Input {
+        id: input.id,
+        room: input.room.clone(),
+        text: input.text.clone(),
+    };
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.block_on(execute_input_inner(&app, &headers, &user, &input))
+    })
+    .await
+    .map_err(|_| "Command worker unavailable.")?
+}
+async fn execute_input_inner(
+    app: &App,
+    headers: &HeaderMap,
+    user: &str,
+    input: &Input,
+) -> Result<(String, Option<Change>), String> {
     let elevated = sudo_command(&input.text)?;
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
@@ -33,7 +56,7 @@ pub(super) async fn execute_input(
                 if parts.len() != 1 {
                     return Err(format!("Usage: {}", parts[0]));
                 }
-                Ok(("Done.".into(), false))
+                Ok(("Done.".into(), None))
             },
         );
     }
@@ -46,7 +69,9 @@ pub(super) async fn execute_input(
             if parts.len() != 1 {
                 return Err("Usage: /configs".into());
             }
-            app.config.display().map(|text| (text, false))
+            app.config
+                .display_with_history(engine.history_store.stats()?)
+                .map(|text| (text, None))
         });
     }
     let passwd = parts.first() == Some(&"/passwd");
@@ -61,7 +86,13 @@ pub(super) async fn execute_input(
         }
         let before = engine.revision;
         let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
-        return Ok((reply, engine.revision != before));
+        let change = (engine.revision != before).then(|| {
+            engine
+                .changed_conversation
+                .as_ref()
+                .map_or(Change::All, |id| Change::Conversation(id.clone()))
+        });
+        return Ok((reply, change));
     }
     if passwd && parts.len() != 3 {
         return Err("Usage: /passwd old new".into());
@@ -153,7 +184,7 @@ pub(super) async fn execute_input(
                     hash,
                     current,
                 )
-                .map(|text| (text, true));
+                .map(|text| (text, Some(Change::All)));
         }
         // Recheck the command, action and target identity after hashing.
         engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
@@ -172,6 +203,6 @@ pub(super) async fn execute_input(
         }
         engine
             .provision_by(Some(user), name, hash, admin, reset)
-            .map(|text| (text, true))
+            .map(|text| (text, Some(Change::All)))
     })
 }

@@ -11,35 +11,11 @@ impl Engine {
             .map_or("su", |(name, _)| name.as_str())
     }
 
-    pub(super) fn unread(
-        &self,
-        user: &str,
-        key: &str,
-        messages: &VecDeque<Message>,
-        revision: u64,
-    ) -> Unread {
-        let read = self
-            .read_positions
-            .get(user)
-            .and_then(|p| p.get(key))
-            .copied()
-            .unwrap_or(0);
-        let start = messages.partition_point(|m| m.sequence <= read);
-        let mut incoming = messages.iter().skip(start).filter(|m| m.from != user);
-        let first = incoming.next().map(|m| m.sequence);
-        Unread {
-            count: usize::from(first.is_some()) + incoming.count(),
-            first,
-            through: messages.back().map_or(0, |m| m.sequence),
-            oldest: messages.front().map_or(0, |m| m.sequence),
-            revision,
-        }
-    }
-    pub(super) fn conversation(
+    pub(crate) fn conversation(
         &self,
         user: &str,
         view: &str,
-    ) -> Result<(String, &VecDeque<Message>, u64), String> {
+    ) -> Result<(String, String, u64), String> {
         if !self.active(user) {
             return Err("Account unavailable.".into());
         }
@@ -50,7 +26,7 @@ impl Engine {
                 .private
                 .get(key)
                 .ok_or("Conversation not found.")?;
-            return Ok((format!("dm:{key}"), &chat.messages, chat.revision));
+            return Ok((format!("dm:{key}"), chat.id.clone(), chat.revision));
         }
         if let Some(peer) = view.strip_prefix("@direct:") {
             let key = private_key(user, peer);
@@ -60,26 +36,37 @@ impl Engine {
                 .private
                 .get(&key)
                 .ok_or("Conversation not found.")?;
-            return Ok((format!("dm:{key}"), &chat.messages, chat.revision));
+            return Ok((format!("dm:{key}"), chat.id.clone(), chat.revision));
         }
         let room = self.data.rooms.get(view).ok_or("Room not found.")?;
         self.require(Some(user), &Scope::Room(room.id.clone()), Action::Read)?;
-        Ok((format!("room:{view}"), &room.messages, room.revision))
+        Ok((format!("room:{view}"), room.id.clone(), room.revision))
     }
+    #[cfg(test)]
     pub fn history(&self, user: &str, view: &str) -> Result<History, String> {
-        let (_, messages, revision) = self.conversation(user, view)?;
-        Ok(History {
-            view: view.into(),
-            messages: messages.iter().cloned().collect(),
-            revision,
-        })
+        self.history_page(user, view, history::HistoryRange::default())
+    }
+    #[cfg(test)]
+    pub fn history_page(
+        &self,
+        user: &str,
+        view: &str,
+        range: history::HistoryRange,
+    ) -> Result<History, String> {
+        let (_, id, revision) = self.conversation(user, view)?;
+        self.history_store.page(&id, revision, range, view)
     }
     pub fn mark_read(&mut self, user: &str, view: &str, through: u64) -> Result<bool, String> {
-        let (key, messages, _) = self.conversation(user, view)?;
-        if messages
-            .binary_search_by_key(&through, |m| m.sequence)
-            .is_err()
-        {
+        let (key, id, _) = self.conversation(user, view)?;
+        let exists: bool = self.history_store.read(|db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence=?2)",
+                params![id, through],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })?;
+        if !exists {
             return Err("Message is no longer in this conversation.".into());
         }
         if self
@@ -99,45 +86,50 @@ impl Engine {
             .insert(key, through);
         Ok(true)
     }
-    pub fn unreads(&self, name: &str) -> BTreeMap<String, Unread> {
-        self.data
+    pub fn unreads(&self, name: &str) -> Result<BTreeMap<String, Unread>, String> {
+        let mut result = BTreeMap::new();
+        for (view, id, revision, key) in self
+            .data
             .rooms
             .iter()
-            .filter(|(_, room)| {
-                self.allows(Some(name), &Scope::Room(room.id.clone()), Action::Read)
-            })
-            .map(|(view, room)| {
+            .filter(|(_, r)| self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read))
+            .map(|(name, r)| {
                 (
-                    view.clone(),
-                    self.unread(name, &format!("room:{view}"), &room.messages, room.revision),
+                    name.clone(),
+                    r.id.clone(),
+                    r.revision,
+                    format!("room:{name}"),
                 )
             })
-            .chain(self.data.private.iter().filter_map(|(key, chat)| {
-                private_peer(key, name)
-                    .filter(|_| self.allows(Some(name), &self.private_scope(key), Action::Read))
-                    .map(|peer| {
-                        (
-                            format!("@direct:{peer}"),
-                            self.unread(name, &format!("dm:{key}"), &chat.messages, chat.revision),
-                        )
-                    })
-            }))
             .chain(
                 self.data
                     .private
                     .iter()
                     .filter(|(key, _)| {
-                        private_peer(key, name).is_none()
-                            && self.allows(Some(name), &self.private_scope(key), Action::Read)
+                        self.allows(Some(name), &self.private_scope(key), Action::Read)
                     })
-                    .map(|(key, chat)| {
+                    .map(|(key, c)| {
                         (
-                            format!("@private:{key}"),
-                            self.unread(name, &format!("dm:{key}"), &chat.messages, chat.revision),
+                            private_peer(key, name).map_or_else(
+                                || format!("@private:{key}"),
+                                |peer| format!("@direct:{peer}"),
+                            ),
+                            c.id.clone(),
+                            c.revision,
+                            format!("dm:{key}"),
                         )
                     }),
             )
-            .collect()
+        {
+            let read = self
+                .read_positions
+                .get(name)
+                .and_then(|p| p.get(&key))
+                .copied()
+                .unwrap_or(0);
+            result.insert(view, self.history_store.unread(&id, name, read, revision)?);
+        }
+        Ok(result)
     }
     pub fn connect(&mut self, name: &str) {
         *self.online_connections.entry(name.into()).or_default() += 1;
@@ -150,9 +142,103 @@ impl Engine {
             }
         }
     }
+    pub fn conversation_update(
+        &self,
+        user: &str,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        if !self.active(user) {
+            return Err("Account unavailable.".into());
+        }
+        let view = self
+            .data
+            .rooms
+            .iter()
+            .find(|(_, r)| r.id == id)
+            .map(|(name, _)| name.clone())
+            .or_else(|| {
+                self.data
+                    .private
+                    .iter()
+                    .find(|(_, c)| c.id == id)
+                    .map(|(key, _)| {
+                        private_peer(key, user).map_or_else(
+                            || format!("@private:{key}"),
+                            |peer| format!("@direct:{peer}"),
+                        )
+                    })
+            });
+        let Some(view) = view else {
+            return Ok(None);
+        };
+        let Ok((key, id, revision)) = self.conversation(user, &view) else {
+            return Ok(None);
+        };
+        let page = self.history_store.page(
+            &id,
+            revision,
+            history::HistoryRange {
+                limit: Some(VISIBLE_HISTORY),
+                ..Default::default()
+            },
+            &view,
+        )?;
+        let read = self
+            .read_positions
+            .get(user)
+            .and_then(|p| p.get(&key))
+            .copied()
+            .unwrap_or(0);
+        let unread = self.history_store.unread(&id, user, read, revision)?;
+        Ok(Some(
+            serde_json::json!({"kind":"conversation","view":view,"id":id,"messages":page.messages,"unread":unread}),
+        ))
+    }
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         let account_scope = Scope::Account(account.id.clone());
+        let mut tails = BTreeMap::new();
+        let mut tail_budget = 1000usize;
+        let mut byte_budget = 4 * 1024 * 1024usize;
+        for (id, revision, scope) in self
+            .data
+            .rooms
+            .values()
+            .map(|r| (&r.id, r.revision, Scope::Room(r.id.clone())))
+            .chain(
+                self.data
+                    .private
+                    .iter()
+                    .map(|(key, c)| (&c.id, c.revision, self.private_scope(key))),
+            )
+        {
+            if self.allows(Some(name), &scope, Action::Read) && tail_budget > 0 {
+                let page = self
+                    .history_store
+                    .page(
+                        id,
+                        revision,
+                        history::HistoryRange {
+                            limit: Some(VISIBLE_HISTORY),
+                            ..Default::default()
+                        },
+                        "",
+                    )
+                    .ok()?;
+                let mut messages = Vec::new();
+                for message in page.messages.into_iter().rev() {
+                    let bytes = serde_json::to_vec(&message).ok()?.len();
+                    if bytes > byte_budget || tail_budget == 0 {
+                        break;
+                    }
+                    byte_budget -= bytes;
+                    tail_budget -= 1;
+                    messages.push(message);
+                }
+                messages.reverse();
+                tails.insert(id.clone(), messages);
+            }
+        }
         Some(Snapshot {
             kind: "snapshot",
             username: name.into(),
@@ -235,12 +321,7 @@ impl Engine {
                     } else {
                         BTreeSet::new()
                     },
-                    messages: r
-                        .messages
-                        .iter()
-                        .skip(r.messages.len().saturating_sub(VISIBLE_HISTORY))
-                        .cloned()
-                        .collect(),
+                    messages: tails.get(&r.id).cloned().unwrap_or_default(),
                 })
                 .chain(
                     self.data
@@ -264,12 +345,7 @@ impl Engine {
                                 } else {
                                     BTreeSet::new()
                                 },
-                                messages: chat
-                                    .messages
-                                    .iter()
-                                    .skip(chat.messages.len().saturating_sub(VISIBLE_HISTORY))
-                                    .cloned()
-                                    .collect(),
+                                messages: tails.get(&chat.id).cloned().unwrap_or_default(),
                             }
                         }),
                 )
@@ -283,12 +359,7 @@ impl Engine {
                         private_peer(key, name).is_some()
                             && self.allows(Some(name), &self.private_scope(key), Action::Read)
                     })
-                    .flat_map(|(_, chat)| {
-                        chat.messages
-                            .iter()
-                            .skip(chat.messages.len().saturating_sub(VISIBLE_HISTORY))
-                            .cloned()
-                    })
+                    .flat_map(|(_, chat)| tails.get(&chat.id).into_iter().flatten().cloned())
                     .collect();
                 messages.sort_by_key(|m| m.sequence);
                 messages
@@ -301,7 +372,7 @@ impl Engine {
                 .filter_map(|key| private_peer(key, name))
                 .map(String::from)
                 .collect(),
-            unread: self.unreads(name),
+            unread: self.unreads(name).ok()?,
             commands: self.commands_for(Some(name), None),
             available_rooms: self
                 .data
@@ -317,11 +388,7 @@ impl Engine {
     }
     pub(super) fn apply_queries(&mut self, context: &CommandContext<'_>) -> Result<String, String> {
         let CommandContext {
-            actor,
-            room,
-            parts,
-            author,
-            ..
+            actor, room, parts, ..
         } = *context;
         match parts[0] {
             "/console" => {
@@ -482,78 +549,56 @@ impl Engine {
                     .join("\n"))
             }
             "/history" => {
-                if parts.len() > 3 || (room.is_some() && parts.len() > 2) {
+                if !matches!(parts.len(), 1 | 3 | 4) {
                     return Err(
-                        "Usage: /history [count] [user] (user is for private history)".into(),
+                        "Usage: /history [start end] [room|@direct:peer|@private:a:b]".into(),
                     );
                 }
-                let limit = self.max_messages;
-                let count_error = format!("Count must be between 1 and {limit}.");
-                let count = parts
-                    .get(1)
-                    .map(|n| n.parse::<usize>())
-                    .transpose()
-                    .map_err(|_| count_error.clone())?
-                    .unwrap_or(VISIBLE_HISTORY.min(limit));
-                if !(1..=limit).contains(&count) {
-                    return Err(count_error);
-                }
-                let mut messages: Vec<_> = if let Some(name) = room {
-                    let target = self.data.rooms.get(name).ok_or("Room not found.")?;
-                    self.require_target_command(actor, &Scope::Room(target.id.clone()), parts[0])?;
-                    self.require(actor, &Scope::Room(target.id.clone()), Action::Read)?;
-                    target.messages.iter().collect()
-                } else if let Some(key) = parts.get(2).and_then(|v| v.strip_prefix("@private:")) {
-                    self.require_target_command(actor, &self.private_scope(key), parts[0])?;
-                    self.require(actor, &self.private_scope(key), Action::Read)?;
-                    self.data
+                let view = parts
+                    .get(3)
+                    .copied()
+                    .or(context.view)
+                    .ok_or("Select or specify a conversation.")?;
+                let (id, revision) = if let Some(user) = actor {
+                    let (_, id, revision) = self.conversation(user, view)?;
+                    (id, revision)
+                } else if let Some(key) = view.strip_prefix("@private:") {
+                    let chat = self
+                        .data
                         .private
                         .get(key)
-                        .ok_or("Private conversation not found.")?
-                        .messages
-                        .iter()
-                        .collect()
-                } else if parts.len() <= 2
-                    && let Scope::Private(id) = &context.scope
-                {
-                    self.require(actor, &context.scope, Action::Read)?;
-                    self.data
-                        .private
-                        .values()
-                        .find(|chat| chat.id == *id)
-                        .ok_or("Private conversation not found.")?
-                        .messages
-                        .iter()
-                        .collect()
-                } else if actor.is_some() {
-                    self.data
-                        .private
-                        .iter()
-                        .filter(|(key, _)| {
-                            self.allows(actor, &self.private_scope(key), Action::Read)
-                                && self
-                                    .require_target_command(
-                                        actor,
-                                        &self.private_scope(key),
-                                        parts[0],
-                                    )
-                                    .is_ok()
-                                && private_peer(key, author).is_some_and(|peer| {
-                                    parts.get(2).is_none_or(|requested| peer == *requested)
-                                })
-                        })
-                        .flat_map(|(_, chat)| &chat.messages)
-                        .collect()
+                        .ok_or("Conversation not found.")?;
+                    (chat.id.clone(), chat.revision)
                 } else {
-                    return Err("Specify a room via a web session to read history.".into());
+                    let room = self.data.rooms.get(view).ok_or("Room not found.")?;
+                    (room.id.clone(), room.revision)
                 };
-                messages.sort_by_key(|m| m.sequence);
-                let text = messages
+                let scope = if view.starts_with('@') {
+                    Scope::Private(id.clone())
+                } else {
+                    Scope::Room(id.clone())
+                };
+                self.require_target_command(actor, &scope, parts[0])?;
+                let range = if parts.len() >= 3 {
+                    history::HistoryRange {
+                        start: Some(parts[1].parse().map_err(|_| "Invalid start sequence.")?),
+                        end: Some(parts[2].parse().map_err(|_| "Invalid end sequence.")?),
+                        ..Default::default()
+                    }
+                } else {
+                    history::HistoryRange {
+                        limit: Some(VISIBLE_HISTORY),
+                        ..Default::default()
+                    }
+                };
+                let page = self.history_store.page(&id, revision, range, view)?;
+                let text = page
+                    .messages
                     .iter()
-                    .skip(messages.len().saturating_sub(count))
                     .map(|m| {
                         format!(
-                            "{} {}{}: {}",
+                            "[{}] {} {}{}: {}",
+                            m.sequence,
                             m.time,
                             m.from,
                             m.to.as_ref()
@@ -565,11 +610,19 @@ impl Engine {
                     .collect::<Vec<_>>()
                     .join("\n");
                 Ok(if text.is_empty() {
-                    "No messages.".into()
+                    "No messages in this range.".into()
+                } else if page.has_after
+                    && range
+                        .end
+                        .zip(page.messages.last())
+                        .is_some_and(|(end, message)| message.sequence < end)
+                {
+                    format!("{text}\nMore history available; continue after the last sequence.")
                 } else {
                     text
                 })
             }
+
             _ => Err("Unknown command.".into()),
         }
     }

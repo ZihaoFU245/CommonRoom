@@ -1631,3 +1631,22 @@ button:focus-visible {
     width: 100%;
   }
 }
+
+.history-navigation {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 12px;
+  flex-wrap: wrap;
+}
+.history-navigation button {
+  font: inherit;
+}
+
+.message-list {
+  overflow-anchor: none;
+}
+.message-list > [data-virtual-key] {
+  display: flow-root;
+  overflow-anchor: none;
+}

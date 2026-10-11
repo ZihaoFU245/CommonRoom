@@ -26,7 +26,7 @@ pub(super) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, Api
     }
     let session_token =
         token(headers).ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))?;
-    app.engine_api()?
+    app.engine_read_api()?
         .session(session_token)
         .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))
 }
@@ -36,6 +36,28 @@ pub(super) struct Login {
     password: String,
 }
 pub(super) async fn login(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(input): Json<Login>,
+) -> Result<Response, ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.block_on(login_inner(
+            State(app),
+            ConnectInfo(peer),
+            headers,
+            Json(input),
+        ))
+    })
+    .await
+    .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Login worker unavailable."))?
+}
+async fn login_inner(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -68,7 +90,7 @@ pub(super) async fn login(
         entry.1 += 1;
     }
     let account = app
-        .engine_api()?
+        .engine_read_api()?
         .data
         .users
         .get(&input.username)
@@ -138,6 +160,23 @@ pub(super) async fn logout(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.block_on(logout_inner(State(app), headers))
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Logout worker unavailable.",
+        )
+    })?
+}
+async fn logout_inner(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
     check_origin(&app, &headers)?;
     if let Some(token) = token(&headers) {
         app.engine_api()?
@@ -161,7 +200,23 @@ pub(super) async fn me(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let username = authenticate(&app, &headers)?;
-    let snapshot = app.engine_api()?.snapshot(&username);
-    Ok(Json(json!(snapshot)))
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let username = authenticate(&app, &headers)?;
+        let snapshot = app
+            .engine_read_api()?
+            .snapshot(&username)
+            .ok_or_else(|| error(StatusCode::SERVICE_UNAVAILABLE, "Snapshot unavailable."))?;
+        Ok(Json(json!(snapshot)))
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Snapshot worker unavailable.",
+        )
+    })?
 }

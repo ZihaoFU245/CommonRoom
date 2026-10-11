@@ -190,8 +190,8 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
         (
             "Messages",
             "/history",
-            "/history [count] [user]",
-            "Read retained messages (default up to 50)",
+            "/history [start end] [view]",
+            "Read an inclusive sequence range (up to 100 per page)",
             false,
         ),
         (

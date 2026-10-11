@@ -5,6 +5,7 @@ pub mod authorization;
 mod benchmarks;
 mod dispatch;
 mod helpers;
+mod history;
 mod messages;
 mod models;
 mod queries;
@@ -21,6 +22,7 @@ use dispatch::CommandContext;
 pub use dispatch::sudo_command;
 use helpers::*;
 pub use helpers::{hash_password, verify_password};
+pub use history::HistoryRange;
 pub use models::*;
 use rusqlite::{Connection, params};
 use std::{
@@ -33,10 +35,14 @@ const VISIBLE_HISTORY: usize = 50;
 pub struct Engine {
     pub data: Data,
     pub revision: u64,
+    pub changed_conversation: Option<String>,
     max_users: usize,
     max_rooms: usize,
     max_messages: usize,
-    db: Connection,
+    db: std::sync::Arc<std::sync::Mutex<Connection>>,
+    pub(crate) history_store: std::sync::Arc<history::HistoryStore>,
+    pending_deletes: Vec<(String, u64)>,
+    pending_cleanups: Vec<(String, u64)>,
     online_connections: BTreeMap<String, usize>,
     read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     authorization: authorization::CompiledPolicy,

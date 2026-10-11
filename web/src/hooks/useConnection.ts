@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { Snapshot, Acknowledgement } from "../api/protocol.ts";
 import { parseFrame, errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
+import {
+  boundSnapshot,
+  applyConversation,
+} from "../features/conversation/historyCache.ts";
 import { snapshotSync } from "./sync.ts";
 interface Callbacks {
   onSnapshot: (previous: Snapshot, data: Snapshot, baseline: boolean) => void;
@@ -65,8 +69,15 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         const data = parseFrame(String(event.data));
         if (!data) return;
         if (data.kind === "snapshot") {
-          sync.receive(data, baseline);
+          sync.receive(boundSnapshot(data), baseline);
           baseline = false;
+        } else if (data.kind === "conversation") {
+          const next = applyConversation(currentState.current, data);
+          if (!next) {
+            sync.refresh().catch(handleSyncError);
+            return;
+          }
+          sync.receive(next, false);
         } else if (data.kind === "read") {
           sync.receive({ ...currentState.current, unread: data.unread }, true);
         } else if (data.kind === "notice" || data.kind === "error") {

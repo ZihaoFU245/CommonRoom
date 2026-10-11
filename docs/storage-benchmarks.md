@@ -1,4 +1,6 @@
-# Mutation persistence benchmarks
+# Historical v6 mutation persistence benchmarks
+
+These recorded results predate v7 pagination, reader concurrency and lazy caches. They are not measurements of the current implementation. The runner now seeds both versions through public commands and adapts fixture access to their different storage ownership.
 
 Measured on 2026-10-11, Darwin arm64, Rust 1.99.0, bundled SQLite, release profile.
 Baseline: `181fd92c88bed009f7a67afad393c96b2d7a8bdf` (schema v5).

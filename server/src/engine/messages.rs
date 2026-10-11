@@ -12,7 +12,7 @@ impl Engine {
             .data
             .next_sequence
             .checked_add(1)
-            .filter(|n| *n <= i64::MAX as u64)
+            .filter(|n| *n <= 9_007_199_254_740_991)
             .ok_or("Message sequence exhausted.")?;
         let mut message = new_message(actor.unwrap_or("console"), to, text);
         message.author_id = actor
@@ -135,6 +135,13 @@ impl Engine {
                 if !can_delete_any && original.author_id != actor_id {
                     return Err("You can only delete your own messages.".into());
                 }
+                let deleted_sequence = original.sequence;
+                let conversation_id = match &scope {
+                    Scope::Room(id) | Scope::Private(id) => id.clone(),
+                    _ => return Err("Invalid message scope.".into()),
+                };
+                self.pending_deletes
+                    .push((conversation_id, deleted_sequence));
                 messages.retain(|m| m.id != id);
                 for message in messages {
                     if message.reply.as_ref().is_some_and(|quote| quote.id == id) {
@@ -345,57 +352,22 @@ impl Engine {
                     self.require_clean(actor, target, age)?;
                 }
                 let mut removed = 0;
-                if scope == "@all" || scope == "@private" {
-                    for chat in self.data.private.values_mut() {
-                        let before = chat.messages.len();
-                        chat.messages.retain(|m| m.time >= cutoff);
-                        let deleted = before - chat.messages.len();
-                        if deleted > 0 {
+                for target in &scopes {
+                    let id = match target {
+                        Scope::Room(id) | Scope::Private(id) => id,
+                        _ => continue,
+                    };
+                    let count:usize=self.history_store.read(|db| db.query_row("SELECT count(*) FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2",params![id,cutoff],|r|r.get(0)).map_err(|e|e.to_string()))?;
+                    if count > 0 {
+                        self.pending_cleanups.push((id.clone(), cutoff));
+                        if let Some(room) = self.data.rooms.values_mut().find(|r| r.id == *id) {
+                            room.revision = room.revision.wrapping_add(1);
+                        }
+                        if let Some(chat) = self.data.private.values_mut().find(|c| c.id == *id) {
                             chat.revision = chat.revision.wrapping_add(1);
                         }
-                        removed += deleted;
+                        removed += count;
                     }
-                }
-                if scope == "@all" {
-                    for target in self.data.rooms.values_mut() {
-                        let before = target.messages.len();
-                        target.messages.retain(|m| m.time >= cutoff);
-                        let deleted = before - target.messages.len();
-                        if deleted > 0 {
-                            target.revision = target.revision.wrapping_add(1);
-                        }
-                        removed += deleted;
-                    }
-                } else if scope.starts_with("@private:") || scope.starts_with("@direct:") {
-                    let key = if let Some(key) = scope.strip_prefix("@private:") {
-                        key.to_owned()
-                    } else {
-                        private_key(
-                            author,
-                            scope.strip_prefix("@direct:").ok_or("Invalid scope.")?,
-                        )
-                    };
-                    let chat = self
-                        .data
-                        .private
-                        .get_mut(&key)
-                        .ok_or("Private conversation not found.")?;
-                    let before = chat.messages.len();
-                    chat.messages.retain(|m| m.time >= cutoff);
-                    let deleted = before - chat.messages.len();
-                    if deleted > 0 {
-                        chat.revision = chat.revision.wrapping_add(1);
-                    }
-                    removed += deleted;
-                } else if scope != "@private" {
-                    let target = self.data.rooms.get_mut(scope).ok_or("Room not found.")?;
-                    let before = target.messages.len();
-                    target.messages.retain(|m| m.time >= cutoff);
-                    let deleted = before - target.messages.len();
-                    if deleted > 0 {
-                        target.revision = target.revision.wrapping_add(1);
-                    }
-                    removed += deleted;
                 }
                 self.audit(actor, "/clean", scope);
                 Ok(format!(

@@ -18,12 +18,21 @@ impl Engine {
                 .map_err(|_| "Another server is already using this data folder.".to_string())?;
             Some(file)
         };
-        let db = Connection::open(path).map_err(|e| e.to_string())?;
+        let memory = path == Path::new(":memory:");
+        let location = if memory {
+            format!(
+                "file:chat-{}?mode=memory&cache=shared",
+                uuid::Uuid::new_v4()
+            )
+        } else {
+            path.to_string_lossy().into_owned()
+        };
+        let db = Connection::open(&location).map_err(|e| e.to_string())?;
         let mut version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 5 && version != 6 {
-            return Err("Unsupported database schema; schemas v5 and v6 are supported.".into());
+        if version != 0 && version != 5 && version != 6 && version != 7 {
+            return Err("Unsupported database schema; schemas v5, v6 and v7 are supported.".into());
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -51,17 +60,20 @@ impl Engine {
                 .map_err(|e| e.to_string())?;
             write_data(&transaction, &data)?;
             transaction
-                .execute_batch("PRAGMA user_version=6;")
+                .execute_batch(INDEXES)
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=7;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
-            version = 6;
+            version = 7;
         }
         let raw: String = db
             .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         let mut data: Data = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         drop(raw);
-        if version == 6 {
+        if version >= 6 {
             load_entities(&db, &mut data)?;
         }
         // Upgrade persisted command grants once; dispatch accepts only the new syntax.
@@ -108,14 +120,32 @@ impl Engine {
                     .insert(view, sequence);
             }
         }
-        if version != 6 {
+        if version == 5 {
             let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
             tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
             write_data(&tx, &data)?;
-            tx.execute_batch("PRAGMA user_version=6;")
+            tx.execute_batch(INDEXES).map_err(|e| e.to_string())?;
+            tx.execute_batch("PRAGMA user_version=7;")
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
             upgraded = false;
+        }
+        if version == 6 {
+            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(INDEXES).map_err(|e| e.to_string())?;
+            if upgraded {
+                write_state(&tx, &data)?;
+            }
+            tx.execute_batch("PRAGMA user_version=7;")
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            upgraded = false;
+        }
+        for room in data.rooms.values_mut() {
+            room.messages.clear();
+        }
+        for chat in data.private.values_mut() {
+            chat.messages.clear();
         }
         let mut engine = Self {
             authorization,
@@ -123,10 +153,16 @@ impl Engine {
             data,
             read_positions,
             revision: 0,
+            changed_conversation: None,
             max_users: 64,
             max_rooms: 64,
             max_messages: 1000,
-            db,
+            history_store: std::sync::Arc::new(super::history::HistoryStore::open(
+                &location, memory,
+            )?),
+            db: std::sync::Arc::new(std::sync::Mutex::new(db)),
+            pending_deletes: Vec::new(),
+            pending_cleanups: Vec::new(),
             _lock: lock,
         };
         // Validate the complete policy before writing. A failed atomic state write
@@ -145,38 +181,47 @@ impl Engine {
         if max_users == 0 || max_rooms == 0 || max_messages == 0 {
             return Err("max_users, max_rooms and max_messages must be positive integers.".into());
         }
-        if self
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let mut changed = Vec::new();
+        for (kind, key, id, revision) in self
             .data
             .rooms
-            .values()
-            .any(|room| room.messages.len() > max_messages)
-            || self
-                .data
-                .private
-                .values()
-                .any(|chat| chat.messages.len() > max_messages)
+            .iter()
+            .map(|(key, r)| ("room", key, &r.id, r.revision))
+            .chain(
+                self.data
+                    .private
+                    .iter()
+                    .map(|(key, c)| ("private", key, &c.id, c.revision)),
+            )
         {
-            let previous = self.data.clone();
-            for room in self.data.rooms.values_mut() {
-                if room.messages.len() > max_messages {
-                    room.messages.drain(..room.messages.len() - max_messages);
-                    room.revision = room.revision.wrapping_add(1);
-                }
+            let deleted=tx.execute("DELETE FROM messages WHERE conversation=?1 AND sequence <= (SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence DESC LIMIT 1 OFFSET ?2)",params![id,max_messages]).map_err(|e|e.to_string())?;
+            if deleted > 0 {
+                let revision = revision.wrapping_add(1);
+                tx.execute(
+                    "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                    params![kind, key, revision],
+                )
+                .map_err(|e| e.to_string())?;
+                changed.push((kind, key.clone(), revision));
             }
-            for chat in self.data.private.values_mut() {
-                if chat.messages.len() > max_messages {
-                    chat.messages.drain(..chat.messages.len() - max_messages);
-                    chat.revision = chat.revision.wrapping_add(1);
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        for (kind, key, revision) in changed {
+            if kind == "room" {
+                if let Some(r) = self.data.rooms.get_mut(&key) {
+                    r.revision = revision;
                 }
-            }
-            if let Err(error) = self.save() {
-                self.data = previous;
-                return Err(error);
+            } else if let Some(c) = self.data.private.get_mut(&key) {
+                c.revision = revision;
             }
         }
         self.max_users = max_users;
         self.max_rooms = max_rooms;
         self.max_messages = max_messages;
+
         Ok(())
     }
     pub(super) fn save(&mut self) -> Result<(), String> {
@@ -185,8 +230,26 @@ impl Engine {
         } else {
             None
         };
-        let tx = self.db.transaction().map_err(|e| e.to_string())?;
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.transaction().map_err(|e| e.to_string())?;
         write_data(&tx, &self.data).map_err(storage_error)?;
+        for (id, sequence) in &self.pending_deletes {
+            let message_id:String=tx.query_row("SELECT json_extract(json,'$.id') FROM messages WHERE conversation=?1 AND sequence=?2",params![id,sequence],|r|r.get(0)).map_err(|e|storage_error(e.to_string()))?;
+            tx.execute("UPDATE messages SET json=json_set(json,'$.reply',NULL) WHERE conversation=?1 AND json_extract(json,'$.reply.id')=?2",params![id,message_id]).map_err(|e|storage_error(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM messages WHERE conversation=?1 AND sequence=?2",
+                params![id, sequence],
+            )
+            .map_err(|e| storage_error(e.to_string()))?;
+        }
+        for (id, cutoff) in &self.pending_cleanups {
+            tx.execute(
+                "DELETE FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2",
+                params![id, cutoff],
+            )
+            .map_err(|e| storage_error(e.to_string()))?;
+        }
         tx.commit().map_err(|e| storage_error(e.to_string()))?;
         if let Some(authorization) = authorization {
             self.authorization = authorization;
@@ -196,6 +259,8 @@ impl Engine {
     }
     pub fn checkpoint(&self) -> Result<(), String> {
         self.db
+            .lock()
+            .map_err(|_| "Storage unavailable.")?
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(|e| e.to_string())
     }
@@ -207,7 +272,7 @@ impl Engine {
         key: &str,
         through: u64,
     ) -> Result<(), String> {
-        self.db.execute("INSERT INTO read_positions VALUES(?1,?2,?3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+        self.db.lock().map_err(|_| "Storage unavailable.")?.execute("INSERT INTO read_positions VALUES(?1,?2,?3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
             params![user,key,through]).map_err(|e| { tracing::error!(error=%e,"Read position write failed"); "Storage unavailable; read position was not applied.".to_string() })?;
         Ok(())
     }
@@ -218,7 +283,9 @@ impl Engine {
         new_name: &str,
         conversations: &BTreeMap<String, String>,
     ) -> Result<(), String> {
-        let transaction = self.db.transaction().map_err(|e| e.to_string())?;
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let transaction = db.transaction().map_err(|e| e.to_string())?;
         // A reused name must never inherit orphaned cursors from an old account.
         transaction
             .execute(
@@ -246,6 +313,7 @@ impl Engine {
                 )
                 .map_err(|e| e.to_string())?;
         }
+        rewrite_account_messages(&transaction, name, Some(new_name))?;
         write_data(&transaction, &self.data)?;
         transaction.commit().map_err(|e| e.to_string())
     }
@@ -255,7 +323,10 @@ impl Engine {
         name: &str,
         removed: &BTreeSet<String>,
     ) -> Result<(), String> {
-        let transaction = self.db.transaction().map_err(|e| e.to_string())?;
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let transaction = db.transaction().map_err(|e| e.to_string())?;
+        rewrite_account_messages(&transaction, name, None)?;
         write_data(&transaction, &self.data)?;
         transaction
             .execute(
@@ -280,6 +351,13 @@ CREATE TABLE messages(conversation TEXT NOT NULL,sequence INTEGER NOT NULL,json 
 CREATE TABLE reactions(conversation TEXT NOT NULL,sequence INTEGER NOT NULL,reaction TEXT NOT NULL,username TEXT NOT NULL,PRIMARY KEY(conversation,sequence,reaction,username),FOREIGN KEY(conversation,sequence) REFERENCES messages(conversation,sequence) ON DELETE CASCADE) WITHOUT ROWID;
 CREATE TABLE counters(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL);
 CREATE INDEX read_positions_conversation ON read_positions(conversation);";
+
+const INDEXES: &str =
+    "CREATE INDEX messages_id ON messages(json_extract(json,'$.id'),conversation);
+CREATE INDEX messages_author ON messages(conversation,json_extract(json,'$.from'),sequence);
+CREATE INDEX messages_time ON messages(conversation,json_extract(json,'$.time'));
+CREATE INDEX messages_sequence ON messages(sequence);
+CREATE INDEX entities_id ON entities(json_extract(json,'$.id')) WHERE kind IN ('room','private');";
 
 fn storage_error(error: String) -> String {
     tracing::error!(error, "Storage write failed");
@@ -390,7 +468,7 @@ fn write_state(db: &Connection, data: &Data) -> Result<(), String> {
 // Administrative mutations may affect many records. Reconcile inside the caller's
 // transaction, writing only changed rows, without retaining another history copy.
 fn write_data(db: &Connection, data: &Data) -> Result<(), String> {
-    db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS live_entities(kind TEXT,key TEXT,PRIMARY KEY(kind,key)) WITHOUT ROWID; CREATE TEMP TABLE IF NOT EXISTS live_messages(conversation TEXT,sequence INTEGER,PRIMARY KEY(conversation,sequence)) WITHOUT ROWID; DELETE FROM live_entities; DELETE FROM live_messages;").map_err(|e| e.to_string())?;
+    db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS live_entities(kind TEXT,key TEXT,PRIMARY KEY(kind,key)) WITHOUT ROWID; DELETE FROM live_entities;").map_err(|e| e.to_string())?;
     for row in data
         .users
         .iter()
@@ -440,14 +518,9 @@ fn write_data(db: &Connection, data: &Data) -> Result<(), String> {
         for m in messages {
             put_message(db, key, m)?;
             reconcile_reactions(db, key, m)?;
-            db.execute(
-                "INSERT INTO live_messages VALUES(?1,?2)",
-                params![key, m.sequence],
-            )
-            .map_err(|e| e.to_string())?;
         }
     }
-    db.execute_batch("DELETE FROM entities WHERE NOT EXISTS(SELECT 1 FROM live_entities l WHERE l.kind=entities.kind AND l.key=entities.key); DELETE FROM messages WHERE NOT EXISTS(SELECT 1 FROM live_messages l WHERE l.conversation=messages.conversation AND l.sequence=messages.sequence); DELETE FROM live_entities; DELETE FROM live_messages;").map_err(|e| e.to_string())?;
+    db.execute_batch("DELETE FROM messages WHERE conversation IN (SELECT json_extract(e.json,'$.id') FROM entities e WHERE e.kind IN ('room','private') AND NOT EXISTS(SELECT 1 FROM entities current JOIN live_entities l ON l.kind=current.kind AND l.key=current.key WHERE current.kind=e.kind AND json_extract(current.json,'$.id')=json_extract(e.json,'$.id'))); DELETE FROM entities WHERE NOT EXISTS(SELECT 1 FROM live_entities l WHERE l.kind=entities.kind AND l.key=entities.key); DELETE FROM live_entities;").map_err(|e| e.to_string())?;
     db.execute("INSERT INTO counters VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence", params![data.next_sequence]).map_err(|e| e.to_string())?;
     write_state(db, data)
 }
@@ -508,44 +581,7 @@ pub(super) fn load_entities(db: &Connection, data: &mut Data) -> Result<(), Stri
             chat.revision = revision;
         }
     }
-    let mut query = db
-        .prepare("SELECT conversation,json FROM messages ORDER BY conversation,sequence")
-        .map_err(|e| e.to_string())?;
-    let mut rooms: BTreeMap<_, _> = data
-        .rooms
-        .values_mut()
-        .map(|r| (r.id.clone(), &mut r.messages))
-        .chain(
-            data.private
-                .values_mut()
-                .map(|c| (c.id.clone(), &mut c.messages)),
-        )
-        .collect();
-    let rows = query
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        let (key, json) = row.map_err(|e| e.to_string())?;
-        let mut message: Message = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        let mut reactions = db
-            .prepare_cached(
-                "SELECT reaction,username FROM reactions WHERE conversation=?1 AND sequence=?2",
-            )
-            .map_err(|e| e.to_string())?;
-        let entries = reactions
-            .query_map(params![key, message.sequence], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .map_err(|e| e.to_string())?;
-        for entry in entries {
-            let (reaction, user) = entry.map_err(|e| e.to_string())?;
-            message.reactions.entry(reaction).or_default().insert(user);
-        }
-        rooms
-            .get_mut(&key)
-            .ok_or("Orphaned stored message.")?
-            .push_back(message);
-    }
+
     Ok(())
 }
 
@@ -565,7 +601,9 @@ impl Engine {
             let room = self.data.rooms.get(&change.key).ok_or("Room not found.")?;
             (&room.id, &room.messages)
         };
-        let tx = self.db.transaction().map_err(|e| e.to_string())?;
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.transaction().map_err(|e| e.to_string())?;
         if change.reaction {
             if let Some(index) = change.index {
                 let current = messages.get(index).ok_or("Message not found.")?;
@@ -602,13 +640,7 @@ impl Engine {
             }
         } else if let Some(message) = messages.back().filter(|m| m.sequence > change.sequence) {
             put_message(&tx, id, message).map_err(storage_error)?;
-            if let Some(evicted) = &change.previous {
-                tx.execute(
-                    "DELETE FROM messages WHERE conversation=?1 AND sequence=?2",
-                    params![id, evicted.sequence],
-                )
-                .map_err(|e| storage_error(e.to_string()))?;
-            }
+            tx.execute("DELETE FROM messages WHERE conversation=?1 AND sequence <= (SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence DESC LIMIT 1 OFFSET ?2)",params![id,self.max_messages]).map_err(|e|storage_error(e.to_string()))?;
             tx.execute(
                 "UPDATE counters SET sequence=?1 WHERE id=1",
                 params![self.data.next_sequence],
@@ -642,7 +674,72 @@ impl Engine {
         )
         .map_err(|e| storage_error(e.to_string()))?;
         tx.commit().map_err(|e| storage_error(e.to_string()))?;
+        self.changed_conversation = (!change.new_conversation()).then(|| id.clone());
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
+}
+
+// Bounded 100-row maintenance batches; the caller's transaction covers all batches.
+fn rewrite_account_messages(
+    db: &Connection,
+    name: &str,
+    new_name: Option<&str>,
+) -> Result<(), String> {
+    let replacement = new_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{name} (deleted)"));
+    let mut after = 0u64;
+    loop {
+        let mut query=db.prepare("SELECT conversation,json FROM messages WHERE sequence>?1 ORDER BY sequence LIMIT 100").map_err(|e|e.to_string())?;
+        let rows = query
+            .query_map([after], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let batch = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if batch.is_empty() {
+            break;
+        }
+        for (id, json) in batch {
+            let mut m: Message = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+            after = m.sequence;
+            let mut changed = false;
+            if m.from == name {
+                m.from = replacement.clone();
+                changed = true;
+            }
+            if new_name.is_some() && m.to.as_deref() == Some(name) {
+                m.to = new_name.map(str::to_owned);
+                changed = true;
+            }
+            if let Some(reply) = &mut m.reply
+                && reply.from == name
+            {
+                reply.from = replacement.clone();
+                changed = true;
+            }
+            if m.mentions.remove(name) {
+                if let Some(new) = new_name {
+                    m.mentions.insert(new.into());
+                }
+                changed = true;
+            }
+            if changed {
+                put_message(db, &id, &m)?;
+            }
+        }
+    }
+    if let Some(new) = new_name {
+        db.execute(
+            "UPDATE OR IGNORE reactions SET username=?1 WHERE username=?2",
+            params![new, name],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    db.execute("DELETE FROM reactions WHERE username=?1", [name])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

@@ -1,3 +1,4 @@
+import type { VirtualTimelineHandle } from "./useVirtualTimeline.ts";
 import type { RefObject } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { Message, Unread, LocalOutput } from "../api/protocol.ts";
@@ -14,7 +15,8 @@ interface Context {
   settingsOpen: boolean;
   menu: boolean;
   status: string;
-  retryHistory: () => void;
+  loadSequence: (sequence: number) => void;
+  virtualTimeline: RefObject<VirtualTimelineHandle>;
   atBottom: RefObject<boolean>;
   historyElement: RefObject<HTMLElement>;
   end: RefObject<HTMLDivElement>;
@@ -30,7 +32,8 @@ export function useReadTracking({
   settingsOpen,
   menu,
   status,
-  retryHistory,
+  loadSequence,
+  virtualTimeline,
   atBottom,
   historyElement,
   end,
@@ -46,12 +49,15 @@ export function useReadTracking({
     if (enteredView.current !== selected && (!unread || historyReady)) {
       enteredView.current = selected;
       const first = unread?.first;
+      if (first && !messages.some((message) => message.sequence === first)) {
+        loadSequence(first);
+        enteredView.current = null;
+        return;
+      }
       setUnreadBoundary(first || null);
       if (first) {
         resetCleared();
-        historyElement.current
-          ?.querySelector(`[data-sequence="${first}"]`)
-          ?.scrollIntoView({ block: "start" });
+        virtualTimeline.current?.scrollToSequence(first);
         atBottom.current = false;
       } else {
         end.current?.scrollIntoView({ block: "end" });
@@ -91,7 +97,9 @@ export function useReadTracking({
     const through = visibleReadPosition(
       elements,
       viewport.getBoundingClientRect(),
-      unread?.first ?? null,
+      messages.some((message) => message.sequence === unread?.first)
+        ? null
+        : (unread?.first ?? null),
     );
     if (!through || (readSent.current.get(selected) || 0) >= through) return;
     const view = selected;
@@ -117,19 +125,18 @@ export function useReadTracking({
   }, [selected, messages, unread, historyReady, menu, settingsOpen, status]);
   function jumpToUnread() {
     if (!unread?.first) return;
-    if (!historyReady) {
-      retryHistory();
+    if (
+      !historyReady ||
+      !messages.some((message) => message.sequence === unread.first)
+    ) {
+      loadSequence(unread.first);
       return;
     }
     resetCleared();
     setUnreadBoundary(unread?.first ?? null);
     atBottom.current = false;
-    requestAnimationFrame(() => {
-      historyElement.current
-        ?.querySelector(`[data-sequence="${unread.first}"]`)
-        ?.scrollIntoView({ block: "start" });
-      acknowledgeVisible();
-    });
+    virtualTimeline.current?.scrollToSequence(unread.first);
+    requestAnimationFrame(acknowledgeVisible);
   }
 
   return {

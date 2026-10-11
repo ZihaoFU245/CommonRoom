@@ -58,39 +58,13 @@ impl Engine {
                 room.members.insert(new_name.into());
             }
         }
-        for (messages, revision) in self
+        for revision in self
             .data
             .rooms
             .values_mut()
-            .map(|r| (&mut r.messages, &mut r.revision))
-            .chain(
-                self.data
-                    .private
-                    .values_mut()
-                    .map(|r| (&mut r.messages, &mut r.revision)),
-            )
+            .map(|r| &mut r.revision)
+            .chain(self.data.private.values_mut().map(|c| &mut c.revision))
         {
-            for message in messages {
-                if message.from == name {
-                    message.from = new_name.into();
-                }
-                if message.to.as_deref() == Some(name) {
-                    message.to = Some(new_name.into());
-                }
-                if let Some(reply) = &mut message.reply
-                    && reply.from == name
-                {
-                    reply.from = new_name.into();
-                }
-                if message.mentions.remove(name) {
-                    message.mentions.insert(new_name.into());
-                }
-                for users in message.reactions.values_mut() {
-                    if users.remove(name) {
-                        users.insert(new_name.into());
-                    }
-                }
-            }
             *revision = revision.wrapping_add(1);
         }
         if let Err(error) = self.store_account_rename(name, new_name, &conversations) {
@@ -335,28 +309,11 @@ impl Engine {
             .retain(|_, session| session.username != name);
         let deleted_author = format!("{name} (deleted)");
         for room in self.data.rooms.values_mut() {
+            room.revision = room.revision.wrapping_add(1);
             room.members.remove(name);
-            let mut changed = false;
-            for message in &mut room.messages {
-                if message.from == name {
-                    message.from.clone_from(&deleted_author);
-                    changed = true;
-                }
-                if let Some(reply) = &mut message.reply
-                    && reply.from == name
-                {
-                    reply.from.clone_from(&deleted_author);
-                    changed = true;
-                }
-                changed |= message.mentions.remove(name);
-                message.reactions.retain(|_, users| {
-                    changed |= users.remove(name);
-                    !users.is_empty()
-                });
-            }
-            if changed {
-                room.revision = room.revision.wrapping_add(1);
-            }
+        }
+        for chat in self.data.private.values_mut() {
+            chat.revision = chat.revision.wrapping_add(1);
         }
         let mut removed = BTreeSet::new();
         let removed_scopes: Vec<_> = self

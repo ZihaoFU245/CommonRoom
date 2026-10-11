@@ -2,13 +2,11 @@ import { useLocalConsole } from "../hooks/useLocalConsole.ts";
 import { useCommands } from "../hooks/useCommands.ts";
 import { useReadTracking } from "../hooks/useReadTracking.ts";
 import { useEffect, useRef, useState, useMemo } from "preact/hooks";
-import type { Snapshot, Message, History } from "../api/protocol.ts";
+import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
 import { notifyMentions } from "../features/preferences/notifications.ts";
-import { retainedHistory } from "../features/conversation/unread.ts";
 import {
-  ingest,
   timeline,
   privatePeers,
   privateMessages,
@@ -23,6 +21,7 @@ import { useHistory } from "../hooks/useHistory.ts";
 import { useComposerResize } from "../hooks/useComposerResize.ts";
 import { useFonts } from "../hooks/useFonts.ts";
 import type { useTheme } from "../hooks/useTheme.ts";
+import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useEvent } from "../hooks/useEvent.ts";
 
 export function Chat({
@@ -111,7 +110,7 @@ export function Chat({
   const desiredRoom = useRef<string | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const historyElement = useRef<HTMLElement>(null);
-  const historyCache = useRef<History | null>(null);
+  const virtualTimeline = useRef<VirtualTimelineHandle>(null);
   const atBottom = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
   const { output, cleared, setCleared, ledger, append, complete, clearView } =
@@ -156,14 +155,7 @@ export function Chat({
             setSelected(view);
           },
         });
-      const cache = historyCache.current;
-      const metadata = cache && data.unread?.[cache.view];
-      if (contentChanged)
-        ingest(
-          data,
-          ledger.current,
-          metadata ? retainedHistory(cache.messages, [], metadata) : [],
-        );
+
       if (
         desiredRoom.current &&
         (data.rooms.some((r) => r.name === desiredRoom.current) ||
@@ -237,16 +229,28 @@ export function Chat({
     acceptHint,
     reactTo,
   } = commands;
-  const { unread, historyReady, messages, historyError, retryHistory } =
-    useHistory(
-      state,
-      selected,
-      tail,
-      historyCache,
-      currentState,
-      selectedRef,
-      ledger,
-    );
+  const {
+    unread,
+    historyReady,
+    messages,
+    historyError,
+    retryHistory,
+    loading,
+    hasBefore,
+    hasAfter,
+    loadOlder,
+    loadNewer,
+    loadLatest,
+    loadSequence,
+  } = useHistory(
+    state,
+    selected,
+    tail,
+    currentState,
+    ledger,
+    virtualTimeline,
+    atBottom,
+  );
   const { unreadBoundary, acknowledgeVisible, jumpToUnread, resetEntry } =
     useReadTracking({
       selected,
@@ -260,7 +264,8 @@ export function Chat({
       settingsOpen,
       menu,
       status,
-      retryHistory,
+      loadSequence,
+      virtualTimeline,
       atBottom,
       historyElement,
       end,
@@ -290,6 +295,14 @@ export function Chat({
       atBottom.current =
         element.scrollHeight - element.scrollTop - element.clientHeight < 32;
     acknowledgeVisible();
+    if (element && !loading && historyReady) {
+      if (element.scrollTop < 240 && hasBefore) loadOlder();
+      else if (
+        element.scrollHeight - element.scrollTop - element.clientHeight < 240 &&
+        hasAfter
+      )
+        loadNewer();
+    }
   });
   useEffect(() => {
     if (
@@ -441,6 +454,32 @@ export function Chat({
             <button onClick={jumpToUnread}>Jump to unread ↓</button>
           </div>
         )}
+        {(hasBefore || hasAfter || loading) && (
+          <div class="history-navigation">
+            {hasBefore && (
+              <button disabled={loading} onClick={loadOlder}>
+                Older messages
+              </button>
+            )}
+            {loading && <span role="status">Loading history…</span>}
+            {hasAfter && (
+              <>
+                <button disabled={loading} onClick={loadNewer}>
+                  Newer messages
+                </button>
+                <button
+                  disabled={loading}
+                  onClick={() => {
+                    atBottom.current = true;
+                    loadLatest();
+                  }}
+                >
+                  Latest messages
+                </button>
+              </>
+            )}
+          </div>
+        )}
         {historyError && (
           <div class="history-error" role="alert">
             {historyError}
@@ -458,6 +497,7 @@ export function Chat({
           onReact={handleReact}
           onReply={handleReply}
           onDelete={handleDelete}
+          virtualTimeline={virtualTimeline}
           historyElement={historyElement}
           end={end}
           onScroll={handleScroll}

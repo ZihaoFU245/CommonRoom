@@ -1,5 +1,5 @@
 import { isSnapshot, isHistory, isOk, responseError } from "./protocol.ts";
-import type { ClientFrame } from "./protocol.ts";
+import type { ClientFrame, HistoryRange } from "./protocol.ts";
 
 export function sendFrame(socket: WebSocket, frame: ClientFrame) {
   socket.send(JSON.stringify(frame));
@@ -37,13 +37,12 @@ export const api = {
   login: (username: string, password: string) =>
     request("login", isOk, { username, password }),
   logout: () => request("logout", isOk, {}),
-  history: (view: string, signal: AbortSignal) =>
-    request(
-      `history?view=${encodeURIComponent(view)}`,
-      isHistory,
-      undefined,
-      signal,
-    ),
+  history: (view: string, signal: AbortSignal, range: HistoryRange = {}) => {
+    const query = new URLSearchParams({ view });
+    for (const [key, value] of Object.entries(range))
+      query.set(key, String(value));
+    return request(`history?${query.toString()}`, isHistory, undefined, signal);
+  },
   read: (view: string, through: number) =>
     request("read", isOk, { view, through }),
 };
