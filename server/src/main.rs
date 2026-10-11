@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load(Path::new(&data_dir))?;
     engine.set_limits(config.max_users, config.max_rooms, config.max_messages)?;
     if engine.data.users.is_empty() {
-        tracing::info!("No accounts yet. Console: /user alice a-long-password admin");
+        tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
     }
     let (changes, _) = broadcast::channel(16);
     let app = App {

@@ -1,106 +1,31 @@
 # Commands
 
-## Commands
+## Using commands
 
-Accounts without conversations start in a local Command view. Use `/console` to open it from a conversation; select a room or private conversation in the sidebar to return. Account management there requires the appropriate grants. Rooms and private conversations use foldable navigation lists.
-New accounts have no room memberships. Type messages or commands in the composer. Enter sends; Shift + Enter adds
-a line. Use `/help` for commands grouped into General, Account, Rooms, Messages, and Server, filtered by your grants in the selected context. Typing `/`
-shows contextual command and argument hints; arrow keys select a hint, Tab
-completes it, and Escape closes the hints. Enter executes what you typed.
-Chat messages use a Discord-style layout, all aligned on the left, with the
-sender and local time above the text. Consecutive
-messages from one sender are grouped within five minutes; commands break the
-group. Dates, times, and date separators follow the browser timezone, with the
-full local date and timezone available on timestamp hover. The server stores
-Unix timestamps in seconds. Commands and replies retain their console format
-alongside chat messages, only in your current tab and the view where the command ran.
-The Command view has its own local history. Private messages are grouped by
-person; only people you have exchanged private messages with appear in the list. Start a
-new private conversation with `/tell person message`; typing in a private conversation is equivalent to `/tell person message`. Reloading clears command output and
-fetches a 50-message tail per room and per private conversation. Opening a
-conversation fetches its retained history; `/history 200` also prints more
-retained messages as local command output. `/clear`
-clears the local display without deleting server history; refresh restores it.
-The URL remembers the selected room, so refresh returns to the same conversation.
-Every permission check happens on the server. Use `/man` for the manual index,
-`/man grant` and `/man revoke` for both command forms, and `/man permissions` for
-the complete action catalog. Manuals use headings, short lists, and separate
-command examples in the web UI; stdin shows the same structured text.
-Manuals are read-only and do not grant execution rights.
+Type commands in the composer. Enter sends, Shift + Enter adds a line, Tab accepts
+a suggestion, arrow keys choose one, and Escape closes the suggestions.
+`/help` lists commands permitted in the current context; `/man COMMAND` explains
+server command syntax and required grants. The server checks both the invocation context and
+the target. Opening `/console` adds no permissions. Accounts without conversations
+start in Command; select a conversation or use `/join ROOM` to return.
 
-`@global` names the global scope (`@server` remains a compatibility alias).
-Command suggestions and command-grant confirmations list the additional action
-requirements. `/permissions` groups effective read/write/management actions and
-command grants separately from the assignments at the selected scope.
+Commands and their replies stay in the originating view and tab. Reloading clears
+command output and reloads server history. `/clear` only clears the local display.
+Passwords are masked in local output and never logged. The URL remembers the
+selected conversation. Memberships and private peers come from the server on
+login, reconnect and foreground refresh.
 
-Orange badges count messages from other people that you have not read. Opening
-an unread conversation starts at its first unread message; **Jump to unread**
-returns to the next unread message while you browse history. Only messages
-viewed in a focused, visible conversation advance the read position. Unread
-counts sync across your devices and survive restarting or moving `data/`.
-Commands and reactions do not add unread messages. Histories evicted by the
-retention limit no longer contribute to the count.
-
-The compact top bar shows a green Connected dot and an online count. Open the
-count to see connected accounts; a user remains online while any tab or device
-is connected.
-
-Message actions appear on hover (always on touch devices). Accounts with metadata grants can use
-`/debug on` to reveal a **⋯** button beside **+**; click it to expand selectable
-message details, including the message ID. `/debug off` hides the details. Debug
-is off after refresh and when metadata permission is revoked; it stays local to the tab. Use **Reply** to
-quote a message in the composer, **Delete** to retract your own message for
-everyone in the conversation (including its retained reply previews) after
-confirmation, or **+** to choose an emoji/custom UTF-8
-reaction. The picker opens above when there is insufficient room below in the
-visible chat area, and updates its placement on scroll or resize. Clicking a
-reaction toggles your participation. Reactions allow
-1–128 Unicode characters without control characters, with at most 32 distinct
-reactions per message. Reactions and replies are persisted for both rooms and
-private conversations; they require matching scoped action and command grants. Quoted
-replies keep the original author's name and a 160-character preview even after
-the original message expires. The quote jumps to the original if it is loaded.
-
-Type `@username` to mention a room member or the other private-chat participant;
-name completion appears as you type. Names are case-sensitive. The server
-records mentions only for participants in that conversation; email addresses
-are not treated as mentions. Text and custom reactions remain UTF-8.
-
-For desktop Chrome notifications, click the bell next to your profile and
-allow notifications in the browser prompt. Production needs HTTPS; localhost
-works for development. The setting is remembered per browser origin.
-Notifications arrive for new mentions while the page is open and its WebSocket
-is connected, when the page is in the background or a different conversation
-is selected. Reading the same conversation in the foreground suppresses the
-notification. Clicking a notification opens its conversation. Reactions,
-refresh, history joins and reconnect snapshots do not replay notifications.
-Notifications are not push delivery to a closed browser/tab, and browser/OS
-notification settings can block them. Private message previews can appear in
-system notifications only after you opt in.
-
-The Settings button beside your profile chooses the theme (Light, Dark, System,
-which follows the operating system even on the login screen, or Custom) and
-adjusts chat text (14–24px) and UI text (12–18px) independently, taking effect
-immediately; Reset defaults
-restores the theme, the custom colors, and both font sizes. Custom takes a
-surface color and an accent color as hex values and generates the rest of the
-palette from them: every text, border, hover, and status tone is solved against
-a contrast target across paper, hover surfaces, and input fields. Text, including
-unread counts, has at least 4.5:1 contrast; surface steps shrink when necessary
-to preserve legibility. The surface's own luminance decides whether the result is
-light or dark. These preferences stay in this browser; they do not change the
-server configuration. The theme is resolved from browser storage in the entry
-module, before the app renders.
-Room and private-chat lists share a scrollable sidebar area; the profile stays
-fixed below it. Joined rooms and private peers come from the server on login,
-socket reconnect and when the page returns to the foreground. An older HTTP
-refresh cannot overwrite a newer WebSocket snapshot.
-
+## Syntax
 
 | Command | Who | Behavior |
 | --- | --- | --- |
+| `/ls [room\|user\|group\|@user\|@admin\|@su]` | Matching list grants | Default: rooms and own readable private pairs; user lists accounts; @group filters global assignments; group lists predefined bundles |
+| `/new room NAME` or `/new user NAME PASSWORD [user\|admin]` | Room/account-create grant | Create an invitation-only room or account; admin assignment needs its own grant |
+| `/rm room NAME` or `/rm user NAME` | Room/account-delete grant | Permanently remove the target; web asks for confirmation |
+| `/rm group USER GROUP [ROOM]` | Group management grants | Remove an assignment; other assignments and direct grants still apply |
+| `/alias A B` | Web only | Replace one command prefix; save the mapping in this browser |
 | `/help` | Authorized commands | Show commands permitted in the current context |
-| `/man [command\|topic]` | Manual command grant | Read manuals: grant, revoke, permissions, groups, scopes, ownership, or any command |
+| `/man [command\|topic]` | Manual command grant | Read manuals: grant, revoke, permissions, groups, scopes, ownership, or any server command |
 | `/whoami` | Accounts/stdin | Show name and group label (`user`, `admin`, `su`) |
 | `/console` | Web command grant | Open the Command view in this tab; does not add permissions |
 | `/sudo /command [arguments]` | Global `/sudo` and `x:command.sudo` grants | Execute one command with su authority while retaining the caller's identity |
@@ -111,8 +36,6 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/debug on\|off` | Metadata grant | Toggle expandable details for readable messages in this tab |
 | `/rename [user] new-name` | Own/any rename grant | Rename yourself, or an authorized target; preserve identity, history, sessions and read positions |
 | `/passwd old new` | Own-password grant | Change password and sign out other sessions |
-| `/rooms` | Accounts/stdin | List discoverable rooms with their owners, then your own readable private pairs; one entry per line. Other users' pairs are excluded even for su |
-| `/users` | Directory grant | List active accounts and groups |
 | `/members [room]` | Member-list grant | List authorized conversation participants |
 | `/history [count] [user\|@private:a:b]` | Read and command grants | Read retained history, default up to 50 |
 | `/join room` | Read/join grants | Open an authorized room; does not create membership |
@@ -121,45 +44,83 @@ refresh cannot overwrite a newer WebSocket snapshot.
 | `/react message-id reaction` | Read/reaction grants | Toggle a reaction on a message in the selected conversation |
 | `/retract message-id` | Read/retract grants | Retract own messages; su has permission to retract any message |
 | `/reply message-id message` | Read/write grants | Reply within the selected conversation |
-| `/new room` | Room-create grant | Create an invitation-only room with creator ownership/grants |
 | `/add user [room]` | Room-invite grant | Add participant with room user grants |
 | `/kick user [room]` | Room-remove grant | Remove participant and direct room grants |
-| `/delete room` | Room-delete grant | Delete room, history and scoped grants |
 | `/configs` | Configuration grant | Print active configuration; changes require restart |
 | `/clean age [scope]` | Scoped cleanup grants | Authorize every target before deleting old messages; units s/m/h/d/w |
 | `/clear` | Web command grant | Clear visible local history; refresh restores persisted history |
 | `/logout` | Web | Sign out |
-| `/user name password [admin\|user]` | Account-create grant | Create account; admin assignment needs its own permission |
 | `/reset name password` | Explicit password-reset grant | Reset password and revoke sessions; ordinary admins have no default reset grant |
 | `/disable name` | Account-disable grant | Disable, revoke sessions and remove room access |
 | `/enable name` | Account-enable grant | Enable without restoring room access |
-| `/deleteuser name` | Account-delete grant | Delete account and private pairs; retain room messages with deleted-author label |
 
-See [Security](security.md) for permission names, group bundles, scope syntax,
-read-only access, delegation limits, ownership and persistence.
+## Browser aliases
 
-`/deleteuser bob` permanently removes Bob's account and private conversations
-for both participants. Shared room messages and reply quotes remain, with their
-author labeled `bob (deleted)`. The username and user-limit slot become available
-again; a replacement account starts without old memberships, DMs, or read
-positions. Ordinary admins cannot delete themselves or the last active admin. `su` can
-manage any account, including other superusers; only `su` can manage a su account. Use `/disable`
-for a reversible account suspension.
+`/alias rooms /ls room` makes `/rooms` run `/ls room`. A accepts a command name
+with an optional leading slash; B accepts a command and subcommand. Repeating A
+replaces its mapping. Expansion happens once, preserves following arguments,
+and also works inside `/sudo`; it never adds server permissions. `/alias` and
+`/sudo` themselves cannot be remapped.
 
-There is no default room. Existing rooms are preserved, including rooms named
-`lobby`, which can be deleted like any other room. Rooms are invitation-only for regular users;
-owners and explicitly authorized room managers control membership. Ordinary
-admins cannot join someone else’s new private room automatically. Stdin is `su` and can manage
-all rooms; specify the room on stdin. Account command passwords, including both `/passwd` arguments, are masked in local output and never logged.
-`/clean 7d room-name` cleans one room; `/clean 24h @private` cleans private messages;
-`/clean 7d @all` cleans all rooms and private messages. Without a scope it uses
-the selected room, or all messages in Command and stdin. Cleanup keeps messages
-at or newer than the cutoff and reports the number removed. It preserves rooms,
-accounts, and memberships. Cleanup is manual and uses stored UTC timestamps.
-There is no runtime configuration setter: `/configs` shows the loaded settings,
-and editing `data/config.json` takes effect after restart.
-Ordinary web admins do not receive private
-messages between other users. Web accounts in `su` can inspect every private pair. `/tell` opens the private-message view in the UI.
-Names contain 1–32 Unicode characters, including Chinese, accents, combining marks and emoji. Whitespace, control characters and ASCII punctuation other than `_` and `-` are excluded to keep command, mention and conversation syntax unambiguous. Limits count Unicode characters rather than UTF-8 bytes.
+Mappings use localStorage, survive refresh, and are shared by accounts in the
+same browser profile. Settings → Alias lets you add, edit, or remove mappings.
+Storage failures are reported. Web `/rm` and `/retract`
+commands, including aliases and sudo, ask for confirmation before sending.
+Stdin removals execute directly. Old command syntax is unsupported; stored-grant
+updates are described in [Data](data.md).
 
-Settings opens the Account section by default, with username and password forms that execute `/rename` and `/passwd`. Appearance contains the existing theme, palette and font controls. `/rename new-name` changes your own username; `/rename user new-name` targets another account. Regular users and admins receive `w:account.rename.own`; renaming another account requires an explicit `x:account.rename.any` grant on the target, plus `/rename`. Only su can rename a su account.
+## Rooms, accounts and cleanup
+
+New rooms are invitation-only. Creation assigns ownership and grants; `/join`
+opens an authorized room without creating membership. There is no default room;
+existing rooms, including `lobby`, can be removed. Owners must transfer ownership
+before leaving or being kicked. Only su can manage a su account. Ordinary admins
+cannot delete themselves or the last active admin.
+
+`/rm user bob` removes Bob's account and private pairs for both participants.
+Room messages and reply quotes remain with author `bob (deleted)`. The name and
+user-limit slot become available; a replacement account inherits no old access,
+DMs, sessions or read positions. Use `/disable` for reversible suspension.
+Groups are fixed bundles; `/rm group` removes an assignment, not the bundle.
+
+`/clean 7d ROOM`, `/clean 24h @private`, and `/clean 7d @all` remove messages
+older than the specified UTC age (units s/m/h/d/w). Without a scope, cleanup uses
+the selected room, or all messages in Command/stdin. It preserves accounts,
+rooms and memberships. `/configs` shows active configuration; edit
+`data/config.json` while stopped and restart to apply changes. See
+[Security](security.md) for delegation, ownership and conditional cleanup grants.
+
+Names contain 1–32 Unicode characters, including Chinese, accents, combining
+marks and emoji. Whitespace, controls and ASCII punctuation other than `_` and
+`-` are excluded to keep command, mention and conversation syntax unambiguous.
+
+## Messages and settings
+
+Private conversations appear after exchanging messages. Start one with
+`/tell USER MESSAGE`; ordinary text in that private view sends to the peer.
+Opening a conversation loads retained history; snapshots carry the latest 50
+messages. `/history 200` prints more retained history as local output.
+
+Messages stay left-aligned, with local dates and times. Consecutive messages
+from the same sender group within five minutes; commands break the group.
+Unread badges count unread incoming messages. Opening a view starts at the first
+unread message; Jump to unread returns there while browsing. Only visible
+messages in a focused tab advance the read cursor, which syncs across devices.
+
+Hover actions (always shown on touch devices) provide reply, retract, and
+emoji/custom reactions. Replies quote a 160-character preview and jump to the
+original when loaded. Retracting clears retained reply previews; expiring a
+message preserves them. Reactions accept 1–128 Unicode characters without
+controls, with up to 32 reactions per message. `/debug on` shows expandable
+metadata only where permitted; it resets on refresh or permission revocation.
+
+`@USERNAME` mentions complete room members or the private peer; email addresses
+are excluded. The profile bell enables browser notifications for new mentions.
+Notifications require browser permission, work while the app is open, and omit
+refresh/history events, own messages, and the focused conversation. Clicking one
+opens its conversation; private previews appear only after opting in.
+
+Settings opens Account with `/rename` and `/passwd` forms. Appearance controls
+light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
+(12–18px); preferences stay in this browser. Reset restores defaults. Theme
+applies before rendering, and palette text contrast is at least 4.5:1.

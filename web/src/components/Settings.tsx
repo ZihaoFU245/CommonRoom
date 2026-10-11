@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { AliasSettings } from "./AliasSettings.tsx";
+import type { Aliases } from "../features/conversation/aliases.ts";
 import {
   errorMessage,
   type Acknowledgement,
@@ -61,6 +63,9 @@ export function Settings({
   state,
   pending,
   onAccountCommand,
+  aliases,
+  onSaveAlias,
+  onRemoveAlias,
   fonts,
   theme,
   seeds,
@@ -72,6 +77,9 @@ export function Settings({
   state: Snapshot;
   pending: boolean;
   onAccountCommand: (text: string) => Promise<Acknowledgement>;
+  aliases: Aliases;
+  onSaveAlias: (name: string, target: string) => void;
+  onRemoveAlias: (name: string) => void;
   fonts: Fonts;
   theme: Theme;
   seeds: Seeds;
@@ -80,7 +88,7 @@ export function Settings({
   onSeedsChange: (value: Seeds) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"account" | "appearance">("account");
+  const [tab, setTab] = useState<"account" | "appearance" | "alias">("account");
   const [name, setName] = useState(state.username);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -152,12 +160,25 @@ export function Settings({
           >
             Appearance
           </button>
+          <button
+            type="button"
+            aria-current={tab === "alias" ? "page" : undefined}
+            onClick={() => setTab("alias")}
+          >
+            Alias
+          </button>
         </nav>
         <section
           key={tab}
           class="settings-content"
           tabIndex={0}
-          aria-label={tab === "account" ? "Account" : "Appearance"}
+          aria-label={
+            tab === "account"
+              ? "Account"
+              : tab === "appearance"
+                ? "Appearance"
+                : "Alias"
+          }
         >
           {tab === "account" ? (
             <>
@@ -276,6 +297,12 @@ export function Settings({
                 </p>
               )}
             </>
+          ) : tab === "alias" ? (
+            <AliasSettings
+              aliases={aliases}
+              onSave={onSaveAlias}
+              onRemove={onRemoveAlias}
+            />
           ) : (
             <>
               <fieldset class="theme-setting">

@@ -1562,6 +1562,49 @@ button:focus-visible {
 .account-error {
   color: var(--danger);
 }
+.alias-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.alias-feedback {
+  margin: 0 0 16px;
+}
+.alias-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.alias-mapping {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.alias-mapping code {
+  overflow-wrap: anywhere;
+}
+.alias-actions {
+  display: flex;
+  gap: 8px;
+}
+.alias-actions button {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.alias-actions button:hover {
+  background: var(--wash);
+}
 .account-feedback,
 .account-error {
   overflow-wrap: anywhere;

@@ -4,7 +4,7 @@ fn engine() -> Engine {
     for (name, admin) in [("alice", true), ("bob", false), ("eve", false)] {
         e.provision(name, "test-hash".into(), admin, false).unwrap();
     }
-    e.execute(Some("alice"), None, "/new lobby").unwrap();
+    e.execute(Some("alice"), None, "/new room lobby").unwrap();
     e.execute(Some("alice"), None, "/add bob lobby").unwrap();
     e.execute(Some("alice"), None, "/add eve lobby").unwrap();
     e
@@ -17,8 +17,8 @@ fn cleanup_respects_age_scope_permissions_and_persistence() {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
         e.provision("bob", "hash".into(), false, false).unwrap();
-        e.execute(Some("alice"), None, "/new one").unwrap();
-        e.execute(Some("alice"), None, "/new two").unwrap();
+        e.execute(Some("alice"), None, "/new room one").unwrap();
+        e.execute(Some("alice"), None, "/new room two").unwrap();
         for room in ["one", "two"] {
             e.execute(Some("alice"), Some(room), "old").unwrap();
             e.data.rooms.get_mut(room).unwrap().messages[0].time = now() - 8 * 86400;
@@ -90,7 +90,7 @@ fn private_rings_are_independent_and_read_positions_persist() {
                 .unwrap();
         }
         e.set_limits(64, 64, 3).unwrap();
-        e.execute(Some("alice"), None, "/new room").unwrap();
+        e.execute(Some("alice"), None, "/new room room").unwrap();
         e.execute(Some("alice"), None, "/add bob room").unwrap();
         for n in 0..5 {
             e.execute(Some("alice"), None, &format!("/tell bob 私信 {n} 🙂"))
@@ -170,8 +170,8 @@ fn configurable_limits_preserve_existing_accounts_and_rooms() {
     e.provision("alice", "hash".into(), true, false).unwrap();
     e.provision("bob", "hash".into(), false, false).unwrap();
     assert!(e.provision("eve", "hash".into(), false, false).is_err());
-    e.execute(Some("alice"), None, "/new one").unwrap();
-    assert!(e.execute(None, None, "/new two").is_err());
+    e.execute(Some("alice"), None, "/new room one").unwrap();
+    assert!(e.execute(None, None, "/new room two").is_err());
     e.set_limits(1, 1, 1000).unwrap();
     e.provision("bob", "replacement".into(), false, true)
         .unwrap();
@@ -188,7 +188,8 @@ fn unicode_messages_round_trip_and_count_characters() {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
         e.provision("bob", "hash".into(), false, false).unwrap();
-        e.execute(Some("alice"), None, "/new languages").unwrap();
+        e.execute(Some("alice"), None, "/new room languages")
+            .unwrap();
         e.execute(Some("alice"), Some("languages"), sample).unwrap();
         e.execute(Some("alice"), None, &format!("/tell bob {sample}"))
             .unwrap();
@@ -231,18 +232,18 @@ fn new_accounts_have_no_rooms() {
     e.provision("bob", "hash".into(), false, false).unwrap();
     assert!(e.data.rooms.is_empty());
     assert!(e.snapshot("bob").unwrap().rooms.is_empty());
-    e.execute(Some("admin"), None, "/new lobby").unwrap();
+    e.execute(Some("admin"), None, "/new room lobby").unwrap();
     e.provision("alice", "hash".into(), false, false).unwrap();
     assert!(e.snapshot("alice").unwrap().rooms.is_empty());
     assert!(e.execute(Some("admin"), None, "/disable admin").is_err());
-    e.execute(Some("admin"), None, "/delete lobby").unwrap();
+    e.execute(Some("admin"), None, "/rm room lobby").unwrap();
     assert!(e.data.rooms.is_empty());
 }
 #[test]
 fn permissions_and_private_delivery() {
     let mut e = engine();
-    assert!(e.execute(Some("bob"), None, "/new secret").is_err());
-    e.execute(Some("alice"), None, "/new secret").unwrap();
+    assert!(e.execute(Some("bob"), None, "/new room secret").is_err());
+    e.execute(Some("alice"), None, "/new room secret").unwrap();
     assert!(e.execute(Some("bob"), None, "/join secret").is_err());
     e.execute(Some("alice"), None, "/add bob secret").unwrap();
     e.execute(Some("bob"), Some("secret"), "hello").unwrap();
@@ -272,7 +273,7 @@ fn persists_accounts_and_history() {
     {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
-        e.execute(Some("alice"), None, "/new lobby").unwrap();
+        e.execute(Some("alice"), None, "/new room lobby").unwrap();
         e.execute(Some("alice"), Some("lobby"), "retained").unwrap();
     }
     let e = Engine::open(&path).unwrap();
@@ -300,8 +301,8 @@ fn room_ring_keeps_newest_messages_across_restart_and_limit_changes() {
     {
         let mut e = Engine::open(&path).unwrap();
         e.set_limits(64, 64, 3).unwrap();
-        e.execute(None, None, "/new one").unwrap();
-        e.execute(None, None, "/new two").unwrap();
+        e.execute(None, None, "/new room one").unwrap();
+        e.execute(None, None, "/new room two").unwrap();
         e.execute(None, Some("two"), "independent").unwrap();
         for n in 0..10 {
             e.execute(None, Some("one"), &format!("消息 {n} 🙂"))
@@ -425,7 +426,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     assert_eq!(reply.reply.as_ref().unwrap().text, original.text);
     assert_eq!(reply.mentions, BTreeSet::from(["alice".into()]));
     assert!(e.execute(Some("bob"), Some("lobby"), &react).is_err());
-    e.execute(Some("alice"), None, "/new secret").unwrap();
+    e.execute(Some("alice"), None, "/new room secret").unwrap();
     e.execute(Some("alice"), Some("secret"), "private-room")
         .unwrap();
     let id = e.data.rooms["secret"].messages[0].id.clone();
@@ -471,7 +472,7 @@ fn message_features_persist_and_rollback() {
     {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
-        e.execute(Some("alice"), None, "/new room").unwrap();
+        e.execute(Some("alice"), None, "/new room room").unwrap();
         e.execute(Some("alice"), Some("room"), "@alice 中文")
             .unwrap();
         let id = e.data.rooms["room"].messages[0].id.clone();
@@ -521,7 +522,7 @@ fn moving_folder_preserves_sessions_and_permissions() {
         e.provision("alice", "hash".into(), true, false).unwrap();
         e.login("session-token".into(), "alice", "hash", None)
             .unwrap();
-        e.execute(Some("alice"), None, "/new team").unwrap();
+        e.execute(Some("alice"), None, "/new room team").unwrap();
         e.execute(Some("alice"), Some("team"), "before migration")
             .unwrap();
         e.checkpoint().unwrap();
@@ -554,19 +555,19 @@ fn rejects_two_servers_and_unknown_schema() {
 fn failed_storage_rolls_back_changes() {
     let mut e = engine();
     e.db.execute_batch("DROP TABLE state;").unwrap();
-    assert!(e.execute(Some("alice"), None, "/new lost").is_err());
+    assert!(e.execute(Some("alice"), None, "/new room lost").is_err());
     assert!(!e.data.rooms.contains_key("lost"));
 }
 #[test]
 fn delete_user_checks_permissions_and_cleans_references() {
     let mut e = engine();
     for (actor, command) in [
-        (Some("bob"), "/deleteuser eve"),
-        (Some("missing"), "/deleteuser bob"),
-        (Some("alice"), "/deleteuser alice"),
-        (Some("alice"), "/deleteuser nobody"),
-        (Some("alice"), "/deleteuser"),
-        (None, "/deleteuser bob extra"),
+        (Some("bob"), "/rm user eve"),
+        (Some("missing"), "/rm user bob"),
+        (Some("alice"), "/rm user alice"),
+        (Some("alice"), "/rm user nobody"),
+        (Some("alice"), "/rm user"),
+        (None, "/rm user bob extra"),
     ] {
         let before = e.data.clone();
         assert!(e.execute(actor, None, command).is_err());
@@ -575,12 +576,12 @@ fn delete_user_checks_permissions_and_cleans_references() {
     assert!(
         !e.execute(Some("bob"), None, "/help")
             .unwrap()
-            .contains("/deleteuser")
+            .contains("/rm user")
     );
     assert!(
         e.execute(Some("alice"), None, "/help")
             .unwrap()
-            .contains("/deleteuser user")
+            .contains("/rm user name")
     );
     e.execute(Some("bob"), Some("lobby"), "old room message")
         .unwrap();
@@ -616,7 +617,7 @@ fn delete_user_checks_permissions_and_cleans_references() {
     let dm = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
     e.mark_read("bob", "@direct:alice", dm).unwrap();
     e.mark_read("alice", "@direct:bob", dm).unwrap();
-    e.execute(Some("alice"), None, "/deleteuser bob").unwrap();
+    e.execute(Some("alice"), None, "/rm user bob").unwrap();
     assert!(!e.data.users.contains_key("bob"));
     assert!(e.session("bob-one").is_none() && e.session("bob-two").is_none());
     assert_eq!(e.session("alice-session").as_deref(), Some("alice"));
@@ -662,9 +663,9 @@ fn delete_user_persists_and_stdin_can_replace_the_last_admin() {
         e.provision("bob", "hash".into(), false, false).unwrap();
         assert!(e.provision("eve", "hash".into(), false, false).is_err());
         e.execute(None, None, "/disable bob").unwrap();
-        e.execute(Some("alice"), None, "/deleteuser bob").unwrap();
+        e.execute(Some("alice"), None, "/rm user bob").unwrap();
         e.provision("eve", "hash".into(), false, false).unwrap();
-        e.execute(None, None, "/deleteuser alice").unwrap();
+        e.execute(None, None, "/rm user alice").unwrap();
         e.provision("alice", "replacement".into(), true, false)
             .unwrap();
     }
@@ -689,7 +690,7 @@ fn delete_user_rolls_back_database_and_cache_on_cleanup_failure() {
         e.db.query_row("SELECT json FROM state", [], |r| r.get(0))
             .unwrap();
     e.db.execute_batch("CREATE TRIGGER fail_cleanup BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'test cleanup failure'); END;").unwrap();
-    assert!(e.execute(Some("alice"), None, "/deleteuser bob").is_err());
+    assert!(e.execute(Some("alice"), None, "/rm user bob").is_err());
     assert!(e.data == before);
     assert_eq!(e.read_positions, positions);
     assert_eq!(e.revision, revision);
@@ -701,7 +702,7 @@ fn delete_user_rolls_back_database_and_cache_on_cleanup_failure() {
     );
     assert_eq!(e.db.query_row::<u64,_,_>("SELECT sequence FROM read_positions WHERE username='bob' AND conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),through);
     e.db.execute_batch("DROP TRIGGER fail_cleanup;").unwrap();
-    e.execute(Some("alice"), None, "/deleteuser bob").unwrap();
+    e.execute(Some("alice"), None, "/rm user bob").unwrap();
     assert!(e.session("bob-token").is_none());
 }
 #[test]
@@ -731,9 +732,9 @@ fn role_commands_are_authorized_and_not_chat_messages() {
             .unwrap()
             .contains("Permission: admin")
     );
-    e.execute(Some("bob"), None, "/new promoted").unwrap();
+    e.execute(Some("bob"), None, "/new room promoted").unwrap();
     e.execute(Some("alice"), None, "/revoke bob").unwrap();
-    assert!(e.execute(Some("bob"), None, "/new denied").is_err());
+    assert!(e.execute(Some("bob"), None, "/new room denied").is_err());
     assert!(e.data.rooms["lobby"].messages.is_empty());
     assert!(e.execute(Some("alice"), None, "/grant missing").is_err());
 }
@@ -763,7 +764,7 @@ fn history_tail_members_and_account_recovery() {
             .unwrap()
             .contains("alice — admin")
     );
-    e.execute(Some("alice"), None, "/new private").unwrap();
+    e.execute(Some("alice"), None, "/new room private").unwrap();
     assert!(e.execute(Some("bob"), Some("private"), "/history").is_err());
     assert!(
         e.execute(Some("bob"), Some("lobby"), "/members private")
@@ -853,7 +854,7 @@ fn retract_persists_and_failed_writes_restore_message_and_quotes() {
         let mut e = Engine::open(&path).unwrap();
         e.provision("alice", "hash".into(), true, false).unwrap();
         e.provision("bob", "hash".into(), false, false).unwrap();
-        e.execute(Some("alice"), None, "/new room").unwrap();
+        e.execute(Some("alice"), None, "/new room room").unwrap();
         for room in [Some("room"), None] {
             e.execute(
                 Some("alice"),
@@ -1009,6 +1010,123 @@ fn old_and_unversioned_databases_are_rejected_without_modification() {
             )
             .unwrap(),
             1
+        );
+    }
+}
+
+#[test]
+fn command_family_upgrade_preserves_v5_state_and_runs_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut before;
+    let mut expected;
+    let read_positions;
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.provision("bob", "hash".into(), false, false).unwrap();
+        e.execute(Some("alice"), None, "/new room team").unwrap();
+        e.execute(Some("alice"), None, "/add bob team").unwrap();
+        e.execute(Some("alice"), Some("team"), "retained history")
+            .unwrap();
+        e.login("session".into(), "bob", "hash", None).unwrap();
+        let sequence = e.data.rooms["team"].messages[0].sequence;
+        e.mark_read("bob", "team", sequence).unwrap();
+        read_positions = e.read_positions.clone();
+        expected = e.data.clone();
+        before = e.data.clone();
+        // Model an existing v5 database, including the old owner command bundle.
+        for grant in &mut before.policy.grants {
+            if grant.permissions.remove("/rm") {
+                grant.permissions.insert("/delete".into());
+            }
+        }
+        before.policy.grants.push(authorization::Grant {
+            owner: false,
+            subject: authorization::Subject::Account(before.users["alice"].id.clone()),
+            scope: authorization::Scope::Server,
+            permissions: ["/deleteuser", "/user", "/rooms", "/users", "/ls"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            minimum_age: 0,
+        });
+        e.db.execute(
+            "UPDATE state SET json=?1 WHERE id=1",
+            params![serde_json::to_string(&before).unwrap()],
+        )
+        .unwrap();
+    }
+    let mut account_grant = before.policy.grants.last().unwrap().clone();
+    account_grant.permissions = ["/new", "/rm", "/ls"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    expected.policy.grants.push(account_grant);
+    expected.policy.revision = expected.policy.revision.wrapping_add(1);
+    {
+        let mut e = Engine::open(&path).unwrap();
+        assert!(e.data == expected);
+        assert_eq!(e.read_positions, read_positions);
+        assert_eq!(e.session("session").as_deref(), Some("bob"));
+        assert!(
+            e.require_command(Some("alice"), Some("team"), "/rm")
+                .is_ok()
+        );
+        assert!(
+            e.execute(Some("alice"), Some("team"), "/delete team")
+                .is_err()
+        );
+        let stored: String =
+            e.db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
+                .unwrap();
+        assert!(serde_json::from_str::<Data>(&stored).unwrap() == expected);
+    }
+    let e = Engine::open(&path).unwrap();
+    assert!(e.data == expected);
+    assert_eq!(e.revision, 0);
+}
+
+#[test]
+fn command_family_upgrade_leaves_database_intact_on_validation_or_write_failure() {
+    for invalid in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let original;
+        {
+            let e = Engine::open(&path).unwrap();
+            let mut data = e.data.clone();
+            data.policy.grants.push(authorization::Grant {
+                owner: false,
+                subject: authorization::Subject::Account("console".into()),
+                scope: authorization::Scope::Server,
+                permissions: if invalid {
+                    ["/delete", "/unknown"]
+                        .into_iter()
+                        .map(String::from)
+                        .collect()
+                } else {
+                    BTreeSet::from(["/delete".into()])
+                },
+                minimum_age: 0,
+            });
+            original = serde_json::to_string(&data).unwrap();
+            e.db.execute("UPDATE state SET json=?1 WHERE id=1", params![original])
+                .unwrap();
+            if !invalid {
+                e.db.execute_batch("CREATE TRIGGER fail_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'test upgrade failure'); END;").unwrap();
+            }
+        }
+        assert!(Engine::open(&path).is_err());
+        let db = Connection::open(&path).unwrap();
+        let stored: String = db
+            .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, original);
+        assert_eq!(
+            db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap(),
+            5
         );
     }
 }

@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "preact/hooks";
 
 export function DeleteConfirmation({
+  kind,
   onCancel,
   onConfirm,
 }: {
+  kind: "message" | "resource";
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -19,17 +21,16 @@ export function DeleteConfirmation({
       aria-describedby="delete-description"
       onCancel={onCancel}
     >
-      <h2 id="delete-title">Delete message?</h2>
-      <p id="delete-description">
-        This deletes the message for everyone in the conversation and removes
-        its reply previews. This cannot be undone.
-      </p>
+      <h2 id="delete-title">
+        {kind === "resource" ? "Confirm removal?" : "Delete message?"}
+      </h2>
+      <p id="delete-description">This action can’t be undone.</p>
       <div class="delete-confirmation-actions">
         <button type="button" autoFocus onClick={onCancel}>
           Cancel
         </button>
         <button type="button" class="confirm-delete" onClick={onConfirm}>
-          Delete message
+          {kind === "resource" ? "Remove" : "Delete message"}
         </button>
       </div>
     </dialog>

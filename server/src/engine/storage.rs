@@ -58,7 +58,27 @@ impl Engine {
         let raw: String = db
             .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        let data: Data = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let mut data: Data = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        // Upgrade persisted command grants once; dispatch accepts only the new syntax.
+        // This changes names within v5, not the schema or action permissions.
+        let mut upgraded = false;
+        for grant in &mut data.policy.grants {
+            for (old, new) in [
+                ("/delete", "/rm"),
+                ("/deleteuser", "/rm"),
+                ("/user", "/new"),
+                ("/rooms", "/ls"),
+                ("/users", "/ls"),
+            ] {
+                if grant.permissions.remove(old) {
+                    grant.permissions.insert(new.into());
+                    upgraded = true;
+                }
+            }
+        }
+        if upgraded {
+            data.policy.revision = data.policy.revision.wrapping_add(1);
+        }
         let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         {
             let mut query = db
@@ -82,7 +102,7 @@ impl Engine {
             }
         }
         let authorization = super::authorization::CompiledPolicy::compile(&data)?;
-        Ok(Self {
+        let mut engine = Self {
             authorization,
             online_connections: BTreeMap::new(),
             data,
@@ -93,7 +113,13 @@ impl Engine {
             max_messages: 1000,
             db,
             _lock: lock,
-        })
+        };
+        // Validate the complete policy before writing. A failed atomic state write
+        // leaves the original database intact and prevents startup.
+        if upgraded {
+            engine.save()?;
+        }
+        Ok(engine)
     }
     pub fn set_limits(
         &mut self,

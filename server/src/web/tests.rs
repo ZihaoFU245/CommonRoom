@@ -219,7 +219,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         ("/sudo /configs", false),
         ("/sudo /reset target long-sudo-password", true),
         ("/sudo /enable target", true),
-        ("/sudo /user created long-created-password admin", true),
+        ("/sudo /new user created long-created-password admin", true),
         ("/sudo /clear", false),
         ("/sudo /logout", false),
     ] {
@@ -319,7 +319,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             ready.await.unwrap();
             let job_app = app.clone();
             let text = if case == "creation" {
-                "/user created long-fixture-password user"
+                "/new user created long-fixture-password user"
             } else if case.starts_with("sudo-") {
                 "/sudo /reset target long-fixture-password"
             } else {
@@ -376,7 +376,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                         e.execute(None, None, "/disable target").unwrap();
                     }
                     "target-replaced" | "sudo-target-replaced" => {
-                        e.execute(None, None, "/deleteuser target").unwrap();
+                        e.execute(None, None, "/rm user target").unwrap();
                         e.provision("target", "replacement-hash".into(), false, false)
                             .unwrap();
                         // Regrant on the replacement to ensure rejection checks identity as well as rights.

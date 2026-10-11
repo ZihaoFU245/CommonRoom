@@ -107,7 +107,7 @@ export function privateMessages(
         (message.from === peer && message.to === self),
   );
 }
-export function redactCommand(text: string) {
+export function redactCommand(text: string): string {
   let prefix = "";
   let sudo = text.match(/^\/sudo\s+/u)?.[0];
   while (sudo) {
@@ -115,8 +115,17 @@ export function redactCommand(text: string) {
     text = text.slice(sudo.length);
     sudo = text.match(/^\/sudo\s+/u)?.[0];
   }
+  const alias = text.match(/^(\/alias\s+\S+\s+)(.+)$/u);
+  if (alias?.[1] && alias[2])
+    return (
+      prefix +
+      alias[1] +
+      redactCommand(alias[2].startsWith("/") ? alias[2] : `/${alias[2]}`)
+    );
   if (/^\/passwd(?:\s|$)/.test(text)) return prefix + "/passwd •••• ••••";
-  return prefix + text.replace(/^(\/(?:user|reset)\s+\S+\s+)\S+/, "$1••••");
+  return (
+    prefix + text.replace(/^(\/(?:new\s+user|reset)\s+\S+\s+)\S+/, "$1••••")
+  );
 }
 export function commandText(text: string) {
   return text.trim().replace(/^\/sudo\s+/u, "");
@@ -198,6 +207,20 @@ export function suggestions(
       ];
   }
   let values: string[] = [];
+  if (["/new", "/rm", "/ls"].includes(name) && position === 1)
+    values =
+      name === "/new"
+        ? ["room", "user"]
+        : name === "/rm"
+          ? ["room", "user", "group"]
+          : ["room", "user", "group", "@user", "@admin", "@su"];
+  if (name === "/new" && parts[1] === "user" && position === 4)
+    values = ["user", "admin"];
+  if (name === "/rm" && position === 2)
+    values = parts[1] === "room" ? rooms : users;
+  if (name === "/rm" && parts[1] === "group" && position === 3)
+    values = ["user", "admin", "su"];
+  if (name === "/rm" && parts[1] === "group" && position === 4) values = rooms;
   if (
     [
       "/tell",
@@ -209,15 +232,11 @@ export function suggestions(
       "/reset",
       "/disable",
       "/enable",
-      "/deleteuser",
     ].includes(name) &&
     position === 1
   )
     values = users;
-  if (
-    ["/join", "/leave", "/delete", "/members"].includes(name) &&
-    position === 1
-  )
+  if (["/join", "/leave", "/members"].includes(name) && position === 1)
     values = rooms;
   if (["/add", "/kick"].includes(name) && position === 2) values = rooms;
   if (["/grant", "/revoke"].includes(name) && position === 2)
@@ -247,6 +266,7 @@ export function suggestions(
         "groups",
         "scopes",
         "ownership",
+        "alias",
         ...commands.map((command) => command.name.slice(1)),
       ]),
     ];

@@ -23,6 +23,7 @@ pub(super) async fn execute_input(
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
     let parts: Vec<_> = text.split_whitespace().collect();
+    let provision = crate::commands::provision_command(&parts)?;
     if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
         return app.engine()?.with_command_authority(
             Some(user),
@@ -49,7 +50,7 @@ pub(super) async fn execute_input(
         });
     }
     let passwd = parts.first() == Some(&"/passwd");
-    if !passwd && !matches!(parts.first(), Some(&"/user") | Some(&"/reset")) {
+    if !passwd && provision.is_none() {
         let mut engine = app.engine()?;
         if token(headers)
             .and_then(|token| engine.session(token))
@@ -62,26 +63,16 @@ pub(super) async fn execute_input(
         let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
         return Ok((reply, engine.revision != before));
     }
-    let reset = parts[0] == "/reset";
-    if input.text.len() > 4000
-        || ((reset || passwd) && parts.len() != 3)
-        || (!reset && !passwd && !(3..=4).contains(&parts.len()))
-    {
-        return Err(if passwd {
-            "Usage: /passwd old new"
-        } else {
-            "Usage: /user name password [admin|user] or /reset name password"
-        }
-        .into());
+    if passwd && parts.len() != 3 {
+        return Err("Usage: /passwd old new".into());
     }
-    if !passwd
-        && !reset
-        && parts
-            .get(3)
-            .is_some_and(|role| !["admin", "user"].contains(role))
-    {
-        return Err("Role must be admin or user.".into());
+    if input.text.len() > 4000 {
+        return Err("Password commands support at most 4000 bytes.".into());
     }
+    let reset = provision.is_some_and(|account| account.reset);
+    let admin = provision.is_some_and(|account| account.admin);
+    let name = provision.map_or(parts[1], |account| account.name);
+    let password = provision.map_or(parts[2], |account| account.password);
     let target_id = {
         let mut engine = app.engine()?;
         engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
@@ -91,13 +82,13 @@ pub(super) async fn execute_input(
                 engine.require_target_command(Some(user), &scope, parts[0])?;
                 Ok(None)
             } else if reset {
-                let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
+                let scope = engine.account_target(Some(user), name, Action::Reset)?;
                 engine.require_target_command(Some(user), &scope, parts[0])?;
                 Ok(Some(
                     engine
                         .data
                         .users
-                        .get(parts[1])
+                        .get(name)
                         .ok_or("User not found.")?
                         .id
                         .clone(),
@@ -105,7 +96,7 @@ pub(super) async fn execute_input(
             } else {
                 engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
                 engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
-                if parts.get(3) == Some(&"admin") {
+                if admin {
                     engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
                 }
                 Ok(None)
@@ -126,8 +117,8 @@ pub(super) async fn execute_input(
     } else {
         None
     };
-    let old = parts[1].to_owned();
-    let password = parts[2].to_owned();
+    let old = name.to_owned();
+    let password = password.to_owned();
     let expected_job = expected.clone();
     let permit = app
         .password_jobs
@@ -167,26 +158,20 @@ pub(super) async fn execute_input(
         // Recheck the command, action and target identity after hashing.
         engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
         if reset {
-            let scope = engine.account_target(Some(user), parts[1], Action::Reset)?;
+            let scope = engine.account_target(Some(user), name, Action::Reset)?;
             engine.require_target_command(Some(user), &scope, parts[0])?;
-            if engine.data.users.get(parts[1]).map(|u| &u.id) != target_id.as_ref() {
+            if engine.data.users.get(name).map(|u| &u.id) != target_id.as_ref() {
                 return Err("Account changed. Try again.".into());
             }
         } else {
             engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
             engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
-            if parts.get(3) == Some(&"admin") {
+            if admin {
                 engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
             }
         }
         engine
-            .provision_by(
-                Some(user),
-                parts[1],
-                hash,
-                parts.get(3) == Some(&"admin"),
-                reset,
-            )
+            .provision_by(Some(user), name, hash, admin, reset)
             .map(|text| (text, true))
     })
 }

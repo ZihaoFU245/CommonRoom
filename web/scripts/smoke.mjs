@@ -188,7 +188,7 @@ try {
     ["bob", "user"],
     ["eve", "user"],
   ]) {
-    child.stdin.write(`/user ${name} ${name}-long-password ${role}\n`);
+    child.stdin.write(`/new user ${name} ${name}-long-password ${role}\n`);
     await until(
       () => logs.includes(`Account ${name} created.`),
       `provision ${name}`,
@@ -348,13 +348,13 @@ try {
     [],
     "unmessaged accounts are not private contacts",
   );
-  await send(bob, "/user denied abc", null, "error");
+  await send(bob, "/new user denied abc", null, "error");
   await send(bob, "/reset alice abc", null, "error");
   await send(bob, "/disable alice", null, "error");
   await send(bob, "/enable alice", null, "error");
-  await send(alice, "/user carol abc", null);
-  await send(alice, "/user dave abc", null, "error");
-  child.stdin.write("/user dave abc\n");
+  await send(alice, "/new user carol abc", null);
+  await send(alice, "/new user dave abc", null, "error");
+  child.stdin.write("/new user dave abc\n");
   await until(
     () => logs.includes("User limit reached (4)."),
     "stdin user limit",
@@ -404,10 +404,10 @@ try {
     0,
     "commands must not enter persisted chat history",
   );
-  await send(bob, "/new forbidden", null, "error");
-  await send(alice, "/new study");
-  await send(alice, "/new overflow", null, "error");
-  child.stdin.write("/new overflow\n");
+  await send(bob, "/new room forbidden", null, "error");
+  await send(alice, "/new room study");
+  await send(alice, "/new room overflow", null, "error");
+  child.stdin.write("/new room overflow\n");
   await until(
     () => logs.includes("Room limit reached (1)."),
     "stdin room limit",
@@ -738,7 +738,7 @@ try {
   await start(devices);
   for (const name of ["alice", "bob", "eve"]) {
     child.stdin.write(
-      `/user ${name} ${name}-long-password ${name === "alice" ? "admin" : "user"}\n`,
+      `/new user ${name} ${name}-long-password ${name === "alice" ? "admin" : "user"}\n`,
     );
     await until(
       () => logs.includes(`Account ${name} created.`),
@@ -748,7 +748,7 @@ try {
   const deviceCookie = await login("alice");
   const deviceOne = await connect(deviceCookie);
   for (const name of ["empty", "quiet", "active"])
-    await send(deviceOne, `/new ${name}`, null);
+    await send(deviceOne, `/new room ${name}`, null);
   await send(deviceOne, "/tell bob older conversation", null);
   // Busy Eve history must not evict Bob or his separate snapshot tail.
   for (let i = 0; i < 55; i++) {
@@ -793,7 +793,7 @@ try {
   assertDirectory(await (await request("me", secondCookie)).json());
   const deviceTwo = await connect(secondCookie);
   assertDirectory(deviceTwo.snapshot);
-  await send(deviceOne, "/new added_elsewhere", null);
+  await send(deviceOne, "/new room added_elsewhere", null);
   await until(
     () =>
       deviceTwo.snapshot.rooms.some((room) => room.name === "added_elsewhere"),
@@ -812,8 +812,8 @@ try {
   const bobSecondCookie = await login("bob");
   const bobDevice = await connect(bobCookie);
   const bobSecondDevice = await connect(bobSecondCookie);
-  await send(eveDevice, "/deleteuser bob", null, "error");
-  await send(deviceOne, "/deleteuser alice", null, "error");
+  await send(eveDevice, "/rm user bob", null, "error");
+  await send(deviceOne, "/rm user alice", null, "error");
   await send(deviceOne, "/add bob active", null);
   await send(bobDevice, "preserved after deletion", "active");
   await until(
@@ -827,7 +827,7 @@ try {
   await send(deviceOne, `/reply ${originalId} @bob preserved reply`, "active");
   await send(bobDevice, `/react ${originalId} 👍`, "active");
   await send(deviceOne, "/tell bob private before deletion", null);
-  await send(deviceOne, "/deleteuser bob", null);
+  await send(deviceOne, "/rm user bob", null);
   await until(
     () =>
       bobDevice.ws.readyState === WebSocket.CLOSED &&
@@ -855,7 +855,7 @@ try {
     (await request("history?view=%40direct%3Abob", deviceCookie)).status,
     403,
   );
-  await send(deviceOne, "/user bob fresh-password", null);
+  await send(deviceOne, "/new user bob fresh-password", null);
   const freshBobCookie = await login("bob", "fresh-password");
   const freshBob = await connect(freshBobCookie);
   assert.deepEqual(freshBob.snapshot.rooms, []);
@@ -867,7 +867,7 @@ try {
     "replacement user's fresh private history",
   );
   assert.equal(freshBob.snapshot.direct[0].text, "fresh private");
-  child.stdin.write("/deleteuser eve\n");
+  child.stdin.write("/rm user eve\n");
   await until(
     () => logs.includes("Deleted account eve"),
     "stdin account deletion",
@@ -903,7 +903,7 @@ try {
     ["reader", "user"],
     ["other", "admin"],
   ]) {
-    child.stdin.write(`/user ${name} ${name}-long-password ${role}\n`);
+    child.stdin.write(`/new user ${name} ${name}-long-password ${role}\n`);
     await until(
       () => logs.includes(`Account ${name} created.`),
       `trust account ${name}`,
@@ -924,7 +924,7 @@ try {
       readerClient.snapshot.commands.some((command) => command.name === "/new"),
     "user receives room creation grants",
   );
-  await send(readerClient, "/new delegated", null);
+  await send(readerClient, "/new room delegated", null);
   await send(readerClient, "/grant owner delegated /add", "delegated");
   await send(ownerClient, "/add other delegated", null, "error");
   await send(readerClient, "/grant owner delegated x:member.add", "delegated");
@@ -940,8 +940,8 @@ try {
   await send(ownerClient, "/add other", "delegated", "error");
   await send(readerClient, "/revoke owner delegated /add", "delegated");
   await send(ownerClient, "/add other", "delegated", "error");
-  await send(readerClient, "/delete delegated", "delegated");
-  await send(ownerClient, "/new owned", null);
+  await send(readerClient, "/rm room delegated", "delegated");
+  await send(ownerClient, "/new room owned", null);
   await send(ownerClient, "private room text", "owned");
   await send(otherClient, "/join owned", null, "error");
   assert.equal((await request("history?view=owned", otherCookie)).status, 403);
@@ -1032,7 +1032,7 @@ try {
     });
     assert.equal(response.status, 404, "server must not serve UI assets");
   }
-  child.stdin.write("/user alice alice-long-password admin\n");
+  child.stdin.write("/new user alice alice-long-password admin\n");
   await until(
     () => logs.includes("Account alice created."),
     "production account provisioning",
@@ -1046,7 +1046,7 @@ try {
   assert.match(secureLogin.headers.get("set-cookie"), /Path=\/commonroom\//);
   const secureCookie = secureLogin.headers.get("set-cookie").split(";")[0];
   const secureClient = await connect(secureCookie);
-  await send(secureClient, "/new production", null);
+  await send(secureClient, "/new room production", null);
   await send(secureClient, "production websocket works", "production");
   assert.equal(
     (await request("logout", secureCookie, {}, "https://evil.example")).status,

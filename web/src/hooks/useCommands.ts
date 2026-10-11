@@ -17,6 +17,16 @@ import {
 } from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
 import type { ValueRef } from "./refs.ts";
+import {
+  loadAliases,
+  saveAlias,
+  expandAlias,
+  browserCommands,
+  aliasHelp,
+  aliasManual,
+  setAlias,
+  removeAlias,
+} from "../features/conversation/aliases.ts";
 interface Context {
   selected: string;
   direct: boolean;
@@ -56,16 +66,24 @@ export function useCommands({
   clearView,
   logout,
 }: Context) {
+  const [aliases, setAliases] = useState(loadAliases);
+  function saveAliasMapping(name: string, target: string) {
+    setAliases(setAlias(aliases, name, target));
+  }
+  function removeAliasMapping(name: string) {
+    setAliases(removeAlias(aliases, name));
+  }
   const permissions =
     room?.permissions ??
     state.private_access[selected]?.permissions ??
     (direct ? state.private_permissions : state.permissions);
-  const availableCommands =
+  const serverCommands =
     room?.commands ??
     state.private_access[selected]?.commands ??
     (direct ? state.private_commands : state.commands);
+  const availableCommands = browserCommands(serverCommands, aliases);
   const canExecute = (name: string) =>
-    availableCommands.some((command) => command.name === name);
+    serverCommands.some((command) => command.name === name);
   const canDebug = permissions.includes("r:message.metadata");
   const [debug, setDebug] = useState(false);
   useEffect(() => {
@@ -109,15 +127,20 @@ export function useCommands({
   useEffect(() => {
     setReplyTarget(null);
   }, [selected]);
-  const [deleteConfirmation, setDeleteConfirmation] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<
+    "message" | "resource" | null
+  >(null);
   const deleteAction = useRef<(() => void) | null>(null);
-  function requestDelete(action: () => void) {
+  function requestDelete(
+    action: () => void,
+    kind: "message" | "resource" = "message",
+  ) {
     deleteAction.current = action;
-    setDeleteConfirmation(true);
+    setDeleteConfirmation(kind);
   }
   function cancelDelete() {
     deleteAction.current = null;
-    setDeleteConfirmation(false);
+    setDeleteConfirmation(null);
   }
   function confirmDelete() {
     const action = deleteAction.current;
@@ -170,8 +193,12 @@ export function useCommands({
       ? []
       : (draft.startsWith("/")
           ? suggestions(
-              draft,
-              availableCommands,
+              /\s/u.test(draft) && !draft.startsWith("/alias ")
+                ? expandAlias(draft, aliases)
+                : draft,
+              /\s/u.test(draft) && !draft.startsWith("/alias ")
+                ? serverCommands
+                : availableCommands,
               state.users,
               state.available_rooms || state.rooms.map((r) => r.name),
             )
@@ -196,8 +223,22 @@ export function useCommands({
   }
   function send(event: Event, confirmed = false) {
     event.preventDefault();
-    const text = draft.trim();
+    const text = expandAlias(draft.trim(), aliases);
     if (!text || pending) return;
+    if (text.split(/\s+/u)[0] === "/alias") {
+      try {
+        setAliases(saveAlias(aliases, text));
+        append(text, "Alias saved in this browser.");
+        setDraft("");
+      } catch (error: unknown) {
+        append(
+          text,
+          error instanceof Error ? error.message : "Alias could not be saved.",
+          true,
+        );
+      }
+      return;
+    }
     if (!text.startsWith("/") && Array.from(text).length > 4000) {
       append(text, "Messages support at most 4000 characters.", true);
       return;
@@ -221,6 +262,11 @@ export function useCommands({
       setDraft("");
       return;
     }
+    if (/^\/man\s+\/?alias$/u.test(text)) {
+      append(text, aliasManual);
+      setDraft("");
+      return;
+    }
     if (text === "/logout") {
       logout();
       return;
@@ -237,8 +283,14 @@ export function useCommands({
       append(text, "Use a command or select a room to send a message.", true);
       return;
     }
-    if (commandText(text).split(/\s+/u)[0] === "/retract" && !confirmed)
-      return requestDelete(() => send(event, true));
+    if (
+      ["/retract", "/rm"].includes(commandText(text).split(/\s+/u)[0] ?? "") &&
+      !confirmed
+    )
+      return requestDelete(
+        () => send(event, true),
+        commandText(text).split(/\s+/u)[0] === "/rm" ? "resource" : "message",
+      );
     const id = ++serial.current;
     request.current = {
       id,
@@ -250,7 +302,7 @@ export function useCommands({
     setPending(true);
     setHintDismissed(true);
     let wireText =
-      peer && !text.startsWith("/") ? `/tell ${peer} ${text}` : draft;
+      peer && !text.startsWith("/") ? `/tell ${peer} ${text}` : text;
     if (replyTarget && !text.startsWith("/"))
       wireText = `/reply ${replyTarget.id} ${draft}`;
     if (peer && /^\/history(?:\s+\d+)?$/.test(text))
@@ -301,12 +353,23 @@ export function useCommands({
       resolve(data);
       return;
     }
-    if (current.key) complete(current.key, data.text || "Done.", error);
-    else if (error) append(current.text, data.text, true, current.room);
+    if (current.key) {
+      const localHelp =
+        !error && commandText(current.text) === "/help"
+          ? `\n\n${aliasHelp(aliases)}`
+          : "";
+      complete(current.key, (data.text || "Done.") + localHelp, error);
+    } else if (error) append(current.text, data.text, true, current.room);
     if (!error && !current.action) {
       setDraft("");
       if (current.reply) setReplyTarget(null);
-      const [command, target] = commandText(current.text).split(/\s+/u);
+      const [command, argument, name] = commandText(current.text).split(/\s+/u);
+      const target =
+        command === "/new"
+          ? argument === "room"
+            ? name
+            : undefined
+          : argument;
       if (command === "/clear") clearView();
       if (command === "/logout") logout();
       if (command === "/console") {
@@ -345,9 +408,12 @@ export function useCommands({
     }
   }
   return {
+    aliases,
+    saveAliasMapping,
+    removeAliasMapping,
     accountCommand,
     permissions,
-    availableCommands,
+    serverCommands,
     debug: debug && canDebug,
     draft,
     pending,

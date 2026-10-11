@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands;
 
 pub fn sudo_command(input: &str) -> Result<Option<&str>, String> {
     let input = input.trim();
@@ -39,8 +40,8 @@ impl Engine {
                 engine.execute(actor, room, command)
             });
         }
-        if input.split_whitespace().next() == Some("/rename") {
-            let parts: Vec<_> = input.split_whitespace().collect();
+        let parts: Vec<_> = input.split_whitespace().collect();
+        if parts.first() == Some(&"/rename") {
             self.require_command(actor, room, "/rename")?;
             let (name, new_name) = match parts.as_slice() {
                 [_, new_name] => (actor.ok_or("Usage: /rename user new-name")?, *new_name),
@@ -49,17 +50,16 @@ impl Engine {
             };
             return self.rename_user(actor, name, new_name);
         }
-        if input.split_whitespace().next() == Some("/deleteuser") {
-            let parts: Vec<_> = input.split_whitespace().collect();
-            require_len(&parts, 2, "/deleteuser user")?;
-            self.require_command(actor, room, "/deleteuser")?;
+        if parts.first() == Some(&"/rm") && parts.get(1) == Some(&"user") {
+            require_len(&parts, 3, "/rm user name")?;
+            self.require_command(actor, room, "/rm")?;
             let scope =
-                self.account_target(actor, parts[1], authorization::Action::DeleteAccount)?;
-            self.require_target_command(actor, &scope, "/deleteuser")?;
-            return self.delete_user(actor, parts[1]);
+                self.account_target(actor, parts[2], authorization::Action::DeleteAccount)?;
+            self.require_target_command(actor, &scope, "/rm")?;
+            return self.delete_user(actor, parts[2]);
         }
         if matches!(
-            input.split_whitespace().next(),
+            parts.first().copied(),
             Some(
                 "/permissions"
                     | "/debug"
@@ -67,8 +67,7 @@ impl Engine {
                     | "/man"
                     | "/whoami"
                     | "/console"
-                    | "/rooms"
-                    | "/users"
+                    | "/ls"
                     | "/members"
                     | "/history"
             )
@@ -149,11 +148,35 @@ impl Engine {
         let view = room;
         let scope = self.command_scope(actor, room)?;
         let room = room.filter(|name| !name.starts_with('@'));
+        let subcommand = parts.get(1).copied();
+        let routed_parts;
+        let handler_parts = if matches!(parts[0], "/new" | "/rm") {
+            match (parts[0], subcommand) {
+                ("/new", Some("room")) | ("/rm", Some("room")) => {}
+                ("/rm", Some("group")) if (4..=5).contains(&parts.len()) => {}
+                _ => {
+                    return Err(format!(
+                        "Usage: {}",
+                        if parts[0] == "/new" {
+                            commands::NEW_USAGE
+                        } else {
+                            commands::RM_USAGE
+                        }
+                    ));
+                }
+            }
+            routed_parts = std::iter::once(parts[0])
+                .chain(parts.iter().skip(2).copied())
+                .collect::<Vec<_>>();
+            &routed_parts
+        } else {
+            &parts
+        };
         let context = CommandContext {
             actor,
             room,
             input,
-            parts: &parts,
+            parts: handler_parts,
             author,
             scope,
             view,
@@ -161,13 +184,14 @@ impl Engine {
         match parts[0] {
             "/enable" | "/disable" => self.apply_accounts(&context),
             "/grant" | "/revoke" | "/permissions" => self.apply_policy(&context),
-            "/new" | "/add" | "/kick" | "/join" | "/leave" | "/delete" | "/owner" => {
+            "/rm" if subcommand == Some("group") => self.apply_policy(&context),
+            "/new" | "/add" | "/kick" | "/join" | "/leave" | "/rm" | "/owner" => {
                 self.apply_rooms(&context)
             }
             "/react" | "/reply" | "/retract" | "/clean" | "/tell" => self.apply_messages(&context),
-            "/debug" | "/help" | "/man" | "/whoami" | "/console" | "/rooms" | "/users"
-            | "/members" | "/history" => self.apply_queries(&context),
-            "/user" | "/reset" => Err("Account provisioning is console-only.".into()),
+            "/debug" | "/help" | "/man" | "/whoami" | "/console" | "/ls" | "/members"
+            | "/history" => self.apply_queries(&context),
+            "/reset" => Err("Account provisioning is console-only.".into()),
             _ => Err("Unknown command. Try /help.".into()),
         }
     }

@@ -14,7 +14,7 @@ impl Engine {
             "/new" => {
                 self.require_target_command(actor, &Scope::Server, parts[0])?;
                 self.require(actor, &Scope::Server, Action::CreateRoom)?;
-                require_len(parts, 2, "/new room")?;
+                require_len(parts, 2, "/new room name")?;
                 let name = parts[1];
                 if !valid_name(name) {
                     return Err("Invalid room name.".into());
@@ -180,15 +180,15 @@ impl Engine {
                 self.audit(actor, "/owner", &format!("{} {name}", parts[1]));
                 Ok(format!("{} owns #{name}.", parts[1]))
             }
-            "/delete" => {
-                require_len(parts, 2, "/delete room")?;
+            "/rm" => {
+                require_len(parts, 2, "/rm room name")?;
                 let scope = self.room_scope(parts[1])?;
                 self.require_target_command(actor, &scope, parts[0])?;
                 self.require(actor, &scope, Action::DeleteRoom)?;
                 self.data.rooms.remove(parts[1]).ok_or("Room not found.")?;
                 self.data.policy.assignments.retain(|a| a.scope != scope);
                 self.data.policy.grants.retain(|g| g.scope != scope);
-                self.audit(actor, "/delete", parts[1]);
+                self.audit(actor, "/rm", parts[1]);
                 Ok(format!("Deleted #{}.", parts[1]))
             }
             _ => Err("Unknown command.".into()),

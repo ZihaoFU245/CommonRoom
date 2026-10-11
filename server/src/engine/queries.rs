@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands;
 use authorization::{Action, Scope};
 
 impl Engine {
@@ -368,8 +369,10 @@ impl Engine {
                     self.permission_label(actor)
                 ))
             }
-            "/rooms" => {
-                require_len(parts, 1, "/rooms")?;
+            "/ls" if parts.len() == 1 || parts.get(1) == Some(&"room") => {
+                if parts.len() > 2 {
+                    return Err(format!("Usage: {}", commands::LS_USAGE));
+                }
                 let rooms = self
                     .data
                     .rooms
@@ -402,8 +405,14 @@ impl Engine {
                     }
                 ))
             }
-            "/users" => {
-                require_len(parts, 1, "/users")?;
+            "/ls" => {
+                require_len(parts, 2, commands::LS_USAGE)?;
+                if parts[1] == "group" {
+                    return Ok("Groups: user, admin, su (predefined permission bundles).\nUse /ls @user, /ls @admin, or /ls @su for global members; /man groups explains the bundles.".into());
+                }
+                if !["user", "@user", "@admin", "@su"].contains(&parts[1]) {
+                    return Err(format!("Usage: {}", commands::LS_USAGE));
+                }
                 self.require_target_command(actor, &Scope::Server, parts[0])?;
                 self.require(actor, &Scope::Server, Action::Directory)?;
                 Ok(format!(
@@ -412,11 +421,26 @@ impl Engine {
                         .users
                         .iter()
                         .filter(|(_, u)| self.is_su(actor) || !u.disabled)
-                        .map(|(n, u)| format!(
-                            "{n} — {}{}",
-                            self.permission_label(Some(n)),
-                            if u.disabled { " (disabled)" } else { "" }
-                        ))
+                        .filter_map(|(n, u)| {
+                            let groups: Vec<_> = self
+                                .data
+                                .policy
+                                .assignments
+                                .iter()
+                                .filter(|a| a.account_id == u.id && a.scope == Scope::Server)
+                                .map(|a| a.group)
+                                .collect();
+                            if parts[1] != "user"
+                                && !groups.iter().any(|g| format!("@{}", g.name()) == parts[1])
+                            {
+                                return None;
+                            }
+                            Some(format!(
+                                "{n} — {}{}",
+                                groups.iter().max().map_or("user", |g| g.name()),
+                                if u.disabled { " (disabled)" } else { "" }
+                            ))
+                        })
                         .collect::<Vec<_>>()
                         .join("\n")
                 ))

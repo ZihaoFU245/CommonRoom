@@ -13,7 +13,10 @@ import {
 
 test("passwords are masked and help groups retain their commands", () => {
   assert.equal(redactCommand("/passwd old secret"), "/passwd •••• ••••");
-  assert.equal(redactCommand("/user bob secret user"), "/user bob •••• user");
+  assert.equal(
+    redactCommand("/new user bob secret user"),
+    "/new user bob •••• user",
+  );
   assert.deepEqual(
     helpSections("[General]\n/help — Help\n\n[Rooms]\n/kick user — Kick"),
     [
@@ -32,8 +35,8 @@ test("sudo passwords stay masked and wrapped commands retain completion and UI r
     "/sudo /passwd •••• ••••",
   );
   assert.equal(
-    redactCommand("/sudo /user bob secret user"),
-    "/sudo /user bob •••• user",
+    redactCommand("/sudo /new user bob secret user"),
+    "/sudo /new user bob •••• user",
   );
   assert.equal(
     redactCommand("/sudo /reset bob secret"),
@@ -43,7 +46,7 @@ test("sudo passwords stay masked and wrapped commands retain completion and UI r
     redactCommand("/sudo /sudo /reset bob secret"),
     "/sudo /sudo /reset bob ••••",
   );
-  assert.equal(commandText(" /sudo /new team "), "/new team");
+  assert.equal(commandText(" /sudo /new room team "), "/new room team");
   assert.equal(commandText("/retract message"), "/retract message");
   const commands = [
     {
@@ -168,20 +171,18 @@ test("hints appear only for slash commands and complete usernames or rooms", () 
 test("delete-user hints complete usernames rather than rooms", () => {
   const commands = [
     {
-      name: "/deleteuser",
-      usage: "/deleteuser user",
+      name: "/rm",
+      usage: "/rm user user",
       description: "Delete account",
     },
   ];
   assert.equal(
-    suggestions("/deleteu", commands, ["bob"], ["board"])[0].value,
-    "/deleteuser ",
+    suggestions("/r", commands, ["bob"], ["board"])[0].value,
+    "/rm ",
   );
   assert.deepEqual(
-    suggestions("/deleteuser b", commands, ["bob"], ["board"]).map(
-      (h) => h.value,
-    ),
-    ["/deleteuser bob "],
+    suggestions("/rm user b", commands, ["bob"], ["board"]).map((h) => h.value),
+    ["/rm user bob "],
   );
 });
 
@@ -254,5 +255,37 @@ test("command and grant hints disclose all action requirements without granting 
       (hint) => hint.value === "/grant bob @server ",
     ),
     false,
+  );
+});
+
+test("command families complete subcommands and removal targets", () => {
+  const commands = ["/ls", "/rm", "/new"].map((name) => ({
+    name,
+    usage: name + " arguments",
+    description: "Command family",
+  }));
+  assert.equal(
+    suggestions("/new user alice secret a", commands, [], [])[0].value,
+    "/new user alice secret admin ",
+  );
+  assert.deepEqual(
+    suggestions("/ls @", commands, [], []).map((h) => h.value),
+    ["/ls @user ", "/ls @admin ", "/ls @su "],
+  );
+  assert.deepEqual(
+    suggestions("/new r", commands, [], []).map((h) => h.value),
+    ["/new room "],
+  );
+  assert.deepEqual(
+    suggestions("/rm room t", commands, ["ted"], ["team"]).map((h) => h.value),
+    ["/rm room team "],
+  );
+  assert.deepEqual(
+    suggestions("/rm group t", commands, ["ted"], ["team"]).map((h) => h.value),
+    ["/rm group ted "],
+  );
+  assert.deepEqual(
+    suggestions("/rm group ted a", commands, [], []).map((h) => h.value),
+    ["/rm group ted admin "],
   );
 });

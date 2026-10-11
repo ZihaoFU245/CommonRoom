@@ -20,10 +20,17 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
                 .find(|command| command.name == name)
                 .ok_or_else(|| format!("No manual for '{topic}'. Use /man to list topics."))?;
             return Ok(format!(
-                "# {}\n\n{}\n\n## Usage\n\n```\n{}\n```\n\n## Access required\n\n- The command grant must allow the selected conversation and its target.\n- The matching action grants must allow each affected resource.\n\n{}\n\n## See also\n\nUse `/help` to list commands available here, or `/man permissions` to understand grants.",
+                "# {}\n\n{}\n\n## Usage\n\n```\n{}\n```{}\n\n## Access required\n\n- The command grant must allow the selected conversation and its target.\n- The matching action grants must allow each affected resource.\n\n{}\n\n## See also\n\nUse `/help` to list commands available here, or `/man permissions` to understand grants.",
                 command.name,
                 command.description,
                 command.usage,
+                match topic {
+                    "ls" => LS,
+                    "new" => NEW,
+                    "rm" => RM,
+                    "retract" => RETRACT,
+                    _ => "",
+                },
                 if command.requirements.is_empty() {
                     "No additional action grant is required.".into()
                 } else {
@@ -65,7 +72,14 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
 
 const OVERVIEW: &str = r#"# CommonRoom manual
 
-Start with `/man grant` to give access, or `/man revoke` to remove it.
+Use `/help` to list commands available in the selected conversation.
+
+## Everyday commands
+
+- `/man ls` — list rooms, accounts, groups, and global group members.
+- `/man new` — create an invitation-only room or account.
+- `/man rm` — delete a room/account or remove a group assignment.
+- `/man alias` — customize command prefixes in the web app.
 
 ## Usage
 
@@ -92,6 +106,104 @@ Use `/man history`, `/man reset`, or another command name for its usage.
 `/console` opens the Command view; select a room or use `/join room` to return to a conversation.
 
 Manuals are public documentation. Reading one does not grant permission to run the command."#;
+
+const LS: &str = r#"
+
+## Examples
+
+```
+/ls
+/ls room
+/ls user
+/ls group
+/ls @admin
+```
+
+## What is listed?
+
+- `/ls` and `/ls room` list rooms you can discover or read, plus your readable private conversations.
+- `/ls user` lists accounts. Disabled accounts are visible only to su.
+- `/ls group` lists the fixed user, admin, and su bundles; use `/man groups` for their permissions.
+- `/ls @user`, `/ls @admin`, and `/ls @su` filter explicit global group assignments, not room assignments or individual permissions.
+
+An account can belong to several groups. Its displayed label is its highest global group;
+an account listed under @user can therefore display admin. Listing never changes access.
+Account listings require `r:account.list` at global scope."#;
+
+const NEW: &str = r#"
+
+## Examples
+
+```
+/new room support
+/new user bob temporary-password
+/new user alice temporary-password admin
+```
+
+## Rooms
+
+New rooms are invitation-only. The creator owns the room and receives participant
+and management grants. Invite Bob with `/add bob support`.
+`/join support` opens a room you can already access; it does not grant membership.
+
+## Accounts
+
+The optional group is user or admin; omitting it means user. Creating an admin
+requires `x:group.admin.assign` as well as `x:account.create`.
+Assign su separately with `/grant username su`, which only an existing su can run.
+Names and passwords are single arguments; spaces are not supported.
+Passwords are masked in browser command output. Use `/passwd old new` to change
+your own password or `/reset username password` with explicit reset authority.
+
+See `/man ownership` for room management and `/man groups` for group defaults."#;
+
+const RM: &str = r#"
+
+## Examples
+
+```
+/rm room support
+/rm user bob
+/rm group bob user support
+/rm group alice admin
+```
+
+## Delete a room or account
+
+- Removing a room permanently deletes its messages and scoped access.
+- Removing an account revokes its sessions and removes its private conversations for both participants.
+- Room messages and reply quotes remain attributed to the deleted account.
+- Reusing a deleted name does not inherit old grants, history, sessions, or read positions.
+
+Only su can delete a su account. Ordinary admins cannot delete themselves or
+the last active admin. Use `/disable username` for reversible account suspension.
+
+## Remove a group assignment
+
+The group must be user, admin, or su. Without a room, remove its global assignment;
+with a room, remove that room's assignment. The predefined bundle itself remains.
+Direct grants and other group assignments still apply. `/kick username room`
+removes membership and scoped access; `/revoke` also removes individual grants.
+The delegation and su restrictions described in `/man revoke` apply.
+
+## Confirmation
+
+The web app asks for confirmation before sending `/rm`, including aliases and
+sudo. Stdin executes directly. Room/account deletion cannot be undone;
+group access can be granted again by an authorized manager."#;
+
+const RETRACT: &str = r#"
+
+## Behavior
+
+Retract a retained message by its ID. It disappears for every participant,
+and retained replies lose their quote preview. Read permission is required;
+own-message authority applies to your messages, while any-message authority
+also allows retracting other authors' messages.
+
+The web app asks for confirmation, including aliases and sudo. Stdin executes
+directly. Retraction cannot be undone. The message's hover action supplies its
+ID automatically in the web app."#;
 
 const GRANT: &str = r#"# /grant
 
@@ -398,7 +510,7 @@ the su group includes both grants.
 ## Examples
 
 ```
-/sudo /new support
+/sudo /new room support
 /sudo /reset alice new-password
 /sudo /permissions @audit
 ```
@@ -453,7 +565,7 @@ Creating a room requires `w:room.create` at global scope and the `/new` command 
 Creation saves the room, stable identity, ownership, and grants together.
 
 ```
-/new support
+/new room support
 /add bob support
 ```
 

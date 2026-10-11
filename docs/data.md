@@ -2,9 +2,16 @@
 
 ## Data upgrades
 
-Only the current HEAD schema (v5) is supported. New empty databases are initialized as v5; existing v1–v4, unversioned, or newer databases are rejected without changing their stored state or version. Legacy upgrade code has been removed.
+Only the current HEAD schema (v5) is supported. New empty databases are initialized as v5; existing v1–v4, unversioned, or newer databases are rejected without changing their stored state or version. Older-schema migrations are not supported.
 
 Back up the entire data folder with the server stopped before upgrading. Current v5 accounts, sessions, identities, grants, messages and read cursors remain compatible. Tests use isolated temporary data and never modify working `data/`.
+
+The command-family rework updates persisted v5 command grants once at startup:
+`/delete` and `/deleteuser` become `/rm`, `/user` becomes `/new`, and `/rooms`
+and `/users` become `/ls`. Action permissions, scopes, ownership, accounts,
+sessions, history, and read cursors are preserved. The policy revision advances
+once, and validation or write failures leave the saved state unchanged. This is
+a data update within v5; old command syntax remains unsupported.
 
 ## Move to another machine
 

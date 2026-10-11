@@ -27,6 +27,13 @@ pub fn start(app: App) {
             if parts.is_empty() {
                 continue;
             }
+            let provision = match commands::provision_command(&parts) {
+                Ok(provision) => provision,
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    continue;
+                }
+            };
             let before = match app.engine() {
                 Ok(engine) => engine.revision,
                 Err(error) => {
@@ -34,34 +41,14 @@ pub fn start(app: App) {
                     break;
                 }
             };
-            let result = match parts[0] {
-                "/help" => Ok(commands::help(true, true)),
-                "/configs" if parts.len() == 1 => app.config.display(),
-                "/configs" => Err("Usage: /configs".into()),
-                "/user" | "/reset" => {
-                    let reset = parts[0] == "/reset";
-                    if (reset && parts.len() != 3) || (!reset && !(3..=4).contains(&parts.len())) {
-                        Err(
-                            "Usage: /user name password [admin|user] or /reset name password"
-                                .into(),
-                        )
-                    } else if !reset
-                        && parts
-                            .get(3)
-                            .is_some_and(|role| !["admin", "user"].contains(role))
-                    {
-                        Err("Role must be admin or user.".into())
-                    } else {
-                        hash_password(parts[2]).and_then(|hash| {
-                            app.engine()?.provision(
-                                parts[1],
-                                hash,
-                                parts.get(3) == Some(&"admin"),
-                                reset,
-                            )
-                        })
-                    }
-                }
+            let result = match (parts[0], provision) {
+                ("/help", _) if parts.len() == 1 => Ok(commands::help(true, true)),
+                ("/configs", _) if parts.len() == 1 => app.config.display(),
+                ("/configs", _) => Err("Usage: /configs".into()),
+                (_, Some(account)) => hash_password(account.password).and_then(|hash| {
+                    app.engine()?
+                        .provision(account.name, hash, account.admin, account.reset)
+                }),
                 _ => app
                     .engine()
                     .and_then(|mut engine| engine.execute(None, None, command)),

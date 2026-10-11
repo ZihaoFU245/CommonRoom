@@ -19,7 +19,7 @@ The three predefined groups are fixed grant bundles, not authorization bypasses:
 | Group and assignment | Grants |
 | --- | --- |
 | `user` at server scope | Account directory, own password and rename, private sends, general commands |
-| `admin` at server scope | User grants, room/account creation, enable/disable/delete accounts, admin group assignment, config inspection |
+| `admin` at server scope | User grants, room/account creation, enable/disable/rm room accounts, admin group assignment, config inspection |
 | `user` at room scope | Discover/read/join the room, member list, send/reply/react, retract own messages, corresponding commands |
 | `admin` at room scope | Room user grants plus room management and grant inspection |
 | `su` at server scope | Every action and command at every scope, including other users' private history and retraction |
@@ -50,7 +50,7 @@ permissions. Both `/sudo` and `x:command.sudo` must be granted at global scope:
 ```text
 /grant bob @global /sudo
 /grant bob @global x:command.sudo
-/sudo /new support
+/sudo /new room support
 ```
 
 Only su can grant global permissions. User and admin groups do not include sudo;
@@ -120,7 +120,7 @@ all targets before mutating any. HTTP history and read tracking require resource
 read access independently of slash-command grants.
 
 `/console` opens the browser's Command view after checking its command grant in
-the selected context. It gives no additional access. `/rooms` lists only the
+the selected context. It gives no additional access. `/ls room` lists only the
 signed-in account's readable private pairs, even when su or explicit grants allow
 inspection of other pairs. Inspection grants still apply to those resources.
 
@@ -186,7 +186,7 @@ and scoped direct grants with constraints when the requester can inspect policy.
 
 ## Persistence and revocation
 
-Only schema v5 is supported. Existing v5 grants, assignments, identities and read cursors are loaded directly; older schema files are rejected without migration.
+Only schema v5 is supported. Existing v5 state is preserved; retired command-grant names are updated once at startup as described in [Data](data.md). Older schema files are rejected.
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains

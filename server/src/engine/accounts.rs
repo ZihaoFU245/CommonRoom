@@ -262,7 +262,7 @@ impl Engine {
                 },
             );
         }
-        self.audit(actor, if reset { "/reset" } else { "/user" }, name);
+        self.audit(actor, if reset { "/reset" } else { "/new" }, name);
         if !reset {
             let id = self
                 .data
@@ -314,7 +314,7 @@ impl Engine {
             .ok_or("User not found.")?
             .id
             .clone();
-        self.audit(actor, "/deleteuser", name);
+        self.audit(actor, "/rm user", name);
         self.data.policy.assignments.retain(|a| {
             a.account_id != deleted_id
                 && a.scope != authorization::Scope::Account(deleted_id.clone())

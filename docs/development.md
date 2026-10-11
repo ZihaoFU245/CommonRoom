@@ -12,9 +12,9 @@ rtk cargo run --locked
 Create accounts in the server's stdin console:
 
 ```text
-/user alice alice admin
-/user bob bob user
-/new demo
+/new user alice alice admin
+/new user bob bob user
+/new room demo
 /add alice demo
 /add bob demo
 ```

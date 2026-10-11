@@ -1,5 +1,10 @@
 use serde::Serialize;
 
+pub const NEW_USER_USAGE: &str = "/new user name password [user|admin]";
+pub const NEW_USAGE: &str = "/new room name | /new user name password [user|admin]";
+pub const RM_USAGE: &str = "/rm room name | /rm user name | /rm group user group [room]";
+pub const LS_USAGE: &str = "/ls [room|user|group|@user|@admin|@su]";
+
 #[derive(Clone, Serialize)]
 pub struct Command {
     pub name: &'static str,
@@ -41,7 +46,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "Toggle message details in this browser tab",
             true,
         ),
-        ("General", "/help", "/help", "List commands", false),
+        (
+            "General",
+            "/help",
+            "/help",
+            "List commands available here; /man command explains usage",
+            false,
+        ),
         (
             "General",
             "/man",
@@ -53,7 +64,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "General",
             "/whoami",
             "/whoami",
-            "Show your name and permission",
+            "Show your name and global group label",
             false,
         ),
         (
@@ -76,27 +87,6 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "/passwd old new",
             "Change your password; sign out other sessions",
             false,
-        ),
-        (
-            "Account",
-            "/users",
-            "/users",
-            "List accounts and permissions",
-            false,
-        ),
-        (
-            "Account",
-            "/user",
-            "/user name password [admin|user]",
-            "Create an account",
-            true,
-        ),
-        (
-            "Account",
-            "/deleteuser",
-            "/deleteuser user",
-            "Permanently delete an account and its private conversations",
-            true,
         ),
         (
             "Account",
@@ -133,12 +123,11 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "Remove a group assignment or direct permission; /man revoke explains",
             true,
         ),
-        ("Rooms", "/rooms", "/rooms", "List rooms and owners", false),
         (
             "Rooms",
             "/members",
             "/members [room]",
-            "List room members",
+            "List conversation participants",
             false,
         ),
         (
@@ -149,7 +138,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             false,
         ),
         ("Rooms", "/leave", "/leave [room]", "Leave a room", false),
-        ("Rooms", "/new", "/new room", "Create a room", true),
+        (
+            "General",
+            "/new",
+            NEW_USAGE,
+            "Create an invitation-only room or account (default group: user)",
+            true,
+        ),
         (
             "Rooms",
             "/add",
@@ -165,13 +160,6 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             true,
         ),
         (
-            "Rooms",
-            "/delete",
-            "/delete room",
-            "Delete a room and its messages",
-            true,
-        ),
-        (
             "Messages",
             "/tell",
             "/tell user message",
@@ -182,7 +170,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "Messages",
             "/retract",
             "/retract message-id",
-            "Delete your own message for everyone in its conversation",
+            "Retract a message for everyone; requires own/any-message permission",
             false,
         ),
         (
@@ -218,6 +206,20 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "/clean",
             "/clean age [room|@private|@all]",
             "Delete messages older than an age, e.g. 7d or 24h",
+            true,
+        ),
+        (
+            "General",
+            "/ls",
+            LS_USAGE,
+            "List rooms (default), accounts, predefined groups, or global group members",
+            false,
+        ),
+        (
+            "General",
+            "/rm",
+            RM_USAGE,
+            "Delete a room/account or remove a group assignment; web confirms first",
             true,
         ),
     ];
@@ -273,10 +275,12 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
 pub fn requirements(command: &str) -> &'static str {
     match command {
         "/sudo" => "x:command.sudo and /sudo at @global; temporary superuser authority",
-        "/new" => "w:room.create at @global",
-        "/user" => "x:account.create at @global; also x:group.admin.assign when creating an admin",
+        "/new" => {
+            "w:room.create or x:account.create at @global; x:group.admin.assign for admin accounts"
+        }
+        "/ls" => "room discovery/read grants; r:account.list for accounts and group members",
+        "/rm" => "x:room.delete, x:account.delete, or group-management authority on the target",
         "/configs" => "r:server.config at @global",
-        "/users" => "r:account.list at @global",
         "/rename" => {
             "w:account.rename.own on your account or x:account.rename.any on the target; only su can manage su accounts"
         }
@@ -286,9 +290,6 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/disable" => "x:account.disable on the target account; only su can manage su accounts",
         "/enable" => "x:account.enable on the target account; only su can manage su accounts",
-        "/deleteuser" => {
-            "x:account.delete on the target account; account-protection rules also apply"
-        }
         "/join" => "r:message.read + x:room.join on the target room",
         "/members" => "r:member.list on the target conversation",
         "/history" => "r:message.read on each target conversation",
@@ -302,7 +303,6 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/add" => "x:member.add on the room + authority to delegate its full participant bundle",
         "/kick" => "x:member.remove on the room; owners must transfer ownership first",
-        "/delete" => "x:room.delete on the target room",
         "/owner" => "x:room.owner.transfer on the target room",
         "/clean" => "x:history.clean on every target; minimum-age constraints may apply",
         "/debug" => "r:message.metadata on readable conversations",
@@ -311,9 +311,6 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/permissions" => {
             "r:message.read or r:policy.read for a resource; r:policy.read for grant details; su for @audit"
-        }
-        "/rooms" => {
-            "r:room.discover or r:message.read for each listed room; r:message.read for your own private pairs"
         }
         "/leave" => "your own room access; transfer ownership before leaving",
         _ => "",
@@ -337,4 +334,33 @@ pub fn help_for(commands: &[Command]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Shared syntax for the console and asynchronous web password jobs.
+#[derive(Clone, Copy)]
+pub struct ProvisionCommand<'a> {
+    pub name: &'a str,
+    pub password: &'a str,
+    pub admin: bool,
+    pub reset: bool,
+}
+
+pub fn provision_command<'a>(parts: &[&'a str]) -> Result<Option<ProvisionCommand<'a>>, String> {
+    let (name, password, role, reset) = match parts {
+        ["/new", "user", name, password] => (*name, *password, "user", false),
+        ["/new", "user", name, password, role] => (*name, *password, *role, false),
+        ["/reset", name, password] => (*name, *password, "user", true),
+        ["/new", "user", ..] => return Err(format!("Usage: {NEW_USER_USAGE}")),
+        ["/reset", ..] => return Err("Usage: /reset name password".into()),
+        _ => return Ok(None),
+    };
+    if !["user", "admin"].contains(&role) {
+        return Err("Role must be admin or user.".into());
+    }
+    Ok(Some(ProvisionCommand {
+        name,
+        password,
+        admin: role == "admin",
+        reset,
+    }))
 }

@@ -156,8 +156,7 @@ const COMMANDS: &[&str] = &[
     "/whoami",
     "/rename",
     "/passwd",
-    "/users",
-    "/rooms",
+    "/ls",
     "/members",
     "/history",
     "/join",
@@ -169,18 +168,16 @@ const COMMANDS: &[&str] = &[
     "/new",
     "/add",
     "/kick",
-    "/delete",
+    "/rm",
     "/grant",
     "/revoke",
     "/configs",
     "/clean",
     "/clear",
     "/logout",
-    "/user",
     "/reset",
     "/disable",
     "/enable",
-    "/deleteuser",
     "/debug",
     "/permissions",
     "/man",
@@ -251,7 +248,7 @@ fn manager_rights() -> Rights {
         &[
             "/add",
             "/kick",
-            "/delete",
+            "/rm",
             "/clean",
             "/grant",
             "/revoke",
@@ -288,8 +285,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             "/whoami",
             "/rename",
             "/passwd",
-            "/users",
-            "/rooms",
+            "/ls",
             "/join",
             "/leave",
             "/tell",
@@ -312,15 +308,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
                 Action::PolicyRead,
             ],
             &[
-                "/new",
-                "/user",
-                "/disable",
-                "/enable",
-                "/deleteuser",
-                "/grant",
-                "/revoke",
-                "/configs",
-                "/debug",
+                "/new", "/disable", "/enable", "/rm", "/grant", "/revoke", "/configs", "/debug",
             ],
         ));
     }
@@ -1148,16 +1136,15 @@ impl Engine {
                             | "r:server.config"
                             | "r:account.list"
                             | "/new"
-                            | "/user"
                             | "/configs"
-                            | "/users"
+                            | "/ls"
                     )
                 {
                     reply.push_str(&format!("\n\n## Scope hint\n\n`{}` is used at `@global`. This resource-scoped grant does not authorize that global operation.", parts[3]));
                 }
                 Ok(reply)
             }
-            "/grant" | "/revoke" => {
+            "/grant" | "/revoke" | "/rm" => {
                 if !(2..=4).contains(&parts.len()) {
                     return Err(format!(
                         "Invalid arguments. Use /man {} for group and permission syntax.",
@@ -1195,7 +1182,7 @@ impl Engine {
                 if self.is_su(Some(parts[1])) && !self.is_su(actor) {
                     return Err("Only su can manage a su account.".into());
                 }
-                if parts[0] == "/revoke"
+                if parts[0] != "/grant"
                     && group == Group::Admin
                     && scope == Scope::Server
                     && !self.is_su(actor)

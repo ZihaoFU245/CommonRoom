@@ -324,6 +324,7 @@ export function Chat({
     <div class="chat-layout">
       {commands.deleteConfirmation && (
         <DeleteConfirmation
+          kind={commands.deleteConfirmation}
           onCancel={commands.cancelDelete}
           onConfirm={commands.confirmDelete}
         />
@@ -350,6 +351,9 @@ export function Chat({
           state={state}
           pending={commands.pending}
           onAccountCommand={commands.accountCommand}
+          aliases={commands.aliases}
+          onSaveAlias={commands.saveAliasMapping}
+          onRemoveAlias={commands.removeAliasMapping}
           fonts={fonts}
           theme={theme}
           seeds={seeds}
@@ -446,7 +450,7 @@ export function Chat({
         <MessageList
           debug={commands.debug}
           permissions={commands.permissions}
-          commands={commands.availableCommands}
+          commands={commands.serverCommands}
           entries={entries}
           username={state.username}
           pending={pending}

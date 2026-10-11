@@ -21,7 +21,7 @@ the peer address. The allowance is 10 login attempts per IP per minute.
 
 ## Frames
 
-The web sends `{id:number, room:string|null, text:string}`. Private views send
+The web sends `{id:number, room:string|null, text:string}`. Browser aliases expand locally before sending; `/alias` is never sent to the server. Web `/rm` and `/retract` commands wait for local confirmation. Private views send
 `@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.

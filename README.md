@@ -43,7 +43,7 @@ exist; in the web UI, your grants must authorize the same actions.
 Create a room and invite Bob with normal participant access:
 
 ```text
-/new support
+/new room support
 /add bob support
 ```
 
@@ -99,13 +99,13 @@ To delegate one-command superuser execution, su grants both permissions:
 /grant bob @global x:command.sudo
 ```
 
-Bob can then run `/sudo /new support` or another slash command. Temporary
+Bob can then run `/sudo /new room support` or another slash command. Temporary
 elevation retains Bob's identity and leaves his group assignments unchanged.
 Read `/man sudo` for details.
 
 Use `/console` to open the Command view, and select a conversation in the sidebar
-to return. `/rooms` lists rooms and their owners plus your own readable private
+to return. `/ls room` lists rooms and their owners plus your own readable private
 conversations; it excludes other people's private pairs, even for su.
-See [the security guide](docs/security.md) for the full model.
+Use `/ls user` or `/ls @admin` to list accounts, `/new user NAME PASSWORD` to create one, and `/rm user NAME` or `/rm room NAME` for removal. Browser removals ask for confirmation; `/alias A B` saves a local command-prefix mapping. See [Commands](docs/commands.md) for syntax and [Security](docs/security.md) for permissions.
 
 See [docs/README.md](docs/README.md) for development, architecture, commands, testing, and deployment guides.
