@@ -293,7 +293,7 @@ fn permissions_and_private_delivery() {
     e.execute(Some("bob"), None, "/tell eve other-private")
         .unwrap();
     let history = e
-        .execute(Some("bob"), None, "/history 1 100 @direct:alice")
+        .execute(Some("bob"), Some("@direct:alice"), "/history 1 100")
         .unwrap();
     assert!(history.contains("private"));
     assert!(!history.contains("other-private"));
@@ -1355,5 +1355,75 @@ fn invalid_legacy_cursor_aborts_migration_before_schema_changes() {
         )
         .unwrap(),
         2
+    );
+}
+
+#[test]
+fn history_has_only_current_range_and_explicit_hash_room_forms() {
+    let mut e = engine();
+    e.set_limits(64, 64, 200).unwrap();
+    for index in 1..=120 {
+        e.execute(Some("bob"), Some("lobby"), &format!("history item {index}"))
+            .unwrap();
+    }
+    for command in ["/history", "/history #lobby"] {
+        let output = e.execute(Some("bob"), Some("lobby"), command).unwrap();
+        assert_eq!(output.lines().count(), 100);
+        assert!(output.starts_with("[21]"));
+        assert!(output.contains("history item 120"));
+    }
+    let output = e
+        .execute(Some("bob"), Some("lobby"), "/history 10 12")
+        .unwrap();
+    assert_eq!(output.lines().count(), 3);
+    assert!(output.starts_with("[10]"));
+    for input in [
+        "/history lobby",
+        "/history #",
+        "/history 1",
+        "/history 1 2 lobby",
+        "/history 1 2 #lobby",
+        "/history #lobby 1 2",
+        "/history @direct:alice",
+    ] {
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), input).is_err(),
+            "{input}"
+        );
+    }
+    assert!(e.execute(Some("bob"), None, "/history").is_err());
+    assert!(e.execute(Some("bob"), None, "/history 1 2").is_err());
+    e.execute(Some("alice"), None, "/new room hidden").unwrap();
+    e.execute(Some("alice"), Some("hidden"), "protected history")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("lobby"), "/history #hidden")
+            .is_err()
+    );
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    let before = e.data.clone();
+    let output = e
+        .execute(Some("bob"), None, "/sudo /history #hidden")
+        .unwrap();
+    assert!(output.contains("protected history"));
+    assert!(e.data == before);
+    assert!(
+        e.execute(Some("bob"), Some("lobby"), "/history #hidden")
+            .is_err()
+    );
+    assert!(
+        !e.snapshot("bob")
+            .unwrap()
+            .rooms
+            .iter()
+            .any(|room| room.name == "hidden")
+    );
+    assert!(
+        e.execute(None, None, "/history #hidden")
+            .unwrap()
+            .contains("protected history")
     );
 }

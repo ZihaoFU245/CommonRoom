@@ -37,7 +37,7 @@ login, reconnect and foreground refresh.
 | `/rename [user] new-name` | Own/any rename grant | Rename yourself, or an authorized target; preserve identity, history, sessions and read positions |
 | `/passwd old new` | Own-password grant | Change password and sign out other sessions |
 | `/members [room]` | Member-list grant | List authorized conversation participants |
-| `/history [start end] [view]` | Read and command grants | Read inclusive sequence range; default latest 50, maximum 100 per page |
+| `/history [start end]` or `/history #room` | Read and command grants | Read inclusive sequence range; default latest 100, maximum 100 per page |
 | `/join room` | Read/join grants | Open an authorized room; does not create membership |
 | `/leave [room]` | Accounts | Remove own room access; owners must transfer first |
 | `/tell user message` | Private-send grants | Send within a private conversation |
@@ -98,7 +98,7 @@ marks and emoji. Whitespace, controls and ASCII punctuation other than `_` and
 
 Private conversations appear after exchanging messages. Start one with
 `/tell USER MESSAGE`; ordinary text in that private view sends to the peer.
-Opening a conversation loads a 100-message page; scroll to load older/newer pages. Each browser conversation has a sliding 1,000-message cache and only visible rows are mounted. `/history 1000 1099` prints messages whose global sequences are in that inclusive range, without fetching earlier messages. Add a view, e.g. `/history 1000 1099 @direct:bob`, to target another authorized conversation. A wide range returns at most 100 messages; continue after the last printed sequence. The former count/user syntax is removed.
+Opening a conversation loads a 100-message page; scroll to load older/newer pages. Each browser conversation has a sliding 1,000-message cache and only visible rows are mounted. `/history 1000 1099` prints messages whose global sequences are in that inclusive range, without fetching earlier messages. Use `/history #study` to read the latest 100 messages from another authorized room without selecting it. Explicit room names require `#`. `/history` reads the latest 100 messages in the current conversation, including a selected private chat. Ranges apply only to the current conversation. A wide range returns at most 100 messages; continue after the last printed sequence. The former count/user syntax is removed.
 
 Messages stay left-aligned, with local dates and times. Consecutive messages
 from the same sender group within five minutes; commands break the group.

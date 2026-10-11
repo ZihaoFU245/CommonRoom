@@ -190,8 +190,8 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
         (
             "Messages",
             "/history",
-            "/history [start end] [view]",
-            "Read an inclusive sequence range (up to 100 per page)",
+            "/history [start end] or /history #room",
+            "Read a sequence range or the latest 100 messages from #room",
             false,
         ),
         (

@@ -549,16 +549,30 @@ impl Engine {
                     .join("\n"))
             }
             "/history" => {
-                if !matches!(parts.len(), 1 | 3 | 4) {
-                    return Err(
-                        "Usage: /history [start end] [room|@direct:peer|@private:a:b]".into(),
-                    );
-                }
-                let view = parts
-                    .get(3)
-                    .copied()
-                    .or(context.view)
-                    .ok_or("Select or specify a conversation.")?;
+                let usage = "Usage: /history [start end] or /history #room";
+                let (view, range) = match parts {
+                    [_] => (
+                        context
+                            .view
+                            .ok_or("Select a conversation or use /history #room.")?,
+                        history::HistoryRange::default(),
+                    ),
+                    [_, target] if target.starts_with('#') && target.len() > 1 => (
+                        target.strip_prefix('#').ok_or(usage)?,
+                        history::HistoryRange::default(),
+                    ),
+                    [_, start, end] => (
+                        context
+                            .view
+                            .ok_or("Select a conversation for sequence ranges.")?,
+                        history::HistoryRange {
+                            start: Some(start.parse().map_err(|_| usage)?),
+                            end: Some(end.parse().map_err(|_| usage)?),
+                            ..Default::default()
+                        },
+                    ),
+                    _ => return Err(usage.into()),
+                };
                 let (id, revision) = if let Some(user) = actor {
                     let (_, id, revision) = self.conversation(user, view)?;
                     (id, revision)
@@ -579,18 +593,6 @@ impl Engine {
                     Scope::Room(id.clone())
                 };
                 self.require_target_command(actor, &scope, parts[0])?;
-                let range = if parts.len() >= 3 {
-                    history::HistoryRange {
-                        start: Some(parts[1].parse().map_err(|_| "Invalid start sequence.")?),
-                        end: Some(parts[2].parse().map_err(|_| "Invalid end sequence.")?),
-                        ..Default::default()
-                    }
-                } else {
-                    history::HistoryRange {
-                        limit: Some(VISIBLE_HISTORY),
-                        ..Default::default()
-                    }
-                };
                 let page = self.history_store.page(&id, revision, range, view)?;
                 let text = page
                     .messages

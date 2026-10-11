@@ -155,3 +155,7 @@ after, around, concurrent page requests, malformed/unsafe bounds, authorization,
 logout and cache hits using isolated temporary databases. Run the required checks
 and integration suite after rebuilding both binaries. No line/branch coverage
 percentage or production load capacity is claimed by these behavioral tests.
+
+Command syntax regressions cover `/history`, current-conversation ranges and
+`/history #room`, default latest-100 output, rejection of removed aliases, target
+privacy and sudo inspection without joining or retaining elevated authority.
