@@ -28,11 +28,11 @@ impl Engine {
             path.to_string_lossy().into_owned()
         };
         let db = Connection::open(&location).map_err(|e| e.to_string())?;
-        let mut version: u32 = db
+        let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 5 && version != 6 && version != 7 && version != 8 {
-            return Err("Unsupported database schema; schemas v5 through v8 are supported.".into());
+        if version != 0 && version != 8 {
+            return Err("Unsupported database schema; only schema v8 is supported.".into());
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -66,37 +66,13 @@ impl Engine {
                 .execute_batch("PRAGMA user_version=8;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
-            version = 8;
         }
         let raw: String = db
             .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         let mut data: Data = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         drop(raw);
-        if version >= 6 {
-            load_entities(&db, &mut data)?;
-        }
-        // Upgrade persisted command grants once; dispatch accepts only the new syntax.
-        // This changes names within v5, not the schema or action permissions.
-        let mut upgraded = false;
-        for grant in &mut data.policy.grants {
-            for (old, new) in [
-                ("/delete", "/rm"),
-                ("/deleteuser", "/rm"),
-                ("/user", "/new"),
-                ("/rooms", "/ls"),
-                ("/users", "/ls"),
-            ] {
-                if grant.permissions.remove(old) {
-                    grant.permissions.insert(new.into());
-                    upgraded = true;
-                }
-            }
-        }
-        if upgraded {
-            data.policy.revision = data.policy.revision.wrapping_add(1);
-        }
-        // Validate before changing a legacy database; DDL and data move atomically.
+        load_entities(&db, &mut data)?;
         crate::bots::models::validate(&data)?;
         let authorization = super::authorization::CompiledPolicy::compile(&data)?;
         let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
@@ -121,42 +97,13 @@ impl Engine {
                     .insert(view, sequence);
             }
         }
-        if version == 5 {
-            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
-            write_data(&tx, &data)?;
-            tx.execute_batch(INDEXES).map_err(|e| e.to_string())?;
-            tx.execute_batch("PRAGMA user_version=8;")
-                .map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            upgraded = false;
-        }
-        if version == 6 {
-            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            tx.execute_batch(INDEXES).map_err(|e| e.to_string())?;
-            if upgraded {
-                write_state(&tx, &data)?;
-            }
-            tx.execute_batch("PRAGMA user_version=8;")
-                .map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            upgraded = false;
-        }
-        if version == 7 {
-            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            write_state(&tx, &data)?;
-            tx.execute_batch("PRAGMA user_version=8;")
-                .map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            upgraded = false;
-        }
         for room in data.rooms.values_mut() {
             room.messages.clear();
         }
         for chat in data.private.values_mut() {
             chat.messages.clear();
         }
-        let mut engine = Self {
+        Ok(Self {
             authorization,
             online_connections: BTreeMap::new(),
             bot_budgets: BTreeMap::new(),
@@ -174,13 +121,7 @@ impl Engine {
             pending_deletes: Vec::new(),
             pending_cleanups: Vec::new(),
             _lock: lock,
-        };
-        // Validate the complete policy before writing. A failed atomic state write
-        // leaves the original database intact and prevents startup.
-        if upgraded {
-            engine.save()?;
-        }
-        Ok(engine)
+        })
     }
     pub fn set_limits(
         &mut self,

@@ -186,7 +186,7 @@ and scoped direct grants with constraints when the requester can inspect policy.
 
 ## Persistence and revocation
 
-Schema v8 and automatic transactional migration from v5/v6/v7 are supported. Existing v5 state is preserved; retired command-grant names are updated once at startup as described in [Data](data.md). Older schema files are rejected.
+Only schema v8 is supported. New empty databases initialize transactionally; existing v8 metadata is validated without migration or retired command-grant rewrites. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains

@@ -1,20 +1,13 @@
-import type { JSX, RefObject } from "preact";
+import type { RefObject } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
   Snapshot,
   Message,
   Room,
-  ReplyTarget,
   PendingCommand,
-  Hint,
   Acknowledgement,
 } from "../api/protocol.ts";
-import { mentionSuggestions } from "../features/conversation/interactions.ts";
-import {
-  suggestions,
-  privatePeers,
-  commandText,
-} from "../features/conversation/console.ts";
+import { privatePeers, commandText } from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
 import type { ValueRef } from "./refs.ts";
 import {
@@ -27,6 +20,16 @@ import {
   setAlias,
   removeAlias,
 } from "../features/conversation/aliases.ts";
+import { createRequestLifecycle } from "../features/conversation/requestLifecycle.ts";
+import {
+  captureSubmission,
+  deletionKind,
+  submissionFrame,
+} from "../features/conversation/submission.ts";
+import type { ComposerSubmission } from "../features/conversation/submission.ts";
+
+import { useCommandComposer } from "./useCommandComposer.ts";
+
 interface Context {
   selected: string;
   direct: boolean;
@@ -89,44 +92,54 @@ export function useCommands({
   useEffect(() => {
     if (!canDebug) setDebug(false);
   }, [canDebug]);
-  const [draft, setDraft] = useState("");
-  const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [pending, setPending] = useState(false);
-  const [hintIndex, setHintIndex] = useState(0);
-  const [hintDismissed, setHintDismissed] = useState(false);
-  const request = useRef<PendingCommand | null>(null);
-  const serial = useRef(0);
-  const accountResult = useRef<((data: Acknowledgement) => void) | null>(null);
+  const {
+    draft,
+    draftRef,
+    setDraft,
+    replyTarget,
+    setReplyTarget,
+    hints,
+    activeHint,
+    edit,
+    acceptHint,
+    keydown,
+    dismissHints,
+  } = useCommandComposer({
+    selected,
+    direct,
+    peer,
+    state,
+    room,
+    input,
+    pending,
+    aliases,
+    serverCommands,
+    availableCommands,
+    send,
+  });
+  const lifecycleRef = useRef<ReturnType<typeof createRequestLifecycle> | null>(
+    null,
+  );
+  if (!lifecycleRef.current)
+    lifecycleRef.current = createRequestLifecycle((frame) => {
+      const connection = socket.current;
+      if (connection?.readyState !== WebSocket.OPEN)
+        throw new Error("Disconnected. Wait for the connection to recover.");
+      sendFrame(connection, frame);
+    }, setPending);
+  const lifecycle = lifecycleRef.current;
   function accountCommand(text: string): Promise<Acknowledgement> {
-    if (request.current)
+    if (lifecycle.pending)
       return Promise.reject(new Error("Another command is pending."));
-    const connection = socket.current;
-    if (connection?.readyState !== WebSocket.OPEN)
-      return Promise.reject(
-        new Error("Disconnected. Wait for the connection to recover."),
-      );
-    const id = ++serial.current;
-    request.current = { id, text, room: "@command", key: null, action: true };
-    setPending(true);
-    return new Promise((resolve, reject) => {
-      accountResult.current = resolve;
-      try {
-        sendFrame(connection, { id, room: null, text });
-      } catch (error: unknown) {
-        request.current = null;
-        accountResult.current = null;
-        setPending(false);
-        reject(
-          error instanceof Error
-            ? error
-            : new Error("Command could not be sent."),
-        );
-      }
+    return new Promise((resolve) => {
+      lifecycle.submit({
+        command: { text, room: "@command", key: null, action: true },
+        frame: { room: null, text },
+        complete: resolve,
+      });
     });
   }
-  useEffect(() => {
-    setReplyTarget(null);
-  }, [selected]);
   const [deleteConfirmation, setDeleteConfirmation] = useState<
     "message" | "resource" | null
   >(null);
@@ -153,20 +166,12 @@ export function useCommands({
         (message.from !== state.username ||
           !permissions.includes("w:message.retract.own"))) ||
       !canExecute("/retract") ||
-      request.current ||
+      lifecycle.pending ||
       socket.current?.readyState !== WebSocket.OPEN
     )
       return;
     if (!confirmed) return requestDelete(() => retract(message, true));
-    const id = ++serial.current;
-    const text = `/retract ${message.id}`;
-    request.current = { id, text, room: selected, key: null, action: true };
-    setPending(true);
-    sendFrame(socket.current, {
-      id,
-      room: consoleView ? null : selected,
-      text,
-    });
+    sendAction(`/retract ${message.id}`);
     if (replyTarget?.id === message.id) setReplyTarget(null);
   }
   function reactTo(message: Message, value: string) {
@@ -174,57 +179,23 @@ export function useCommands({
       !permissions.includes("w:message.react") ||
       !canExecute("/react") ||
       !value.trim() ||
-      request.current ||
+      lifecycle.pending ||
       socket.current?.readyState !== WebSocket.OPEN
     )
       return;
-    const id = ++serial.current;
-    const text = `/react ${message.id} ${value.trim()}`;
-    request.current = { id, text, room: selected, key: null, action: true };
-    setPending(true);
-    sendFrame(socket.current, {
-      id,
-      room: consoleView ? null : selected,
-      text,
+    sendAction(`/react ${message.id} ${value.trim()}`);
+  }
+  function sendAction(text: string) {
+    lifecycle.submit({
+      command: { text, room: selected, key: null, action: true },
+      frame: { room: consoleView ? null : selected, text },
+      complete: handleAcknowledgement,
     });
   }
-  const hints =
-    hintDismissed || pending
-      ? []
-      : (draft.startsWith("/")
-          ? suggestions(
-              /\s/u.test(draft) && !draft.startsWith("/alias ")
-                ? expandAlias(draft, aliases)
-                : draft,
-              /\s/u.test(draft) && !draft.startsWith("/alias ")
-                ? serverCommands
-                : availableCommands,
-              state.users,
-              state.available_rooms || state.rooms.map((r) => r.name),
-            )
-          : mentionSuggestions(
-              draft,
-              direct
-                ? [state.username, ...(peer ? [peer] : [])]
-                : [...(room?.members || [])],
-            )
-        ).slice(0, 6);
-  const activeHint = Math.min(hintIndex, Math.max(0, hints.length - 1));
-
-  function edit(value: string) {
-    setDraft(value);
-    setHintIndex(0);
-    setHintDismissed(false);
-  }
-  function acceptHint(hint: Hint) {
-    if (!hint?.value) return;
-    edit(hint.value);
-    input.current?.focus();
-  }
-  function send(event: Event, confirmed = false) {
+  function send(event: Event) {
     event.preventDefault();
     const text = expandAlias(draft.trim(), aliases);
-    if (!text || pending) return;
+    if (!text || lifecycle.pending) return;
     if (text.split(/\s+/u)[0] === "/alias") {
       try {
         setAliases(saveAlias(aliases, text));
@@ -283,76 +254,40 @@ export function useCommands({
       append(text, "Use a command or select a room to send a message.", true);
       return;
     }
-    if (
-      ["/retract", "/rm"].includes(commandText(text).split(/\s+/u)[0] ?? "") &&
-      !confirmed
-    )
-      return requestDelete(
-        () => send(event, true),
-        commandText(text).split(/\s+/u)[0] === "/rm" ? "resource" : "message",
-      );
-    const id = ++serial.current;
-    request.current = {
-      id,
+    const submission = captureSubmission({
       text,
-      room: selected,
-      key: text.startsWith("/") ? append(text) : null,
-      reply: !!replyTarget && !text.startsWith("/"),
-    };
-    setPending(true);
-    setHintDismissed(true);
-    let wireText =
-      peer && !text.startsWith("/") ? `/tell ${peer} ${text}` : text;
-    if (replyTarget && !text.startsWith("/"))
-      wireText = `/reply ${replyTarget.id} ${draft}`;
-    if (peer && /^\/history(?:\s+\d+)?$/.test(text))
-      wireText = `${text === "/history" ? "/history 50" : text} ${peer}`;
-    sendFrame(socket.current, {
-      id,
-      room: consoleView ? null : selected,
-      text: wireText,
+      draft,
+      selected,
+      consoleView,
+      peer,
+      replyId: replyTarget?.id ?? null,
+    });
+    const kind = deletionKind(text);
+    if (kind) return requestDelete(() => submitComposer(submission), kind);
+    submitComposer(submission);
+  }
+  function submitComposer(submission: Readonly<ComposerSubmission>) {
+    if (lifecycle.pending) return;
+    const { text, selected: view, replyId } = submission;
+    dismissHints();
+    lifecycle.submit({
+      command: {
+        text,
+        room: view,
+        key: text.startsWith("/") ? append(text, null, false, view) : null,
+        reply: !!replyId && !text.startsWith("/"),
+      },
+      frame: submissionFrame(submission),
+      complete: (data, current) =>
+        handleAcknowledgement(data, current, submission.draft),
     });
   }
-  function keydown(event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) {
-    if (event.isComposing) return;
-    if (event.key === "Escape") {
-      setHintDismissed(true);
-      return;
-    }
-    if (hints.length && ["ArrowUp", "ArrowDown"].includes(event.key)) {
-      event.preventDefault();
-      setHintIndex(
-        (activeHint + (event.key === "ArrowDown" ? 1 : hints.length - 1)) %
-          hints.length,
-      );
-      return;
-    }
-    const hint = hints[activeHint];
-    if (event.key === "Tab" && hint?.value) {
-      event.preventDefault();
-      acceptHint(hint);
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      send(event);
-    }
-  }
-  useEffect(() => {
-    if (!pending) input.current?.focus();
-  }, [pending]);
-  function receive(data: Acknowledgement) {
-    const current = request.current;
-    if (!current || data.id !== current.id) return;
-    request.current = null;
-    setPending(false);
+  function handleAcknowledgement(
+    data: Acknowledgement,
+    current: PendingCommand,
+    submittedDraft?: string,
+  ) {
     const error = data.kind === "error";
-    if (accountResult.current) {
-      const resolve = accountResult.current;
-      accountResult.current = null;
-      resolve(data);
-      return;
-    }
     if (current.key) {
       const localHelp =
         !error && commandText(current.text) === "/help"
@@ -361,7 +296,7 @@ export function useCommands({
       complete(current.key, (data.text || "Done.") + localHelp, error);
     } else if (error) append(current.text, data.text, true, current.room);
     if (!error && !current.action) {
-      setDraft("");
+      if (draftRef.current === submittedDraft) setDraft("");
       if (current.reply) setReplyTarget(null);
       const [command, argument, name] = commandText(current.text).split(/\s+/u);
       const target =
@@ -393,20 +328,6 @@ export function useCommands({
       }
     }
   }
-  function disconnect() {
-    if (request.current) {
-      const current = request.current;
-      const error =
-        "Connection lost before confirmation. Check history before sending again.";
-      if (accountResult.current) {
-        accountResult.current({ kind: "error", id: current.id, text: error });
-        accountResult.current = null;
-      } else if (current.key) complete(current.key, error, true);
-      else append(current.text, error, true, current.room);
-      request.current = null;
-      setPending(false);
-    }
-  }
   return {
     aliases,
     saveAliasMapping,
@@ -430,7 +351,7 @@ export function useCommands({
     deleteConfirmation,
     cancelDelete,
     confirmDelete,
-    receive,
-    disconnect,
+    receive: lifecycle.receive,
+    disconnect: lifecycle.disconnect,
   };
 }

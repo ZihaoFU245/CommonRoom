@@ -420,7 +420,7 @@ Groups are predefined bundles of grants. Their scope determines where the bundle
 Private participants receive content grants in their original pair while they have a server group.
 Individual direct grants still add access.
 
-Migrated legacy admins may have explicit grants preserving older privileges.
+Additional explicit grants can extend these predefined bundles.
 Inspect actual grants before assuming fresh-account defaults.
 
 ## Manage groups

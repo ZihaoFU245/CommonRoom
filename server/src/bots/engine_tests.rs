@@ -284,7 +284,7 @@ fn failed_writes_roll_back_creation_credentials_and_messages() {
 }
 
 #[test]
-fn registrations_and_credentials_survive_restart_and_v7_upgrade_is_atomic() {
+fn registrations_and_credentials_survive_current_schema_restart() {
     let folder = tempfile::tempdir().unwrap();
     let path = folder.path().join("chat.sqlite");
     let secret;
@@ -300,17 +300,7 @@ fn registrations_and_credentials_survive_restart_and_v7_upgrade_is_atomic() {
             .unwrap()
             .to_owned();
         e.send_literal("helper", "support", "preserved").unwrap();
-        e.db.lock().unwrap().execute_batch("PRAGMA user_version=7; CREATE TRIGGER fail_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
     }
-    assert!(Engine::open(&path).is_err());
-    let db = Connection::open(&path).unwrap();
-    assert_eq!(
-        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap(),
-        7
-    );
-    db.execute_batch("DROP TRIGGER fail_upgrade").unwrap();
-    drop(db);
     let e = Engine::open(&path).unwrap();
     assert_eq!(e.bot_identity(&secret).as_deref(), Some("helper"));
     assert_eq!(
@@ -361,38 +351,6 @@ fn provisioning_and_credential_limits_fail_without_partial_changes() {
             .is_err()
     );
     assert!(e.data == previous);
-}
-
-#[test]
-fn legacy_v7_without_bot_metadata_preserves_accounts_sessions_policy_and_history() {
-    let folder = tempfile::tempdir().unwrap();
-    let path = folder.path().join("chat.sqlite");
-    let previous;
-    {
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("admin", "hash".into(), true, false).unwrap();
-        e.execute(Some("admin"), None, "/new room support").unwrap();
-        e.execute(Some("admin"), Some("support"), "legacy history")
-            .unwrap();
-        e.login("legacy-session".into(), "admin", "hash", None)
-            .unwrap();
-        e.mark_read("admin", "support", 1).unwrap();
-        previous = e.data.clone();
-        e.db.lock()
-            .unwrap()
-            .execute_batch(
-                "UPDATE state SET json=json_remove(json,'$.bots'); PRAGMA user_version=7;",
-            )
-            .unwrap();
-    }
-    let e = Engine::open(&path).unwrap();
-    assert!(e.data == previous);
-    assert_eq!(e.session("legacy-session").as_deref(), Some("admin"));
-    assert_eq!(
-        e.history("admin", "support").unwrap().messages[0].text,
-        "legacy history"
-    );
-    assert_eq!(e.unreads("admin").unwrap()["support"].count, 0);
 }
 
 #[test]

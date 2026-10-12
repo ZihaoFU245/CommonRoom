@@ -49,7 +49,7 @@ rtk pnpm --dir web format
 
 Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
 
-Web helper tests cover browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
+Web helper tests cover the shared request lifecycle (success, rejection, mismatched acknowledgements, send failure, disconnect and account promises), captured confirmations, private command routing, browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
 Build tests verify that both modes skip checks and that release packaging
 contains the `dist/` directory with its files. Rust tests also verify that a poisoned engine
@@ -57,7 +57,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Stored command-grant update and migration tests cover v5/v6 → v7 upgrade and v7 restart, state/cursor preservation, idempotence, and validation/write failures. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v8 restart, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -97,7 +97,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v5/v6 migration and v7 restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v8 restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -128,8 +128,7 @@ process peak RSS. It uses temporary databases, never `data/`. See
 Targeted-write tests reject unrelated payload/policy updates and inject failures at
 message insertion/eviction, counter/revision changes, reaction insertion, and new
 private-conversation creation; disk state, cache, sequences and revisions must all
-roll back. Migration tests verify successful state/cursor preservation and that
-validation, cursor decoding, or write failures leave v5 tables and version intact.
+roll back. Startup validation tests verify malformed current-schema policy and cursors fail without rewriting stored metadata.
 
 ## Bounded history regressions
 
@@ -137,7 +136,7 @@ validation, cursor decoding, or write failures leave v5 tables and version intac
 with sequence gaps, invalid bounds, empty-edge direction flags, large payload
 progress, around-anchor fallback, revision/cursor invalidation, retention changes,
 lazy startup, indexed deep-range query plans, streaming rename batches and name
-reuse, cache entry/byte/page budgets, transactional v6 upgrades, four
+reuse, cache entry/byte/page budgets, current-schema restart, four
 simultaneous readers, and WAL reader/writer overlap. Existing regression suites
 also verify private history survives account renames and persistence failures.
 Web server tests check overlapping engine readers and bounded work admission.
@@ -162,7 +161,7 @@ privacy and sudo inspection without joining or retaining elevated authority.
 
 ## Bot coverage
 
-Rust bot tests cover explicit scope resolution; safe direct defaults and filtered command lists; admin-only management; protected active/disabled su targets; ordinary grants/revokes; room/history privacy; mentions/replies/reactions/read cursors; literal slash text; credential hashing, labels, rotation/revocation; disable/enable/rename/delete and name reuse; creation/credential/message rollback; v7 → v8 migration/restart and injected migration failure; HTTP bearer-only boundaries, malformed requests, payload limits, Unicode, account-wide input budgets, shutdown and base paths.
+Rust bot tests cover explicit scope resolution; safe direct defaults and filtered command lists; admin-only management; protected active/disabled su targets; ordinary grants/revokes; room/history privacy; mentions/replies/reactions/read cursors; literal slash text; credential hashing, labels, rotation/revocation; disable/enable/rename/delete and name reuse; creation/credential/message rollback; v8 restart; HTTP bearer-only boundaries, malformed requests, payload limits, Unicode, account-wide input budgets, shutdown and base paths.
 
 The integration harness additionally connects a real bot WebSocket in production under /commonroom/, validates every frame with the frontend guards, checks normal mention delivery and bot replies, live permission revocation, credential revocation/disconnection, and history recovery after restart. It uses isolated temporary data.
 

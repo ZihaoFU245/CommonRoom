@@ -28,16 +28,7 @@ pub(super) fn room_messages(e: &Engine, name: &str) -> VecDeque<Message> {
 pub(super) fn private_messages(e: &Engine, key: &str) -> VecDeque<Message> {
     persisted_messages(e, &e.data.private[key].id)
 }
-fn full_data(e: &Engine) -> Data {
-    let mut data = e.data.clone();
-    for room in data.rooms.values_mut() {
-        room.messages = persisted_messages(e, &room.id);
-    }
-    for chat in data.private.values_mut() {
-        chat.messages = persisted_messages(e, &chat.id);
-    }
-    data
-}
+
 fn age_first(e: &Engine, id: &str) {
     e.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)",params![id,now()-8*86400]).unwrap();
 }
@@ -563,7 +554,7 @@ fn moving_folder_preserves_sessions_and_permissions() {
         e.login("session-token".into(), "alice", "hash", None)
             .unwrap();
         e.execute(Some("alice"), None, "/new room team").unwrap();
-        e.execute(Some("alice"), Some("team"), "before migration")
+        e.execute(Some("alice"), Some("team"), "before moving")
             .unwrap();
         e.checkpoint().unwrap();
     }
@@ -571,7 +562,7 @@ fn moving_folder_preserves_sessions_and_permissions() {
     let mut e = Engine::open(&destination.path().join("chat.sqlite")).unwrap();
     assert_eq!(e.session("session-token"), Some("alice".into()));
     assert!(e.snapshot("alice").unwrap().admin);
-    assert_eq!(room_messages(&e, "team")[0].text, "before migration");
+    assert_eq!(room_messages(&e, "team")[0].text, "before moving");
     e.provision("alice", "new-hash".into(), false, true)
         .unwrap();
     assert!(e.session("session-token").is_none());
@@ -1046,7 +1037,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 9] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 7, 9, 99] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1076,161 +1067,6 @@ fn old_and_unversioned_databases_are_rejected_without_modification() {
             .unwrap(),
             1
         );
-    }
-}
-
-#[test]
-fn command_family_upgrade_preserves_v5_state_and_runs_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    let mut before;
-    let mut expected;
-    let read_positions;
-    {
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("alice", "hash".into(), true, false).unwrap();
-        e.provision("bob", "hash".into(), false, false).unwrap();
-        e.execute(Some("alice"), None, "/new room team").unwrap();
-        e.execute(Some("alice"), None, "/add bob team").unwrap();
-        e.execute(Some("alice"), Some("team"), "retained history")
-            .unwrap();
-        let message_id = room_messages(&e, "team")[0].id.clone();
-        e.execute(
-            Some("alice"),
-            Some("team"),
-            &format!("/react {message_id} 🙂"),
-        )
-        .unwrap();
-        e.execute(
-            Some("alice"),
-            Some("team"),
-            &format!("/reply {message_id} quoted"),
-        )
-        .unwrap();
-        e.execute(Some("alice"), None, "/tell bob retained private")
-            .unwrap();
-        let private_id = private_messages(&e, "alice:bob")[0].id.clone();
-        e.execute(Some("bob"), None, &format!("/react {private_id} 🙂"))
-            .unwrap();
-        e.execute(
-            Some("bob"),
-            None,
-            &format!("/reply {private_id} private quote"),
-        )
-        .unwrap();
-        let private_sequence = private_messages(&e, "alice:bob")[0].sequence;
-        e.mark_read("bob", "@direct:alice", private_sequence)
-            .unwrap();
-        e.login("session".into(), "bob", "hash", None).unwrap();
-        let sequence = room_messages(&e, "team")[0].sequence;
-        e.mark_read("bob", "team", sequence).unwrap();
-        read_positions = e.read_positions.clone();
-        expected = e.data.clone();
-        before = full_data(&e);
-        // Model an existing v5 database, including the old owner command bundle.
-        for grant in &mut before.policy.grants {
-            if grant.permissions.remove("/rm") {
-                grant.permissions.insert("/delete".into());
-            }
-        }
-        before.policy.grants.push(authorization::Grant {
-            owner: false,
-            subject: authorization::Subject::Account(before.users["alice"].id.clone()),
-            scope: authorization::Scope::Server,
-            permissions: ["/deleteuser", "/user", "/rooms", "/users", "/ls"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            minimum_age: 0,
-        });
-        e.db.lock().unwrap().execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
-        e.db.lock()
-            .unwrap()
-            .execute(
-                "UPDATE state SET json=?1 WHERE id=1",
-                params![serde_json::to_string(&before).unwrap()],
-            )
-            .unwrap();
-    }
-    let mut account_grant = before.policy.grants.last().unwrap().clone();
-    account_grant.permissions = ["/new", "/rm", "/ls"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    expected.policy.grants.push(account_grant);
-    expected.policy.revision = expected.policy.revision.wrapping_add(1);
-    {
-        let mut e = Engine::open(&path).unwrap();
-        assert!(e.data == expected);
-        assert_eq!(e.read_positions, read_positions);
-        assert_eq!(e.session("session").as_deref(), Some("bob"));
-        assert!(
-            e.require_command(Some("alice"), Some("team"), "/rm")
-                .is_ok()
-        );
-        assert!(
-            e.execute(Some("alice"), Some("team"), "/delete team")
-                .is_err()
-        );
-        let stored: String =
-            e.db.lock()
-                .unwrap()
-                .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
-                .unwrap();
-        let mut saved: Data = serde_json::from_str(&stored).unwrap();
-        super::storage::load_entities(&e.db.lock().unwrap(), &mut saved).unwrap();
-        assert!(saved == expected);
-    }
-    let e = Engine::open(&path).unwrap();
-    assert!(e.data == expected);
-    assert_eq!(e.revision, 0);
-}
-
-#[test]
-fn command_family_upgrade_leaves_database_intact_on_validation_or_write_failure() {
-    for invalid in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.sqlite");
-        let original;
-        {
-            let e = Engine::open(&path).unwrap();
-            let mut data = e.data.clone();
-            data.policy.grants.push(authorization::Grant {
-                owner: false,
-                subject: authorization::Subject::Account("console".into()),
-                scope: authorization::Scope::Server,
-                permissions: if invalid {
-                    ["/delete", "/unknown"]
-                        .into_iter()
-                        .map(String::from)
-                        .collect()
-                } else {
-                    BTreeSet::from(["/delete".into()])
-                },
-                minimum_age: 0,
-            });
-            original = serde_json::to_string(&data).unwrap();
-            e.db.lock().unwrap().execute_batch("DROP TABLE entities; DROP TABLE reactions; DROP TABLE messages; DROP TABLE counters; DROP INDEX read_positions_conversation; PRAGMA user_version=5;").unwrap();
-            e.db.lock()
-                .unwrap()
-                .execute("UPDATE state SET json=?1 WHERE id=1", params![original])
-                .unwrap();
-            if !invalid {
-                e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'test upgrade failure'); END;").unwrap();
-            }
-        }
-        assert!(Engine::open(&path).is_err());
-        let db = Connection::open(&path).unwrap();
-        let stored: String = db
-            .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(stored, original);
-        assert_eq!(
-            db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                .unwrap(),
-            5
-        );
-        assert_eq!(db.query_row::<usize,_,_>("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('entities','messages','reactions','counters')",[],|r| r.get(0)).unwrap(),0);
     }
 }
 
@@ -1322,43 +1158,6 @@ fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
 }
 
 #[test]
-fn invalid_legacy_cursor_aborts_migration_before_schema_changes() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("chat.sqlite");
-    let data = engine().data;
-    let json = serde_json::to_string(&data).unwrap();
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY,json TEXT NOT NULL); CREATE TABLE read_positions(username TEXT,conversation TEXT,sequence INTEGER,PRIMARY KEY(username,conversation)); PRAGMA user_version=5;").unwrap();
-        db.execute("INSERT INTO state VALUES(1,?1)", params![json])
-            .unwrap();
-        db.execute("INSERT INTO read_positions VALUES('bob','lobby',-1)", [])
-            .unwrap();
-    }
-    assert!(Engine::open(&path).is_err());
-    let db = Connection::open(&path).unwrap();
-    assert_eq!(
-        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap(),
-        5
-    );
-    assert_eq!(
-        db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
-            .unwrap(),
-        json
-    );
-    assert_eq!(
-        db.query_row::<usize, _, _>(
-            "SELECT count(*) FROM sqlite_master WHERE type='table'",
-            [],
-            |r| r.get(0)
-        )
-        .unwrap(),
-        2
-    );
-}
-
-#[test]
 fn history_has_only_current_range_and_explicit_hash_room_forms() {
     let mut e = engine();
     e.set_limits(64, 64, 200).unwrap();
@@ -1426,4 +1225,90 @@ fn history_has_only_current_range_and_explicit_hash_room_forms() {
             .unwrap()
             .contains("protected history")
     );
+}
+
+#[test]
+fn current_schema_validation_failures_do_not_rewrite_metadata() {
+    for corruption in ["cursor", "policy", "missing_metadata"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let original;
+        {
+            let mut e = Engine::open(&path).unwrap();
+            e.provision("alice", "hash".into(), true, false).unwrap();
+            match corruption {
+                "cursor" => {
+                    e.db.lock()
+                        .unwrap()
+                        .execute_batch("INSERT INTO read_positions VALUES('alice','room',-1)")
+                        .unwrap();
+                }
+                "policy" => {
+                    e.data.policy.grants.push(authorization::Grant {
+                        owner: false,
+                        subject: authorization::Subject::Account(e.data.users["alice"].id.clone()),
+                        scope: authorization::Scope::Server,
+                        permissions: BTreeSet::from(["/delete".into()]),
+                        minimum_age: 0,
+                    });
+                    e.db.lock()
+                        .unwrap()
+                        .execute(
+                            "UPDATE state SET json=?1",
+                            params![serde_json::to_string(&e.data).unwrap()],
+                        )
+                        .unwrap();
+                }
+                "missing_metadata" => {
+                    e.db.lock()
+                        .unwrap()
+                        .execute_batch("UPDATE state SET json=json_remove(json,'$.bots')")
+                        .unwrap();
+                }
+                _ => {}
+            }
+            original =
+                e.db.lock()
+                    .unwrap()
+                    .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+                    .unwrap();
+        }
+        assert!(Engine::open(&path).is_err(), "{corruption}");
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap(),
+            8
+        );
+    }
+}
+
+#[test]
+fn current_schema_restart_preserves_policy_sessions_and_cursors_without_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let previous;
+    let cursors;
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.execute(Some("alice"), None, "/new room team").unwrap();
+        e.execute(Some("alice"), Some("team"), "preserved").unwrap();
+        e.mark_read("alice", "team", 1).unwrap();
+        e.login("session".into(), "alice", "hash", None).unwrap();
+        previous = e.data.clone();
+        cursors = e.read_positions.clone();
+        e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_state_write BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'startup must not rewrite state'); END;").unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    assert!(e.data == previous);
+    assert_eq!(e.read_positions, cursors);
+    assert_eq!(e.session("session").as_deref(), Some("alice"));
+    assert_eq!(e.revision, 0);
+    assert_eq!(room_messages(&e, "team")[0].text, "preserved");
 }

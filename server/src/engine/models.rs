@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
     pub hash: String,
-    #[serde(default)]
     pub id: String,
     pub disabled: bool,
 }
@@ -12,20 +11,16 @@ pub struct Account {
 pub struct Message {
     pub id: String,
     pub from: String,
-    #[serde(default)]
     pub author_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub private_id: String,
     pub to: Option<String>,
     pub text: String,
     pub time: u64,
-    #[serde(default)]
     pub sequence: u64,
     #[serde(default)]
     pub reactions: BTreeMap<String, BTreeSet<String>>,
-    #[serde(default)]
     pub reply: Option<Reply>,
-    #[serde(default)]
     pub mentions: BTreeSet<String>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -36,35 +31,26 @@ pub struct Reply {
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Room {
-    #[serde(default)]
     pub id: String,
-    #[serde(default)]
     pub owner_id: String,
     pub members: BTreeSet<String>,
     pub messages: VecDeque<Message>,
-    #[serde(default)]
     pub revision: u64,
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct PrivateChat {
-    #[serde(default)]
     pub id: String,
     pub messages: VecDeque<Message>,
     pub revision: u64,
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Data {
-    #[serde(default)]
     pub bots: BTreeMap<String, crate::bots::models::Registration>,
     pub users: BTreeMap<String, Account>,
     pub rooms: BTreeMap<String, Room>,
-    #[serde(default)]
     pub private: BTreeMap<String, PrivateChat>,
-    #[serde(default)]
     pub next_sequence: u64,
-    #[serde(default)]
     pub sessions: BTreeMap<String, Session>,
-    #[serde(default)]
     pub policy: super::authorization::Policy,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -831,7 +831,7 @@ mod tests {
         );
     }
     #[test]
-    fn v6_upgrade_is_transactional_and_startup_does_not_load_messages() {
+    fn current_schema_restart_does_not_load_messages() {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("chat.sqlite");
         {
@@ -845,26 +845,7 @@ mod tests {
             engine
                 .execute(Some("alice"), Some("room"), "preserved")
                 .unwrap();
-            engine.db.lock().unwrap().execute_batch("DROP INDEX messages_id; DROP INDEX messages_author; DROP INDEX messages_time; DROP INDEX messages_sequence; DROP INDEX entities_id; PRAGMA user_version=6; CREATE INDEX messages_author ON messages(sequence);").unwrap();
         }
-        assert!(Engine::open(&path).is_err());
-        let db = Connection::open(&path).unwrap();
-        assert_eq!(
-            db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                .unwrap(),
-            6
-        );
-        assert_eq!(
-            db.query_row::<usize, _, _>(
-                "SELECT count(*) FROM sqlite_master WHERE name='messages_id'",
-                [],
-                |r| r.get(0)
-            )
-            .unwrap(),
-            0
-        );
-        db.execute_batch("DROP INDEX messages_author;").unwrap();
-        drop(db);
         let engine = Engine::open(&path).unwrap();
         assert!(engine.data.rooms["room"].messages.is_empty());
         assert_eq!(engine.history_store.stats().unwrap()["messages"], 0);

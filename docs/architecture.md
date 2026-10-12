@@ -11,9 +11,9 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | Module | Responsibility |
 | --- | --- |
 | `models.rs` | Persisted data and serialized snapshot/history types |
-| `storage.rs` | SQLite opening, transactional migrations, writer connection, bounded maintenance, cursors, checkpointing |
+| `storage.rs` | SQLite opening, transactional initialization, writer connection, bounded maintenance, cursors, checkpointing |
 | `history.rs` | Four read-only connections, keyset pagination, bounded page/unread caches and cache statistics |
-| `authorization.rs` | Action/command grants, predefined group bundles, scope/ownership policies, compiled permission index, and audit |
+| `authorization.rs` and `authorization/` | Policy types, predefined bundles and compiled index; `access.rs` owns access checks/delegation, `commands.rs` owns policy inspection/mutations |
 | `accounts.rs` | Account/session lifecycle, roles, provisioning, and account deletion |
 | `rooms.rs` | Room creation, deletion, invitations, joining, and leaving |
 | `messages.rs` | Message construction, private queues, reactions, replies, and cleanup |
@@ -40,7 +40,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mut
 - `features/conversation/historyCache.ts` bounds each window to 1,000 messages/approximately 4 MiB and the shared browser history cache to 5,000 messages/16 MiB/32 views. Oldest views are evicted.
 - `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move.
 - `hooks/useReadTracking.ts` owns visible-message acknowledgements, scroll placement, and jump-to-unread.
-- `hooks/useCommands.ts` owns drafts, suggestions, pending request IDs, reactions/replies, and command acknowledgements.
+- `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns the shared single-request lifecycle and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
 - `hooks/useLocalConsole.ts` owns the tab-local command ledger and clearing. It never persists command output.
 - `hooks/useFonts.ts` and `useComposerResize.ts` own presentation preferences and input sizing.
 - `features/conversation/` contains pure ordering, date, mention, and unread helpers. `features/preferences/` contains browser preference and notification helpers.
@@ -51,7 +51,7 @@ Server snapshots are authoritative for membership, scoped permissions and comman
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. A v5 legacy migration necessarily decodes its historical whole-state JSON once.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. Only the current v8 schema is supported.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 

@@ -103,9 +103,9 @@ HTTP/WebSocket integration harness passes privacy, authorization/revocation,
 independent retention, monotonic cursors, account deletion/name reuse, restart,
 move-folder, and production proxy/cookie checks.
 
-Migration tests preserve v5 accounts, identities, ownership, policy, sessions,
+At the time of these historical measurements, migration tests preserved v5 accounts, identities, ownership, policy, sessions,
 messages/reactions/replies and read positions across upgrade and restart. Policy
-validation, cursor decoding, and injected storage failures leave the v5 version and
+validation, cursor decoding, and injected storage failures left the v5 version and
 schema intact. Targeted-write tests reject unrelated payload/policy writes and check
 exact row counts. Failure injection after insertion, eviction, counter/revision
 writes, reaction changes and private-pair creation verifies disk/cache rollback.
