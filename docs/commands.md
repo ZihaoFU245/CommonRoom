@@ -118,11 +118,25 @@ are excluded. The profile bell enables browser notifications for new mentions.
 Notifications require browser permission, work while the app is open, and omit
 refresh/history events, own messages, and the focused conversation. Clicking one
 opens its conversation; private previews appear only after opting in.
+The bell shows a slash while muted. Click the enabled bell to mute immediately;
+click the muted bell to enable notifications. Blocked permission is reported
+with instructions to change the browser's site settings.
+Composer suggestions show command syntax only; use `/man` for descriptions.
+All matching suggestions remain available in a scrollable list. Up/Down selects
+a match, Tab completes it, and repeated Tab cycles the matches. Shift+Tab moves
+focus backward. Completion replaces the token at the cursor and preserves
+following text. Command arguments suggest known users, rooms, scopes, permissions,
+retained message IDs/reactions, and bot subcommands. New names, passwords, bot
+token IDs, and remote configuration keys/values remain free-form.
 
 Settings opens Account with `/rename` and `/passwd` forms. Appearance controls
 light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 (12–18px); preferences stay in this browser. Reset restores defaults. Theme
 applies before rendering, and palette text contrast is at least 4.5:1.
+
+Navigation remembers its open or closed state in this browser across refreshes.
+The message input stays centered in the conversation pane and stops widening
+on large windows.
 
 ## Bot management
 

@@ -7,6 +7,7 @@ import type {
   Command,
   Hint,
 } from "../../api/protocol.ts";
+import { permissionNames } from "./completion.ts";
 // Commands and output live only in this tab; chat comes from server snapshots.
 export function ingest(
   snapshot: Pick<Snapshot, "rooms" | "direct">,
@@ -153,6 +154,11 @@ export function suggestions(
   commands: Command[],
   users: string[],
   rooms: string[],
+  context: {
+    messages?: Message[];
+    aliases?: string[];
+    privateScopes?: string[];
+  } = {},
 ): Hint[] {
   if (!draft.startsWith("/") || draft.includes("\n")) return [];
   const parts = draft.split(/\s+/);
@@ -172,12 +178,25 @@ export function suggestions(
   }
   const spec = commands.find((c) => c.name === name);
   if (!spec) return [];
+  if (name === "/alias" && parts.length > 3) {
+    return suggestions(
+      parts.slice(2).join(" "),
+      commands.filter((command) => !["/alias", "/sudo"].includes(command.name)),
+      users,
+      rooms,
+      context,
+    ).map((hint) => ({
+      ...hint,
+      value: hint.value ? `${parts.slice(0, 2).join(" ")} ${hint.value}` : null,
+    }));
+  }
   if (name === "/sudo") {
     return suggestions(
       draft.replace(/^\/sudo\s+/u, ""),
       commands.filter((command) => command.name !== "/sudo"),
       users,
       rooms,
+      context,
     ).map((hint) => ({
       ...hint,
       label: `/sudo ${hint.label}`,
@@ -192,12 +211,21 @@ export function suggestions(
       (prefix.startsWith("/") ||
         !["user", "admin", "su"].includes(parts[2] ?? ""))
     ) {
-      return commands
-        .filter((command) => command.name.startsWith(prefix))
-        .map((command) => ({
-          label: command.name,
+      return [
+        ...commands.map((command) => ({
+          value: command.name,
           description: describe(command),
-          value: [...parts.slice(0, 3), command.name].join(" ") + " ",
+        })),
+        ...permissionNames.map((value) => ({
+          value,
+          description: "Permission",
+        })),
+      ]
+        .filter((permission) => permission.value.startsWith(prefix))
+        .map((permission) => ({
+          label: permission.value,
+          description: permission.description,
+          value: [...parts.slice(0, 3), permission.value].join(" ") + " ",
         }));
     }
     const granted = commands.find((command) => command.name === parts[3]);
@@ -207,6 +235,48 @@ export function suggestions(
       ];
   }
   let values: string[] = [];
+  const scopes = [
+    ...rooms,
+    "@global",
+    ...users.map((user) => `@account:${user}`),
+    ...(context.privateScopes || []),
+  ];
+  if (name === "/bot") {
+    const operation = parts[1];
+    if (position === 1) values = ["new", "ls", "info", "rm", "token", "config"];
+    if (position === 2 && operation === "token") values = ["new", "ls", "rm"];
+    if (position === 2 && operation === "config") values = ["set", "fetch"];
+    if (
+      (position === 2 && ["info", "rm"].includes(operation || "")) ||
+      (position === 3 && ["token", "config"].includes(operation || ""))
+    )
+      values = users;
+    if (
+      (position === 2 && operation === "ls") ||
+      (position === 3 && ["new", "info"].includes(operation || ""))
+    )
+      values = [...rooms, "@global"];
+    if (position === 3 && operation === "rm") values = ["@global"];
+  }
+  if (name === "/debug" && position === 1) values = ["on", "off"];
+  if (name === "/permissions" && position === 1)
+    values = [...scopes, "@groups", "@audit"];
+  if (name === "/owner" && position === 1) values = users;
+  if (name === "/owner" && position === 2) values = rooms;
+  if (name === "/history" && position === 1)
+    values = rooms.map((room) => `#${room}`);
+  if (["/reply", "/react", "/retract"].includes(name) && position === 1)
+    values = (context.messages || []).map((message) => message.id);
+  if (name === "/react" && position === 2)
+    values = Object.keys(
+      context.messages?.find((message) => message.id === parts[1])?.reactions ||
+        {},
+    );
+  if (name === "/alias" && position === 1) values = context.aliases || [];
+  if (name === "/alias" && position === 2)
+    values = commands
+      .filter((command) => !["/alias", "/sudo"].includes(command.name))
+      .map((command) => command.name);
   if (["/new", "/rm", "/ls"].includes(name) && position === 1)
     values =
       name === "/new"
@@ -247,8 +317,8 @@ export function suggestions(
         "su",
         ...rooms,
         "@global",
-        "@account:",
-        "@private:",
+        ...users.map((user) => `@account:${user}`),
+        ...(context.privateScopes || []),
       ]),
     ];
   if (

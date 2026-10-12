@@ -5,7 +5,10 @@ import { useEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
-import { notifyMentions } from "../features/preferences/notifications.ts";
+import {
+  notifyMentions,
+  toggleMentionNotifications,
+} from "../features/preferences/notifications.ts";
 import {
   timeline,
   privatePeers,
@@ -60,40 +63,58 @@ export function Chat({
     }
   });
   const notificationsRef = useRef(notifications);
+  const notificationRequest = useRef(false);
   async function toggleNotifications() {
-    if (!("Notification" in window) || !window.isSecureContext) {
-      append(
-        "Notifications",
-        "Desktop notifications require a supported browser and HTTPS (or localhost).",
-        true,
-      );
-      return;
-    }
+    if (notificationRequest.current) return;
+    notificationRequest.current = true;
     try {
-      const enabled =
-        !notifications &&
-        (Notification.permission === "granted" ||
-          (await Notification.requestPermission()) === "granted");
+      const enabled = await toggleMentionNotifications(
+        notificationsRef.current,
+        window.Notification,
+        window.isSecureContext,
+      );
       notificationsRef.current = enabled;
       setNotifications(enabled);
-      localStorage.setItem("commonroom-notifications", enabled ? "on" : "off");
-      if (!enabled && Notification.permission === "denied")
-        append(
-          "Notifications",
-          "Notifications are blocked. Change permission in Chrome site settings.",
-          true,
+      try {
+        localStorage.setItem(
+          "commonroom-notifications",
+          enabled ? "on" : "off",
         );
-    } catch {
-      append(
-        "Notifications",
-        "This browser cannot enable notifications.",
-        true,
-      );
+      } catch {
+        // The toggle still works for this session without browser storage.
+      }
+    } catch (error) {
+      append("Notifications", errorMessage(error), true);
+    } finally {
+      notificationRequest.current = false;
     }
   }
-  const [menu, setMenu] = useState(
-    () => window.matchMedia("(min-width: 701px)").matches,
-  );
+  useEffect(() => {
+    const checkPermission = () => {
+      if (window.Notification?.permission !== "granted") {
+        notificationsRef.current = false;
+        setNotifications(false);
+      }
+    };
+    window.addEventListener("focus", checkPermission);
+    return () => window.removeEventListener("focus", checkPermission);
+  }, []);
+  const [menu, setMenu] = useState(() => {
+    try {
+      const saved = localStorage.getItem("commonroom-sidebar-open");
+      if (saved === "true" || saved === "false") return saved === "true";
+    } catch {
+      // Use the responsive default when browser storage is unavailable.
+    }
+    return window.matchMedia("(min-width: 701px)").matches;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("commonroom-sidebar-open", String(menu));
+    } catch {
+      // Navigation remains usable when browser storage is unavailable.
+    }
+  }, [menu]);
   const menuButton = useRef<HTMLButtonElement>(null);
   function closeMenu() {
     setMenu(false);
@@ -226,6 +247,7 @@ export function Chat({
     send,
     edit,
     keydown,
+    selectCaret,
     acceptHint,
     reactTo,
   } = commands;
@@ -522,6 +544,7 @@ export function Chat({
           send={send}
           edit={edit}
           keydown={keydown}
+          selectCaret={selectCaret}
         />
       </main>
     </div>

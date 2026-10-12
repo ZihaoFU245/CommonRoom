@@ -402,6 +402,9 @@ textarea {
 }
 
 .composer-area {
+  width: 100%;
+  max-width: 1000px;
+  margin-inline: auto;
   min-height: var(--chat-footer-height);
   padding: 12px 24px;
   border-top: 0;
@@ -463,8 +466,7 @@ textarea {
   flex-shrink: 0;
 }
 @media (min-width: 1500px) {
-  .message-list,
-  .composer-area {
+  .message-list {
     padding-left: 6vw;
     padding-right: 6vw;
   }

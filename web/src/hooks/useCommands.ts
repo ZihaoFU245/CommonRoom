@@ -104,6 +104,7 @@ export function useCommands({
     edit,
     acceptHint,
     keydown,
+    selectCaret,
     dismissHints,
   } = useCommandComposer({
     selected,
@@ -345,6 +346,7 @@ export function useCommands({
     send,
     edit,
     keydown,
+    selectCaret,
     acceptHint,
     reactTo,
     retract,

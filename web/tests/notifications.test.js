@@ -1,6 +1,48 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { notifyMentions } from "../src/features/preferences/notifications.ts";
+import {
+  notifyMentions,
+  toggleMentionNotifications,
+} from "../src/features/preferences/notifications.ts";
+
+test("muting never requests permission and enabling distinguishes granted, blocked and dismissed permission", async () => {
+  let requests = 0;
+  const notifications = {
+    permission: "granted",
+    async requestPermission() {
+      requests++;
+      return "granted";
+    },
+  };
+  assert.equal(await toggleMentionNotifications(true, undefined, false), false);
+  assert.equal(
+    await toggleMentionNotifications(false, notifications, true),
+    true,
+  );
+  assert.equal(requests, 0);
+  notifications.permission = "default";
+  assert.equal(
+    await toggleMentionNotifications(false, notifications, true),
+    true,
+  );
+  assert.equal(requests, 1);
+  notifications.permission = "denied";
+  await assert.rejects(
+    toggleMentionNotifications(false, notifications, true),
+    /blocked/,
+  );
+  assert.equal(requests, 1);
+  notifications.permission = "default";
+  notifications.requestPermission = async () => "default";
+  await assert.rejects(
+    toggleMentionNotifications(false, notifications, true),
+    /remain muted/,
+  );
+  await assert.rejects(
+    toggleMentionNotifications(false, undefined, true),
+    /supported browser/,
+  );
+});
 test("notification delivery respects permission, foreground view and reconnect baseline; click opens the conversation", () => {
   const previous = {
     username: "alice",

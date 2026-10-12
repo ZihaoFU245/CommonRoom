@@ -8,6 +8,29 @@ interface NotificationOptions {
   open: (view: string) => void;
 }
 import { mentionEvents } from "../conversation/interactions.ts";
+export async function toggleMentionNotifications(
+  enabled: boolean,
+  NotificationClass: typeof Notification | undefined,
+  secureContext: boolean,
+): Promise<boolean> {
+  if (enabled) return false;
+  if (!NotificationClass || !secureContext)
+    throw new Error(
+      "Desktop notifications require a supported browser and HTTPS (or localhost).",
+    );
+  const permission =
+    NotificationClass.permission === "default"
+      ? await NotificationClass.requestPermission()
+      : NotificationClass.permission;
+  if (permission !== "granted")
+    throw new Error(
+      permission === "denied"
+        ? "Notifications are blocked. Allow notifications in your browser's site settings, then try again."
+        : "Notification permission was not granted. Notifications remain muted.",
+    );
+  return true;
+}
+
 export function notifyMentions(
   previous: Snapshot,
   next: Snapshot,

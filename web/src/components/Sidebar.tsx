@@ -112,17 +112,18 @@ export function Sidebar({
             aria-pressed={notifications}
             aria-label={
               notifications
-                ? "Disable mention notifications"
+                ? "Mute mention notifications"
                 : "Enable mention notifications"
             }
             title={
               notifications
                 ? "Mention notifications on"
-                : "Enable mention notifications"
+                : "Mention notifications muted · Click to enable"
             }
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 17h14l-2-3V9a5 5 0 0 0-10 0v5l-2 3Zm5 3h4" />
+              {!notifications && <path d="m3 3 18 18" />}
             </svg>
           </button>
           <button

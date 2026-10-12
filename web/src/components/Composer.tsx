@@ -1,5 +1,6 @@
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
+import { useEffect, useRef } from "preact/hooks";
 interface Props {
   minimumComposerHeight: number;
   actualComposerHeight: number;
@@ -20,6 +21,7 @@ interface Props {
   send: JSX.SubmitEventHandler<HTMLFormElement>;
   edit: (value: string) => void;
   keydown: JSX.KeyboardEventHandler<HTMLTextAreaElement>;
+  selectCaret: () => void;
 }
 export function Composer({
   minimumComposerHeight,
@@ -41,7 +43,14 @@ export function Composer({
   send,
   edit,
   keydown,
+  selectCaret,
 }: Props) {
+  const hintList = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    hintList.current
+      ?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeHint, hints.length]);
   return (
     <div class="composer-area">
       <div
@@ -76,6 +85,7 @@ export function Composer({
       {hints.length > 0 && (
         <ul
           class="command-hints"
+          ref={hintList}
           id="command-hints"
           role="listbox"
           aria-label="Command suggestions"
@@ -96,7 +106,6 @@ export function Composer({
                 disabled={!hint.value}
               >
                 <code>{hint.label}</code>
-                <span>{hint.description}</span>
               </button>
             </li>
           ))}
@@ -149,6 +158,9 @@ export function Composer({
           disabled={pending}
           onInput={(event) => edit(event.currentTarget.value)}
           onKeyDown={keydown}
+          onSelect={selectCaret}
+          onClick={selectCaret}
+          onKeyUp={selectCaret}
         />
         <button
           class="send-button"
