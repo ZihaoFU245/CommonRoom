@@ -242,6 +242,23 @@ textarea {
   height: 100dvh;
   color: var(--muted);
 }
+.chat-shell {
+  position: relative;
+  height: 100dvh;
+}
+.navigation-toggle {
+  position: absolute;
+  top: 16px;
+  left: 24px;
+  z-index: 101;
+  transition: left 120ms ease-out;
+}
+.navigation-open .navigation-toggle {
+  left: 224px;
+}
+.chat-shell:not(.navigation-open) .chat-header {
+  padding-left: 68px;
+}
 .chat-layout {
   height: 100dvh;
   display: flex;
@@ -343,11 +360,17 @@ textarea {
   font-size: 1.5rem;
 }
 .conversation {
+  position: absolute;
+  inset: 0 0 0 auto;
   background: var(--paper);
-  flex: 1;
+  flex: none;
+  width: 100%;
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+.navigation-open .conversation {
+  width: calc(100% - 280px);
 }
 .chat-header {
   min-height: var(--chat-header-height);
@@ -432,6 +455,12 @@ textarea {
   padding: 3px 0;
   outline: none;
   line-height: 1.5;
+  transition: height 120ms ease-out;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.composer textarea::-webkit-scrollbar {
+  display: none;
 }
 .composer textarea::placeholder {
   color: var(--placeholder);
@@ -472,6 +501,18 @@ textarea {
   }
 }
 @media (max-width: 700px) {
+  .navigation-open .conversation {
+    width: 100%;
+  }
+  .navigation-toggle {
+    left: 16px;
+  }
+  .navigation-open .navigation-toggle {
+    left: calc(min(290px, 85vw) - 54px);
+  }
+  .chat-shell .chat-header {
+    padding-left: 60px;
+  }
   .sidebar {
     display: none;
   }
@@ -526,6 +567,13 @@ textarea {
 
   .login-page {
     padding: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer textarea,
+  .navigation-toggle {
+    transition: none;
   }
 }
 
@@ -879,10 +927,33 @@ button:focus-visible {
   position: relative;
   font-size: 0.85714rem;
 }
-.online-users summary {
+.online-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
   cursor: pointer;
   color: var(--muted);
   white-space: nowrap;
+}
+.online-toggle:hover,
+.online-users.open .online-toggle {
+  background: var(--wash);
+  color: var(--ink);
+}
+.online-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 120ms ease-out;
+}
+.online-users.open .online-toggle svg {
+  transform: rotate(180deg);
 }
 .online-list {
   position: absolute;
@@ -898,11 +969,31 @@ button:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow-float);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition:
+    opacity 120ms ease-out,
+    transform 120ms ease-out,
+    visibility 120ms;
+}
+.online-users.open .online-list {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 .online-list span {
   display: block;
   padding: 4px;
   overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .online-list,
+  .online-toggle svg {
+    transition: none;
+  }
 }
 
 /* Chat messages use the UI font; command output keeps its console typography. */

@@ -16,6 +16,7 @@ import {
 } from "../features/conversation/console.ts";
 import { DeleteConfirmation } from "./DeleteConfirmation.tsx";
 import { Sidebar } from "./Sidebar.tsx";
+import { OnlineUsers } from "./OnlineUsers.tsx";
 import { Settings } from "./Settings.tsx";
 import { Composer } from "./Composer.tsx";
 import { MessageList } from "./MessageList.tsx";
@@ -26,6 +27,7 @@ import { useFonts } from "../hooks/useFonts.ts";
 import type { useTheme } from "../hooks/useTheme.ts";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useEvent } from "../hooks/useEvent.ts";
+import autoAnimate from "@formkit/auto-animate";
 
 export function Chat({
   initial,
@@ -116,6 +118,15 @@ export function Chat({
     }
   }, [menu]);
   const menuButton = useRef<HTMLButtonElement>(null);
+  const animatedLayout = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!animatedLayout.current) return;
+    const animation = autoAnimate(animatedLayout.current, {
+      duration: 120,
+      easing: "ease-out",
+    });
+    return () => animation.destroy?.();
+  }, []);
   function closeMenu() {
     setMenu(false);
     requestAnimationFrame(() => menuButton.current?.focus());
@@ -136,14 +147,6 @@ export function Chat({
   const input = useRef<HTMLTextAreaElement>(null);
   const { output, cleared, setCleared, ledger, append, complete, clearView } =
     useLocalConsole(initial, selected, selectedRef, atBottom);
-  const {
-    minimumComposerHeight,
-    actualComposerHeight,
-    startResize,
-    moveResize,
-    endResize,
-    resizeComposer,
-  } = useComposerResize(fonts.chat, input);
   const { state, currentState, status, socket } = useConnection(initial, {
     onLogout,
     onSnapshot(previous, data, baseline) {
@@ -252,6 +255,14 @@ export function Chat({
     reactTo,
   } = commands;
   const {
+    minimumComposerHeight,
+    actualComposerHeight,
+    startResize,
+    moveResize,
+    endResize,
+    resizeComposer,
+  } = useComposerResize(fonts.chat, input, draft);
+  const {
     unread,
     historyReady,
     messages,
@@ -356,7 +367,19 @@ export function Chat({
     input.current?.focus();
   }
   return (
-    <div class="chat-layout">
+    <div class={`chat-shell ${menu ? "navigation-open" : ""}`}>
+      <button
+        class="mobile-menu navigation-toggle"
+        ref={menuButton}
+        aria-label={menu ? "Close navigation" : "Open navigation"}
+        aria-expanded={menu}
+        aria-controls="navigation"
+        onClick={() => (menu ? closeMenu() : setMenu(true))}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d={menu ? "m6 6 12 12M18 6 6 18" : "M5 6h14M5 12h14M5 18h14"} />
+        </svg>
+      </button>
       {commands.deleteConfirmation && (
         <DeleteConfirmation
           kind={commands.deleteConfirmation}
@@ -364,23 +387,6 @@ export function Chat({
           onConfirm={commands.confirmDelete}
         />
       )}
-      <Sidebar
-        state={state}
-        menu={menu}
-        selected={selected}
-        peers={peers}
-        peer={peer}
-        closeMenu={closeMenu}
-        choose={choose}
-        openSettings={() => setSettingsOpen(true)}
-        toggleNotifications={() => {
-          toggleNotifications().catch(reportUnexpectedError);
-        }}
-        notifications={notifications}
-        logout={() => {
-          logout().catch(reportUnexpectedError);
-        }}
-      />
       {settingsOpen && (
         <Settings
           state={state}
@@ -405,148 +411,140 @@ export function Chat({
           onClick={closeMenu}
         />
       )}
-      <main class="conversation">
-        <header class="chat-header">
-          <button
-            class="mobile-menu"
-            hidden={menu}
-            ref={menuButton}
-            aria-label={menu ? "Close navigation" : "Open navigation"}
-            aria-expanded={menu}
-            aria-controls="navigation"
-            onClick={() => (menu ? closeMenu() : setMenu(true))}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 6h14M5 12h14M5 18h14" />
-            </svg>
-          </button>
-          <div class="room-title">
-            <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
-            <h1>
-              {consoleView
-                ? "Command"
-                : direct
-                  ? peer || "Private messages"
-                  : selected}
-            </h1>
-          </div>
-          <div class="header-actions">
-            <details class="online-users">
-              <summary>
+      <div class="chat-layout" ref={animatedLayout}>
+        {menu && (
+          <Sidebar
+            state={state}
+            selected={selected}
+            peers={peers}
+            peer={peer}
+            choose={choose}
+            openSettings={() => setSettingsOpen(true)}
+            toggleNotifications={() => {
+              toggleNotifications().catch(reportUnexpectedError);
+            }}
+            notifications={notifications}
+            logout={() => {
+              logout().catch(reportUnexpectedError);
+            }}
+          />
+        )}
+        <main class="conversation">
+          <header class="chat-header">
+            <div class="room-title">
+              <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
+              <h1>
+                {consoleView
+                  ? "Command"
+                  : direct
+                    ? peer || "Private messages"
+                    : selected}
+              </h1>
+            </div>
+            <div class="header-actions">
+              <OnlineUsers
+                names={state.online}
+                username={state.username}
+                connected={status === "online"}
+              />
+              <span
+                class={`connection ${status}`}
+                role="status"
+                aria-label={
+                  status === "online"
+                    ? "Connected"
+                    : status === "connecting"
+                      ? "Connecting"
+                      : "Reconnecting"
+                }
+              >
+                <i />
                 {status === "online"
-                  ? `${state.online.length} online`
-                  : "Online users"}
-              </summary>
-              <div class="online-list">
-                {status === "online" ? (
-                  state.online.map((name) => (
-                    <span key={name}>
-                      {name}
-                      {name === state.username ? " (you)" : ""}
-                    </span>
-                  ))
-                ) : (
-                  <span>Reconnecting…</span>
-                )}
-              </div>
-            </details>
-            <span
-              class={`connection ${status}`}
-              role="status"
-              aria-label={
-                status === "online"
                   ? "Connected"
                   : status === "connecting"
                     ? "Connecting"
-                    : "Reconnecting"
-              }
-            >
-              <i />
-              {status === "online"
-                ? "Connected"
-                : status === "connecting"
-                  ? "Connecting"
-                  : "Reconnecting"}
-            </span>
-          </div>
-        </header>
-        {unread && unread.count > 0 && (
-          <div class="unread-bar">
-            <span>{unread.count} unread</span>
-            <button onClick={jumpToUnread}>Jump to unread ↓</button>
-          </div>
-        )}
-        {(hasBefore || hasAfter || loading) && (
-          <div class="history-navigation">
-            {hasBefore && (
-              <button disabled={loading} onClick={loadOlder}>
-                Older messages
-              </button>
-            )}
-            {loading && <span role="status">Loading history…</span>}
-            {hasAfter && (
-              <>
-                <button disabled={loading} onClick={loadNewer}>
-                  Newer messages
+                    : "Reconnecting"}
+              </span>
+            </div>
+          </header>
+          {unread && unread.count > 0 && (
+            <div class="unread-bar">
+              <span>{unread.count} unread</span>
+              <button onClick={jumpToUnread}>Jump to unread ↓</button>
+            </div>
+          )}
+          {(hasBefore || hasAfter || loading) && (
+            <div class="history-navigation">
+              {hasBefore && (
+                <button disabled={loading} onClick={loadOlder}>
+                  Older messages
                 </button>
-                <button
-                  disabled={loading}
-                  onClick={() => {
-                    atBottom.current = true;
-                    loadLatest();
-                  }}
-                >
-                  Latest messages
-                </button>
-              </>
-            )}
-          </div>
-        )}
-        {historyError && (
-          <div class="history-error" role="alert">
-            {historyError}
-            <button onClick={() => retryHistory()}>Retry history</button>
-          </div>
-        )}
-        <MessageList
-          debug={commands.debug}
-          permissions={commands.permissions}
-          commands={commands.serverCommands}
-          entries={entries}
-          username={state.username}
-          pending={pending}
-          unreadBoundary={unreadBoundary}
-          onReact={handleReact}
-          onReply={handleReply}
-          onDelete={handleDelete}
-          virtualTimeline={virtualTimeline}
-          historyElement={historyElement}
-          end={end}
-          onScroll={handleScroll}
-        />
-        <Composer
-          canWrite={commands.permissions.includes("w:message.create")}
-          minimumComposerHeight={minimumComposerHeight}
-          actualComposerHeight={actualComposerHeight}
-          hints={hints}
-          activeHint={activeHint}
-          replyTarget={replyTarget}
-          input={input}
-          consoleView={consoleView}
-          draft={draft}
-          pending={pending}
-          startResize={startResize}
-          moveResize={moveResize}
-          endResize={endResize}
-          resizeComposer={resizeComposer}
-          acceptHint={acceptHint}
-          cancelReply={() => setReplyTarget(null)}
-          send={send}
-          edit={edit}
-          keydown={keydown}
-          selectCaret={selectCaret}
-        />
-      </main>
+              )}
+              {loading && <span role="status">Loading history…</span>}
+              {hasAfter && (
+                <>
+                  <button disabled={loading} onClick={loadNewer}>
+                    Newer messages
+                  </button>
+                  <button
+                    disabled={loading}
+                    onClick={() => {
+                      atBottom.current = true;
+                      loadLatest();
+                    }}
+                  >
+                    Latest messages
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {historyError && (
+            <div class="history-error" role="alert">
+              {historyError}
+              <button onClick={() => retryHistory()}>Retry history</button>
+            </div>
+          )}
+          <MessageList
+            debug={commands.debug}
+            permissions={commands.permissions}
+            commands={commands.serverCommands}
+            entries={entries}
+            username={state.username}
+            pending={pending}
+            unreadBoundary={unreadBoundary}
+            onReact={handleReact}
+            onReply={handleReply}
+            onDelete={handleDelete}
+            virtualTimeline={virtualTimeline}
+            historyElement={historyElement}
+            end={end}
+            onScroll={handleScroll}
+          />
+          <Composer
+            canWrite={commands.permissions.includes("w:message.create")}
+            minimumComposerHeight={minimumComposerHeight}
+            actualComposerHeight={actualComposerHeight}
+            hints={hints}
+            activeHint={activeHint}
+            replyTarget={replyTarget}
+            input={input}
+            consoleView={consoleView}
+            draft={draft}
+            pending={pending}
+            startResize={startResize}
+            moveResize={moveResize}
+            endResize={endResize}
+            resizeComposer={resizeComposer}
+            acceptHint={acceptHint}
+            cancelReply={() => setReplyTarget(null)}
+            send={send}
+            edit={edit}
+            keydown={keydown}
+            selectCaret={selectCaret}
+          />
+        </main>
+      </div>
     </div>
   );
 }

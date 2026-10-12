@@ -16,6 +16,7 @@
     "format:check": "prettier --check src tests scripts vite.config.ts eslint.config.mjs tsconfig.json package.json"
   },
   "dependencies": {
+    "@formkit/auto-animate": "^0.10.0",
     "preact": "^10.27.0"
   },
   "devDependencies": {

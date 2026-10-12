@@ -3,11 +3,9 @@ import { Brand } from "./Brand.tsx";
 import { UnreadBadge } from "./UnreadBadge.tsx";
 interface Props {
   state: Snapshot;
-  menu: boolean;
   selected: string;
   peers: string[];
   peer: string | null;
-  closeMenu: () => void;
   choose: (name: string) => void;
   openSettings: () => void;
   toggleNotifications: () => void;
@@ -16,11 +14,9 @@ interface Props {
 }
 export function Sidebar({
   state,
-  menu,
   selected,
   peers,
   peer,
-  closeMenu,
   choose,
   openSettings,
   toggleNotifications,
@@ -28,18 +24,9 @@ export function Sidebar({
   logout,
 }: Props) {
   return (
-    <aside id="navigation" class={`sidebar ${menu ? "visible" : ""}`}>
+    <aside id="navigation" class="sidebar visible">
       <div class="sidebar-heading">
         <Brand />
-        <button
-          class="sidebar-close"
-          aria-label="Close navigation"
-          onClick={closeMenu}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m6 6 12 12M18 6 6 18" />
-          </svg>
-        </button>
       </div>
       <nav class="navigation" aria-label="Conversations">
         <details class="nav-group" open>

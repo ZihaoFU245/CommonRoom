@@ -135,8 +135,14 @@ light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 applies before rendering, and palette text contrast is at least 4.5:1.
 
 Navigation remembers its open or closed state in this browser across refreshes.
+The menu button moves to the right of the logo and becomes an X while navigation
+is open. AutoAnimate gives
+opening and closing a short transition, respecting reduced-motion preferences.
 The message input stays centered in the conversation pane and stops widening
-on large windows.
+on large windows. It grows and shrinks with wrapped text and new lines, up to
+240px or 40% of the viewport height; longer drafts scroll inside the input with
+the scrollbar hidden. The online count opens a short animated dropdown; click
+outside or press Escape to close it.
 
 ## Bot management
 
