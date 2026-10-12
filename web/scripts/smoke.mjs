@@ -117,21 +117,61 @@ async function login(username, password = `${username}-long-password`) {
   assert.match(cookie, /HttpOnly/);
   return cookie.split(";")[0];
 }
-async function connect(cookie) {
+async function connect(cookie, botToken = null, directBot = false) {
   const client = {
-    ws: new WebSocket(`${base.replace("http:", "ws:")}/ws`, {
-      headers: {
-        Origin: production ? publicOrigin : origin,
-        Cookie: cookie,
-        ...(production ? { "X-Forwarded-Proto": "https" } : {}),
+    ws: new WebSocket(
+      `${base.replace("http:", "ws:")}${botToken ? "/api/bot/ws" : "/ws"}`,
+      {
+        headers: {
+          ...(botToken
+            ? { Authorization: `Bearer ${botToken}` }
+            : { Origin: production ? publicOrigin : origin, Cookie: cookie }),
+          ...(production && !directBot ? { "X-Forwarded-Proto": "https" } : {}),
+        },
       },
-    }),
+    ),
     frames: [],
     serial: 0,
     snapshot: null,
+    runtimeConfig: {},
+    configRequests: [],
+    ignoreConfig: false,
   };
   sockets.push(client);
   client.ws.on("message", (raw) => {
+    const control = JSON.parse(raw.toString());
+    if (control.kind === "config_request") {
+      assert.ok(botToken, "config requests never reach browser clients");
+      assert.equal(typeof control.id, "string");
+      assert.match(control.id, /^[a-f0-9-]{36}$/);
+      assert.ok(["set", "fetch"].includes(control.operation));
+      assert.ok(control.key === null || typeof control.key === "string");
+      assert.ok(control.value === null || typeof control.value === "string");
+      client.configRequests.push(control);
+      if (client.ignoreConfig) return;
+      if (control.key === "unsupported") {
+        client.ws.send(
+          JSON.stringify({
+            kind: "config_response",
+            id: control.id,
+            error: "Unsupported key",
+          }),
+        );
+        return;
+      }
+      if (control.operation === "set")
+        client.runtimeConfig[control.key] = control.value;
+      const values =
+        control.key === null
+          ? client.runtimeConfig
+          : Object.hasOwn(client.runtimeConfig, control.key)
+            ? { [control.key]: client.runtimeConfig[control.key] }
+            : {};
+      client.ws.send(
+        JSON.stringify({ kind: "config_response", id: control.id, values }),
+      );
+      return;
+    }
     const frame = parseFrame(raw.toString());
     assert.ok(
       frame,
@@ -1159,6 +1199,186 @@ try {
   await request("logout", pagingCookie, {});
   assert.equal((await request("history?view=paged", pagingCookie)).status, 401);
   await stop();
+  // Bot API uses bearer credentials, existing grants, and the same validated frames.
+  const botData = join(temporary, "bots");
+  await start(botData, true, undefined, "/commonroom/");
+  child.stdin.write(
+    "/new user alice alice-long-password admin\n/new room support\n/grant alice admin support\n/grant alice @global /sudo\n/grant alice @global x:command.sudo\n/new room secret\n",
+  );
+  await until(() => logs.includes("Created #secret."), "bot fixture");
+  const botAdmin = await connect(await login("alice"));
+  await send(botAdmin, "/bot new helper", "support");
+  await send(botAdmin, "/bot token new helper runner");
+  const botSecret = botAdmin.frames
+    .find((f) => f.id === botAdmin.serial)
+    .text.split("\n")
+    .at(-1);
+  assert.match(botSecret, /^bot_[a-f0-9]{64}$/);
+  assert.ok(
+    !logs.includes(botSecret),
+    "credentials must not enter application logs",
+  );
+  const botFetch = async (path, body) =>
+    fetch(`${base}/api/bot/${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: `Bearer ${botSecret}`,
+        "X-Forwarded-Proto": "https",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const directBotResponse = await fetch(`${base}/api/bot/me`, {
+    headers: { Authorization: `Bearer ${botSecret}` },
+  });
+  assert.equal(directBotResponse.status, 200, "trusted direct HTTP bot access");
+  const directBotDenied = await fetch(`${base}/api/bot/me`, {
+    headers: { Authorization: "Bearer invalid" },
+  });
+  assert.equal(
+    directBotDenied.status,
+    401,
+    "trusted IP never replaces bot authentication",
+  );
+  const agent = await connect(null, botSecret, true);
+  assert.deepEqual(
+    agent.snapshot.rooms.map((r) => r.name),
+    ["support"],
+  );
+  await send(botAdmin, "/bot config fetch helper", null, "error");
+  assert.match(
+    botAdmin.frames.find((f) => f.id === botAdmin.serial).text,
+    /offline/,
+  );
+  agent.ws.send(JSON.stringify({ kind: "config_ready" }));
+  await until(
+    () => agent.frames.some((f) => f.id === 0 && f.kind === "notice"),
+    "runtime registration",
+  );
+  await send(botAdmin, '/bot config set helper prompt "Help with Rust"');
+  assert.equal(agent.runtimeConfig.prompt, "Help with Rust");
+  await send(botAdmin, "/bot config fetch helper prompt");
+  assert.deepEqual(
+    JSON.parse(botAdmin.frames.find((f) => f.id === botAdmin.serial).text)
+      .values,
+    { prompt: "Help with Rust" },
+  );
+  await send(botAdmin, "/bot config fetch helper");
+  assert.deepEqual(
+    JSON.parse(botAdmin.frames.find((f) => f.id === botAdmin.serial).text)
+      .values,
+    agent.runtimeConfig,
+  );
+  await send(botAdmin, "/bot config set helper unsupported x", null, "error");
+  assert.match(
+    botAdmin.frames.find((f) => f.id === botAdmin.serial).text,
+    /Unsupported key/,
+  );
+  // Room ownership/admin alone cannot control another account's runtime.
+  child.stdin.write(
+    "/new user delegate delegate-long-password user\n/grant delegate admin support\n",
+  );
+  await until(
+    () => logs.includes("Account delegate created."),
+    "delegate fixture",
+  );
+  const delegate = await connect(
+    await login("delegate", "delegate-long-password"),
+  );
+  await send(delegate, "/bot config fetch helper", null, "error");
+  await send(botAdmin, "/sudo /grant delegate @account:helper /bot");
+  await send(botAdmin, "/sudo /grant delegate @account:helper r:bot.config");
+  await send(delegate, "/bot config fetch helper prompt");
+  await send(delegate, "/bot config set helper prompt denied", null, "error");
+  await send(botAdmin, "/sudo /grant delegate @account:helper w:bot.config");
+  await send(delegate, "/bot config set helper prompt delegated");
+  assert.equal(agent.runtimeConfig.prompt, "delegated");
+  await send(delegate, "/bot token new helper stolen", null, "error");
+  await send(botAdmin, "/sudo /revoke delegate @account:helper w:bot.config");
+  await send(delegate, "/bot config set helper prompt denied", null, "error");
+  agent.ws.send(
+    JSON.stringify({
+      kind: "config_response",
+      id: "unknown",
+      values: { prompt: "spoofed" },
+    }),
+  );
+  await until(
+    () =>
+      agent.frames.some(
+        (f) => f.id === 0 && f.kind === "error" && /Unknown/.test(f.text),
+      ),
+    "unsolicited response rejected",
+  );
+  // A second socket cannot silently take over runtime control.
+  const duplicateRuntime = await connect(null, botSecret, true);
+  duplicateRuntime.ws.send(JSON.stringify({ kind: "config_ready" }));
+  await until(
+    () => duplicateRuntime.frames.some((f) => f.id === 0 && f.kind === "error"),
+    "duplicate runtime rejected",
+  );
+  duplicateRuntime.ws.close();
+  assert.ok(agent.snapshot.rooms[0].commands.some((c) => c.name === "/man"));
+  assert.ok(!agent.snapshot.commands.some((c) => c.name === "/retract"));
+  await send(botAdmin, "@helper please help", "support");
+  await until(
+    () =>
+      agent.snapshot.rooms[0].messages.some((m) =>
+        m.mentions.includes("helper"),
+      ),
+    "normal bot mention",
+  );
+  const mention = agent.snapshot.rooms[0].messages.find((m) =>
+    m.mentions.includes("helper"),
+  );
+  await send(agent, `/reply ${mention.id} Here is my answer.`, "support");
+  await until(
+    () => botAdmin.snapshot.rooms[0].messages.some((m) => m.from === "helper"),
+    "bot reply delivery",
+  );
+  await send(agent, `/retract ${mention.id}`, "support", "error");
+  assert.equal((await botFetch("history?view=secret")).status, 403);
+  assert.equal(
+    (
+      await botFetch("messages", {
+        id: 1,
+        view: "support",
+        text: "/rm user alice",
+      })
+    ).status,
+    200,
+  );
+  await send(botAdmin, "/revoke helper support r:message.read", "support");
+  await until(
+    () => agent.snapshot.rooms.length === 0,
+    "bot permission revocation clears live history",
+  );
+  assert.equal((await botFetch("history?view=support")).status, 403);
+  await send(botAdmin, "/grant helper support r:message.read", "support");
+  await until(() => agent.snapshot.rooms.length === 1, "bot regrant");
+  const after = agent.snapshot.rooms[0].messages.at(-1).sequence;
+  await stop();
+  await start(botData, true, undefined, "/commonroom/");
+  const offlineAdmin = await connect(await login("alice"));
+  await send(offlineAdmin, "while agent offline", "support");
+  const recovered = await botFetch(`history?view=support&after=${after}`);
+  assert.equal(recovered.status, 200);
+  const recoveryPage = await recovered.json();
+  assert.ok(isHistory(recoveryPage));
+  assert.equal(recoveryPage.messages.at(-1).text, "while agent offline");
+  const botReconnected = await connect(null, botSecret, true);
+  await send(offlineAdmin, "/bot token ls helper");
+  const credentialId = offlineAdmin.frames
+    .find((f) => f.id === offlineAdmin.serial)
+    .text.split("\n")[1]
+    .split(" ")[0];
+  await send(offlineAdmin, `/bot token rm helper ${credentialId}`);
+  await until(
+    () => botReconnected.ws.readyState === WebSocket.CLOSED,
+    "credential revocation disconnects bot",
+  );
+  assert.equal((await botFetch("me")).status, 401);
+  await stop();
   await start(join(temporary, "untrusted-proxy"), true, "10.0.0.2");
   const spoofed = await fetch(`${base}/api/health`, {
     headers: {
@@ -1173,7 +1393,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: bot bearer API, mentions, replies, scoped permissions, credential revocation, reconnect recovery, base paths, bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

@@ -54,6 +54,8 @@ pub struct PrivateChat {
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Data {
+    #[serde(default)]
+    pub bots: BTreeMap<String, crate::bots::models::Registration>,
     pub users: BTreeMap<String, Account>,
     pub rooms: BTreeMap<String, Room>,
     #[serde(default)]

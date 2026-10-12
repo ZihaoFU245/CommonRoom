@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use std::time::Duration;
 
-pub(super) fn token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::COOKIE)?
         .to_str()
@@ -17,25 +17,43 @@ pub(super) fn token(headers: &HeaderMap) -> Option<&str> {
         .split(';')
         .find_map(|part| part.trim().strip_prefix("chat_session="))
 }
-pub(super) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, ApiError> {
+pub(crate) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, ApiError> {
     if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(error(
             StatusCode::SERVICE_UNAVAILABLE,
             "Server is shutting down.",
         ));
     }
-    let session_token =
-        token(headers).ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))?;
-    app.engine_read_api()?
-        .session(session_token)
-        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))
+    let engine = app.engine_read_api()?;
+    identity(&engine, headers)
+        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+}
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    value.strip_prefix("Bearer ").filter(|s| !s.is_empty())
+}
+pub(crate) fn identity(engine: &Engine, headers: &HeaderMap) -> Option<String> {
+    if headers.contains_key(header::AUTHORIZATION) {
+        engine.bot_identity(bearer(headers)?)
+    } else {
+        engine.session(token(headers)?)
+    }
+}
+pub(crate) fn authenticate_bot(app: &App, headers: &HeaderMap) -> Result<String, ApiError> {
+    bearer(headers)
+        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Bot bearer credential required."))?;
+    authenticate(app, headers)
 }
 #[derive(Deserialize)]
-pub(super) struct Login {
+pub(crate) struct Login {
     username: String,
     password: String,
 }
-pub(super) async fn login(
+pub(crate) async fn login(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -145,7 +163,7 @@ async fn login_inner(
     );
     Ok(response)
 }
-pub(super) fn cookie(app: &App, value: &str, age: u32) -> String {
+pub(crate) fn cookie(app: &App, value: &str, age: u32) -> String {
     format!(
         "chat_session={value}; HttpOnly; SameSite=Strict; Path={}; Max-Age={age}{}",
         app.config.base_url,
@@ -156,7 +174,7 @@ pub(super) fn cookie(app: &App, value: &str, age: u32) -> String {
         }
     )
 }
-pub(super) async fn logout(
+pub(crate) async fn logout(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -196,7 +214,7 @@ async fn logout_inner(State(app): State<App>, headers: HeaderMap) -> Result<Resp
     );
     Ok(response)
 }
-pub(super) async fn me(
+pub(crate) async fn me(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {

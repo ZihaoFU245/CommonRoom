@@ -31,8 +31,8 @@ impl Engine {
         let mut version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 5 && version != 6 && version != 7 {
-            return Err("Unsupported database schema; schemas v5, v6 and v7 are supported.".into());
+        if version != 0 && version != 5 && version != 6 && version != 7 && version != 8 {
+            return Err("Unsupported database schema; schemas v5 through v8 are supported.".into());
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -63,10 +63,10 @@ impl Engine {
                 .execute_batch(INDEXES)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=7;")
+                .execute_batch("PRAGMA user_version=8;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
-            version = 7;
+            version = 8;
         }
         let raw: String = db
             .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
@@ -97,6 +97,7 @@ impl Engine {
             data.policy.revision = data.policy.revision.wrapping_add(1);
         }
         // Validate before changing a legacy database; DDL and data move atomically.
+        crate::bots::models::validate(&data)?;
         let authorization = super::authorization::CompiledPolicy::compile(&data)?;
         let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         {
@@ -125,7 +126,7 @@ impl Engine {
             tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
             write_data(&tx, &data)?;
             tx.execute_batch(INDEXES).map_err(|e| e.to_string())?;
-            tx.execute_batch("PRAGMA user_version=7;")
+            tx.execute_batch("PRAGMA user_version=8;")
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
             upgraded = false;
@@ -136,7 +137,15 @@ impl Engine {
             if upgraded {
                 write_state(&tx, &data)?;
             }
-            tx.execute_batch("PRAGMA user_version=7;")
+            tx.execute_batch("PRAGMA user_version=8;")
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            upgraded = false;
+        }
+        if version == 7 {
+            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            write_state(&tx, &data)?;
+            tx.execute_batch("PRAGMA user_version=8;")
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
             upgraded = false;
@@ -150,6 +159,7 @@ impl Engine {
         let mut engine = Self {
             authorization,
             online_connections: BTreeMap::new(),
+            bot_budgets: BTreeMap::new(),
             data,
             read_positions,
             revision: 0,
@@ -455,6 +465,7 @@ fn private_metadata(chat: &PrivateChat) -> PrivateChat {
 fn write_state(db: &Connection, data: &Data) -> Result<(), String> {
     let metadata = Data {
         policy: data.policy.clone(),
+        bots: data.bots.clone(),
         ..Data::default()
     };
     let json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;

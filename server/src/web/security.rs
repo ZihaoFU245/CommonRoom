@@ -6,8 +6,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-pub(super) async fn security(State(app): State<App>, request: Request, next: Next) -> Response {
-    // Only a trusted, TLS-terminating proxy may reach the production listener.
+pub(crate) async fn security(State(app): State<App>, request: Request, next: Next) -> Response {
+    // Production ingress must be the configured trusted socket peer.
+    // Bot endpoints additionally allow direct bearer-authenticated local/private HTTP.
     if app.config.production
         && !request
             .extensions()
@@ -20,7 +21,14 @@ pub(super) async fn security(State(app): State<App>, request: Request, next: Nex
         )
             .into_response();
     }
+    let direct_bot = request
+        .uri()
+        .path()
+        .starts_with(&format!("{}api/bot/", app.config.base_url))
+        && super::auth::bearer(request.headers()).is_some()
+        && !request.headers().contains_key("x-forwarded-proto");
     if app.config.production
+        && !direct_bot
         && request
             .headers()
             .get("x-forwarded-proto")
@@ -71,10 +79,10 @@ pub(super) async fn security(State(app): State<App>, request: Request, next: Nex
     }
     response
 }
-pub(super) fn trusted_proxy(config: &Config, peer: std::net::IpAddr) -> bool {
+pub(crate) fn trusted_proxy(config: &Config, peer: std::net::IpAddr) -> bool {
     peer.to_canonical() == config.trust.to_canonical()
 }
-pub(super) fn check_origin(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn check_origin(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok())
@@ -88,7 +96,7 @@ pub(super) fn check_origin(app: &App, headers: &HeaderMap) -> Result<(), ApiErro
 
 // The trusted proxy must overwrite this header with one verified client address.
 // Never select an address from an unverified forwarding chain.
-pub(super) fn client_ip(
+pub(crate) fn client_ip(
     config: &Config,
     peer: std::net::IpAddr,
     headers: &HeaderMap,
@@ -112,4 +120,14 @@ pub(super) fn client_ip(
         .ok()
         .and_then(|value| value.trim().parse::<std::net::IpAddr>().ok())
         .map_or(peer, |ip| ip.to_canonical())
+}
+
+pub(crate) fn check_origin_or_bot(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
+    if headers.contains_key(header::AUTHORIZATION) {
+        super::auth::bearer(headers)
+            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Bot bearer credential required."))
+            .map(|_| ())
+    } else {
+        check_origin(app, headers)
+    }
 }

@@ -100,7 +100,7 @@ The permission catalog has individual actions in three families:
   `room.owner.transfer`, `history.clean`, `account.create`,
   `account.password.reset`, `account.disable`, `account.enable`, `account.delete`,
   `group.admin.assign`, `group.su.assign`, `policy.change`, `command.sudo`,
-  `account.rename.any`.
+  `account.rename.any`, `bot.credentials`.
 
 Prefix the action with its family, for example `r:message.read`. A slash command
 name such as `/history` is a separate permission. No matching grant means denial.
@@ -186,7 +186,7 @@ and scoped direct grants with constraints when the requester can inspect policy.
 
 ## Persistence and revocation
 
-Schema v7 and automatic transactional migration from v5/v6 are supported. Existing v5 state is preserved; retired command-grant names are updated once at startup as described in [Data](data.md). Older schema files are rejected.
+Schema v8 and automatic transactional migration from v5/v6/v7 are supported. Existing v5 state is preserved; retired command-grant names are updated once at startup as described in [Data](data.md). Older schema files are rejected.
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -202,3 +202,13 @@ The server operator and `su` remain fully trusted. Messages and sessions remain 
 the server database; this change is access control, not end-to-end encryption.
 
 Account rename preserves stable account and private conversation IDs and all scoped grants. Sessions, memberships, message display authors, reply authors, recipients, reactions, mention metadata, private keys and read cursors move to the new name atomically. Historical message text and audit records retain their original contents. Own rename is included in user/admin groups; any-account rename requires explicit delegation or su.
+
+## Bot connections
+
+Bots are ordinary accounts, without a bot/human flag. /bot lifecycle and credential management additionally require global admin or su membership (or stdin); room admin and a direct /bot grant alone are insufficient for those operations. Remote configuration fetch/set use r:bot.config/w:bot.config on the target account plus ordinary /bot context/target command gates; these can be delegated via existing grants. Both actions are in the global admin bundle; protected-su targets still require su. Authorization is rechecked before dispatch and result disclosure. The global admin bundle includes x:bot.credentials for account-wide credential management. Existing protected-su account checks apply even while targets are disabled.
+
+New room bots receive explicit direct grants rather than the user bundle: discover/read/member-list/join/send/react and /help, /man, /whoami, /members, /history, /join, /reply, /react. Settings, message retraction/cleanup, private creation and administrative commands are excluded. Explicit @global creation applies these grants globally and requires the creator to hold each corresponding permission/command there. Ordinary admins with only room access cannot delegate global content access.
+
+Credential authentication resolves stable account ID to the current active username, then uses the same command execution, history/read checks, and snapshot filtering as browser sessions. Credentials cannot specify an author or bypass grants. Only hashes of 244-bit random secrets (two UUIDv4 values) are stored. Revocation is checked on subsequent actions and WebSocket updates/heartbeats; revocation broadcasts wake connected sockets. Already-delivered content cannot be recalled. Account-wide input throttling is shared across credentials and sockets. See [Bots](bots.md).
+
+Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.

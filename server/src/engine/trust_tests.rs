@@ -1150,6 +1150,9 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "x:account.enable",
         "x:account.delete",
         "x:group.admin.assign",
+        "x:bot.credentials",
+        "r:bot.config",
+        "w:bot.config",
         "r:server.config",
         "r:policy.read",
     ]);
@@ -1311,6 +1314,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
     let probes = [
         "/sudo /whoami".into(),
         "/help".into(),
+        "/bot ls @global".into(),
         "/console".into(),
         "/man grant".into(),
         "/permissions team".into(),

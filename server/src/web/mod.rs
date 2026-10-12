@@ -1,8 +1,8 @@
-mod auth;
-mod commands;
-mod history;
-mod security;
-mod socket;
+pub(crate) mod auth;
+pub(crate) mod commands;
+pub(crate) mod history;
+pub(crate) mod security;
+pub(crate) mod socket;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests;
@@ -39,6 +39,7 @@ pub struct App {
     pub connections: Arc<tokio::sync::Semaphore>,
     pub io_jobs: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
+    pub bot_runtimes: crate::bots::runtime::Hub,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 impl App {
@@ -69,13 +70,14 @@ impl App {
             .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))
     }
 }
-type ApiError = (StatusCode, Json<serde_json::Value>);
-fn error(code: StatusCode, message: &str) -> ApiError {
+pub(crate) type ApiError = (StatusCode, Json<serde_json::Value>);
+pub(crate) fn error(code: StatusCode, message: &str) -> ApiError {
     (code, Json(json!({ "error": message })))
 }
 
 pub fn router(app: App) -> Router {
     let routes = Router::new()
+        .merge(crate::bots::routes())
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))

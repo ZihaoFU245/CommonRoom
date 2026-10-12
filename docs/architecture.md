@@ -22,6 +22,8 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
 | `tests.rs` | Engine regression tests using isolated storage |
 
+`server/src/bots/` contains credential models, token hashing, API transport and /bot management. The engine loads `bots/commands.rs` as its bot domain extension so account/grant mutations retain the single state owner and existing transaction/rollback rules. bots/runtime.rs owns a transient, bounded WebSocket request/reply registry for remote configuration. The external worker owns configuration and persistence; the engine authorizes account-scoped config access using ordinary grants. Bot registrations reference ordinary stable account IDs; no account-kind field is introduced. SQL remains in engine/storage.rs. Browser and bot commands share web/commands.rs, with authentication rechecked after asynchronous work.
+
 `commands.rs` outside the engine owns help/completion metadata and the shared account-provisioning syntax used by stdin and web password jobs. `manual.rs` provides read-only command and grant-system manuals. The domain dispatcher executes commands; the registry does not authorize them.
 
 `web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` handles asynchronous account commands and configuration output. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.

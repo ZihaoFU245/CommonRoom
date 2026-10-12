@@ -123,6 +123,9 @@ impl Engine {
         }
         let parts: Vec<_> = input.split_whitespace().collect();
         self.load_command_message(actor, room, &parts)?;
+        if parts.first() == Some(&"/bot") {
+            return self.bot_command(actor, room, &parts);
+        }
         if parts.first() == Some(&"/rename") {
             self.require_command(actor, room, "/rename")?;
             let (name, new_name) = match parts.as_slice() {
@@ -196,6 +199,86 @@ impl Engine {
             }
         }
     }
+    fn apply_text(
+        &mut self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        input: &str,
+    ) -> Result<String, String> {
+        if input.chars().count() > 4000 {
+            return Err("Messages support at most 4000 characters.".into());
+        }
+        let room = room.ok_or("Select a room first.")?;
+        if let Some(key) = room.strip_prefix("@private:") {
+            self.require(actor, &self.private_scope(key), authorization::Action::Send)?;
+            let (_, recipient) = key.split_once(':').ok_or("Invalid private conversation.")?;
+            if !self.data.private.contains_key(key) {
+                return Err("Private conversation not found.".into());
+            }
+            let recipient = actor
+                .and_then(|name| private_peer(key, name))
+                .unwrap_or(recipient);
+            let mut message = self.message(actor, Some(recipient), input)?;
+            message
+                .mentions
+                .retain(|name| key.split(':').any(|p| p == name));
+            return self.push_private_to(key, message).map(|()| String::new());
+        }
+
+        self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
+        let mut message = self.message(actor, None, input)?;
+        let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
+        if target.messages.len() == self.max_messages {
+            target.messages.pop_front();
+        }
+        message
+            .mentions
+            .retain(|name| target.members.contains(name));
+        target.messages.push_back(message);
+        target.revision = target.revision.wrapping_add(1);
+        Ok(String::new())
+    }
+
+    pub fn send_literal(&mut self, user: &str, view: &str, text: &str) -> Result<Message, String> {
+        if !self.active(user) {
+            return Err("Account unavailable.".into());
+        }
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > 4000 {
+            return Err("Messages support 1–4000 characters.".into());
+        }
+        let normalized = view
+            .strip_prefix("@direct:")
+            .map(|peer| format!("@private:{}", private_key(user, peer)));
+        let view = normalized.as_deref().unwrap_or(view);
+        self.changed_conversation = None;
+        // Use the same bounded transaction/rollback path as ordinary browser sends.
+        let change = self
+            .message_change(Some(user), Some(view), &["literal"], "literal")
+            .ok_or("Select an existing room or private conversation.")?;
+        let result = self.apply_text(Some(user), Some(view), text).and_then(|_| {
+            let message = if let Some(key) = view.strip_prefix("@private:") {
+                self.data.private.get(key).and_then(|c| c.messages.back())
+            } else {
+                self.data.rooms.get(view).and_then(|r| r.messages.back())
+            }
+            .cloned()
+            .ok_or("Message unavailable.")?;
+            self.save_message_change(&change)?;
+            Ok(message)
+        });
+        if result.is_err() {
+            self.restore_message_change(change);
+        }
+        for room in self.data.rooms.values_mut() {
+            room.messages.clear();
+        }
+        for chat in self.data.private.values_mut() {
+            chat.messages.clear();
+        }
+        result
+    }
+
     pub(super) fn apply(
         &mut self,
         actor: Option<&str>,
@@ -212,35 +295,7 @@ impl Engine {
         let author = actor.unwrap_or("console");
         let parts: Vec<&str> = input.split_whitespace().collect();
         if !input.starts_with('/') {
-            if input.chars().count() > 4000 {
-                return Err("Messages support at most 4000 characters.".into());
-            }
-            let room = room.ok_or("Select a room first.")?;
-            if let Some(key) = room.strip_prefix("@private:") {
-                self.require(actor, &self.private_scope(key), authorization::Action::Send)?;
-                let (_, recipient) = key.split_once(':').ok_or("Invalid private conversation.")?;
-                if !self.data.private.contains_key(key) {
-                    return Err("Private conversation not found.".into());
-                }
-                let mut message = self.message(actor, Some(recipient), input)?;
-                message
-                    .mentions
-                    .retain(|name| key.split(':').any(|p| p == name));
-                return self.push_private_to(key, message).map(|()| String::new());
-            }
-
-            self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
-            let mut message = self.message(actor, None, input)?;
-            let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
-            if target.messages.len() == self.max_messages {
-                target.messages.pop_front();
-            }
-            message
-                .mentions
-                .retain(|name| target.members.contains(name));
-            target.messages.push_back(message);
-            target.revision = target.revision.wrapping_add(1);
-            return Ok(String::new());
+            return self.apply_text(actor, room, input);
         }
         self.require_command(actor, room, parts[0])?;
         let view = room;

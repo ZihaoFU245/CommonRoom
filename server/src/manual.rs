@@ -13,6 +13,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         "ownership" => OWNERSHIP,
         "console" => CONSOLE,
         "sudo" => SUDO,
+        "bot" => BOT,
         _ => {
             let name = format!("/{topic}");
             let command = commands::available(true, false)
@@ -595,3 +596,52 @@ An owner must transfer ownership before leaving or being kicked.
 
 Disabling or deleting an owner returns the room to the console. su has global recovery access.
 Use `/permissions support` to inspect the room's grants."#;
+
+const BOT: &str = r#"# /bot
+
+Manage bot accounts, tokens and external runtime settings. `[scope]` and `[key]` are optional.
+
+## Accounts
+
+- `/bot new name [scope]` — create a bot with read/send/reply/react and manual access.
+- `/bot ls [scope]` — list bots; a room scope filters by membership.
+- `/bot info name [scope]` — show status, connections and permissions.
+- `/bot rm name @global` — delete the account and its tokens.
+
+Scope defaults to the current room. Console/private views need an explicit room. Always write `@global` explicitly.
+
+## Tokens
+
+- `/bot token new name label` — issue a token; save the secret shown once.
+- `/bot token ls name` — list token IDs and labels.
+- `/bot token rm name token-id` — revoke a token and disconnect its sockets.
+
+Tokens follow the account's current grants.
+
+## Remote configuration
+
+- `/bot config set name key value` — ask the connected runtime to apply a setting.
+- `/bot config fetch name [key]` — fetch one setting, or all when key is omitted.
+
+Values are strings; quote with JSON syntax when needed. The external runtime validates and saves settings. It must be online; requests time out after 10 seconds. Fetch before retrying an uncertain set.
+
+## Permissions
+
+- Every operation needs `/bot` command access in its context and target.
+- Accounts/tokens: global admin, su or stdin; ordinary account/scope permissions also apply. Tokens require `x:bot.credentials`.
+- Config fetch: `r:bot.config` on `@account:name`.
+- Config set: `w:bot.config` on `@account:name`.
+- Config access can be delegated; account-scope grants require su/stdin. Protected su accounts require su.
+
+Use `/grant`, `/revoke`, `/add`, `/kick`, `/disable`, `/enable` and `/rename` as for any user.
+
+## Examples
+
+```
+/bot new helper support
+/bot token new helper worker
+/bot config set helper prompt "Help with Rust questions."
+/bot config fetch helper
+/grant alice @account:helper /bot
+/grant alice @account:helper w:bot.config
+```"#;

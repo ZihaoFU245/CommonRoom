@@ -19,6 +19,13 @@ pub struct Command {
 pub fn available(admin: bool, console: bool) -> Vec<Command> {
     let definitions = [
         (
+            "Server",
+            "/bot",
+            "/bot new name [scope] | ls [scope] | info name [scope] | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]",
+            "Manage bot accounts, credentials and remote configuration",
+            true,
+        ),
+        (
             "General",
             "/sudo",
             "/sudo /command [arguments]",
@@ -280,6 +287,9 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/ls" => "room discovery/read grants; r:account.list for accounts and group members",
         "/rm" => "x:room.delete, x:account.delete, or group-management authority on the target",
+        "/bot" => {
+            "Lifecycle/credentials: global admin or su; config: r:bot.config or w:bot.config on target account, plus /bot command gates"
+        }
         "/configs" => "r:server.config at @global",
         "/rename" => {
             "w:account.rename.own on your account or x:account.rename.any on the target; only su can manage su accounts"

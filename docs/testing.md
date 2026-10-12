@@ -159,3 +159,13 @@ percentage or production load capacity is claimed by these behavioral tests.
 Command syntax regressions cover `/history`, current-conversation ranges and
 `/history #room`, default latest-100 output, rejection of removed aliases, target
 privacy and sudo inspection without joining or retaining elevated authority.
+
+## Bot coverage
+
+Rust bot tests cover explicit scope resolution; safe direct defaults and filtered command lists; admin-only management; protected active/disabled su targets; ordinary grants/revokes; room/history privacy; mentions/replies/reactions/read cursors; literal slash text; credential hashing, labels, rotation/revocation; disable/enable/rename/delete and name reuse; creation/credential/message rollback; v7 → v8 migration/restart and injected migration failure; HTTP bearer-only boundaries, malformed requests, payload limits, Unicode, account-wide input budgets, shutdown and base paths.
+
+The integration harness additionally connects a real bot WebSocket in production under /commonroom/, validates every frame with the frontend guards, checks normal mention delivery and bot replies, live permission revocation, credential revocation/disconnection, and history recovery after restart. It uses isolated temporary data.
+
+Trusted direct bot transport regressions additionally check production HTTP/WS without a forwarded-protocol header, valid/invalid/missing credentials, IPv4-mapped loopback, missing/untrusted socket identity, spoofed forwarding headers, forwarded-http rejection, base paths, unchanged browser HTTPS requirements, and direct bot message sends. The real socket integration suite connects the bot using direct WS and verifies revocation/disconnection.
+
+Remote bot configuration regressions cover separate read/write account grants, command/context gates, cross-account denial, lifecycle restrictions, protected/disabled targets, result authorization rechecks, offline/disconnected runtimes, duplicate handler registration, malformed/oversized responses and timeout/cancellation. The real production WebSocket harness checks registration, set/fetch round trips, runtime rejection, delegated access/revocation and unsolicited responses.

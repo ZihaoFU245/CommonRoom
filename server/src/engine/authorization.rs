@@ -47,6 +47,9 @@ actions! {
     AssignSu => "x:group.su.assign",
     PolicyWrite => "x:policy.change",
     Sudo => "x:command.sudo",
+    BotCredentials => "x:bot.credentials",
+    BotConfigRead => "r:bot.config",
+    BotConfigWrite => "w:bot.config",
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -184,6 +187,7 @@ const COMMANDS: &[&str] = &[
     "/owner",
     "/console",
     "/sudo",
+    "/bot",
 ];
 fn direct_grant(parts: &[&str]) -> bool {
     parts.len() >= 4
@@ -305,10 +309,14 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
                 Action::DeleteAccount,
                 Action::AssignAdmin,
                 Action::Config,
+                Action::BotCredentials,
+                Action::BotConfigRead,
+                Action::BotConfigWrite,
                 Action::PolicyRead,
             ],
             &[
                 "/new", "/disable", "/enable", "/rm", "/grant", "/revoke", "/configs", "/debug",
+                "/bot",
             ],
         ));
     }

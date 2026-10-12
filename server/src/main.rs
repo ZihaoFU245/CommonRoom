@@ -1,3 +1,4 @@
+mod bots;
 mod commands;
 mod config;
 mod console;
@@ -48,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let listener = tokio::net::TcpListener::bind(&app.config.bind).await?;

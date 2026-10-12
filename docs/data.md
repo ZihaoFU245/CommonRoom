@@ -2,9 +2,9 @@
 
 ## Data upgrades
 
-The current schema is v7. New empty databases are initialized as v7. Existing v5 and v6 databases migrate automatically in one transaction after validating accounts, policy, and cursor decoding. Schema creation, retained messages/reactions, entities, counters, command-grant updates, and the version change commit together. Failures preserve the original version, state and schema. Existing v1–v4, unversioned, or newer databases are rejected without changing stored state or version.
+The current schema is v8. New empty databases are initialized as v8. Existing v5, v6 and v7 databases migrate automatically in one transaction after validating accounts, policy, and cursor decoding. Schema creation, retained messages/reactions, entities, counters, command-grant updates, and the version change commit together. Failures preserve the original version, state and schema. Existing v1–v4, unversioned, or newer databases are rejected without changing stored state or version.
 
-Back up the entire data folder with the server stopped before upgrading. The v5/v6 → v7 migration preserves accounts, sessions, identities, grants, messages, reactions, reply quotes, conversation revisions, sequences, and read cursors. A v5/v6-only binary cannot open the upgraded folder; restoring the stopped-server backup is the downgrade path. Tests use isolated temporary data and never modify working `data/`.
+Back up the entire data folder with the server stopped before upgrading. The v5/v6/v7 → v8 migration preserves accounts, sessions, identities, grants, messages, reactions, reply quotes, conversation revisions, sequences, and read cursors. A v5/v6/v7-only binary cannot open the upgraded folder; restoring the stopped-server backup is the downgrade path. Tests use isolated temporary data and never modify working `data/`.
 
 The command-family rework updates persisted v5 command grants once at startup:
 `/delete` and `/deleteuser` become `/rm`, `/user` becomes `/new`, and `/rooms`
@@ -12,6 +12,8 @@ and `/users` become `/ls`. Action permissions, scopes, ownership, accounts,
 sessions, history, and read cursors are preserved. The policy revision advances
 once, and validation or write failures leave the saved state unchanged. This is
 included atomically when migrating v5 to v7; old command syntax remains unsupported.
+
+Schema v8 adds bot registrations and hashed API credentials to the metadata state row. The v7 → v8 migration validates metadata, policy and read cursors before atomically writing the state and version. It does not rewrite retained message history. Account creation/deletion and credential changes use the existing transactions; failures preserve both disk and memory. API secrets are never stored. Rename preserves registration identity, disable suspends credentials, and account deletion removes them. Existing browser sessions are preserved during migration.
 
 ## Move to another machine
 
@@ -38,7 +40,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary supports v7 and automatic migration from v5/v6. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary supports v8 and automatic migration from v5/v6/v7. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.

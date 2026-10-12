@@ -104,7 +104,11 @@ impl Engine {
             .users
             .get(user)
             .is_some_and(|u| !u.disabled && u.hash == expected_hash)
-            || self.session(keep).as_deref() != Some(user)
+            || self
+                .session(keep)
+                .or_else(|| self.bot_identity(keep))
+                .as_deref()
+                != Some(user)
         {
             return Err("Account or session changed. Please log in again.".into());
         }
@@ -299,6 +303,7 @@ impl Engine {
         });
         self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         self.data.users.remove(name);
+        self.data.bots.remove(&deleted_id);
         for room in self.data.rooms.values_mut() {
             if room.owner_id == deleted_id {
                 room.owner_id = "console".into();

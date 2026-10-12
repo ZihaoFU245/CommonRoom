@@ -1,12 +1,12 @@
 use super::*;
-use super::{auth::authenticate, security::check_origin};
+use super::{auth::authenticate, security::check_origin_or_bot};
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
 };
 use serde::Deserialize;
 #[derive(Deserialize)]
-pub(super) struct HistoryQuery {
+pub(crate) struct HistoryQuery {
     view: String,
     start: Option<u64>,
     end: Option<u64>,
@@ -15,7 +15,7 @@ pub(super) struct HistoryQuery {
     around: Option<u64>,
     limit: Option<usize>,
 }
-pub(super) async fn history(
+pub(crate) async fn history(
     State(app): State<App>,
     headers: HeaderMap,
     Query(input): Query<HistoryQuery>,
@@ -72,16 +72,16 @@ pub(super) async fn history(
     })?
 }
 #[derive(Deserialize)]
-pub(super) struct Read {
+pub(crate) struct Read {
     view: String,
     through: u64,
 }
-pub(super) async fn read(
+pub(crate) async fn read(
     State(app): State<App>,
     headers: HeaderMap,
     Json(input): Json<Read>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    check_origin(&app, &headers)?;
+    check_origin_or_bot(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;

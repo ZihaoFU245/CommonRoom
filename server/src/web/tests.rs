@@ -19,6 +19,7 @@ fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
     let engine = app.engine.clone();
@@ -67,6 +68,7 @@ fn cookies_are_http_only_and_secure_in_production() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
     let value = cookie(&app, "token", 43200);
@@ -137,6 +139,7 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
     async fn attempt(app: &App, peer: &str, forwarded: &str) -> StatusCode {
@@ -212,6 +215,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
     let mut headers = HeaderMap::new();
@@ -314,6 +318,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                 connections: Arc::new(tokio::sync::Semaphore::new(128)),
                 io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
                 password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+                bot_runtimes: Default::default(),
                 stopping: Default::default(),
             };
             let (release, wait) = std::sync::mpsc::channel();
@@ -442,6 +447,7 @@ fn engine_readers_overlap_and_io_admission_is_bounded() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
     let reader = app.engine_read().unwrap();

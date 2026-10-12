@@ -1,4 +1,4 @@
-use super::auth::token;
+use super::auth::{identity, token};
 use super::*;
 use crate::engine::{
     authorization::{Action, Scope},
@@ -8,12 +8,12 @@ use axum::http::HeaderMap;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-pub(super) struct Input {
-    pub(super) id: u64,
-    pub(super) room: Option<String>,
-    pub(super) text: String,
+pub(crate) struct Input {
+    pub(crate) id: u64,
+    pub(crate) room: Option<String>,
+    pub(crate) text: String,
 }
-pub(super) async fn execute_input(
+pub(crate) async fn execute_input(
     app: &App,
     headers: &HeaderMap,
     user: &str,
@@ -42,10 +42,32 @@ async fn execute_input_inner(
     user: &str,
     input: &Input,
 ) -> Result<(String, Option<Change>), String> {
+    {
+        let engine = app.engine()?;
+        if identity(&engine, headers).as_deref() != Some(user) {
+            return Err("Please log in.".into());
+        }
+    }
+    if let Some(secret) = super::auth::bearer(headers) {
+        app.engine()?.admit_bot_input(secret)?;
+    }
     let elevated = sudo_command(&input.text)?;
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
     let parts: Vec<_> = text.split_whitespace().collect();
+    if let Some(command) = crate::bots::runtime::ConfigCommand::parse(text)? {
+        let authority = crate::bots::runtime::Authority {
+            actor: Some(user.to_owned()),
+            headers: headers.clone(),
+            view: input.room.clone(),
+            sudo,
+        };
+        return app
+            .bot_runtimes
+            .execute(app, authority, command)
+            .await
+            .map(|reply| (reply, None));
+    }
     let provision = crate::commands::provision_command(&parts)?;
     if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
         return app.engine()?.with_command_authority(
@@ -62,6 +84,9 @@ async fn execute_input_inner(
     }
     if parts.first() == Some(&"/configs") {
         let mut engine = app.engine()?;
+        if identity(&engine, headers).as_deref() != Some(user) {
+            return Err("Please log in.".into());
+        }
         return engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
             engine.require_command(Some(user), input.room.as_deref(), "/configs")?;
             engine.require_target_command(Some(user), &Scope::Server, "/configs")?;
@@ -77,11 +102,7 @@ async fn execute_input_inner(
     let passwd = parts.first() == Some(&"/passwd");
     if !passwd && provision.is_none() {
         let mut engine = app.engine()?;
-        if token(headers)
-            .and_then(|token| engine.session(token))
-            .as_deref()
-            != Some(user)
-        {
+        if identity(&engine, headers).as_deref() != Some(user) {
             return Err("Please log in.".into());
         }
         let before = engine.revision;
@@ -168,8 +189,10 @@ async fn execute_input_inner(
     .await
     .map_err(|_| "Password hashing failed.")??;
     let mut engine = app.engine()?;
-    let current = token(headers).ok_or("Please log in.")?;
-    if engine.session(current).as_deref() != Some(user) {
+    let current = super::auth::bearer(headers)
+        .or_else(|| token(headers))
+        .ok_or("Please log in.")?;
+    if identity(&engine, headers).as_deref() != Some(user) {
         return Err("Please log in.".into());
     }
     engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {

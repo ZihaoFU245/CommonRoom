@@ -3,6 +3,8 @@ pub mod authorization;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod benchmarks;
+#[path = "../bots/commands.rs"]
+mod bots;
 mod dispatch;
 mod helpers;
 mod history;
@@ -44,6 +46,7 @@ pub struct Engine {
     pending_deletes: Vec<(String, u64)>,
     pending_cleanups: Vec<(String, u64)>,
     online_connections: BTreeMap<String, usize>,
+    bot_budgets: BTreeMap<String, (std::time::Instant, u32)>,
     read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     authorization: authorization::CompiledPolicy,
     _lock: Option<std::fs::File>,

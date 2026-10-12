@@ -537,7 +537,7 @@ fn message_features_persist_and_rollback() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        7
+        8
     );
 }
 #[test]
@@ -1046,7 +1046,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 8] {
+    for version in [0, 1, 2, 3, 4, 9] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {

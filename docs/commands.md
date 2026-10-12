@@ -123,3 +123,9 @@ Settings opens Account with `/rename` and `/passwd` forms. Appearance controls
 light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 (12–18px); preferences stay in this browser. Reset restores defaults. Theme
 applies before rendering, and palette text contrast is at least 4.5:1.
+
+## Bot management
+
+Lifecycle and credential subcommands require global admins, su or stdin. Remote /bot config uses the existing scoped command and account action grants. `/bot new name` defaults to the selected room; Console/private views require an explicit room, and global scope always requires `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /kick to remove room participation.
+
+Credentials are account-wide: `/bot token new name label` shows a secret once, `/bot token ls name` lists IDs/labels/creation times, and `/bot token rm name id` revokes one. Token management requires x:bot.credentials and respects protected-su targets. Use /man bot or [Bots](bots.md) for the full contract. `/bot config set name key value` asks the connected external runtime to apply a string setting; `/bot config fetch name [key]` queries one/all runtime settings. These require w:bot.config or r:bot.config on the bot account and /bot command access in the invoking context and target. Settings are owned by the external runtime; /bot does not launch agents.

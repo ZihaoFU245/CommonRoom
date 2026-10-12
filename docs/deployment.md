@@ -57,8 +57,8 @@ remove the `/commonroom` redirect.
 Validate with `rtk proxy nginx -t` before reloading Nginx.
 
 Release binaries require HTTPS, check request origins, set secure HttpOnly
-cookies scoped to `base_url`, send HSTS and CSP on backend responses, and reject
-requests without `X-Forwarded-Proto: https`. Nginx supplies the security headers
+cookies scoped to `base_url`, send HSTS and CSP on backend responses, and require
+`X-Forwarded-Proto: https` except for direct bearer-authenticated bot requests from `trust` under `/api/bot/`. Nginx supplies the security headers
 for static UI responses. The frontend redirects HTTP to HTTPS and uses
 `wss:` in production. The proxy must overwrite forwarded headers. Production
 requests must arrive from the exact socket-peer IP configured in `trust`;
@@ -200,3 +200,5 @@ rtk proxy ./chat > chat.log 2>&1
 
 Closing stdin leaves the web service running. Ctrl + C or SIGTERM stops it
 gracefully and checkpoints SQLite. No default account or password is shipped.
+
+Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.
