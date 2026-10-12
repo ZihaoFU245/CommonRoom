@@ -16,6 +16,8 @@ pub struct Message {
     pub private_id: String,
     pub to: Option<String>,
     pub text: String,
+    #[serde(default)]
+    pub markdown: bool,
     pub time: u64,
     pub sequence: u64,
     #[serde(default)]

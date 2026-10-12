@@ -1,3 +1,4 @@
+import { markdownCommand } from "./markdown.ts";
 import type { Command } from "../../api/protocol.ts";
 import { redactCommand } from "./console.ts";
 
@@ -19,6 +20,7 @@ export function browserCommands(
   return [
     ...commands.filter((command) => !Object.hasOwn(aliases, command.name)),
     aliasCommand,
+    markdownCommand,
     ...Object.entries(aliases).map(([name, target]) => ({
       ...aliasCommand,
       name,
@@ -30,7 +32,8 @@ export function browserCommands(
 
 export function aliasHelp(aliases: Aliases): string {
   return [
-    `[Browser]\n${aliasCommand.usage} — ${aliasCommand.description}`,
+    `[Browser]\n${markdownCommand.usage} — ${markdownCommand.description}`,
+    `${aliasCommand.usage} — ${aliasCommand.description}`,
     ...Object.entries(aliases).map(
       ([name, target]) => `${name} — Alias for ${redactCommand(target)}`,
     ),
@@ -62,7 +65,7 @@ Leading slashes are optional. Repeating A replaces its mapping.
 
 The last two examples expand to /rm room support and /sudo /rm room support.
 Expansion happens once and preserves following arguments. Aliases can replace
-existing command names; /alias and /sudo cannot be remapped.
+existing command names; /alias, /sudo and /markdown cannot be remapped.
 
 ## Storage and permissions
 
@@ -78,7 +81,7 @@ const commandName = /^\/[^\s/]+$/u;
 function validAlias(a: string, b: unknown): b is string {
   return (
     commandName.test(a) &&
-    !["/alias", "/sudo"].includes(a) &&
+    !["/alias", "/sudo", "/markdown"].includes(a) &&
     typeof b === "string" &&
     commandName.test(b.split(/\s+/u)[0] ?? "")
   );
@@ -110,7 +113,7 @@ export function setAlias(
   const b = target.trim().startsWith("/") ? target.trim() : `/${target.trim()}`;
   if (!validAlias(a, b))
     throw new Error(
-      "Use a single command name and a command target; /alias and /sudo cannot be remapped.",
+      "Use a single command name and a command target; /alias, /sudo and /markdown cannot be remapped.",
     );
   const next = { ...aliases, [a]: b };
   localStorage.setItem(key, JSON.stringify(next));

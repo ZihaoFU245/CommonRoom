@@ -1,6 +1,7 @@
 import { commandText } from "./console.ts";
 
 export interface ComposerSubmission {
+  markdown?: boolean;
   text: string;
   draft: string;
   selected: string;
@@ -27,6 +28,9 @@ export function submissionFrame(submission: Readonly<ComposerSubmission>) {
   const { text, peer, replyId, selected, consoleView } = submission;
   const message = !text.startsWith("/");
   return {
+    ...(submission.markdown === undefined
+      ? {}
+      : { markdown: submission.markdown }),
     room: consoleView ? null : selected,
     text:
       message && replyId

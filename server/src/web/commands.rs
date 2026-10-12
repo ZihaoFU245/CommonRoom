@@ -12,6 +12,8 @@ pub(crate) struct Input {
     pub(crate) id: u64,
     pub(crate) room: Option<String>,
     pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) markdown: bool,
 }
 pub(crate) async fn execute_input(
     app: &App,
@@ -25,6 +27,7 @@ pub(crate) async fn execute_input(
     let user = user.to_owned();
     let input = Input {
         id: input.id,
+        markdown: input.markdown,
         room: input.room.clone(),
         text: input.text.clone(),
     };
@@ -106,7 +109,12 @@ async fn execute_input_inner(
             return Err("Please log in.".into());
         }
         let before = engine.revision;
-        let reply = engine.execute(Some(user), input.room.as_deref(), &input.text)?;
+        let reply = engine.execute_formatted(
+            Some(user),
+            input.room.as_deref(),
+            &input.text,
+            input.markdown,
+        )?;
         let change = (engine.revision != before).then(|| {
             engine
                 .changed_conversation

@@ -538,6 +538,7 @@ fn bot_password_jobs_recheck_credentials_and_permissions_after_hashing() {
                     format!("Bearer {secret}").parse().unwrap(),
                 );
                 let input = commands::Input {
+                    markdown: false,
                     id: 1,
                     room: None,
                     text: "/new user created long-fixture-password user".into(),
@@ -732,6 +733,7 @@ async fn runtime_config_roundtrip_is_private_delegated_and_rechecked() {
     let mut headers = HeaderMap::new();
     headers.insert(header::COOKIE, "chat_session=operator".parse().unwrap());
     let input = commands::Input {
+        markdown: false,
         id: 1,
         room: None,
         text: "/bot config set helper prompt \"Help with Rust\"".into(),
@@ -778,6 +780,7 @@ async fn runtime_config_roundtrip_is_private_delegated_and_rechecked() {
         &headers,
         "admin",
         &commands::Input {
+            markdown: false,
             id: 2,
             room: None,
             text: "/bot config fetch helper".into(),

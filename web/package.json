@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@formkit/auto-animate": "^0.10.0",
+    "markdown-it": "^15.0.2",
     "preact": "^10.27.0"
   },
   "devDependencies": {

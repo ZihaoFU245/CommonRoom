@@ -65,8 +65,8 @@ export function AliasSettings({
           onInput={(event) => setTarget(event.currentTarget.value)}
         />
         <p class="account-summary">
-          Saving an existing name replaces its mapping. /alias and /sudo cannot
-          be remapped.
+          Saving an existing name replaces its mapping. /alias, /sudo and
+          /markdown cannot be remapped.
         </p>
         <button type="submit">Save alias</button>
       </form>

@@ -21,7 +21,10 @@ the peer address. The allowance is 10 login attempts per IP per minute.
 
 ## Frames
 
-The web sends `{id:number, room:string|null, text:string}`. Browser aliases expand locally before sending; `/alias` is never sent to the server. Web `/rm` and `/retract` commands wait for local confirmation. Private views send
+The web sends `{id:number, room:string|null, text:string, markdown?:boolean}`.
+The optional `markdown` flag defaults to false and applies only to newly created
+messages, including `/tell` and `/reply`. `/markdown on|off` is handled locally
+in the browser. Browser aliases expand locally before sending; `/alias` is never sent to the server. Web `/rm` and `/retract` commands wait for local confirmation. Private views send
 `@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
@@ -36,7 +39,7 @@ It requires `/sudo` and `x:command.sudo` at global scope and elevates only the
 wrapped command. Snapshots retain the caller's actual groups and permissions.
 Password commands recheck sudo authorization after asynchronous hashing.
 
-Each message contains `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
+Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
 `commands`, filtered `members`, and up to 50 latest messages (1,000 tail messages globally per snapshot; some tails may be empty). Read grants govern

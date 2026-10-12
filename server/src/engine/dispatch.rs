@@ -26,6 +26,7 @@ pub(super) struct CommandContext<'a> {
     pub(super) parts: &'a [&'a str],
     pub(super) view: Option<&'a str>,
     pub(super) scope: authorization::Scope,
+    pub(super) markdown: bool,
     pub(super) author: &'a str,
 }
 impl Engine {
@@ -35,11 +36,20 @@ impl Engine {
         room: Option<&str>,
         input: &str,
     ) -> Result<String, String> {
+        self.execute_formatted(actor, room, input, false)
+    }
+    pub fn execute_formatted(
+        &mut self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        input: &str,
+        markdown: bool,
+    ) -> Result<String, String> {
         if actor.is_some_and(|user| !self.active(user)) {
             return Err("Account unavailable.".into());
         }
         self.changed_conversation = None;
-        let result = self.execute_inner(actor, room, input);
+        let result = self.execute_inner(actor, room, input, markdown);
         // Working messages are transient. Durable history and bounded pages live in storage.
         for room in self.data.rooms.values_mut() {
             room.messages.clear();
@@ -115,10 +125,11 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
         input: &str,
+        markdown: bool,
     ) -> Result<String, String> {
         if let Some(command) = sudo_command(input)? {
             return self.with_command_authority(actor, room, true, |engine| {
-                engine.execute_inner(actor, room, command)
+                engine.execute_inner(actor, room, command, markdown)
             });
         }
         let parts: Vec<_> = input.split_whitespace().collect();
@@ -157,10 +168,10 @@ impl Engine {
                     | "/history"
             )
         ) {
-            return self.apply(actor, room, input);
+            return self.apply(actor, room, input, markdown);
         }
         if let Some(change) = self.message_change(actor, room, &parts, input) {
-            let result = self.apply(actor, room, input);
+            let result = self.apply(actor, room, input, markdown);
             match result {
                 Ok(reply) => {
                     if let Err(error) = self.save_message_change(&change) {
@@ -176,7 +187,7 @@ impl Engine {
             }
         }
         let before = self.data.clone();
-        let result = self.apply(actor, room, input);
+        let result = self.apply(actor, room, input, markdown);
         match result {
             Ok(reply) => {
                 if self.data == before {
@@ -204,6 +215,7 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
         input: &str,
+        markdown: bool,
     ) -> Result<String, String> {
         if input.chars().count() > 4000 {
             return Err("Messages support at most 4000 characters.".into());
@@ -218,7 +230,7 @@ impl Engine {
             let recipient = actor
                 .and_then(|name| private_peer(key, name))
                 .unwrap_or(recipient);
-            let mut message = self.message(actor, Some(recipient), input)?;
+            let mut message = self.message(actor, Some(recipient), input, markdown)?;
             message
                 .mentions
                 .retain(|name| key.split(':').any(|p| p == name));
@@ -226,7 +238,7 @@ impl Engine {
         }
 
         self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
-        let mut message = self.message(actor, None, input)?;
+        let mut message = self.message(actor, None, input, markdown)?;
         let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
         if target.messages.len() == self.max_messages {
             target.messages.pop_front();
@@ -256,17 +268,19 @@ impl Engine {
         let change = self
             .message_change(Some(user), Some(view), &["literal"], "literal")
             .ok_or("Select an existing room or private conversation.")?;
-        let result = self.apply_text(Some(user), Some(view), text).and_then(|_| {
-            let message = if let Some(key) = view.strip_prefix("@private:") {
-                self.data.private.get(key).and_then(|c| c.messages.back())
-            } else {
-                self.data.rooms.get(view).and_then(|r| r.messages.back())
-            }
-            .cloned()
-            .ok_or("Message unavailable.")?;
-            self.save_message_change(&change)?;
-            Ok(message)
-        });
+        let result = self
+            .apply_text(Some(user), Some(view), text, false)
+            .and_then(|_| {
+                let message = if let Some(key) = view.strip_prefix("@private:") {
+                    self.data.private.get(key).and_then(|c| c.messages.back())
+                } else {
+                    self.data.rooms.get(view).and_then(|r| r.messages.back())
+                }
+                .cloned()
+                .ok_or("Message unavailable.")?;
+                self.save_message_change(&change)?;
+                Ok(message)
+            });
         if result.is_err() {
             self.restore_message_change(change);
         }
@@ -284,6 +298,7 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
         input: &str,
+        markdown: bool,
     ) -> Result<String, String> {
         let input = input.trim();
         if input.is_empty() || input.chars().count() > 4100 {
@@ -295,7 +310,7 @@ impl Engine {
         let author = actor.unwrap_or("console");
         let parts: Vec<&str> = input.split_whitespace().collect();
         if !input.starts_with('/') {
-            return self.apply_text(actor, room, input);
+            return self.apply_text(actor, room, input, markdown);
         }
         self.require_command(actor, room, parts[0])?;
         let view = room;
@@ -331,6 +346,7 @@ impl Engine {
             input,
             parts: handler_parts,
             author,
+            markdown,
             scope,
             view,
         };

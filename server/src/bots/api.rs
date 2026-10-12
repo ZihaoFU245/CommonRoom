@@ -109,6 +109,7 @@ async fn command(
         ));
     }
     let frame = commands::Input {
+        markdown: false,
         id: input.id,
         room: input.view,
         text: input.command,
@@ -148,6 +149,7 @@ async fn message(
             return Err(error(StatusCode::BAD_REQUEST, "Invalid reply message ID."));
         }
         let frame = commands::Input {
+            markdown: false,
             id: input.id,
             room: Some(input.view),
             text: format!("/reply {reply_to} {}", input.text),

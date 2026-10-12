@@ -1,3 +1,4 @@
+import { Markdown } from "./Markdown.tsx";
 import { useEffect, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
@@ -99,17 +100,21 @@ export function ConsoleMessage({
             <span dir="auto">{reply.text}</span>
           </button>
         )}
-        <p dir="auto">
-          {text.map((part, index) =>
-            part.mention ? (
-              <mark key={index} class="mention">
-                {part.text}
-              </mark>
-            ) : (
-              part.text
-            ),
-          )}
-        </p>
+        {message.markdown ? (
+          <Markdown text={message.text} mentions={message.mentions} />
+        ) : (
+          <p dir="auto">
+            {text.map((part, index) =>
+              part.mention ? (
+                <mark key={index} class="mention">
+                  {part.text}
+                </mark>
+              ) : (
+                part.text
+              ),
+            )}
+          </p>
+        )}
         {debug && detailsOpen && (
           <dl id={`details-${message.id}`} class="message-debug">
             <dt>Message ID</dt>

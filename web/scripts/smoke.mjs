@@ -200,9 +200,10 @@ async function send(
   room = null,
   kind = "notice",
   escaped = false,
+  markdown = false,
 ) {
   const id = ++client.serial;
-  const frame = JSON.stringify({ id, room, text });
+  const frame = JSON.stringify({ id, room, text, markdown });
   client.ws.send(escaped ? frame.replaceAll("🙂", "\\ud83d\\ude42") : frame);
   await until(
     () => client.frames.some((f) => f.id === id),
@@ -465,7 +466,7 @@ try {
   );
   await send(bob, "a retained room message", "study");
   const multilingual = "你好 日本語 한국어 مرحبا नमस्ते Привет שלום 🙂 e\u0301";
-  await send(bob, multilingual, "study");
+  await send(bob, multilingual, "study", "notice", false, true);
   await until(
     () =>
       bob.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)
@@ -494,7 +495,14 @@ try {
     "shared reaction count",
   );
   await send(alice, `/react ${roomMessageId} 好👍`, "study");
-  await send(bob, `/reply ${roomMessageId} @alice 回答 🙂`, "study");
+  await send(
+    bob,
+    `/reply ${roomMessageId} @alice 回答 🙂`,
+    "study",
+    "notice",
+    false,
+    true,
+  );
   await until(
     () =>
       alice.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)
@@ -506,6 +514,7 @@ try {
     .messages.at(-1);
   assert.deepEqual(roomReply.mentions, ["alice"]);
   assert.equal(roomReply.reply.text, multilingual);
+  assert.equal(roomReply.markdown, true);
   await send(eve, `/react ${roomMessageId} 👀`, "study", "error");
   await send(eve, `/reply ${roomMessageId} no access`, "study", "error");
   await send(alice, `/retract ${roomMessageId}`, "study", "error");
@@ -557,12 +566,13 @@ try {
     (m) => m.text === "a private message",
   ).id;
   await send(alice, `/react ${dmId} ❤️`, null);
-  await send(alice, `/reply ${dmId} @bob 私信`, null);
+  await send(alice, `/reply ${dmId} @bob 私信`, null, "notice", false, true);
   await until(
     () => bob.snapshot.direct.at(-1)?.reply?.id === dmId,
     "private reply delivery",
   );
   assert.equal(bob.snapshot.direct.at(-1).to, "bob");
+  assert.equal(bob.snapshot.direct.at(-1).markdown, true);
   assert.deepEqual(bob.snapshot.direct.at(-1).mentions, ["bob"]);
   await send(eve, `/react ${dmId} ❤️`, null, "error");
   await send(eve, `/reply ${dmId} leak`, null, "error");

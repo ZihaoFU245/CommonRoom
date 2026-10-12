@@ -232,6 +232,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         ("/sudo /logout", false),
     ] {
         let input = super::commands::Input {
+            markdown: false,
             id: 1,
             room: None,
             text: text.into(),
@@ -343,6 +344,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                     HeaderValue::from_static("chat_session=fixture"),
                 );
                 let input = super::commands::Input {
+                    markdown: false,
                     id: 1,
                     room: None,
                     text: text.into(),

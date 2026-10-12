@@ -258,7 +258,8 @@ export function suggestions(
       values = [...rooms, "@global"];
     if (position === 3 && operation === "rm") values = ["@global"];
   }
-  if (name === "/debug" && position === 1) values = ["on", "off"];
+  if (["/debug", "/markdown"].includes(name) && position === 1)
+    values = ["on", "off"];
   if (name === "/permissions" && position === 1)
     values = [...scopes, "@groups", "@audit"];
   if (name === "/owner" && position === 1) values = users;

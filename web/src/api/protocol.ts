@@ -5,6 +5,7 @@ export interface Reply {
   text: string;
 }
 export interface Message {
+  markdown?: boolean;
   id: string;
   from: string;
   private_id?: string;
@@ -99,6 +100,7 @@ export type ServerFrame =
   | Acknowledgement
   | { kind: "read"; unread: Record<string, Unread> };
 export interface ClientFrame {
+  markdown?: boolean;
   id: number;
   room: string | null;
   text: string;
@@ -151,6 +153,7 @@ const reply = (v: unknown): v is Reply =>
   typeof v.text === "string";
 export const isMessage = (v: unknown): v is Message =>
   record(v) &&
+  (v.markdown === undefined || typeof v.markdown === "boolean") &&
   (v.private_id === undefined || typeof v.private_id === "string") &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&

@@ -7,6 +7,7 @@ impl Engine {
         actor: Option<&str>,
         to: Option<&str>,
         text: &str,
+        markdown: bool,
     ) -> Result<Message, String> {
         self.data.next_sequence = self
             .data
@@ -15,6 +16,7 @@ impl Engine {
             .filter(|n| *n <= 9_007_199_254_740_991)
             .ok_or("Message sequence exhausted.")?;
         let mut message = new_message(actor.unwrap_or("console"), to, text);
+        message.markdown = markdown;
         message.author_id = actor
             .and_then(|name| self.data.users.get(name))
             .map_or_else(|| "console".into(), |u| u.id.clone());
@@ -277,7 +279,7 @@ impl Engine {
                 } else {
                     None
                 };
-                let mut message = self.message(actor, recipient, value)?;
+                let mut message = self.message(actor, recipient, value, context.markdown)?;
                 message.reply = Some(Reply {
                     id: original.id.clone(),
                     from: original.from.clone(),
@@ -402,7 +404,7 @@ impl Engine {
                     self.require(actor, &Scope::Server, Action::Direct)?;
                 }
                 self.require(actor, &self.private_scope(&key), Action::Send)?;
-                let mut message = self.message(actor, Some(recipient), text)?;
+                let mut message = self.message(actor, Some(recipient), text, context.markdown)?;
                 message
                     .mentions
                     .retain(|name| name == author || name == recipient);

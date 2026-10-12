@@ -1312,3 +1312,55 @@ fn current_schema_restart_preserves_policy_sessions_and_cursors_without_writes()
     assert_eq!(e.revision, 0);
     assert_eq!(room_messages(&e, "team")[0].text, "preserved");
 }
+
+#[test]
+fn markdown_is_per_message_persisted_and_does_not_bypass_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.provision("bob", "hash".into(), false, false).unwrap();
+        e.execute(Some("alice"), None, "/new room lobby").unwrap();
+        e.execute_formatted(Some("alice"), Some("lobby"), "**bold**", true)
+            .unwrap();
+        let first = room_messages(&e, "lobby")[0].clone();
+        assert!(first.markdown);
+        assert_eq!(first.text, "**bold**");
+        e.execute_formatted(
+            Some("alice"),
+            Some("lobby"),
+            &format!("/reply {} *reply*", first.id),
+            true,
+        )
+        .unwrap();
+        e.execute(Some("alice"), Some("lobby"), "**plain**")
+            .unwrap();
+        e.execute_formatted(Some("alice"), None, "/tell bob **private**", true)
+            .unwrap();
+        let private = private_messages(&e, "alice:bob")[0].clone();
+        e.execute_formatted(
+            Some("bob"),
+            Some("@direct:alice"),
+            &format!("/reply {} *reply*", private.id),
+            true,
+        )
+        .unwrap();
+        assert!(
+            e.execute_formatted(Some("bob"), Some("lobby"), "**denied**", true)
+                .is_err()
+        );
+        // Old JSON without the optional field remains readable without a schema migration.
+        let mut legacy = serde_json::to_value(&first).unwrap();
+        legacy.as_object_mut().unwrap().remove("markdown");
+        assert!(!serde_json::from_value::<Message>(legacy).unwrap().markdown);
+    }
+    let e = Engine::open(&path).unwrap();
+    let messages = room_messages(&e, "lobby");
+    assert_eq!(messages.len(), 3);
+    assert!(messages[0].markdown);
+    assert!(messages[1].markdown);
+    assert!(!messages[2].markdown);
+    assert!(private_messages(&e, "alice:bob").iter().all(|m| m.markdown));
+    assert!(e.snapshot("bob").unwrap().direct.iter().all(|m| m.markdown));
+}

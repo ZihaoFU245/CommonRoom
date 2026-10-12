@@ -1,3 +1,8 @@
+import {
+  loadMarkdown,
+  setMarkdown,
+  markdownManual,
+} from "../features/conversation/markdown.ts";
 import type { RefObject } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
@@ -69,6 +74,7 @@ export function useCommands({
   clearView,
   logout,
 }: Context) {
+  const [markdown, updateMarkdown] = useState(loadMarkdown);
   const [aliases, setAliases] = useState(loadAliases);
   function saveAliasMapping(name: string, target: string) {
     setAliases(setAlias(aliases, name, target));
@@ -197,6 +203,26 @@ export function useCommands({
     event.preventDefault();
     const text = expandAlias(draft.trim(), aliases);
     if (!text || lifecycle.pending) return;
+    if (text.split(/\s+/u)[0] === "/markdown") {
+      try {
+        const enabled = setMarkdown(text.replace(/\s+/gu, " "));
+        updateMarkdown(enabled);
+        append(text, `Markdown ${enabled ? "on" : "off"} for future messages.`);
+        setDraft("");
+      } catch (error: unknown) {
+        append(
+          text,
+          error instanceof Error ? error.message : "Could not update Markdown.",
+          true,
+        );
+      }
+      return;
+    }
+    if (/^\/man\s+\/?markdown$/u.test(text)) {
+      append(text, markdownManual);
+      setDraft("");
+      return;
+    }
     if (text.split(/\s+/u)[0] === "/alias") {
       try {
         setAliases(saveAlias(aliases, text));
@@ -262,6 +288,7 @@ export function useCommands({
       consoleView,
       peer,
       replyId: replyTarget?.id ?? null,
+      markdown,
     });
     const kind = deletionKind(text);
     if (kind) return requestDelete(() => submitComposer(submission), kind);

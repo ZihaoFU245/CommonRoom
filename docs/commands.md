@@ -149,3 +149,14 @@ outside or press Escape to close it.
 Lifecycle and credential subcommands require global admins, su or stdin. Remote /bot config uses the existing scoped command and account action grants. `/bot new name` defaults to the selected room; Console/private views require an explicit room, and global scope always requires `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /kick to remove room participation.
 
 Credentials are account-wide: `/bot token new name label` shows a secret once, `/bot token ls name` lists IDs/labels/creation times, and `/bot token rm name id` revokes one. Token management requires x:bot.credentials and respects protected-su targets. Use /man bot or [Bots](bots.md) for the full contract. `/bot config set name key value` asks the connected external runtime to apply a string setting; `/bot config fetch name [key]` queries one/all runtime settings. These require w:bot.config or r:bot.config on the bot account and /bot command access in the invoking context and target. Settings are owned by the external runtime; /bot does not launch agents.
+
+## Markdown messages
+
+In the web composer, `/markdown on` formats future room messages, private
+messages (`/tell`) and replies with Markdown. `/markdown off` restores plain
+text (the default). `/man markdown` explains the feature; completion suggests
+`on` and `off`. The preference stays in this browser and does not grant any
+message permissions. Each message retains its chosen format for recipients
+and history, independently of later toggle changes. Supported formatting includes
+bold, italic, strikethrough, headings, lists, quotes, code, tables and links.
+Raw HTML and embedded images are disabled; links allow HTTP, HTTPS and mailto.
