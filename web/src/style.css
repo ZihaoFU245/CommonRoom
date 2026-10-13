@@ -700,13 +700,19 @@ textarea {
   position: relative;
 }
 .command-hints {
+  position: absolute;
+  bottom: 100%;
+  left: 24px;
+  right: 24px;
+  z-index: 5;
   list-style: none;
   padding: 5px;
-  margin: 0 0 8px;
+  margin: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
-  max-height: 250px;
+  box-shadow: var(--shadow-float);
+  max-height: min(250px, 40dvh);
   overflow: auto;
 }
 .command-hints button {
@@ -738,6 +744,10 @@ textarea {
   font-size: var(--chat-font-size, 16px);
 }
 @media (max-width: 700px) {
+  .command-hints {
+    left: 16px;
+    right: 16px;
+  }
   .help-list li {
     grid-template-columns: 1fr;
     gap: 0;
@@ -1611,8 +1621,12 @@ button:focus-visible {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: none;
   overscroll-behavior: contain;
   padding-right: 4px;
+}
+.settings-content::-webkit-scrollbar {
+  display: none;
 }
 .settings-content > * {
   flex-shrink: 0;
