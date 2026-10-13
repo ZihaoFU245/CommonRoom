@@ -26,6 +26,7 @@ actions! {
     Send => "w:message.create",
     React => "w:message.react",
     EditOwn => "w:message.edit.own",
+    EditAny => "w:message.edit.any",
     RetractOwn => "w:message.retract.own",
     RetractAny => "w:message.retract.any",
     CreateRoom => "w:room.create",

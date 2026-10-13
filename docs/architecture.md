@@ -43,6 +43,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mut
 - `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns the shared single-request lifecycle and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
 - `hooks/useLocalConsole.ts` owns the tab-local command ledger and clearing. It never persists command output.
 - `hooks/useFonts.ts` and `useComposerResize.ts` own presentation preferences and input sizing.
+- `hooks/useMessageEditorLayout.ts` owns inline editor sizing, focus, animation, and last-message scroll anchoring; `ConsoleMessage.tsx` owns rendering and edit interactions.
 - `features/conversation/` contains pure ordering, date, mention, and unread helpers. `features/preferences/` contains browser preference and notification helpers.
 
 Server snapshots are authoritative for membership, scoped permissions and commands, peer directories, and messages. The legacy wire `admin` flag is informational; UI controls use effective grants. Browser storage contains presentation/notification preferences and browser-local command aliases. Stable event callbacks and memoized message lists keep draft edits from sorting and rendering the transcript again. Keep pure helpers independent of browser APIs where possible.

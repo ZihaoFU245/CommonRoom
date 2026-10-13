@@ -1630,3 +1630,231 @@ fn shared_provisioning_syntax_rejects_malformed_account_requests() {
         );
     }
 }
+
+#[test]
+fn edit_any_requires_scoped_read_command_and_action_grants() {
+    let mut e = fixture();
+    e.execute(Some("alice"), Some("team"), "original").unwrap();
+    let original = super::tests::room_messages(&e, "team")[0].clone();
+    // Ownership/ordinary admin rights do not include editing other authors.
+    assert!(!e.allows(
+        Some("alice"),
+        &e.room_scope("team").unwrap(),
+        Action::EditAny
+    ));
+    assert!(
+        e.execute(Some("alice"), None, "/grant bob team w:message.edit.any")
+            .is_err()
+    );
+    e.execute(None, None, "/revoke bob user team").unwrap();
+    e.execute(None, None, "/grant bob team w:message.edit.any")
+        .unwrap();
+    let command = format!("/edit {} moderated", original.id);
+    assert!(e.execute(Some("bob"), Some("team"), &command).is_err());
+    e.execute(None, None, "/grant bob team /edit").unwrap();
+    assert!(e.execute(Some("bob"), Some("team"), &command).is_err());
+    e.execute(None, None, "/grant bob team r:message.read")
+        .unwrap();
+    e.execute(Some("bob"), Some("team"), &command).unwrap();
+    let edited = super::tests::room_messages(&e, "team")[0].clone();
+    assert_eq!(edited.from, original.from);
+    assert_eq!(edited.author_id, original.author_id);
+    assert_eq!(edited.sequence, original.sequence);
+    assert!(edited.edited);
+    // Every gate remains necessary after the first successful edit.
+    for permission in ["w:message.edit.any", "/edit", "r:message.read"] {
+        e.execute(None, None, &format!("/revoke bob team {permission}"))
+            .unwrap();
+        assert!(
+            e.execute(
+                Some("bob"),
+                Some("team"),
+                &format!("/edit {} denied", original.id)
+            )
+            .is_err()
+        );
+        assert_eq!(super::tests::room_messages(&e, "team")[0].text, "moderated");
+        e.execute(None, None, &format!("/grant bob team {permission}"))
+            .unwrap();
+    }
+    e.execute(Some("mallory"), None, "/new room other").unwrap();
+    e.execute(Some("mallory"), Some("other"), "foreign")
+        .unwrap();
+    let foreign = super::tests::room_messages(&e, "other")[0].id.clone();
+    e.execute(None, None, "/grant bob other r:message.read")
+        .unwrap();
+    e.execute(None, None, "/grant bob other /edit").unwrap();
+    assert!(
+        e.execute(
+            Some("bob"),
+            Some("other"),
+            &format!("/edit {foreign} denied")
+        )
+        .is_err()
+    );
+    assert!(
+        e.execute(
+            Some("bob"),
+            Some("team"),
+            &format!("/edit {foreign} denied")
+        )
+        .is_err()
+    );
+    // Edit-any is outside participant delegation, even when a manager holds it.
+    e.execute(None, None, "/grant alice team w:message.edit.any")
+        .unwrap();
+    assert!(
+        e.execute(Some("alice"), None, "/grant eve team w:message.edit.any")
+            .is_err()
+    );
+    e.execute(None, None, "/grant eve team w:message.edit.any")
+        .unwrap();
+    assert!(
+        e.execute(Some("alice"), None, "/grant eve other w:message.edit.any")
+            .is_err()
+    );
+}
+
+#[test]
+fn private_edit_any_preserves_participants_and_cannot_escape_its_scope() {
+    let mut e = fixture();
+    e.execute(Some("bob"), None, "/tell alice original")
+        .unwrap();
+    e.execute(Some("bob"), None, "/tell eve other conversation")
+        .unwrap();
+    let original = super::tests::private_messages(&e, "alice:bob")[0].clone();
+    let other = super::tests::private_messages(&e, "bob:eve")[0].id.clone();
+    for permission in ["w:message.edit.any", "r:message.read", "/edit"] {
+        e.execute(
+            None,
+            None,
+            &format!("/grant eve @private:alice:bob {permission}"),
+        )
+        .unwrap();
+    }
+    let view = Some("@private:alice:bob");
+    e.execute(
+        Some("eve"),
+        view,
+        &format!("/edit {} @alice @bob @eve", original.id),
+    )
+    .unwrap();
+    let edited = super::tests::private_messages(&e, "alice:bob")[0].clone();
+    assert_eq!(edited.from, "bob");
+    assert_eq!(edited.to.as_deref(), Some("alice"));
+    assert_eq!(edited.author_id, original.author_id);
+    assert_eq!(
+        edited.mentions,
+        BTreeSet::from(["alice".into(), "bob".into()])
+    );
+    assert!(
+        e.execute(Some("eve"), view, &format!("/edit {other} denied"))
+            .is_err()
+    );
+    assert!(
+        e.execute(
+            Some("eve"),
+            Some("@direct:bob"),
+            &format!("/edit {} denied", original.id)
+        )
+        .is_err()
+    );
+    e.execute(None, None, "/disable eve").unwrap();
+    assert!(
+        e.execute(
+            Some("eve"),
+            view,
+            &format!("/edit {} disabled", original.id)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        super::tests::private_messages(&e, "alice:bob")[0].text,
+        "@alice @bob @eve"
+    );
+}
+
+#[test]
+fn su_console_and_sudo_edits_use_any_message_authority() {
+    let mut e = fixture();
+    e.execute(Some("alice"), Some("team"), "original").unwrap();
+    let original = super::tests::room_messages(&e, "team")[0].clone();
+    e.execute(None, None, &format!("/edit {} console update", original.id))
+        .unwrap();
+    assert!(
+        e.commands_for(None, None)
+            .iter()
+            .any(|command| command.name == "/edit")
+    );
+    e.execute(None, None, "/grant eve su").unwrap();
+    e.execute(
+        Some("eve"),
+        None,
+        &format!("/edit {} su update", original.id),
+    )
+    .unwrap();
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    e.execute(
+        Some("bob"),
+        Some("team"),
+        &format!("/sudo /edit {} sudo update", original.id),
+    )
+    .unwrap();
+    assert!(!e.allows(Some("bob"), &e.room_scope("team").unwrap(), Action::EditAny));
+    assert!(
+        e.execute(
+            Some("bob"),
+            Some("team"),
+            &format!("/edit {} denied", original.id)
+        )
+        .is_err()
+    );
+    let edited = super::tests::room_messages(&e, "team")[0].clone();
+    assert_eq!(edited.text, "sudo update");
+    assert_eq!(edited.author_id, original.author_id);
+    assert_eq!(edited.from, original.from);
+    assert_eq!(edited.time, original.time);
+    e.execute(Some("bob"), None, "/tell alice private original")
+        .unwrap();
+    let private = super::tests::private_messages(&e, "alice:bob")[0]
+        .id
+        .clone();
+    e.execute(None, None, &format!("/edit {private} @alice @bob @eve"))
+        .unwrap();
+    assert_eq!(
+        super::tests::private_messages(&e, "alice:bob")[0].mentions,
+        BTreeSet::from(["alice".into(), "bob".into()])
+    );
+}
+
+#[test]
+fn private_edit_any_rolls_back_on_revision_write_failure() {
+    let mut e = fixture();
+    e.execute(Some("bob"), None, "/tell alice original")
+        .unwrap();
+    let original = super::tests::private_messages(&e, "alice:bob")[0].clone();
+    for permission in ["w:message.edit.any", "r:message.read", "/edit"] {
+        e.execute(
+            None,
+            None,
+            &format!("/grant eve @private:alice:bob {permission}"),
+        )
+        .unwrap();
+    }
+    let revision = e.data.private["alice:bob"].revision;
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_edit_revision BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+    assert!(
+        e.execute(
+            Some("eve"),
+            Some("@private:alice:bob"),
+            &format!("/edit {} failed", original.id)
+        )
+        .is_err()
+    );
+    assert!(super::tests::private_messages(&e, "alice:bob")[0] == original);
+    assert_eq!(e.data.private["alice:bob"].revision, revision);
+    assert!(e.changed_conversation.is_none());
+}

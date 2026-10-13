@@ -11,6 +11,7 @@ export const permissionNames = [
   "w:message.create",
   "w:message.react",
   "w:message.edit.own",
+  "w:message.edit.any",
   "w:message.retract.own",
   "w:message.retract.any",
   "w:room.create",

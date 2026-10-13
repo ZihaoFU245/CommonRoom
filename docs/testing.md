@@ -176,3 +176,13 @@ cache invalidation, restart persistence, transactional failure rollback, and
 unchanged edits without storage writes or revision changes.
 Web tests cover edit visibility, malformed edited markers, and request failures;
 the integration harness checks edit broadcasts to a second client and history.
+
+Edit-any regressions cover scoped action/read/command gates, delegation and
+revocation, ordinary admin defaults, cross-room/private isolation, disabled
+editors, su/console/sudo authority, author/participant preservation, and
+transactional rollback. UI checks cover sizing to all text on entry, growth and
+shrinkage while typing, and reflow at compact widths.
+
+Editor scroll geometry tests cover keeping the last message's footer anchored
+when the textarea grows/shrinks, temporary measurement collapse, and scroll
+bounds. Browser checks exercise this with the virtualized conversation list.

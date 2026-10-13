@@ -163,16 +163,19 @@ Raw HTML and embedded images are disabled; links allow HTTP, HTTPS and mailto.
 
 ## Editing messages
 
-`/edit message-id message` updates your own retained room or private message.
+`/edit message-id message` updates a retained room or private message.
 It requires the `/edit` command grant, `r:message.read`, and
-`w:message.edit.own` on the selected conversation. Ordinary room members and
+`w:message.edit.own` for your own messages or `w:message.edit.any` for any
+author, on the selected conversation. Ordinary room members and
 private participants receive editing rights through their participant bundle.
 Explicit grants, including bot grants, must include editing separately.
-Even superusers cannot edit another author's message.
+Ordinary admins and room owners do not receive edit-any by default. Superusers
+and the stdin console have edit-any; other accounts need explicit scoped grants.
 
-The Edit button appears between Reply and Delete on your own messages. The
+The Edit button appears between Reply and Delete on messages you have permission to edit. The
 inline editor offers Save and Cancel; Escape cancels. Failed saves retain the
-draft for retry. Edits support nonempty text of at most 4,000 Unicode characters.
+draft for retry. The editor fits its full text and grows or shrinks as you type
+or resize the view. Edits support nonempty text of at most 4,000 Unicode characters.
 They preserve message identity, original time, sequence, Markdown format,
 reactions, and existing reply quotes, and recalculate mentions. An `edited`
 boolean marks edited messages; absent values default to false. Changes persist

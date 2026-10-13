@@ -1424,8 +1424,7 @@ fn edits_enforce_ownership_scope_permissions_and_validation() {
     let mut e = engine();
     e.execute(Some("bob"), Some("lobby"), "original").unwrap();
     let id = room_messages(&e, "lobby")[0].id.clone();
-    e.execute(None, None, "/grant alice su").unwrap();
-    for actor in [Some("alice"), Some("eve"), None] {
+    for actor in [Some("alice"), Some("eve")] {
         assert!(
             e.execute(actor, Some("lobby"), &format!("/edit {id} forbidden"))
                 .is_err()
@@ -1618,4 +1617,38 @@ fn unchanged_edits_do_not_mark_messages_or_write_storage() {
         .unwrap();
     assert!(room_messages(&e, "lobby")[0].edited);
     assert_eq!(e.revision, revision);
+}
+
+#[test]
+fn edit_any_grants_survive_restart_and_revoke() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chat.sqlite");
+    let id;
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.provision("eve", "hash".into(), false, false).unwrap();
+        e.execute(Some("alice"), None, "/new room team").unwrap();
+        e.execute(Some("alice"), Some("team"), "original").unwrap();
+        id = room_messages(&e, "team")[0].id.clone();
+        for permission in ["w:message.edit.any", "r:message.read", "/edit"] {
+            e.execute(None, None, &format!("/grant eve team {permission}"))
+                .unwrap();
+        }
+    }
+    let mut e = Engine::open(&path).unwrap();
+    e.execute(
+        Some("eve"),
+        Some("team"),
+        &format!("/edit {id} after restart"),
+    )
+    .unwrap();
+    assert_eq!(room_messages(&e, "team")[0].from, "alice");
+    e.execute(None, None, "/revoke eve team w:message.edit.any")
+        .unwrap();
+    assert!(
+        e.execute(Some("eve"), Some("team"), &format!("/edit {id} denied"))
+            .is_err()
+    );
+    assert_eq!(room_messages(&e, "team")[0].text, "after restart");
 }

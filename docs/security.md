@@ -94,7 +94,7 @@ The permission catalog has individual actions in three families:
 
 - `r`: `room.discover`, `message.read`, `message.metadata`, `member.list`,
   `account.list`, `server.config`, `policy.read`.
-- `w`: `message.create`, `message.react`, `message.edit.own`, `message.retract.own`,
+- `w`: `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
   `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`.
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.owner.transfer`, `history.clean`, `account.create`,
@@ -212,3 +212,9 @@ New room bots receive explicit direct grants rather than the user bundle: discov
 Credential authentication resolves stable account ID to the current active username, then uses the same command execution, history/read checks, and snapshot filtering as browser sessions. Credentials cannot specify an author or bypass grants. Only hashes of 244-bit random secrets (two UUIDv4 values) are stored. Revocation is checked on subsequent actions and WebSocket updates/heartbeats; revocation broadcasts wake connected sockets. Already-delivered content cannot be recalled. Account-wide input throttling is shared across credentials and sockets. See [Bots](bots.md).
 
 Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.
+
+`w:message.edit.any` permits changing another author's retained message when
+`r:message.read` and `/edit` are also granted on that conversation. It does not
+change authorship or grant access to other conversations. Like other powers
+outside the participant bundle, only su/console may delegate it; a room manager
+cannot grant it even when holding it. Ordinary participants retain edit-own.

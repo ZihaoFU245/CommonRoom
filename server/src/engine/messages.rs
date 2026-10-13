@@ -2,6 +2,26 @@ use super::*;
 use authorization::{Action, Scope};
 
 impl Engine {
+    // Resolve only the selected room, or a retained target for global su actions.
+    pub(super) fn message_action_room(
+        &self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        scope: &Scope,
+        id: &str,
+    ) -> Option<String> {
+        room.map(str::to_owned).or_else(|| {
+            if !self.is_su(actor) || *scope != Scope::Server {
+                return None;
+            }
+            self.data
+                .rooms
+                .iter()
+                .find(|(_, target)| target.messages.iter().any(|message| message.id == id))
+                .map(|(name, _)| name.clone())
+        })
+    }
+
     pub(super) fn message(
         &mut self,
         actor: Option<&str>,
@@ -73,17 +93,7 @@ impl Engine {
             "/retract" => {
                 require_len(parts, 2, "/retract message-id")?;
                 let id = parts[1];
-                let room = room.map(str::to_owned).or_else(|| {
-                    (self.is_su(actor) && context.scope == Scope::Server)
-                        .then(|| {
-                            self.data
-                                .rooms
-                                .iter()
-                                .find(|(_, target)| target.messages.iter().any(|m| m.id == id))
-                                .map(|(name, _)| name.clone())
-                        })
-                        .flatten()
-                });
+                let room = self.message_action_room(actor, room, &context.scope, id);
                 let scope = if let Some(name) = &room {
                     self.room_scope(name)?
                 } else {
@@ -155,7 +165,11 @@ impl Engine {
                 Ok("Message deleted.".into())
             }
             "/react" | "/reply" | "/edit" => {
-                let user = actor.ok_or("Message actions require a user account.")?;
+                let user = if parts[0] == "/edit" {
+                    actor.unwrap_or("console")
+                } else {
+                    actor.ok_or("Message actions require a user account.")?
+                };
                 let content = input
                     .strip_prefix(parts[0])
                     .ok_or("Invalid command.")?
@@ -167,6 +181,10 @@ impl Engine {
                 if value.is_empty() {
                     return Err("A reaction, reply or edit cannot be empty.".into());
                 }
+                let edit_room = (parts[0] == "/edit" && room.is_none())
+                    .then(|| self.message_action_room(actor, room, &context.scope, id))
+                    .flatten();
+                let room = room.or(edit_room.as_deref());
                 let scope = if let Some(name) = room {
                     self.room_scope(name)?
                 } else {
@@ -192,7 +210,11 @@ impl Engine {
                     if parts[0] == "/react" {
                         Action::React
                     } else if parts[0] == "/edit" {
-                        Action::EditOwn
+                        if self.allows(actor, &scope, Action::EditAny) {
+                            Action::EditAny
+                        } else {
+                            Action::EditOwn
+                        }
                     } else {
                         Action::Send
                     },
@@ -266,14 +288,10 @@ impl Engine {
                     return Err("Messages support at most 4000 characters.".into());
                 }
                 if parts[0] == "/edit" {
-                    let actor_id = self
-                        .data
-                        .users
-                        .get(user)
-                        .ok_or("User not found.")?
-                        .id
-                        .clone();
-                    if original.author_id != actor_id {
+                    let actor_id = self.principal_id(actor).ok_or("Account unavailable.")?;
+                    if original.author_id != actor_id
+                        && !self.allows(actor, &scope, Action::EditAny)
+                    {
                         return Err("You can only edit your own messages.".into());
                     }
                     if original.text == value {
@@ -285,7 +303,9 @@ impl Engine {
                         mentions.retain(|name| target.members.contains(name));
                         (&mut target.messages, &mut target.revision)
                     } else {
-                        mentions.retain(|name| name == user || original.to.as_ref() == Some(name));
+                        mentions.retain(|name| {
+                            name == &original.from || original.to.as_ref() == Some(name)
+                        });
                         let chat = self
                             .data
                             .private

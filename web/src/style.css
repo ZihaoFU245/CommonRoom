@@ -1799,8 +1799,9 @@ button:focus-visible {
   border-radius: 0;
   background: transparent;
   width: 100%;
-  min-height: 80px;
-  resize: vertical;
+  min-height: 0;
+  overflow: hidden;
+  resize: none;
   font: inherit;
 }
 .message-editor textarea:focus-visible {

@@ -47,3 +47,18 @@ test("editing requires ownership and both scoped grants", () => {
   assert.equal(messageActions(other, "bob", permission, []).edit, false);
   assert.equal(messageActions(other, "bob", [], commands).edit, false);
 });
+
+test("edit-any permits other authors but still requires the command grant", () => {
+  assert.equal(
+    messageActions(other, "alice", ["w:message.edit.any"], commands).edit,
+    true,
+  );
+  assert.equal(
+    messageActions(other, "alice", ["w:message.edit.any"], []).edit,
+    false,
+  );
+  assert.equal(
+    messageActions(other, "alice", ["w:message.retract.any"], commands).edit,
+    false,
+  );
+});

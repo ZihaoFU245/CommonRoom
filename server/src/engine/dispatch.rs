@@ -403,6 +403,15 @@ impl Engine {
             (true, private_key(actor?, parts.get(1)?))
         } else if let Some(room) = view.filter(|v| !v.starts_with('@')) {
             (false, room.to_owned())
+        } else if command == "/edit"
+            && let Some(name) = self.message_action_room(
+                actor,
+                None,
+                &self.command_scope(actor, view).ok()?,
+                parts.get(1)?,
+            )
+        {
+            (false, name)
         } else if !input.trim_start().starts_with('/') {
             (true, view?.strip_prefix("@private:")?.to_owned())
         } else {

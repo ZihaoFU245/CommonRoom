@@ -12,9 +12,10 @@ export function messageActions(
     react: permissions.includes("w:message.react") && allowed("/react"),
     reply: permissions.includes("w:message.create") && allowed("/reply"),
     edit:
-      message.from === username &&
-      permissions.includes("w:message.edit.own") &&
-      allowed("/edit"),
+      allowed("/edit") &&
+      (permissions.includes("w:message.edit.any") ||
+        (message.from === username &&
+          permissions.includes("w:message.edit.own"))),
     retract:
       allowed("/retract") &&
       (permissions.includes("w:message.retract.any") ||

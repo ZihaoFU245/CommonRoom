@@ -87,6 +87,7 @@ export const MessageList = memo(function MessageList({
           canReact={actions.react}
           canReply={actions.reply}
           canEdit={actions.edit}
+          anchorEditorBottom={index === entries.length - 1}
           canDelete={actions.retract}
           onEdit={(value) => onEdit(entry.message, value)}
           onReact={(value) => onReact(entry.message, value)}

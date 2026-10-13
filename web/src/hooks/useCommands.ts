@@ -183,8 +183,9 @@ export function useCommands({
   }
   function editMessage(message: Message, value: string): Promise<boolean> {
     if (
-      message.from !== state.username ||
-      !permissions.includes("w:message.edit.own") ||
+      (!permissions.includes("w:message.edit.any") &&
+        (message.from !== state.username ||
+          !permissions.includes("w:message.edit.own"))) ||
       !canExecute("/edit") ||
       !value.trim() ||
       Array.from(value.trim()).length > 4000 ||

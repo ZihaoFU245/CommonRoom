@@ -1,8 +1,9 @@
 import { Markdown } from "./Markdown.tsx";
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
 import type { MessageDate } from "../features/conversation/messages.ts";
+import { useMessageEditorLayout } from "../hooks/useMessageEditorLayout.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
 
 export function ConsoleMessage({
@@ -16,6 +17,7 @@ export function ConsoleMessage({
   canReply,
   canDelete,
   canEdit,
+  anchorEditorBottom = false,
   onEdit,
   onReact,
   onReply,
@@ -31,6 +33,7 @@ export function ConsoleMessage({
   canReply: boolean;
   canDelete: boolean;
   canEdit: boolean;
+  anchorEditorBottom?: boolean;
   onEdit: (value: string) => Promise<boolean>;
   onReact: (value: string) => void;
   onReply: () => void;
@@ -38,41 +41,20 @@ export function ConsoleMessage({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const editor = useRef<HTMLTextAreaElement>(null);
-  const messageBody = useRef<HTMLFormElement>(null);
-  const bodyAnimation = useRef<Animation | null>(null);
-  const previousHeight = useRef<number | null>(null);
+  const [editText, setEditText] = useState("");
+  const {
+    input: editor,
+    body: messageBody,
+    prepareTransition,
+  } = useMessageEditorLayout({
+    active: editing && canEdit,
+    text: editText,
+    anchorBottom: anchorEditorBottom,
+  });
   function changeEditing(next: boolean) {
-    previousHeight.current =
-      messageBody.current?.getBoundingClientRect().height ?? null;
-    bodyAnimation.current?.cancel();
+    prepareTransition();
     setEditing(next);
   }
-  useLayoutEffect(() => {
-    const body = messageBody.current;
-    const from = previousHeight.current;
-    previousHeight.current = null;
-    if (
-      !body ||
-      from === null ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    )
-      return;
-    const to = body.getBoundingClientRect().height;
-    // Animate the persistent body only. Removed inputs must never be reinserted.
-    bodyAnimation.current = body.animate(
-      [
-        { height: `${from}px`, overflow: "hidden" },
-        { height: `${to}px`, overflow: "hidden" },
-      ],
-      { duration: 180, easing: "ease-out" },
-    );
-  }, [editing, canEdit]);
-  useEffect(() => () => bodyAnimation.current?.cancel(), []);
-  useEffect(() => {
-    if (editing && canEdit) editor.current?.focus();
-  }, [editing, canEdit]);
-  const [editText, setEditText] = useState("");
   const editOriginal = useRef("");
   const [editError, setEditError] = useState("");
   const [reaction, setReaction] = useState("");
@@ -101,6 +83,9 @@ export function ConsoleMessage({
       document.removeEventListener("keydown", dismissEscape);
     };
   }, [reactionOpen, placement.anchor]);
+  const editValue = editText.trim();
+  const validEdit =
+    editing && !!editValue && Array.from(editValue).length <= 4000;
   const reply = message.reply;
   const text = mentionedText(message.text, message.mentions);
   return (
@@ -147,16 +132,9 @@ export function ConsoleMessage({
           class={editing && canEdit ? "message-editor" : "message-body"}
           onSubmit={(event) => {
             event.preventDefault();
-            if (
-              !editing ||
-              !canEdit ||
-              pending ||
-              !editText.trim() ||
-              Array.from(editText.trim()).length > 4000
-            )
-              return;
+            if (!editing || !canEdit || pending || !validEdit) return;
             setEditError("");
-            if (editText.trim() === editOriginal.current) {
+            if (editValue === editOriginal.current) {
               changeEditing(false);
               return;
             }
@@ -173,7 +151,11 @@ export function ConsoleMessage({
             <>
               <textarea
                 name="message-edit"
-                aria-label="Edit your message"
+                dir="auto"
+                rows={1}
+                aria-label={
+                  message.from === self ? "Edit your message" : "Edit message"
+                }
                 ref={editor}
                 value={editText}
                 disabled={pending}
@@ -190,11 +172,7 @@ export function ConsoleMessage({
                 <button
                   type="submit"
                   class="primary"
-                  disabled={
-                    pending ||
-                    !editText.trim() ||
-                    Array.from(editText.trim()).length > 4000
-                  }
+                  disabled={pending || !validEdit}
                 >
                   Save
                 </button>
@@ -275,7 +253,9 @@ export function ConsoleMessage({
           <button
             type="button"
             disabled={pending || editing}
-            aria-label="Edit your message"
+            aria-label={
+              message.from === self ? "Edit your message" : "Edit message"
+            }
             onClick={() => {
               editOriginal.current = message.text;
               setEditText(message.text);

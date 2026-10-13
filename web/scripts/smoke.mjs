@@ -552,6 +552,39 @@ try {
     true,
   );
   await send(bob, `/edit ${roomMessageId} ${multilingual}`, "study");
+  child.stdin.write("/grant alice study w:message.edit.any\n");
+  await until(
+    () =>
+      alice.snapshot.rooms
+        .find((r) => r.name === "study")
+        .permissions.includes("w:message.edit.any"),
+    "edit-any grant delivery",
+  );
+  await send(alice, `/edit ${roomMessageId} moderator update`, "study");
+  await until(
+    () =>
+      bob.snapshot.rooms
+        .find((r) => r.name === "study")
+        .messages.find((m) => m.id === roomMessageId)?.text ===
+      "moderator update",
+    "edit-any broadcast",
+  );
+  assert.equal(
+    bob.snapshot.rooms
+      .find((r) => r.name === "study")
+      .messages.find((m) => m.id === roomMessageId).from,
+    "bob",
+  );
+  child.stdin.write("/revoke alice study w:message.edit.any\n");
+  await until(
+    () =>
+      !alice.snapshot.rooms
+        .find((r) => r.name === "study")
+        .permissions.includes("w:message.edit.any"),
+    "edit-any revocation delivery",
+  );
+  await send(alice, `/edit ${roomMessageId} revoked`, "study", "error");
+  await send(bob, `/edit ${roomMessageId} ${multilingual}`, "study");
 
   await send(eve, `/react ${roomMessageId} 👀`, "study", "error");
   await send(eve, `/reply ${roomMessageId} no access`, "study", "error");
@@ -612,6 +645,41 @@ try {
   assert.equal(bob.snapshot.direct.at(-1).to, "bob");
   assert.equal(bob.snapshot.direct.at(-1).markdown, true);
   assert.deepEqual(bob.snapshot.direct.at(-1).mentions, ["bob"]);
+  child.stdin.write("/grant alice @private:alice:bob w:message.edit.any\n");
+  await until(
+    () =>
+      alice.snapshot.private_access["@direct:bob"]?.permissions.includes(
+        "w:message.edit.any",
+      ),
+    "private edit-any grant",
+  );
+  await send(
+    alice,
+    `/edit ${dmId} @alice @bob private moderator update`,
+    "@direct:bob",
+  );
+  await until(
+    () =>
+      bob.snapshot.direct.find((m) => m.id === dmId)?.text ===
+      "@alice @bob private moderator update",
+    "private edit-any delivery",
+  );
+  assert.deepEqual(bob.snapshot.direct.find((m) => m.id === dmId).mentions, [
+    "alice",
+    "bob",
+  ]);
+  assert.equal(bob.snapshot.direct.find((m) => m.id === dmId).from, "bob");
+  await send(bob, `/edit ${dmId} a private message`, "@direct:alice");
+  child.stdin.write("/revoke alice @private:alice:bob w:message.edit.any\n");
+  await until(
+    () =>
+      !alice.snapshot.private_access["@direct:bob"]?.permissions.includes(
+        "w:message.edit.any",
+      ),
+    "private edit-any revoke",
+  );
+  await send(alice, `/edit ${dmId} revoked`, "@direct:bob", "error");
+
   await send(eve, `/react ${dmId} ❤️`, null, "error");
   await send(eve, `/reply ${dmId} leak`, null, "error");
   await send(alice, `/retract ${dmId}`, null, "error");
