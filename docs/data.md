@@ -69,3 +69,8 @@ Account rename/deletion streams at most 100 message records at a time inside the
 Message JSON may include a boolean `markdown` field. Missing fields default to
 false, preserving plain-text rendering for existing messages. This additive JSON
 field does not change the SQLite schema or require a migration.
+
+Message JSON may include an `edited` boolean. Missing values default to false.
+This additive field uses the existing v8 storage schema. Edits update the
+message payload and conversation revision in one transaction; failed writes
+roll back both. Existing reply quotes retain the text captured when replying.

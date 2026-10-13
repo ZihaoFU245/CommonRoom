@@ -1787,3 +1787,46 @@ button:focus-visible {
   color: var(--ink);
   text-decoration: underline;
 }
+
+.message-editor {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+.message-editor textarea {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  font: inherit;
+}
+.message-editor textarea:focus-visible {
+  outline: none;
+}
+.message-editor > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78571rem;
+  line-height: 1.4;
+}
+.message-edited {
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+.message-editor .primary {
+  margin-top: 0;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.message-editor button[type="button"] {
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.message-editor button[type="button"]:hover {
+  background: var(--wash);
+}

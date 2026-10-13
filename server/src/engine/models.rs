@@ -18,6 +18,8 @@ pub struct Message {
     pub text: String,
     #[serde(default)]
     pub markdown: bool,
+    #[serde(default)]
+    pub edited: bool,
     pub time: u64,
     pub sequence: u64,
     #[serde(default)]

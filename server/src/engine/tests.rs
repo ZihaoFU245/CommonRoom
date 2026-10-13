@@ -1364,3 +1364,258 @@ fn markdown_is_per_message_persisted_and_does_not_bypass_permissions() {
     assert!(private_messages(&e, "alice:bob").iter().all(|m| m.markdown));
     assert!(e.snapshot("bob").unwrap().direct.iter().all(|m| m.markdown));
 }
+
+#[test]
+fn edits_preserve_identity_format_reactions_quotes_and_read_positions() {
+    let mut e = engine();
+    e.execute_formatted(Some("bob"), Some("lobby"), "**original** @eve", true)
+        .unwrap();
+    let original = room_messages(&e, "lobby")[0].clone();
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/react {} 👍", original.id),
+    )
+    .unwrap();
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/reply {} reply", original.id),
+    )
+    .unwrap();
+    let before = room_messages(&e, "lobby");
+    e.mark_read("alice", "lobby", before[1].sequence).unwrap();
+    let revision = e.data.rooms["lobby"].revision;
+    let sequence = e.data.next_sequence;
+    let cursors = e.read_positions.clone();
+    // Warm history before updating it to exercise revision-based invalidation.
+    e.history("alice", "lobby").unwrap();
+    e.execute(
+        Some("bob"),
+        Some("lobby"),
+        &format!("/edit {} **你好**\n@alice @missing", original.id),
+    )
+    .unwrap();
+    let edited = room_messages(&e, "lobby");
+    assert!(edited[0].edited);
+    assert_eq!(edited[0].text, "**你好**\n@alice @missing");
+    assert_eq!(edited[0].id, original.id);
+    assert_eq!(edited[0].sequence, original.sequence);
+    assert_eq!(edited[0].time, original.time);
+    assert!(edited[0].markdown);
+    assert_eq!(edited[0].mentions, BTreeSet::from(["alice".into()]));
+    assert_eq!(edited[0].reactions, before[0].reactions);
+    assert!(edited[1] == before[1]);
+    assert_eq!(e.data.next_sequence, sequence);
+    assert_eq!(e.data.rooms["lobby"].revision, revision + 1);
+    assert_eq!(e.read_positions, cursors);
+    assert_eq!(
+        e.changed_conversation.as_ref(),
+        Some(&e.data.rooms["lobby"].id)
+    );
+    assert_eq!(
+        e.history("alice", "lobby").unwrap().messages[0].text,
+        edited[0].text
+    );
+}
+
+#[test]
+fn edits_enforce_ownership_scope_permissions_and_validation() {
+    let mut e = engine();
+    e.execute(Some("bob"), Some("lobby"), "original").unwrap();
+    let id = room_messages(&e, "lobby")[0].id.clone();
+    e.execute(None, None, "/grant alice su").unwrap();
+    for actor in [Some("alice"), Some("eve"), None] {
+        assert!(
+            e.execute(actor, Some("lobby"), &format!("/edit {id} forbidden"))
+                .is_err()
+        );
+    }
+    for text in [
+        format!("/edit {id}"),
+        format!("/edit {id}   "),
+        format!("/edit {id} {}", "界".repeat(4001)),
+        "/edit missing value".into(),
+    ] {
+        assert!(e.execute(Some("bob"), Some("lobby"), &text).is_err());
+    }
+    e.execute(Some("alice"), None, "/new room other").unwrap();
+    e.execute(Some("alice"), None, "/add bob other").unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("other"), &format!("/edit {id} forbidden"))
+            .is_err()
+    );
+    e.execute(None, None, "/revoke bob user lobby").unwrap();
+    e.execute(None, None, "/grant bob lobby r:message.read")
+        .unwrap();
+    e.execute(None, None, "/grant bob lobby /edit").unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("lobby"), &format!("/edit {id} forbidden"))
+            .is_err()
+    );
+    e.execute(None, None, "/grant bob lobby w:message.edit.own")
+        .unwrap();
+    e.execute(None, None, "/revoke bob lobby /edit").unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("lobby"), &format!("/edit {id} forbidden"))
+            .is_err()
+    );
+    assert_eq!(room_messages(&e, "lobby")[0].text, "original");
+    e.execute(None, None, "/grant bob lobby /edit").unwrap();
+    e.execute(
+        Some("bob"),
+        Some("lobby"),
+        &format!("/edit {id} {}", "界".repeat(4000)),
+    )
+    .unwrap();
+    e.execute(Some("bob"), None, "/rename robert").unwrap();
+    e.execute(
+        Some("robert"),
+        Some("lobby"),
+        &format!("/edit {id} renamed author"),
+    )
+    .unwrap();
+    e.execute(Some("robert"), Some("lobby"), &format!("/retract {id}"))
+        .unwrap_err();
+    e.execute(None, Some("lobby"), &format!("/retract {id}"))
+        .unwrap();
+    assert!(
+        e.execute(
+            Some("robert"),
+            Some("lobby"),
+            &format!("/edit {id} expired")
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn private_edits_are_scoped_and_survive_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let id;
+    {
+        let mut e = Engine::open(&path).unwrap();
+        for name in ["alice", "bob", "eve"] {
+            e.provision(name, "hash".into(), false, false).unwrap();
+        }
+        e.execute(Some("bob"), None, "/tell alice original")
+            .unwrap();
+        e.execute(Some("bob"), None, "/tell eve other").unwrap();
+        id = private_messages(&e, "alice:bob")[0].id.clone();
+        assert!(
+            e.execute(
+                Some("bob"),
+                Some("@direct:eve"),
+                &format!("/edit {id} leaked")
+            )
+            .is_err()
+        );
+        assert!(
+            e.execute(Some("eve"), None, &format!("/edit {id} leaked"))
+                .is_err()
+        );
+        assert!(
+            e.execute(
+                Some("alice"),
+                Some("@direct:bob"),
+                &format!("/edit {id} forbidden")
+            )
+            .is_err()
+        );
+        e.execute(
+            Some("bob"),
+            Some("@direct:alice"),
+            &format!("/edit {id} updated @alice @eve"),
+        )
+        .unwrap();
+        assert_eq!(
+            private_messages(&e, "alice:bob")[0].mentions,
+            BTreeSet::from(["alice".into()])
+        );
+    }
+    let e = Engine::open(&path).unwrap();
+    let message = private_messages(&e, "alice:bob")[0].clone();
+    assert_eq!(message.id, id);
+    assert_eq!(message.text, "updated @alice @eve");
+    assert!(message.edited);
+}
+
+#[test]
+fn failed_edit_rolls_back_payload_and_revision() {
+    let mut e = engine();
+    e.execute(Some("bob"), Some("lobby"), "original").unwrap();
+    let before = room_messages(&e, "lobby")[0].clone();
+    let revision = e.data.rooms["lobby"].revision;
+    for table in ["messages", "entities"] {
+        e.db.lock().unwrap().execute_batch(&format!(
+            "CREATE TRIGGER reject_edit BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT, 'injected edit failure'); END;"
+        )).unwrap();
+        assert!(
+            e.execute(
+                Some("bob"),
+                Some("lobby"),
+                &format!("/edit {} changed", before.id)
+            )
+            .is_err()
+        );
+        assert!(room_messages(&e, "lobby")[0] == before);
+        assert_eq!(e.data.rooms["lobby"].revision, revision);
+        assert!(e.changed_conversation.is_none());
+        e.db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_edit;")
+            .unwrap();
+    }
+}
+
+#[test]
+fn unchanged_edits_do_not_mark_messages_or_write_storage() {
+    let mut e = engine();
+    e.execute(Some("bob"), Some("lobby"), "original").unwrap();
+    e.execute(Some("bob"), None, "/tell alice private original")
+        .unwrap();
+    // No-op edits must succeed even when every storage write is rejected.
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop_message BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'unexpected message write'); END; CREATE TRIGGER reject_noop_revision BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT, 'unexpected revision write'); END;").unwrap();
+    for (view, conversation, text) in [
+        ("lobby", "lobby", "original"),
+        ("@direct:alice", "alice:bob", "private original"),
+    ] {
+        let messages = if view == "lobby" {
+            room_messages(&e, conversation)
+        } else {
+            private_messages(&e, conversation)
+        };
+        let original = messages[0].clone();
+        let before = e.data.clone();
+        let revision = e.revision;
+        e.execute(
+            Some("bob"),
+            Some(view),
+            &format!("/edit {}   {text}  ", original.id),
+        )
+        .unwrap();
+        assert!(e.data == before);
+        assert_eq!(e.revision, revision);
+        assert!(e.changed_conversation.is_none());
+        let messages = if view == "lobby" {
+            room_messages(&e, conversation)
+        } else {
+            private_messages(&e, conversation)
+        };
+        assert!(messages[0] == original);
+        assert!(!messages[0].edited);
+    }
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_noop_message; DROP TRIGGER reject_noop_revision;")
+        .unwrap();
+    let id = room_messages(&e, "lobby")[0].id.clone();
+    e.execute(Some("bob"), Some("lobby"), &format!("/edit {id} changed"))
+        .unwrap();
+    let revision = e.revision;
+    e.execute(Some("bob"), Some("lobby"), &format!("/edit {id} changed"))
+        .unwrap();
+    assert!(room_messages(&e, "lobby")[0].edited);
+    assert_eq!(e.revision, revision);
+}

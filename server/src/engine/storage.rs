@@ -331,6 +331,7 @@ struct MessageRecord<'a> {
     from: &'a str,
     author_id: &'a str,
     markdown: bool,
+    edited: bool,
     private_id: &'a str,
     to: &'a Option<String>,
     text: &'a str,
@@ -345,6 +346,7 @@ fn put_message(db: &Connection, key: &str, message: &Message) -> Result<(), Stri
         from: &message.from,
         author_id: &message.author_id,
         markdown: message.markdown,
+        edited: message.edited,
         private_id: &message.private_id,
         to: &message.to,
         text: &message.text,
@@ -555,10 +557,23 @@ impl Engine {
             let room = self.data.rooms.get(&change.key).ok_or("Room not found.")?;
             (&room.id, &room.messages)
         };
+        let revision = if change.private {
+            self.data.private.get(&change.key).map(|chat| chat.revision)
+        } else {
+            self.data.rooms.get(&change.key).map(|room| room.revision)
+        };
+        if change.index.is_some() && revision == change.revision {
+            return Ok(());
+        }
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
-        if change.reaction {
+        if !change.reaction
+            && let Some(index) = change.index
+        {
+            put_message(&tx, id, messages.get(index).ok_or("Message not found.")?)
+                .map_err(storage_error)?;
+        } else if change.reaction {
             if let Some(index) = change.index {
                 let current = messages.get(index).ok_or("Message not found.")?;
                 let previous = change

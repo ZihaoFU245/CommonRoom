@@ -5,6 +5,7 @@ export interface Reply {
   text: string;
 }
 export interface Message {
+  edited?: boolean;
   markdown?: boolean;
   id: string;
   from: string;
@@ -154,6 +155,7 @@ const reply = (v: unknown): v is Reply =>
 export const isMessage = (v: unknown): v is Message =>
   record(v) &&
   (v.markdown === undefined || typeof v.markdown === "boolean") &&
+  (v.edited === undefined || typeof v.edited === "boolean") &&
   (v.private_id === undefined || typeof v.private_id === "string") &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&

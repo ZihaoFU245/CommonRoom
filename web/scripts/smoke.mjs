@@ -515,6 +515,44 @@ try {
   assert.deepEqual(roomReply.mentions, ["alice"]);
   assert.equal(roomReply.reply.text, multilingual);
   assert.equal(roomReply.markdown, true);
+  const originalRoomMessage = alice.snapshot.rooms
+    .find((r) => r.name === "study")
+    .messages.find((m) => m.id === roomMessageId);
+  await send(alice, `/edit ${roomMessageId} forbidden`, "study", "error");
+  await send(eve, `/edit ${roomMessageId} forbidden`, "study", "error");
+  await send(bob, `/edit ${roomMessageId} **edited** @alice`, "study");
+  await until(
+    () =>
+      alice.snapshot.rooms
+        .find((r) => r.name === "study")
+        .messages.find((m) => m.id === roomMessageId)?.text ===
+      "**edited** @alice",
+    "edit broadcast",
+  );
+  const editedRoomMessage = alice.snapshot.rooms
+    .find((r) => r.name === "study")
+    .messages.find((m) => m.id === roomMessageId);
+  assert.equal(editedRoomMessage.edited, true);
+  assert.equal(editedRoomMessage.sequence, originalRoomMessage.sequence);
+  assert.equal(editedRoomMessage.time, originalRoomMessage.time);
+  assert.equal(editedRoomMessage.markdown, true);
+  assert.deepEqual(editedRoomMessage.reactions, originalRoomMessage.reactions);
+  assert.deepEqual(editedRoomMessage.mentions, ["alice"]);
+  assert.equal(
+    alice.snapshot.rooms
+      .find((r) => r.name === "study")
+      .messages.find((m) => m.id === roomReply.id).reply.text,
+    multilingual,
+  );
+  const editedHistory = await (
+    await request("history?view=study", cookies.alice)
+  ).json();
+  assert.equal(
+    editedHistory.messages.find((m) => m.id === roomMessageId).edited,
+    true,
+  );
+  await send(bob, `/edit ${roomMessageId} ${multilingual}`, "study");
+
   await send(eve, `/react ${roomMessageId} 👀`, "study", "error");
   await send(eve, `/reply ${roomMessageId} no access`, "study", "error");
   await send(alice, `/retract ${roomMessageId}`, "study", "error");
@@ -1403,7 +1441,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: bot bearer API, mentions, replies, scoped permissions, credential revocation, reconnect recovery, base paths, bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: bot bearer API, mentions, replies, scoped permissions, credential revocation, reconnect recovery, base paths, bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, message editing and room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

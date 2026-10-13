@@ -19,6 +19,7 @@ interface Props {
   commands: Command[];
   unreadBoundary: number | null;
   onReact: (message: Message, value: string) => void;
+  onEdit: (message: Message, value: string) => Promise<boolean>;
   onReply: (message: Message) => void;
   onDelete: (message: Message) => void;
   historyElement: RefObject<HTMLElement>;
@@ -35,6 +36,7 @@ export const MessageList = memo(function MessageList({
   commands,
   unreadBoundary,
   onReact,
+  onEdit,
   onReply,
   onDelete,
   historyElement,
@@ -84,7 +86,9 @@ export const MessageList = memo(function MessageList({
           debug={debug}
           canReact={actions.react}
           canReply={actions.reply}
+          canEdit={actions.edit}
           canDelete={actions.retract}
+          onEdit={(value) => onEdit(entry.message, value)}
           onReact={(value) => onReact(entry.message, value)}
           onDelete={() => onDelete(entry.message)}
           onReply={() => {

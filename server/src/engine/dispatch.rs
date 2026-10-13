@@ -69,7 +69,7 @@ impl Engine {
     ) -> Result<(), String> {
         if !matches!(
             parts.first().copied(),
-            Some("/react" | "/reply" | "/retract")
+            Some("/react" | "/reply" | "/retract" | "/edit")
         ) {
             return Ok(());
         }
@@ -357,7 +357,9 @@ impl Engine {
             "/new" | "/add" | "/kick" | "/join" | "/leave" | "/rm" | "/owner" => {
                 self.apply_rooms(&context)
             }
-            "/react" | "/reply" | "/retract" | "/clean" | "/tell" => self.apply_messages(&context),
+            "/react" | "/reply" | "/retract" | "/edit" | "/clean" | "/tell" => {
+                self.apply_messages(&context)
+            }
             "/debug" | "/help" | "/man" | "/whoami" | "/console" | "/ls" | "/members"
             | "/history" => self.apply_queries(&context),
             "/reset" => Err("Account provisioning is console-only.".into()),
@@ -375,7 +377,7 @@ pub(super) struct MessageChange {
     pub(super) index: Option<usize>,
     pub(super) previous: Option<Message>,
     pub(super) sequence: u64,
-    revision: Option<u64>,
+    pub(super) revision: Option<u64>,
 }
 impl MessageChange {
     pub(super) fn new_conversation(&self) -> bool {
@@ -392,7 +394,8 @@ impl Engine {
     ) -> Option<MessageChange> {
         let command = *parts.first()?;
         let reaction = command == "/react";
-        if input.trim_start().starts_with('/') && !matches!(command, "/tell" | "/reply" | "/react")
+        if input.trim_start().starts_with('/')
+            && !matches!(command, "/tell" | "/reply" | "/react" | "/edit")
         {
             return None;
         }
@@ -426,7 +429,7 @@ impl Engine {
         } else {
             self.data.rooms.get(&key).map(|r| (&r.messages, r.revision))
         };
-        let index = if reaction {
+        let index = if reaction || command == "/edit" {
             Some(
                 conversation?
                     .0
@@ -476,7 +479,7 @@ impl Engine {
             if let Some(old_revision) = change.revision {
                 *revision = old_revision;
             }
-            if change.reaction {
+            if change.index.is_some() {
                 if let (Some(index), Some(previous)) = (change.index, change.previous)
                     && let Some(message) = messages.get_mut(index)
                 {

@@ -181,3 +181,25 @@ test("history and incremental frames reject unsafe sequences and oversized pages
     null,
   );
 });
+
+test("edited markers accept legacy messages and reject malformed values", () => {
+  const history = {
+    view: "room",
+    revision: 1,
+    messages: [message],
+    has_before: false,
+    has_after: false,
+  };
+  for (const edited of [undefined, false, true]) {
+    assert.equal(
+      isHistory({ ...history, messages: [{ ...message, edited }] }),
+      true,
+    );
+  }
+  for (const edited of [null, "true", 1, {}]) {
+    assert.equal(
+      isHistory({ ...history, messages: [{ ...message, edited }] }),
+      false,
+    );
+  }
+});

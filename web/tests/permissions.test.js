@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { messageActions } from "../src/features/conversation/permissions.ts";
-const commands = ["/react", "/reply", "/retract"].map((name) => ({ name }));
+const commands = ["/react", "/reply", "/retract", "/edit"].map((name) => ({
+  name,
+}));
 const other = { from: "bob" };
 test("read-only access never exposes mutating controls, even with command grants", () => {
   assert.deepEqual(
     messageActions(other, "alice", ["r:message.read"], commands),
-    { react: false, reply: false, retract: false },
+    { react: false, reply: false, edit: false, retract: false },
   );
 });
 test("actions require both the scoped command and resource grant", () => {
@@ -17,7 +19,7 @@ test("actions require both the scoped command and resource grant", () => {
       ["w:message.react", "w:message.create", "w:message.retract.any"],
       [],
     ),
-    { react: false, reply: false, retract: false },
+    { react: false, reply: false, edit: false, retract: false },
   );
 });
 test("own retraction cannot delete another author; su any-message grants can", () => {
@@ -33,4 +35,15 @@ test("own retraction cannot delete another author; su any-message grants can", (
     messageActions(other, "alice", ["w:message.retract.any"], commands).retract,
     true,
   );
+});
+
+test("editing requires ownership and both scoped grants", () => {
+  const permission = ["w:message.edit.own"];
+  assert.equal(messageActions(other, "bob", permission, commands).edit, true);
+  assert.equal(
+    messageActions(other, "alice", permission, commands).edit,
+    false,
+  );
+  assert.equal(messageActions(other, "bob", permission, []).edit, false);
+  assert.equal(messageActions(other, "bob", [], commands).edit, false);
 });

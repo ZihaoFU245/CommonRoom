@@ -160,3 +160,25 @@ message permissions. Each message retains its chosen format for recipients
 and history, independently of later toggle changes. Supported formatting includes
 bold, italic, strikethrough, headings, lists, quotes, code, tables and links.
 Raw HTML and embedded images are disabled; links allow HTTP, HTTPS and mailto.
+
+## Editing messages
+
+`/edit message-id message` updates your own retained room or private message.
+It requires the `/edit` command grant, `r:message.read`, and
+`w:message.edit.own` on the selected conversation. Ordinary room members and
+private participants receive editing rights through their participant bundle.
+Explicit grants, including bot grants, must include editing separately.
+Even superusers cannot edit another author's message.
+
+The Edit button appears between Reply and Delete on your own messages. The
+inline editor offers Save and Cancel; Escape cancels. Failed saves retain the
+draft for retry. Edits support nonempty text of at most 4,000 Unicode characters.
+They preserve message identity, original time, sequence, Markdown format,
+reactions, and existing reply quotes, and recalculate mentions. An `edited`
+boolean marks edited messages; absent values default to false. Changes persist
+and are broadcast only to authorized conversation readers. Editing does not
+create a new message or advance read cursors.
+
+Saving unchanged text behaves like Cancel: it does not send an edit or add an
+edited marker. Existing edited markers from earlier changes remain. Direct
+`/edit` commands with unchanged text also leave storage and revisions unchanged.

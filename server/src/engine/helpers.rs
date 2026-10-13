@@ -75,6 +75,7 @@ pub(super) fn new_message(from: &str, to: Option<&str>, text: &str) -> Message {
         to: to.map(String::from),
         text: text.into(),
         markdown: false,
+        edited: false,
         time: now(),
         sequence: 0,
         reactions: BTreeMap::new(),

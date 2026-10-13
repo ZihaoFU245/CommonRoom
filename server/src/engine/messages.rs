@@ -154,7 +154,7 @@ impl Engine {
                 self.audit(actor, "/retract", id);
                 Ok("Message deleted.".into())
             }
-            "/react" | "/reply" => {
+            "/react" | "/reply" | "/edit" => {
                 let user = actor.ok_or("Message actions require a user account.")?;
                 let content = input
                     .strip_prefix(parts[0])
@@ -162,10 +162,10 @@ impl Engine {
                     .trim_start();
                 let (id, value) = content
                     .split_once(char::is_whitespace)
-                    .ok_or("Usage: /react message-id reaction or /reply message-id message")?;
+                    .ok_or("Usage: /react message-id reaction, /reply message-id message or /edit message-id message")?;
                 let value = value.trim();
                 if value.is_empty() {
-                    return Err("A reaction or reply cannot be empty.".into());
+                    return Err("A reaction, reply or edit cannot be empty.".into());
                 }
                 let scope = if let Some(name) = room {
                     self.room_scope(name)?
@@ -191,6 +191,8 @@ impl Engine {
                     &scope,
                     if parts[0] == "/react" {
                         Action::React
+                    } else if parts[0] == "/edit" {
+                        Action::EditOwn
                     } else {
                         Action::Send
                     },
@@ -262,6 +264,45 @@ impl Engine {
                 }
                 if value.chars().count() > 4000 {
                     return Err("Messages support at most 4000 characters.".into());
+                }
+                if parts[0] == "/edit" {
+                    let actor_id = self
+                        .data
+                        .users
+                        .get(user)
+                        .ok_or("User not found.")?
+                        .id
+                        .clone();
+                    if original.author_id != actor_id {
+                        return Err("You can only edit your own messages.".into());
+                    }
+                    if original.text == value {
+                        return Ok("Message unchanged.".into());
+                    }
+                    let mut mentions = mentioned_names(value);
+                    let (messages, revision) = if let Some(name) = room {
+                        let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
+                        mentions.retain(|name| target.members.contains(name));
+                        (&mut target.messages, &mut target.revision)
+                    } else {
+                        mentions.retain(|name| name == user || original.to.as_ref() == Some(name));
+                        let chat = self
+                            .data
+                            .private
+                            .values_mut()
+                            .find(|chat| matches!(&scope, Scope::Private(id) if chat.id == *id))
+                            .ok_or("Private conversation not found.")?;
+                        (&mut chat.messages, &mut chat.revision)
+                    };
+                    let target = messages
+                        .iter_mut()
+                        .find(|message| message.id == id)
+                        .ok_or("Message not found in this conversation.")?;
+                    target.text = value.into();
+                    target.mentions = mentions;
+                    target.edited = true;
+                    *revision = revision.wrapping_add(1);
+                    return Ok("Message edited.".into());
                 }
                 let recipient = if room.is_none() {
                     let peer = if original.from == user {

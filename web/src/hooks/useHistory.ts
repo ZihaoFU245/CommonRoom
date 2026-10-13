@@ -163,7 +163,7 @@ export function useHistory(
         return;
       }
     }
-    // Refresh only the current window after reactions/cleanup; do not download earlier history.
+    // Refresh only the current window after edits/reactions/cleanup; do not download earlier history.
     const anchor =
       target ??
       (previous?.view === selected && !atBottom.current

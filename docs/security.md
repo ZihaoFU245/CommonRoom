@@ -94,7 +94,7 @@ The permission catalog has individual actions in three families:
 
 - `r`: `room.discover`, `message.read`, `message.metadata`, `member.list`,
   `account.list`, `server.config`, `policy.read`.
-- `w`: `message.create`, `message.react`, `message.retract.own`,
+- `w`: `message.create`, `message.react`, `message.edit.own`, `message.retract.own`,
   `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`.
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.owner.transfer`, `history.clean`, `account.create`,

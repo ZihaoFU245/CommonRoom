@@ -266,7 +266,10 @@ export function suggestions(
   if (name === "/owner" && position === 2) values = rooms;
   if (name === "/history" && position === 1)
     values = rooms.map((room) => `#${room}`);
-  if (["/reply", "/react", "/retract"].includes(name) && position === 1)
+  if (
+    ["/reply", "/react", "/retract", "/edit"].includes(name) &&
+    position === 1
+  )
     values = (context.messages || []).map((message) => message.id);
   if (name === "/react" && position === 2)
     values = Object.keys(

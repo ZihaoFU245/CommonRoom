@@ -168,3 +168,11 @@ The integration harness additionally connects a real bot WebSocket in production
 Trusted direct bot transport regressions additionally check production HTTP/WS without a forwarded-protocol header, valid/invalid/missing credentials, IPv4-mapped loopback, missing/untrusted socket identity, spoofed forwarding headers, forwarded-http rejection, base paths, unchanged browser HTTPS requirements, and direct bot message sends. The real socket integration suite connects the bot using direct WS and verifies revocation/disconnection.
 
 Remote bot configuration regressions cover separate read/write account grants, command/context gates, cross-account denial, lifecycle restrictions, protected/disabled targets, result authorization rechecks, offline/disconnected runtimes, duplicate handler registration, malformed/oversized responses and timeout/cancellation. The real production WebSocket harness checks registration, set/fetch round trips, runtime rejection, delegated access/revocation and unsolicited responses.
+
+Editing regressions cover ownership, separate action/command grants, room and
+private scope isolation, Unicode limits, expired messages, renamed authors,
+identity/format/reaction/quote preservation, mention recalculation, history
+cache invalidation, restart persistence, transactional failure rollback, and
+unchanged edits without storage writes or revision changes.
+Web tests cover edit visibility, malformed edited markers, and request failures;
+the integration harness checks edit broadcasts to a second client and history.

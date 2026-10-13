@@ -315,6 +315,7 @@ export function Chat({
     [messages, output, cleared, selected],
   );
   const handleReact = useEvent(reactTo);
+  const handleEdit = useEvent(commands.editMessage);
   const handleDelete = useEvent((message: Message) =>
     commands.retract(message),
   );
@@ -514,6 +515,7 @@ export function Chat({
             pending={pending}
             unreadBoundary={unreadBoundary}
             onReact={handleReact}
+            onEdit={handleEdit}
             onReply={handleReply}
             onDelete={handleDelete}
             virtualTimeline={virtualTimeline}

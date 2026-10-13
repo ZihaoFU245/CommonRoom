@@ -1,5 +1,5 @@
 import { Markdown } from "./Markdown.tsx";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
 import type { MessageDate } from "../features/conversation/messages.ts";
@@ -15,6 +15,8 @@ export function ConsoleMessage({
   canReact,
   canReply,
   canDelete,
+  canEdit,
+  onEdit,
   onReact,
   onReply,
   onDelete,
@@ -28,11 +30,51 @@ export function ConsoleMessage({
   canReact: boolean;
   canReply: boolean;
   canDelete: boolean;
+  canEdit: boolean;
+  onEdit: (value: string) => Promise<boolean>;
   onReact: (value: string) => void;
   onReply: () => void;
   onDelete: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  const messageBody = useRef<HTMLFormElement>(null);
+  const bodyAnimation = useRef<Animation | null>(null);
+  const previousHeight = useRef<number | null>(null);
+  function changeEditing(next: boolean) {
+    previousHeight.current =
+      messageBody.current?.getBoundingClientRect().height ?? null;
+    bodyAnimation.current?.cancel();
+    setEditing(next);
+  }
+  useLayoutEffect(() => {
+    const body = messageBody.current;
+    const from = previousHeight.current;
+    previousHeight.current = null;
+    if (
+      !body ||
+      from === null ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    const to = body.getBoundingClientRect().height;
+    // Animate the persistent body only. Removed inputs must never be reinserted.
+    bodyAnimation.current = body.animate(
+      [
+        { height: `${from}px`, overflow: "hidden" },
+        { height: `${to}px`, overflow: "hidden" },
+      ],
+      { duration: 180, easing: "ease-out" },
+    );
+  }, [editing, canEdit]);
+  useEffect(() => () => bodyAnimation.current?.cancel(), []);
+  useEffect(() => {
+    if (editing && canEdit) editor.current?.focus();
+  }, [editing, canEdit]);
+  const [editText, setEditText] = useState("");
+  const editOriginal = useRef("");
+  const [editError, setEditError] = useState("");
   const [reaction, setReaction] = useState("");
   const [reactionOpen, setReactionOpen] = useState(false);
   const placement = useReactionPlacement(reactionOpen);
@@ -100,21 +142,88 @@ export function ConsoleMessage({
             <span dir="auto">{reply.text}</span>
           </button>
         )}
-        {message.markdown ? (
-          <Markdown text={message.text} mentions={message.mentions} />
-        ) : (
-          <p dir="auto">
-            {text.map((part, index) =>
-              part.mention ? (
-                <mark key={index} class="mention">
-                  {part.text}
-                </mark>
-              ) : (
-                part.text
-              ),
-            )}
-          </p>
-        )}
+        <form
+          ref={messageBody}
+          class={editing && canEdit ? "message-editor" : "message-body"}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (
+              !editing ||
+              !canEdit ||
+              pending ||
+              !editText.trim() ||
+              Array.from(editText.trim()).length > 4000
+            )
+              return;
+            setEditError("");
+            if (editText.trim() === editOriginal.current) {
+              changeEditing(false);
+              return;
+            }
+            onEdit(editText).then(
+              (saved) => {
+                if (saved) changeEditing(false);
+                else setEditError("Could not save your edit. Try again.");
+              },
+              () => setEditError("Could not save your edit. Try again."),
+            );
+          }}
+        >
+          {editing && canEdit ? (
+            <>
+              <textarea
+                name="message-edit"
+                aria-label="Edit your message"
+                ref={editor}
+                value={editText}
+                disabled={pending}
+                onInput={(event) => setEditText(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !pending) {
+                    event.preventDefault();
+                    changeEditing(false);
+                  }
+                }}
+              />
+              {editError && <p role="alert">{editError}</p>}
+              <div>
+                <button
+                  type="submit"
+                  class="primary"
+                  disabled={
+                    pending ||
+                    !editText.trim() ||
+                    Array.from(editText.trim()).length > 4000
+                  }
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => changeEditing(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : message.markdown ? (
+            <Markdown text={message.text} mentions={message.mentions} />
+          ) : (
+            <p dir="auto">
+              {text.map((part, index) =>
+                part.mention ? (
+                  <mark key={index} class="mention">
+                    {part.text}
+                  </mark>
+                ) : (
+                  part.text
+                ),
+              )}
+            </p>
+          )}
+        </form>
+        {message.edited && <span class="message-edited">edited</span>}
         {debug && detailsOpen && (
           <dl id={`details-${message.id}`} class="message-debug">
             <dt>Message ID</dt>
@@ -150,7 +259,7 @@ export function ConsoleMessage({
         </div>
       </div>
       <div
-        class={`message-actions ${reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
+        class={`message-actions ${editing || reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
       >
         {canReply && (
           <button
@@ -160,6 +269,21 @@ export function ConsoleMessage({
             aria-label={`Reply to ${message.from}'s message`}
           >
             Reply
+          </button>
+        )}
+        {canEdit && (
+          <button
+            type="button"
+            disabled={pending || editing}
+            aria-label="Edit your message"
+            onClick={() => {
+              editOriginal.current = message.text;
+              setEditText(message.text);
+              setEditError("");
+              changeEditing(true);
+            }}
+          >
+            Edit
           </button>
         )}
         {canDelete && (

@@ -62,7 +62,13 @@ test("server rejection completes once and permits the next operation", () => {
   assert.equal(f.submit("retry"), true);
 });
 
-for (const text of ["hello", "/react m1 🙂", "/retract m1", "/passwd secret"]) {
+for (const text of [
+  "hello",
+  "/react m1 🙂",
+  "/edit m1 updated",
+  "/retract m1",
+  "/passwd secret",
+]) {
   test(`send failures release the shared lifecycle for ${text.split(" ")[0]}`, async () => {
     for (const failure of [new Error("send failed"), "unknown failure"]) {
       const f = fixture(() => {

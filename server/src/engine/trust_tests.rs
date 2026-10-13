@@ -1163,6 +1163,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "w:message.create",
         "w:message.react",
         "w:message.retract.own",
+        "w:message.edit.own",
         "x:room.join",
     ]);
     let manager = BTreeSet::from([
@@ -1342,6 +1343,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         format!("/retract {id}"),
         format!("/react {id} reaction"),
         format!("/reply {id} reply"),
+        format!("/edit {id} edited"),
         "/history".into(),
         "/configs".into(),
         "/clean 7d team".into(),

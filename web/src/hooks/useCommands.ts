@@ -181,6 +181,36 @@ export function useCommands({
     sendAction(`/retract ${message.id}`);
     if (replyTarget?.id === message.id) setReplyTarget(null);
   }
+  function editMessage(message: Message, value: string): Promise<boolean> {
+    if (
+      message.from !== state.username ||
+      !permissions.includes("w:message.edit.own") ||
+      !canExecute("/edit") ||
+      !value.trim() ||
+      Array.from(value.trim()).length > 4000 ||
+      lifecycle.pending ||
+      socket.current?.readyState !== WebSocket.OPEN
+    )
+      return Promise.resolve(false);
+    return new Promise((resolve) => {
+      lifecycle.submit({
+        command: {
+          text: `/edit ${message.id} ${value.trim()}`,
+          room: selected,
+          key: null,
+          action: true,
+        },
+        frame: {
+          room: consoleView ? null : selected,
+          text: `/edit ${message.id} ${value.trim()}`,
+        },
+        complete: (result, current) => {
+          handleAcknowledgement(result, current);
+          resolve(result.kind !== "error");
+        },
+      });
+    });
+  }
   function reactTo(message: Message, value: string) {
     if (
       !permissions.includes("w:message.react") ||
@@ -376,6 +406,7 @@ export function useCommands({
     selectCaret,
     acceptHint,
     reactTo,
+    editMessage,
     retract,
     deleteConfirmation,
     cancelDelete,

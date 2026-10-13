@@ -175,6 +175,13 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
         ),
         (
             "Messages",
+            "/edit",
+            "/edit message-id message",
+            "Edit your own retained message",
+            false,
+        ),
+        (
+            "Messages",
             "/retract",
             "/retract message-id",
             "Retract a message for everyone; requires own/any-message permission",
@@ -237,7 +244,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
                 && (!console
                     || ![
                         "/passwd", "/join", "/leave", "/tell", "/history", "/react", "/reply",
-                        "/debug", "/console",
+                        "/edit", "/debug", "/console",
                     ]
                     .contains(name))
         })
@@ -305,6 +312,7 @@ pub fn requirements(command: &str) -> &'static str {
         "/history" => "r:message.read on each target conversation",
         "/reply" => "r:message.read + w:message.create on the message's conversation",
         "/react" => "r:message.read + w:message.react on the message's conversation",
+        "/edit" => "r:message.read + w:message.edit.own on the message's conversation",
         "/retract" => {
             "r:message.read + w:message.retract.own (own messages) or w:message.retract.any on the conversation"
         }

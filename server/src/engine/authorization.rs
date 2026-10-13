@@ -25,6 +25,7 @@ actions! {
     PolicyRead => "r:policy.read",
     Send => "w:message.create",
     React => "w:message.react",
+    EditOwn => "w:message.edit.own",
     RetractOwn => "w:message.retract.own",
     RetractAny => "w:message.retract.any",
     CreateRoom => "w:room.create",
@@ -164,6 +165,7 @@ const COMMANDS: &[&str] = &[
     "/leave",
     "/tell",
     "/react",
+    "/edit",
     "/retract",
     "/reply",
     "/new",
@@ -228,9 +230,12 @@ fn member_rights() -> Rights {
             Action::Members,
             Action::Send,
             Action::React,
+            Action::EditOwn,
             Action::RetractOwn,
         ],
-        &["/members", "/history", "/react", "/retract", "/reply"],
+        &[
+            "/members", "/history", "/react", "/edit", "/retract", "/reply",
+        ],
     )
 }
 fn manager_rights() -> Rights {
