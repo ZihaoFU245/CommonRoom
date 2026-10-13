@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { editorScrollTop } from "../features/conversation/editorSizing.ts";
+import { messageMotion } from "../features/conversation/timelineMotion.ts";
 
 interface Context {
   active: boolean;
@@ -124,7 +125,7 @@ export function useMessageEditorLayout({
           overflow: "hidden",
         },
       ],
-      { duration: 180, easing: "ease-out" },
+      messageMotion,
     );
     animation.current = current;
     if (pending.anchor) {

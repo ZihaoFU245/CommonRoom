@@ -21,9 +21,15 @@ export function useVirtualTimeline(
   entries: TimelineEntry[],
   container: RefObject<HTMLElement>,
   handle: RefObject<VirtualTimelineHandle>,
+  atBottom: RefObject<boolean>,
 ) {
   const sizes = useRef(new Map<string, number>());
   const observer = useRef<ResizeObserver | null>(null);
+  const measuredWindow = useRef<{
+    entries: TimelineEntry[];
+    start: number;
+    end: number;
+  } | null>(null);
   const [measurements, setMeasurements] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
   const offsets = useMemo(() => {
@@ -59,7 +65,9 @@ export function useVirtualTimeline(
     const element = container.current;
     if (!element) return;
     const old = previous.current;
-    if (old && element.scrollTop > 0) {
+    if (atBottom.current) {
+      element.scrollTop = element.scrollHeight - element.clientHeight;
+    } else if (old && element.scrollTop > 0) {
       element.scrollTop = anchoredScrollTop(
         old.keys,
         old.offsets,
@@ -73,7 +81,7 @@ export function useVirtualTimeline(
     const live = new Set(entries.map((entry) => entry.key));
     for (const key of sizes.current.keys())
       if (!live.has(key)) sizes.current.delete(key);
-  }, [entries, offsets]);
+  }, [entries, offsets, viewport.height]);
   useEffect(() => {
     const element = container.current;
     if (!element) return;
@@ -118,16 +126,39 @@ export function useVirtualTimeline(
   const window = virtualWindow(offsets, viewport.top, viewport.height);
   useLayoutEffect(() => {
     const currentObserver = observer.current;
-    if (!currentObserver) return;
-    currentObserver.disconnect();
+    currentObserver?.disconnect();
+    const measured = measuredWindow.current;
+    const measure =
+      measured?.entries !== entries ||
+      measured.start !== window.start ||
+      measured.end !== window.end;
+    measuredWindow.current = { entries, start: window.start, end: window.end };
+    let changed = false;
     for (const element of container.current?.querySelectorAll<HTMLElement>(
-      "[data-virtual-key]",
-    ) ?? [])
-      currentObserver.observe(element);
+      ".timeline-rows > [data-virtual-key]",
+    ) ?? []) {
+      if (measure) {
+        const key = element.dataset.virtualKey;
+        const height = element.getBoundingClientRect().height;
+        if (
+          key &&
+          height > 0 &&
+          Math.abs((sizes.current.get(key) ?? 100) - height) > 0.5
+        ) {
+          sizes.current.set(key, height);
+          changed = true;
+        }
+      }
+      currentObserver?.observe(element);
+    }
+    // Resolve new/edited row sizes before motion captures the final positions.
+    if (changed) setMeasurements((value) => value + 1);
   });
   return {
     visible: entries.slice(window.start, window.end),
     start: window.start,
+    end: window.end,
+    layoutVersion: measurements,
     top: window.top,
     bottom: window.bottom,
   };

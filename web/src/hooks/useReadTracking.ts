@@ -19,7 +19,6 @@ interface Context {
   virtualTimeline: RefObject<VirtualTimelineHandle>;
   atBottom: RefObject<boolean>;
   historyElement: RefObject<HTMLElement>;
-  end: RefObject<HTMLDivElement>;
 }
 export function useReadTracking({
   selected,
@@ -36,7 +35,6 @@ export function useReadTracking({
   virtualTimeline,
   atBottom,
   historyElement,
-  end,
 }: Context) {
   const [unreadBoundary, setUnreadBoundary] = useState<number | null>(null);
   const enteredView = useRef<string | null>(null);
@@ -45,6 +43,11 @@ export function useReadTracking({
   const readTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  function scrollToBottom() {
+    const viewport = historyElement.current;
+    if (viewport)
+      viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+  }
   useLayoutEffect(() => {
     if (enteredView.current !== selected && (!unread || historyReady)) {
       enteredView.current = selected;
@@ -60,11 +63,11 @@ export function useReadTracking({
         virtualTimeline.current?.scrollToSequence(first);
         atBottom.current = false;
       } else {
-        end.current?.scrollIntoView({ block: "end" });
+        scrollToBottom();
         atBottom.current = true;
       }
     } else if (enteredView.current === selected && atBottom.current) {
-      end.current?.scrollIntoView({ block: "end" });
+      scrollToBottom();
     }
   }, [messages, selected, historyReady, output, cleared]);
   function acknowledgeVisible() {

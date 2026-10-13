@@ -148,6 +148,12 @@ Navigation remembers its open or closed state in this browser across refreshes.
 The menu button moves to the right of the logo and becomes an X while navigation
 is open. AutoAnimate gives
 opening and closing a short transition, respecting reduced-motion preferences.
+Live messages rise into the conversation while existing messages move up;
+retractions fade away while surrounding messages slide into place. Edits fade
+in their updated text and smoothly reposition neighboring rows. These short
+180 ms ease-out transitions match the inline editor, respect reduced motion,
+and preserve the reading position when browsing older history. Loading history
+and switching conversations do not replay message animations.
 The message input stays centered in the conversation pane and stops widening
 on large windows. It grows and shrinks with wrapped text and new lines, up to
 240px or 40% of the viewport height; longer drafts scroll inside the input with

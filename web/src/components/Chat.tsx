@@ -269,6 +269,7 @@ export function Chat({
     historyError,
     retryHistory,
     loading,
+    refreshing,
     hasBefore,
     hasAfter,
     loadOlder,
@@ -301,7 +302,6 @@ export function Chat({
       virtualTimeline,
       atBottom,
       historyElement,
-      end,
     });
   const entries = useMemo(
     () =>
@@ -474,14 +474,16 @@ export function Chat({
               <button onClick={jumpToUnread}>Jump to unread ↓</button>
             </div>
           )}
-          {(hasBefore || hasAfter || loading) && (
+          {(hasBefore || hasAfter || (loading && !refreshing)) && (
             <div class="history-navigation">
               {hasBefore && (
                 <button disabled={loading} onClick={loadOlder}>
                   Older messages
                 </button>
               )}
-              {loading && <span role="status">Loading history…</span>}
+              {loading && !refreshing && (
+                <span role="status">Loading history…</span>
+              )}
               {hasAfter && (
                 <>
                   <button disabled={loading} onClick={loadNewer}>
@@ -507,6 +509,14 @@ export function Chat({
             </div>
           )}
           <MessageList
+            motionScope={
+              state.private_access[selected]?.id ??
+              state.rooms.find((room) => room.name === selected)?.id ??
+              selected
+            }
+            revision={unread?.revision ?? 0}
+            historyReady={historyReady}
+            atBottom={atBottom}
             debug={commands.debug}
             permissions={commands.permissions}
             commands={commands.serverCommands}

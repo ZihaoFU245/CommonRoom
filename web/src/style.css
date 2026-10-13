@@ -1738,8 +1738,22 @@ button:focus-visible {
 
 .message-list {
   overflow-anchor: none;
+  position: relative;
 }
-.message-list > [data-virtual-key] {
+.message-exit {
+  position: absolute;
+  pointer-events: none;
+  overflow: clip;
+}
+.timeline-rows {
+  position: relative;
+  display: flow-root;
+}
+.timeline-rows.is-animating {
+  overflow: clip;
+  overflow-clip-margin: 10px;
+}
+.timeline-rows > [data-virtual-key] {
   display: flow-root;
   overflow-anchor: none;
 }

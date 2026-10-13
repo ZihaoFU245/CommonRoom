@@ -157,6 +157,32 @@ rejection and private pair routing. `web/tests/virtualTimeline.test.js` exercise
 viewport/overscan bounds, exact variable-height boundaries, spacer totals and
 anchor preservation after measurement, prepend and opposite-edge eviction. These
 geometry tests do not replace browser DOM/ResizeObserver verification on devices.
+`web/tests/timelineMotion.test.js` distinguishes live arrivals from backfill,
+detects remote edits and retractions, and skips text animations for reactions
+and local output. Browser motion checks should cover arrivals, last/interior
+deletions (including the only remaining message), long/short remote edits, rapid updates, inline editor transitions,
+history paging/view switches, compact widths and reduced motion. Confirm that
+the bottom remains anchored, readers of older history are not pulled down,
+exit copies have no duplicate IDs/read targets, and animations/copies are
+removed after the transition.
+
+The repeatable browser fixture at `web/scripts/motion/index.html` uses the actual
+message components and hooks with synthetic data; it needs no backend and never
+writes chat history. Start `rtk pnpm --dir web dev`, open
+`http://127.0.0.1:5173/scripts/motion/index.html`, and select **Run all cases**.
+Repeat with **Compact** enabled in Chromium and WebKit. Its 20 cases cover
+group/date-header changes, deleting the only message, overflow becoming a short
+history, 1,000-row histories, rapid deletions/arrivals, an open inline editor, edits, paging, view switches
+and reduced motion. Assertions inspect text positions on the first changed frame,
+direction/overshoot, paint clipping, scroll anchoring and animation cleanup;
+checking only outer row positions or final state misses visible text jumps.
+
+Also verify the full HTTP/WebSocket path with isolated `CHAT_DATA`: send three
+consecutive messages, then delete the first. Delay history responses during this
+check so the pending refresh is visible. The viewport must remain stationary
+through the refresh, and the next message's text must start from its old screen
+position when it gains an author/date header. Initial loading and explicit
+paging must still display their progress indicator.
 
 The HTTP/WebSocket smoke suite additionally exercises sequence ranges, before,
 after, around, concurrent page requests, malformed/unsafe bounds, authorization,

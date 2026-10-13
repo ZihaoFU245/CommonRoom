@@ -1,6 +1,7 @@
 import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useVirtualTimeline } from "../hooks/useVirtualTimeline.ts";
+import { useTimelineMotion } from "../hooks/useTimelineMotion.ts";
 import { memo } from "preact/compat";
 import type { Command, Message, TimelineEntry } from "../api/protocol.ts";
 import {
@@ -11,6 +12,10 @@ import { messageActions } from "../features/conversation/permissions.ts";
 import { ConsoleOutput } from "./ConsoleOutput.tsx";
 import { ConsoleMessage } from "./ConsoleMessage.tsx";
 interface Props {
+  motionScope: string;
+  revision: number;
+  historyReady: boolean;
+  atBottom: RefObject<boolean>;
   entries: TimelineEntry[];
   username: string;
   pending: boolean;
@@ -28,6 +33,10 @@ interface Props {
   onScroll: () => void;
 }
 export const MessageList = memo(function MessageList({
+  motionScope,
+  revision,
+  historyReady,
+  atBottom,
   entries,
   username,
   pending,
@@ -44,7 +53,21 @@ export const MessageList = memo(function MessageList({
   end,
   onScroll,
 }: Props) {
-  const window = useVirtualTimeline(entries, historyElement, virtualTimeline);
+  const window = useVirtualTimeline(
+    entries,
+    historyElement,
+    virtualTimeline,
+    atBottom,
+  );
+  useTimelineMotion(
+    entries,
+    motionScope,
+    revision,
+    historyReady,
+    historyElement,
+    atBottom,
+    window,
+  );
   const renderedEntries = window.visible.map((entry, localIndex) => {
     const index = window.start + localIndex;
     if (entry.kind !== "message")
@@ -107,13 +130,15 @@ export const MessageList = memo(function MessageList({
       aria-label="Conversation history"
       aria-live="polite"
     >
-      <div aria-hidden="true" style={{ height: window.top, flexShrink: 0 }} />
-      {renderedEntries}
-      <div
-        aria-hidden="true"
-        style={{ height: window.bottom, flexShrink: 0 }}
-      />
-      <div ref={end} />
+      <div class="timeline-rows">
+        <div aria-hidden="true" style={{ height: window.top, flexShrink: 0 }} />
+        {renderedEntries}
+        <div
+          aria-hidden="true"
+          style={{ height: window.bottom, flexShrink: 0 }}
+        />
+        <div ref={end} />
+      </div>
     </section>
   );
 });

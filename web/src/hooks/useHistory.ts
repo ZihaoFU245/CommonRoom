@@ -184,6 +184,12 @@ export function useHistory(
       loaded?.view === selected && loaded.id === id ? loaded.messages : tail,
     historyError,
     loading,
+    refreshing:
+      loading &&
+      target === undefined &&
+      loaded?.view === selected &&
+      loaded.id === id &&
+      loaded.revision !== unread?.revision,
     hasBefore: loaded?.view === selected && loaded.has_before,
     hasAfter: loaded?.view === selected && loaded.has_after,
     retryHistory: () => setRetry((value) => value + 1),
