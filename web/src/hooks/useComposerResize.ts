@@ -24,6 +24,7 @@ export function useComposerResize(
     const element = input.current;
     if (!element) return;
     const mirror = document.createElement("textarea");
+    mirror.name = "message-size-mirror";
     mirror.tabIndex = -1;
     mirror.setAttribute("aria-hidden", "true");
     mirror.style.cssText =

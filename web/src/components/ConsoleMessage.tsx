@@ -218,6 +218,7 @@ export function ConsoleMessage({
                 }}
               >
                 <input
+                  name="reaction"
                   aria-label="Custom reaction"
                   placeholder="Emoji or text"
                   value={reaction}

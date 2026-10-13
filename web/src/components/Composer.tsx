@@ -137,6 +137,7 @@ export function Composer({
           </span>
         )}
         <textarea
+          name="message"
           ref={input}
           dir="auto"
           rows={1}
