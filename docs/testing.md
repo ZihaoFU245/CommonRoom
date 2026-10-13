@@ -66,6 +66,9 @@ constraints, cross-target authorization, private inspection, stable IDs,
 ownership transfer, rename/cursor preservation,
 owner delegation and revocation of invitations without enabling other management
 permissions, loss of that delegation authority after ownership transfer,
+room rename action/context/target gates, management bundles and ownership transfer,
+Unicode names, no-op/collision validation, stable history/grants/read cursors,
+name reuse, restart persistence and cursor/metadata/audit write rollback,
 and compiled-policy rollback. Output regressions verify that @global and its
 legacy alias resolve to the same scope, command requirements do not grant actions,
 and assignment privacy and conditional cleanup limits survive formatting. The room
@@ -109,6 +112,12 @@ These are behavioral and boundary checks, not a claim of 100% line/branch covera
 or a proof that every possible attack is excluded. Update this matrix and add
 positive/negative cases whenever new permissions, commands or resource types are
 introduced.
+
+Rename completion tests cover room/user subcommands, existing account shortcuts,
+free-form destination names, sudo wrapping and `x:room.rename` grants. The
+integration harness verifies room rename broadcasts, stable IDs, history and
+read-state preservation for two live clients, rejection of unauthorized renames,
+and continued messaging in the renamed room.
 
 Sudo regressions cover the two independent global grants, insufficient room
 grants, temporary authority on success/rejection/storage failure, caller identity

@@ -34,7 +34,7 @@ login, reconnect and foreground refresh.
 | `/revoke user group [room]` or `/revoke user scope permission` | Scoped grant/group managers | Remove a group assignment or direct permission; `/man revoke` explains |
 | `/owner user [room]` | Room management grants | Transfer room ownership |
 | `/debug on\|off` | Metadata grant | Toggle expandable details for readable messages in this tab |
-| `/rename [user] new-name` | Own/any rename grant | Rename yourself, or an authorized target; preserve identity, history, sessions and read positions |
+| `/rename room name new-name`, `/rename user name new-name`, or `/rename [user] new-name` | Scoped room rename or own/any account rename grant | Rename a room or account; preserve identity, history and read positions |
 | `/passwd old new` | Own-password grant | Change password and sign out other sessions |
 | `/members [room]` | Member-list grant | List authorized conversation participants |
 | `/history [start end]` or `/history #room` | Read and command grants | Read inclusive sequence range; default latest 100, maximum 100 per page |
@@ -93,6 +93,16 @@ rooms and memberships. `/configs` shows active configuration; edit
 Names contain 1–32 Unicode characters, including Chinese, accents, combining
 marks and emoji. Whitespace, controls and ASCII punctuation other than `_` and
 `-` are excluded to keep command, mention and conversation syntax unambiguous.
+
+Use `/rename room support helpdesk` for rooms and `/rename user bob robert`
+for accounts. `/rename robert` still renames yourself, and `/rename bob robert`
+still targets an account. Room renaming requires `/rename` in the selected
+context and on the target, plus `x:room.rename` on the target room. It preserves
+ownership, membership, grants, history and unread/read positions on all devices.
+New or transferred room owners and scoped room admins receive that action;
+ordinary participants and global admins do not receive it for other rooms.
+Existing explicit owner grants are preserved. Su can add missing rights with
+`/grant owner support x:room.rename` and `/grant owner support /rename`.
 
 ## Messages and settings
 

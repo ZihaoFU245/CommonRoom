@@ -140,9 +140,14 @@ impl Engine {
         if parts.first() == Some(&"/rename") {
             self.require_command(actor, room, "/rename")?;
             let (name, new_name) = match parts.as_slice() {
-                [_, new_name] => (actor.ok_or("Usage: /rename user new-name")?, *new_name),
+                [_, "room", name, new_name] => return self.rename_room(actor, name, new_name),
+                [_, "user", name, new_name] => (*name, *new_name),
+                [_, new_name] => (
+                    actor.ok_or_else(|| format!("Usage: {}", commands::RENAME_USAGE))?,
+                    *new_name,
+                ),
                 [_, name, new_name] => (*name, *new_name),
-                _ => return Err("Usage: /rename [user] new-name".into()),
+                _ => return Err(format!("Usage: {}", commands::RENAME_USAGE)),
             };
             return self.rename_user(actor, name, new_name);
         }

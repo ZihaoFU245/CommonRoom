@@ -47,6 +47,11 @@ backups private as well.
 
 Account renames use the current schema. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. No new schema migration is required.
 
+Room renames also use v8. Room metadata and every name-based read cursor move
+in one transaction. Stable room IDs keep history, ownership and scoped grants
+attached to the renamed room. Failed writes preserve the old name, revision,
+audit and cursors. Destination names do not inherit orphaned read positions.
+
 
 ## Storage layout and costs
 

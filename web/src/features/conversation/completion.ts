@@ -23,6 +23,7 @@ export const permissionNames = [
   "x:member.remove",
   "x:room.join",
   "x:room.delete",
+  "x:room.rename",
   "x:room.owner.transfer",
   "x:history.clean",
   "x:account.create",

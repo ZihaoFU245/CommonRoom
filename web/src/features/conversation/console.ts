@@ -302,7 +302,6 @@ export function suggestions(
       "/revoke",
       "/add",
       "/kick",
-      "/rename",
       "/reset",
       "/disable",
       "/enable",
@@ -310,6 +309,12 @@ export function suggestions(
     position === 1
   )
     values = users;
+  if (name === "/rename" && position === 1)
+    values = [...new Set(["room", "user", ...users])];
+  if (name === "/rename" && position === 2) {
+    if (parts[1] === "room") values = rooms;
+    if (parts[1] === "user") values = users;
+  }
   if (["/join", "/leave", "/members"].includes(name) && position === 1)
     values = rooms;
   if (["/add", "/kick"].includes(name) && position === 2) values = rooms;

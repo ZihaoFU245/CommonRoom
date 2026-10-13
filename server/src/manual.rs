@@ -30,6 +30,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
                     "new" => NEW,
                     "rm" => RM,
                     "retract" => RETRACT,
+                    "rename" => RENAME,
                     _ => "",
                 },
                 if command.requirements.is_empty() {
@@ -107,6 +108,31 @@ Use `/man history`, `/man reset`, or another command name for its usage.
 `/console` opens the Command view; select a room or use `/join room` to return to a conversation.
 
 Manuals are public documentation. Reading one does not grant permission to run the command."#;
+
+const RENAME: &str = r#"
+
+## Examples
+
+```
+/rename room support helpdesk
+/rename user bob robert
+/rename robert
+/rename bob robert
+```
+
+The one-name form renames your own account. The two-name form retains account
+renaming syntax; use the explicit room form to rename a room.
+Names use the same 1–32 Unicode character rules as account and room creation.
+
+Room renames preserve identity, ownership, membership, scoped grants, history and
+read positions. Owners of rooms created or transferred with this version and
+scoped room admins receive `x:room.rename`; ordinary members and global admins do not
+receive it for other people's rooms. Existing explicit owner grants are preserved;
+su can add a missing permission with `/grant owner room x:room.rename` and the
+command with `/grant owner room /rename`.
+
+Account renames retain identity, sessions, history and read positions. The own/any
+account rename permissions remain separate from room rename authority."#;
 
 const LS: &str = r#"
 

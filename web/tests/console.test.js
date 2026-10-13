@@ -67,6 +67,46 @@ test("sudo passwords stay masked and wrapped commands retain completion and UI r
   assert.deepEqual(suggestions("/sudo /sudo ", commands, [], []), []);
 });
 
+test("rename completes explicit room/user targets and keeps new names free-form", () => {
+  const commands = [
+    { name: "/sudo", usage: "/sudo /command", description: "Elevate" },
+    {
+      name: "/rename",
+      usage:
+        "/rename room name new-name | /rename user name new-name | /rename [user] new-name",
+      description: "Rename",
+    },
+    {
+      name: "/grant",
+      usage: "/grant user scope permission",
+      description: "Grant",
+    },
+  ];
+  const hints = (draft) =>
+    suggestions(draft, commands, ["bob", "room"], ["team"]);
+  assert.deepEqual(
+    hints("/rename ").map((hint) => hint.value),
+    ["/rename room ", "/rename user ", "/rename bob "],
+  );
+  assert.equal(hints("/rename room t")[0].value, "/rename room team ");
+  assert.equal(hints("/rename user b")[0].value, "/rename user bob ");
+  assert.equal(hints("/rename b")[0].value, "/rename bob ");
+  assert.equal(
+    hints("/sudo /rename room t")[0].value,
+    "/sudo /rename room team ",
+  );
+  for (const draft of [
+    "/rename room team ",
+    "/rename user bob ",
+    "/rename bob ",
+  ])
+    assert.equal(hints(draft)[0].value, null);
+  assert.equal(
+    hints("/grant bob team x:room.ren")[0].value,
+    "/grant bob team x:room.rename ",
+  );
+});
+
 test("local command output stays in its origin view", () => {
   const output = [
     { key: "room", room: "lol", order: 1 },

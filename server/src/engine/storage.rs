@@ -227,6 +227,28 @@ impl Engine {
             params![user,key,through]).map_err(|e| { tracing::error!(error=%e,"Read position write failed"); "Storage unavailable; read position was not applied.".to_string() })?;
         Ok(())
     }
+    /// Room metadata and name-based read cursors move together; history and
+    /// grants remain attached to the unchanged room ID.
+    pub(super) fn store_room_rename(&mut self, name: &str, new_name: &str) -> Result<(), String> {
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let transaction = db.transaction().map_err(|e| e.to_string())?;
+        // A reused room name must not inherit another room's orphaned cursors.
+        transaction
+            .execute(
+                "DELETE FROM read_positions WHERE conversation=?1",
+                params![format!("room:{new_name}")],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction
+            .execute(
+                "UPDATE read_positions SET conversation=?1 WHERE conversation=?2",
+                params![format!("room:{new_name}"), format!("room:{name}")],
+            )
+            .map_err(|e| e.to_string())?;
+        write_data(&transaction, &self.data)?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
     /// Rename account state and every affected read cursor in one transaction.
     pub(super) fn store_account_rename(
         &mut self,

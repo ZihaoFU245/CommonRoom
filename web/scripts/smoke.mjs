@@ -275,7 +275,7 @@ try {
     eve = await connect(cookies.eve);
   // Rename must preserve both live sockets and the original session cookies.
   const renameTab = await connect(cookies.bob);
-  await send(bob, "/rename 测试用户🙂");
+  await send(bob, "/rename user bob 测试用户🙂");
   await until(
     () =>
       bob.snapshot.username === "测试用户🙂" &&
@@ -515,6 +515,58 @@ try {
   assert.deepEqual(roomReply.mentions, ["alice"]);
   assert.equal(roomReply.reply.text, multilingual);
   assert.equal(roomReply.markdown, true);
+  // Room renames preserve stable identity, history and read state on live clients.
+  await until(
+    () =>
+      bob.snapshot.rooms.find((r) => r.name === "study").messages.at(-1)?.id ===
+      roomReply.id,
+    "reply delivered before room rename",
+  );
+  const roomBeforeRename = bob.snapshot.rooms.find((r) => r.name === "study");
+  const readRoom = await request("read", cookies.alice, {
+    view: "study",
+    through: roomReply.sequence,
+  });
+  assert.equal(readRoom.status, 200);
+  await send(bob, "/rename room study denied", "study", "error");
+  await send(eve, "/rename room study denied", null, "error");
+  await send(alice, "/rename room study 学习🚀", "study");
+  await until(
+    () =>
+      [alice, bob].every(
+        (client) =>
+          client.snapshot.rooms.some(
+            (r) => r.name === "学习🚀" && r.id === roomBeforeRename.id,
+          ) && !client.snapshot.rooms.some((r) => r.name === "study"),
+      ),
+    "room rename delivered to both clients",
+  );
+  assert.equal(alice.snapshot.unread["学习🚀"].count, 0);
+  assert.ok(!Object.hasOwn(alice.snapshot.unread, "study"));
+  assert.ok(!eve.snapshot.rooms.some((r) => r.name === "学习🚀"));
+  const renamedHistoryResponse = await request(
+    `history?view=${encodeURIComponent("学习🚀")}`,
+    cookies.bob,
+  );
+  assert.equal(renamedHistoryResponse.status, 200);
+  const renamedHistory = await renamedHistoryResponse.json();
+  assert.ok(isHistory(renamedHistory));
+  assert.deepEqual(renamedHistory.messages, roomBeforeRename.messages);
+  assert.notEqual(
+    (await request("history?view=study", cookies.bob)).status,
+    200,
+  );
+  await send(bob, "after room rename", "学习🚀");
+  await send(alice, "/rename room 学习🚀 study", "学习🚀");
+  await until(
+    () =>
+      [alice, bob].every((client) =>
+        client.snapshot.rooms.some(
+          (r) => r.name === "study" && r.id === roomBeforeRename.id,
+        ),
+      ),
+    "room renamed back for subsequent checks",
+  );
   const originalRoomMessage = alice.snapshot.rooms
     .find((r) => r.name === "study")
     .messages.find((m) => m.id === roomMessageId);

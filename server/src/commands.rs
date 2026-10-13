@@ -4,6 +4,8 @@ pub const NEW_USER_USAGE: &str = "/new user name password [user|admin]";
 pub const NEW_USAGE: &str = "/new room name | /new user name password [user|admin]";
 pub const RM_USAGE: &str = "/rm room name | /rm user name | /rm group user group [room]";
 pub const LS_USAGE: &str = "/ls [room|user|group|@user|@admin|@su]";
+pub const RENAME_USAGE: &str =
+    "/rename room name new-name | /rename user name new-name | /rename [user] new-name";
 
 #[derive(Clone, Serialize)]
 pub struct Command {
@@ -82,10 +84,10 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             false,
         ),
         (
-            "Account",
+            "General",
             "/rename",
-            "/rename [user] new-name",
-            "Rename yourself or an authorized account",
+            RENAME_USAGE,
+            "Rename a room, yourself or an authorized account",
             false,
         ),
         (
@@ -299,7 +301,7 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/configs" => "r:server.config at @global",
         "/rename" => {
-            "w:account.rename.own on your account or x:account.rename.any on the target; only su can manage su accounts"
+            "x:room.rename on the target room; w:account.rename.own on your account or x:account.rename.any on the target account; only su can manage su accounts"
         }
         "/passwd" => "w:account.password.own on your account",
         "/reset" => {

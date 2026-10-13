@@ -2,6 +2,46 @@ use super::*;
 use authorization::{Action, Group, Scope, Subject};
 
 impl Engine {
+    pub(super) fn rename_room(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        new_name: &str,
+    ) -> Result<String, String> {
+        let scope = self.room_scope(name)?;
+        self.require_target_command(actor, &scope, "/rename")?;
+        self.require(actor, &scope, Action::RenameRoom)?;
+        if !valid_name(new_name) {
+            return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
+        }
+        if name == new_name {
+            return Ok("Room name unchanged.".into());
+        }
+        if self.data.rooms.contains_key(new_name) {
+            return Err("Room already exists.".into());
+        }
+        let before = self.data.clone();
+        self.audit(actor, "/rename room", &format!("{name} -> {new_name}"));
+        let mut room = self.data.rooms.remove(name).ok_or("Room not found.")?;
+        room.revision = room.revision.wrapping_add(1);
+        self.data.rooms.insert(new_name.into(), room);
+        if let Err(error) = self.store_room_rename(name, new_name) {
+            self.data = before;
+            tracing::error!(error = %error, "Room rename failed");
+            return Err("Storage unavailable; rename was not applied.".into());
+        }
+        let old_key = format!("room:{name}");
+        let new_key = format!("room:{new_name}");
+        for positions in self.read_positions.values_mut() {
+            positions.remove(&new_key);
+            if let Some(sequence) = positions.remove(&old_key) {
+                positions.insert(new_key.clone(), sequence);
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(format!("Renamed #{name} to #{new_name}."))
+    }
+
     pub(super) fn apply_rooms(&mut self, context: &CommandContext<'_>) -> Result<String, String> {
         let CommandContext {
             actor,

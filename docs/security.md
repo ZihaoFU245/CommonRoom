@@ -74,7 +74,7 @@ ownership, participant assignment and room-management grants. New rooms are
 invitation-only. There is no public self-admission mode.
 
 The owner can invite/remove participants, inspect and change participant grants,
-clean history, delete the room, or transfer ownership. Ownership does not grant
+clean history, rename/delete the room, or transfer ownership. Ownership does not grant
 retraction of other authors' messages or account/server management. A transfer
 moves only the creator's management grants; existing participant access remains.
 Owners must transfer ownership before leaving or being kicked. Disabling or deleting an account
@@ -97,6 +97,7 @@ The permission catalog has individual actions in three families:
 - `w`: `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
   `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`.
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
+  `room.rename`,
   `room.owner.transfer`, `history.clean`, `account.create`,
   `account.password.reset`, `account.disable`, `account.enable`, `account.delete`,
   `group.admin.assign`, `group.su.assign`, `policy.change`, `command.sudo`,
@@ -202,6 +203,14 @@ The server operator and `su` remain fully trusted. Messages and sessions remain 
 the server database; this change is access control, not end-to-end encryption.
 
 Account rename preserves stable account and private conversation IDs and all scoped grants. Sessions, memberships, message display authors, reply authors, recipients, reactions, mention metadata, private keys and read cursors move to the new name atomically. Historical message text and audit records retain their original contents. Own rename is included in user/admin groups; any-account rename requires explicit delegation or su.
+
+Room rename requires the separate `x:room.rename` action on the room's stable
+scope and `/rename` in the invocation context and on the target. It is included
+in the room management bundle and newly created/transferred owner grants.
+It gives no account rename authority. Renaming preserves all scoped grants and
+room identity; reusing the old name creates a distinct resource with no inherited
+access or read cursors. Existing explicit owner grants are not rewritten: su may
+delegate `x:room.rename` and `/rename` when absent.
 
 ## Bot connections
 

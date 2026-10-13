@@ -331,6 +331,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
         "x:member.remove",
         "/kick",
         "x:room.delete",
+        "x:room.rename",
         "/rm",
         "x:room.owner.transfer",
         "/owner",
@@ -1047,6 +1048,7 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
         "new",
         "rm",
         "retract",
+        "rename",
     ] {
         let manual = e
             .execute(Some("eve"), None, &format!("/man {topic}"))
@@ -1074,6 +1076,7 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
         ("new", "/new user alice temporary-password admin"),
         ("rm", "/rm group bob user support"),
         ("retract", "retained replies lose their quote preview"),
+        ("rename", "/rename room support helpdesk"),
     ] {
         let manual = e
             .execute(Some("eve"), None, &format!("/man {topic}"))
@@ -1176,6 +1179,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "x:room.join",
         "x:room.delete",
         "x:history.clean",
+        "x:room.rename",
         "x:room.owner.transfer",
     ]);
     let room = e.room_scope("team").unwrap();
@@ -1529,6 +1533,372 @@ fn rename_storage_failure_rolls_back_account_and_read_positions() {
         .execute_batch("DROP TRIGGER fail_rename;")
         .unwrap();
     e.execute(Some("bob"), None, "/rename 改名").unwrap();
+}
+
+#[test]
+fn room_rename_checks_scoped_actions_context_and_target_commands() {
+    let mut e = fixture();
+    e.execute(Some("alice"), None, "/new room other").unwrap();
+    for actor in ["bob", "eve", "mallory"] {
+        let before = e.data.clone();
+        assert!(
+            e.execute(Some(actor), None, "/rename room team denied")
+                .is_err()
+        );
+        assert!(e.data == before);
+    }
+    e.execute(None, None, "/revoke bob user").unwrap();
+    e.execute(None, None, "/grant bob team x:room.rename")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), None, "/rename room team denied")
+            .is_err()
+    );
+    e.execute(None, None, "/grant bob other /rename").unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("other"), "/rename room team denied")
+            .unwrap_err()
+            .contains("on this target")
+    );
+    e.execute(None, None, "/grant bob team /rename").unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("@direct:eve"), "/rename room team denied")
+            .unwrap_err()
+            .contains("in this context")
+    );
+    e.execute(Some("bob"), Some("other"), "/rename room team renamed")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("renamed"), "/rename room other stolen")
+            .is_err()
+    );
+    e.execute(None, None, "/revoke bob renamed /rename")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("other"), "/rename room renamed denied")
+            .is_err()
+    );
+    e.execute(None, None, "/grant bob renamed /rename").unwrap();
+    e.execute(None, None, "/revoke bob renamed x:room.rename")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), None, "/rename room renamed denied")
+            .is_err()
+    );
+    // Account rename authority cannot substitute for room management.
+    e.execute(None, None, "/grant bob @global x:account.rename.any")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), None, "/rename room renamed denied")
+            .is_err()
+    );
+    e.execute(None, None, "/grant bob renamed x:room.rename")
+        .unwrap();
+    e.execute(None, None, "/disable bob").unwrap();
+    assert!(
+        e.execute(Some("bob"), None, "/rename room renamed denied")
+            .unwrap_err()
+            .contains("Account unavailable")
+    );
+}
+
+#[test]
+fn room_rename_follows_management_bundles_ownership_and_sudo() {
+    let mut e = fixture();
+    e.execute(Some("alice"), Some("team"), "/rename room team owned")
+        .unwrap();
+    e.execute(Some("alice"), Some("owned"), "/owner bob")
+        .unwrap();
+    assert!(
+        e.execute(Some("alice"), None, "/rename room owned denied")
+            .is_err()
+    );
+    e.execute(Some("bob"), Some("owned"), "/rename room owned transferred")
+        .unwrap();
+    e.execute(None, None, "/grant mallory admin transferred")
+        .unwrap();
+    e.execute(Some("mallory"), None, "/rename room transferred managed")
+        .unwrap();
+    // Room owners cannot delegate a management action outside the participant bundle.
+    assert!(
+        e.execute(
+            Some("bob"),
+            Some("managed"),
+            "/grant eve managed x:room.rename"
+        )
+        .is_err()
+    );
+    e.execute(Some("alice"), None, "/new room foreign").unwrap();
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    let owner = e.data.rooms["foreign"].owner_id.clone();
+    e.execute(Some("bob"), None, "/sudo /rename room foreign elevated")
+        .unwrap();
+    assert_eq!(e.data.rooms["elevated"].owner_id, owner);
+    assert_eq!(
+        e.data.policy.audit.back().unwrap().actor_id,
+        e.data.users["bob"].id
+    );
+    assert!(!e.is_su(Some("bob")));
+    assert!(
+        e.execute(Some("bob"), None, "/rename room elevated denied")
+            .is_err()
+    );
+    e.execute(None, None, "/grant eve su").unwrap();
+    e.execute(Some("eve"), None, "/rename room elevated superuser")
+        .unwrap();
+    e.execute(None, None, "/rename room superuser console")
+        .unwrap();
+}
+
+#[test]
+fn rename_explicit_targets_validation_and_noops_preserve_account_shortcuts() {
+    let mut e = fixture();
+    e.provision("room", "hash".into(), false, false).unwrap();
+    e.execute(Some("room"), None, "/rename user room user")
+        .unwrap();
+    // Legacy target names may themselves be the new subcommand words.
+    e.execute(None, None, "/rename user room").unwrap();
+    e.execute(Some("bob"), None, "/rename user bob robert")
+        .unwrap();
+    e.execute(Some("robert"), None, "/rename bob").unwrap();
+    e.execute(None, None, "/grant eve su").unwrap();
+    e.execute(None, None, "/grant alice @account:eve x:account.rename.any")
+        .unwrap();
+    assert!(
+        e.execute(Some("alice"), None, "/rename user eve denied")
+            .unwrap_err()
+            .contains("Only su")
+    );
+    e.execute(Some("alice"), None, "/new room other").unwrap();
+    let before = e.data.clone();
+    let revision = e.revision;
+    for input in [
+        "/rename",
+        "/rename room",
+        "/rename room team new extra",
+        "/rename unknown team new",
+        "/rename room missing new",
+        "/rename room team other",
+        "/rename room team @private",
+        "/rename room team bad:name",
+    ] {
+        assert!(e.execute(None, None, input).is_err(), "{input}");
+        assert!(e.data == before);
+        assert_eq!(e.revision, revision);
+    }
+    for name in [
+        "",
+        "bad name",
+        "bad\u{0000}name",
+        "bad\u{0085}name",
+        &"界".repeat(33),
+    ] {
+        assert!(e.rename_room(Some("alice"), "team", name).is_err());
+        assert!(e.data == before);
+    }
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'no writes'); END;").unwrap();
+    assert_eq!(
+        e.execute(Some("alice"), None, "/rename room team team")
+            .unwrap(),
+        "Room name unchanged."
+    );
+    assert!(e.data == before);
+    assert_eq!(e.revision, revision);
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_noop;")
+        .unwrap();
+    // Room and account namespaces are independent.
+    e.execute(Some("alice"), None, "/rename room team bob")
+        .unwrap();
+    assert!(e.data.users.contains_key("bob"));
+}
+
+#[test]
+fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_name_reuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    for (name, admin) in [("alice", true), ("bob", false)] {
+        e.provision(name, "hash".into(), admin, false).unwrap();
+    }
+    e.execute(Some("alice"), None, "/new room team").unwrap();
+    e.execute(Some("alice"), None, "/add bob team").unwrap();
+    e.execute(Some("alice"), Some("team"), "hello @bob")
+        .unwrap();
+    let message = e.history("bob", "team").unwrap().messages[0].clone();
+    e.execute(
+        Some("bob"),
+        Some("team"),
+        &format!("/react {} 👍", message.id),
+    )
+    .unwrap();
+    e.execute(
+        Some("bob"),
+        Some("team"),
+        &format!("/reply {} reply", message.id),
+    )
+    .unwrap();
+    e.mark_read("bob", "team", message.sequence).unwrap();
+    e.mark_read("alice", "team", message.sequence).unwrap();
+    e.execute(Some("alice"), Some("team"), "still unread")
+        .unwrap();
+    e.execute(Some("alice"), None, "/tell bob private").unwrap();
+    let dm_sequence = e.history("bob", "@direct:alice").unwrap().messages[0].sequence;
+    e.mark_read("bob", "@direct:alice", dm_sequence).unwrap();
+    // Exercise orphan cursor cleanup without letting name reuse inherit it.
+    e.store_read_position("bob", "room:改名🚀", u64::from(u32::MAX))
+        .unwrap();
+    e.read_positions
+        .get_mut("bob")
+        .unwrap()
+        .insert("room:改名🚀".into(), u64::from(u32::MAX));
+    let room = e.data.rooms["team"].clone();
+    let history = e.history("bob", "team").unwrap().messages;
+    let assignments = e.data.policy.assignments.clone();
+    let grants = e.data.policy.grants.clone();
+    let policy_revision = e.data.policy.revision;
+    let unread = e.unreads("bob").unwrap()["team"].count;
+    e.execute(Some("alice"), Some("team"), "/rename room team 改名🚀")
+        .unwrap();
+    assert!(!e.data.rooms.contains_key("team"));
+    assert_eq!(e.data.rooms["改名🚀"].id, room.id);
+    assert_eq!(e.data.rooms["改名🚀"].owner_id, room.owner_id);
+    assert_eq!(e.data.rooms["改名🚀"].members, room.members);
+    assert!(e.data.policy.assignments == assignments);
+    assert!(e.data.policy.grants == grants);
+    assert_eq!(e.data.policy.revision, policy_revision);
+    assert!(e.history("bob", "改名🚀").unwrap().messages == history);
+    assert!(e.history("bob", "team").is_err());
+    for user in ["alice", "bob"] {
+        assert_eq!(e.read_positions[user]["room:改名🚀"], message.sequence);
+        assert!(!e.read_positions[user].contains_key("room:team"));
+    }
+    assert_eq!(e.read_positions["bob"]["dm:alice:bob"], dm_sequence);
+    assert_eq!(e.unreads("bob").unwrap()["改名🚀"].count, unread);
+    assert!(
+        e.snapshot("bob")
+            .unwrap()
+            .rooms
+            .iter()
+            .any(|r| r.name == "改名🚀" && r.id == room.id)
+    );
+    e.execute(Some("alice"), None, "/new room team").unwrap();
+    assert_ne!(e.data.rooms["team"].id, room.id);
+    assert!(e.history("bob", "team").is_err());
+    e.execute(Some("alice"), None, "/add bob team").unwrap();
+    e.execute(Some("alice"), Some("team"), "replacement")
+        .unwrap();
+    assert_eq!(e.unreads("bob").unwrap()["team"].count, 1);
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    assert_eq!(e.data.rooms["改名🚀"].id, room.id);
+    assert!(e.history("bob", "改名🚀").unwrap().messages == history);
+    assert_eq!(e.read_positions["bob"]["room:改名🚀"], message.sequence);
+    assert_eq!(e.unreads("bob").unwrap()["改名🚀"].count, unread);
+    assert_eq!(e.unreads("bob").unwrap()["team"].count, 1);
+    e.execute(
+        Some("alice"),
+        Some("改名🚀"),
+        "/rename room 改名🚀 renamed_again",
+    )
+    .unwrap();
+}
+
+#[test]
+fn existing_owner_grants_are_preserved_and_room_rename_can_be_explicitly_delegated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("alice", "hash".into(), true, false).unwrap();
+    e.execute(Some("alice"), None, "/new room team").unwrap();
+    // Model an existing v8 owner grant issued before room rename was available.
+    for grant in e.data.policy.grants.iter_mut().filter(|grant| grant.owner) {
+        grant.permissions.remove("x:room.rename");
+        grant.permissions.remove("/rename");
+    }
+    e.data.policy.revision = e.data.policy.revision.wrapping_add(1);
+    e.save().unwrap();
+    let policy = e.data.policy.clone();
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    assert!(e.data.policy == policy);
+    assert!(
+        e.execute(Some("alice"), None, "/rename room team denied")
+            .unwrap_err()
+            .contains("x:room.rename")
+    );
+    for permission in ["x:room.rename", "/rename"] {
+        e.execute(None, None, &format!("/grant alice team {permission}"))
+            .unwrap();
+    }
+    e.execute(Some("alice"), Some("team"), "/rename room team renamed")
+        .unwrap();
+}
+
+#[test]
+fn room_rename_storage_failures_roll_back_disk_memory_cursors_and_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("alice", "hash".into(), true, false).unwrap();
+    e.execute(Some("alice"), None, "/new room team").unwrap();
+    e.execute(Some("alice"), Some("team"), "history").unwrap();
+    let sequence = e.history("alice", "team").unwrap().messages[0].sequence;
+    e.mark_read("alice", "team", sequence).unwrap();
+    let before = e.data.clone();
+    let positions = e.read_positions.clone();
+    let revision = e.revision;
+    for trigger in [
+        "CREATE TRIGGER fail_rename BEFORE UPDATE ON read_positions BEGIN SELECT RAISE(ABORT,'cursor failure'); END;",
+        "CREATE TRIGGER fail_rename BEFORE INSERT ON entities WHEN NEW.kind='room' AND NEW.key='new' BEGIN SELECT RAISE(ABORT,'metadata failure'); END;",
+        "CREATE TRIGGER fail_rename BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'audit failure'); END;",
+    ] {
+        e.db.lock().unwrap().execute_batch(trigger).unwrap();
+        assert!(
+            e.execute(Some("alice"), Some("team"), "/rename room team new")
+                .unwrap_err()
+                .contains("Storage unavailable")
+        );
+        assert!(e.data == before);
+        assert_eq!(e.read_positions, positions);
+        assert_eq!(e.revision, revision);
+        assert!(e.allows(
+            Some("alice"),
+            &e.room_scope("team").unwrap(),
+            Action::RenameRoom
+        ));
+        let disk = Connection::open(&path).unwrap();
+        let raw: String = disk
+            .query_row("SELECT json FROM state WHERE id=1", [], |row| row.get(0))
+            .unwrap();
+        let mut data: Data = serde_json::from_str(&raw).unwrap();
+        storage::load_entities(&disk, &mut data).unwrap();
+        assert!(data == before);
+        let cursor: (String, u64) = disk
+            .query_row(
+                "SELECT conversation,sequence FROM read_positions WHERE username='alice'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cursor, ("room:team".into(), sequence));
+        let count: u64 = disk
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(disk);
+        e.db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_rename;")
+            .unwrap();
+    }
+    e.execute(Some("alice"), Some("team"), "/rename room team new")
+        .unwrap();
+    assert_eq!(e.read_positions["alice"]["room:new"], sequence);
 }
 
 #[test]
