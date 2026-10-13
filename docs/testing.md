@@ -125,6 +125,16 @@ in ownership/messages/audit, self-revocation, and denied nested commands. Passwo
 jobs additionally recheck both sudo grants, actor session/disabled status, and
 target identity after hashing. Frontend checks mask wrapped passwords and retain
 wrapped command completion and routing.
+Join regressions cover persisted sudo membership and participant grants, repeated
+joins, access after sudo revocation/restart, and membership/authority rollback on
+storage failure. Web command checks verify the wrapped result and snapshot updates.
+The sudo command matrix covers every registered engine command with a caller
+holding only sudo grants, including caller identity in reactions, replies,
+private messages, ownership and audit entries. Transport tests cover configuration,
+password/account commands, clear/logout, and remote bot configuration; bot results
+are withheld if either sudo grant is revoked while awaiting the runtime.
+Sudo debug checks cover the successful tab-local toggle and invalidation when
+either global sudo grant is revoked.
 
 
 ## Persistence benchmark

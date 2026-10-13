@@ -26,6 +26,7 @@ import {
   removeAlias,
 } from "../features/conversation/aliases.ts";
 import { createRequestLifecycle } from "../features/conversation/requestLifecycle.ts";
+import { debugAccess } from "../features/conversation/permissions.ts";
 import {
   captureSubmission,
   deletionKind,
@@ -93,10 +94,19 @@ export function useCommands({
   const availableCommands = browserCommands(serverCommands, aliases);
   const canExecute = (name: string) =>
     serverCommands.some((command) => command.name === name);
-  const canDebug = permissions.includes("r:message.metadata");
   const [debug, setDebug] = useState(false);
+  const [sudoDebug, setSudoDebug] = useState(false);
+  const canDebug = debugAccess(
+    permissions,
+    sudoDebug,
+    state.permissions,
+    state.commands,
+  );
   useEffect(() => {
-    if (!canDebug) setDebug(false);
+    if (!canDebug) {
+      setDebug(false);
+      setSudoDebug(false);
+    }
   }, [canDebug]);
   const [pending, setPending] = useState(false);
   const {
@@ -377,7 +387,12 @@ export function useCommands({
           desiredRoom.current = null;
         }
       }
-      if (command === "/debug") setDebug(target === "on");
+      if (command === "/debug") {
+        setDebug(target === "on");
+        setSudoDebug(
+          target === "on" && current.text.trim().split(/\s+/u)[0] === "/sudo",
+        );
+      }
       if (command === "/tell" && target) {
         desiredRoom.current = `@direct:${target}`;
         if (privatePeers(currentState.current).includes(target)) {

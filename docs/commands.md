@@ -38,7 +38,7 @@ login, reconnect and foreground refresh.
 | `/passwd old new` | Own-password grant | Change password and sign out other sessions |
 | `/members [room]` | Member-list grant | List authorized conversation participants |
 | `/history [start end]` or `/history #room` | Read and command grants | Read inclusive sequence range; default latest 100, maximum 100 per page |
-| `/join room` | Read/join grants | Open an authorized room; does not create membership |
+| `/join room` | Read/join grants | Open an authorized room; su and sudo also save participant membership |
 | `/leave [room]` | Accounts | Remove own room access; owners must transfer first |
 | `/tell user message` | Private-send grants | Send within a private conversation |
 | `/react message-id reaction` | Read/reaction grants | Toggle a reaction on a message in the selected conversation |
@@ -72,7 +72,9 @@ updates are described in [Data](data.md).
 ## Rooms, accounts and cleanup
 
 New rooms are invitation-only. Creation assigns ownership and grants; `/join`
-opens an authorized room without creating membership. There is no default room;
+opens an authorized room without creating membership for ordinary accounts.
+Superusers, including `/sudo /join room` callers, join as persisted participants
+with room user grants. There is no default room;
 existing rooms, including `lobby`, can be removed. Owners must transfer ownership
 before leaving or being kicked. Only su can manage a su account. Ordinary admins
 cannot delete themselves or the last active admin.

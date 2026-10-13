@@ -143,7 +143,7 @@ pub fn available(admin: bool, console: bool) -> Vec<Command> {
             "Rooms",
             "/join",
             "/join room",
-            "Switch rooms; users must be invited",
+            "Open an authorized room; su and sudo also save participant membership",
             false,
         ),
         ("Rooms", "/leave", "/leave [room]", "Leave a room", false),

@@ -171,7 +171,8 @@ const NEW: &str = r#"
 
 New rooms are invitation-only. The creator owns the room and receives participant
 and management grants. Invite Bob with `/add bob support`.
-`/join support` opens a room you can already access; it does not grant membership.
+`/join support` opens a room you can already access. Su accounts and
+`/sudo /join support` callers also save participant membership and room user grants.
 
 ## Accounts
 
@@ -538,6 +539,7 @@ the su group includes both grants.
 
 ```
 /sudo /new room support
+/sudo /join support
 /sudo /reset alice new-password
 /sudo /permissions @audit
 ```
@@ -547,6 +549,9 @@ su accounts and grant permanent privileges, so sudo delegates full superuser tru
 The caller keeps their name and stable identity in messages, room ownership, and
 audit entries. Elevation does not itself change groups or persist any grants.
 Normal validation, storage rollback, and session checks still apply.
+`/sudo /join room` saves the caller's membership and room user grants, so they
+retain participant access after elevation ends. Output is the wrapped command's
+result or error.
 
 For password commands, both sudo grants are rechecked after hashing. Nested sudo
 and ordinary message text are rejected. Browser-local clear and logout complete
@@ -596,7 +601,9 @@ Creation saves the room, stable identity, ownership, and grants together.
 /add bob support
 ```
 
-New rooms are invitation-only. `/join` opens a room you already have access to; it never creates membership or grants.
+New rooms are invitation-only. `/join` opens a room you already have access to.
+Su accounts and `/sudo /join room` callers can admit themselves, saving membership
+and room user grants. Ordinary joins do not add membership or grants.
 Another server admin does not automatically gain access to your new room.
 
 ## Owner permissions

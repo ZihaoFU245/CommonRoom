@@ -157,7 +157,24 @@ impl Engine {
                 if parts[0] == "/join" {
                     self.require(actor, &scope, Action::Join)?;
                     self.require(actor, &scope, Action::Read)?;
-                    // Opening a view never manufactures grants or membership.
+                    if self.is_su(actor) {
+                        // Superusers (including sudo callers) can admit themselves.
+                        // Ordinary joins only open a view with existing access.
+                        let id = self
+                            .data
+                            .users
+                            .get(user)
+                            .ok_or("Account unavailable.")?
+                            .id
+                            .clone();
+                        self.data
+                            .rooms
+                            .get_mut(name)
+                            .ok_or("Room not found.")?
+                            .members
+                            .insert(user.into());
+                        self.assign(id, Group::User, scope);
+                    }
                 } else {
                     let id = self
                         .data

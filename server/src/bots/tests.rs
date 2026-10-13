@@ -810,6 +810,103 @@ async fn runtime_config_roundtrip_is_private_delegated_and_rechecked() {
 }
 
 #[tokio::test]
+async fn sudo_runtime_config_keeps_the_caller_and_rechecks_elevation() {
+    let (app, _) = fixture();
+    {
+        let mut engine = app.engine().unwrap();
+        engine
+            .provision("caller", "hash".into(), false, false)
+            .unwrap();
+        engine.execute(None, None, "/revoke caller user").unwrap();
+        for permission in ["/sudo", "x:command.sudo"] {
+            engine
+                .execute(None, None, &format!("/grant caller @global {permission}"))
+                .unwrap();
+        }
+        engine
+            .login("sudo-config".into(), "caller", "hash", None)
+            .unwrap();
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(header::COOKIE, "chat_session=sudo-config".parse().unwrap());
+    let target = app.engine_read().unwrap().data.users["helper"].id.clone();
+    let (sender, mut requests) = tokio::sync::mpsc::channel(8);
+    let _lease = app.bot_runtimes.register(target, sender).unwrap();
+    for text in [
+        "/bot config set helper prompt test",
+        "/bot config fetch helper prompt",
+    ] {
+        let input = commands::Input {
+            markdown: false,
+            id: 1,
+            room: Some("secret".into()),
+            text: text.into(),
+        };
+        assert!(
+            commands::execute_input(&app, &headers, "caller", &input)
+                .await
+                .is_err()
+        );
+        let elevated = commands::Input {
+            text: format!("/sudo {text}"),
+            ..input
+        };
+        let command = commands::execute_input(&app, &headers, "caller", &elevated);
+        let worker = async {
+            let request = requests.recv().await.unwrap();
+            assert_eq!(request.authority.actor.as_deref(), Some("caller"));
+            assert!(request.authority.sudo);
+            assert!(!app.engine_read().unwrap().is_su(Some("caller")));
+            request
+                .reply
+                .send(Ok(std::collections::BTreeMap::from([(
+                    "prompt".into(),
+                    "test".into(),
+                )])))
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(command, worker);
+        let (output, change) = result.unwrap();
+        assert!(change.is_none());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output).unwrap()["values"]["prompt"],
+            "test"
+        );
+        assert!(!app.engine_read().unwrap().is_su(Some("caller")));
+    }
+    for permission in ["/sudo", "x:command.sudo"] {
+        let input = commands::Input {
+            markdown: false,
+            id: 2,
+            room: None,
+            text: "/sudo /bot config fetch helper prompt".into(),
+        };
+        let command = commands::execute_input(&app, &headers, "caller", &input);
+        let worker = async {
+            let request = requests.recv().await.unwrap();
+            app.engine()
+                .unwrap()
+                .execute(None, None, &format!("/revoke caller @global {permission}"))
+                .unwrap();
+            request
+                .reply
+                .send(Ok(std::collections::BTreeMap::from([(
+                    "prompt".into(),
+                    "must not be disclosed".into(),
+                )])))
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(command, worker);
+        assert!(result.is_err());
+        assert!(!app.engine_read().unwrap().is_su(Some("caller")));
+        app.engine()
+            .unwrap()
+            .execute(None, None, &format!("/grant caller @global {permission}"))
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn runtime_config_offline_disconnect_and_response_limits_fail_cleanly() {
     use crate::bots::runtime::{Authority, ConfigCommand, validate_response};
     let (app, _) = fixture();

@@ -190,21 +190,24 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
 #[tokio::test]
 async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
     let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    let actor_hash = crate::engine::hash_password("actor-old-password").unwrap();
     engine
-        .provision("actor", "hash".into(), false, false)
+        .provision("actor", actor_hash.clone(), false, false)
         .unwrap();
     engine
         .provision("target", "hash".into(), false, false)
         .unwrap();
     engine.execute(None, None, "/grant target su").unwrap();
     engine.execute(None, None, "/disable target").unwrap();
+    engine.execute(None, None, "/new room team").unwrap();
+    engine.execute(None, None, "/revoke actor user").unwrap();
     for permission in ["/sudo", "x:command.sudo"] {
         engine
             .execute(None, None, &format!("/grant actor @global {permission}"))
             .unwrap();
     }
     engine
-        .login("fixture".into(), "actor", "hash", None)
+        .login("fixture".into(), "actor", &actor_hash, None)
         .unwrap();
     let (changes, _) = broadcast::channel(1);
     let app = App {
@@ -223,13 +226,26 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         header::COOKIE,
         HeaderValue::from_static("chat_session=fixture"),
     );
-    for (text, changed) in [
-        ("/sudo /configs", false),
-        ("/sudo /reset target long-sudo-password", true),
-        ("/sudo /enable target", true),
-        ("/sudo /new user created long-created-password admin", true),
-        ("/sudo /clear", false),
-        ("/sudo /logout", false),
+    for (text, changed, expected) in [
+        ("/sudo /configs", false, None),
+        (
+            "/sudo /passwd actor-old-password actor-new-password",
+            true,
+            Some("Password changed. Other sessions signed out."),
+        ),
+        (
+            "/sudo /reset target long-sudo-password",
+            true,
+            Some("Account target password reset."),
+        ),
+        ("/sudo /enable target", true, Some("Enabled target.")),
+        (
+            "/sudo /new user created long-created-password admin",
+            true,
+            Some("Account created created."),
+        ),
+        ("/sudo /clear", false, Some("Done.")),
+        ("/sudo /logout", false, Some("Done.")),
     ] {
         let input = super::commands::Input {
             markdown: false,
@@ -237,13 +253,68 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
             room: None,
             text: text.into(),
         };
-        let (_, mutation) = super::commands::execute_input(&app, &headers, "actor", &input)
+        let (reply, mutation) = super::commands::execute_input(&app, &headers, "actor", &input)
             .await
             .unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(reply, expected, "{text}");
+        } else {
+            let config: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(config["bind"], "127.0.0.1:3000");
+        }
         assert_eq!(mutation.is_some(), changed, "{text}");
         assert!(!app.engine().unwrap().is_su(Some("actor")));
     }
+    let join = super::commands::Input {
+        markdown: false,
+        id: 2,
+        room: None,
+        text: "/sudo /join team".into(),
+    };
+    let (reply, mutation) = super::commands::execute_input(&app, &headers, "actor", &join)
+        .await
+        .unwrap();
+    assert_eq!(reply, "Joined #team.");
+    assert!(matches!(mutation, Some(Change::All)));
+    let snapshot = app.engine().unwrap().snapshot("actor").unwrap();
+    let room = snapshot.rooms.iter().find(|r| r.name == "team").unwrap();
+    assert!(room.members.contains("actor"));
+    assert!(room.permissions.contains(&"w:message.create".into()));
+    assert!(snapshot.groups.is_empty());
+    let repeated = super::commands::Input {
+        text: "/sudo /join team".into(),
+        ..join
+    };
+    let (repeated_reply, mutation) =
+        super::commands::execute_input(&app, &headers, "actor", &repeated)
+            .await
+            .unwrap();
+    assert_eq!(reply, repeated_reply);
+    assert!(mutation.is_none());
+    for (command, expected) in [
+        ("/man sudo", crate::manual::manual(Some("sudo"))),
+        ("/join missing", Err("Room not found.".into())),
+    ] {
+        let elevated = super::commands::Input {
+            markdown: false,
+            id: 3,
+            room: None,
+            text: format!("/sudo {command}"),
+        };
+        let elevated_result =
+            super::commands::execute_input(&app, &headers, "actor", &elevated).await;
+        assert_eq!(
+            expected,
+            elevated_result.map(|(reply, _)| reply),
+            "{command}"
+        );
+    }
     let e = app.engine().unwrap();
+    assert!(crate::engine::verify_password(
+        "actor-new-password",
+        &e.data.users["actor"].hash
+    ));
+    assert_eq!(e.session("fixture").as_deref(), Some("actor"));
     assert!(crate::engine::verify_password(
         "long-sudo-password",
         &e.data.users["target"].hash
@@ -254,7 +325,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         e.data.policy.audit.back().unwrap().actor_id,
         e.data.users["actor"].id
     );
-    assert_eq!(e.groups(Some("actor")), vec!["user"]);
+    assert!(e.groups(Some("actor")).is_empty());
 }
 
 #[test]

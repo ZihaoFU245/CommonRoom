@@ -100,6 +100,221 @@ fn sudo_requires_both_global_grants_and_never_persists_elevation() {
 }
 
 #[test]
+fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
+    let probes = [
+        "/help",
+        "/man sudo",
+        "/permissions @audit",
+        "/whoami",
+        "/console",
+        "/debug on",
+        "/ls user",
+        "/ls room",
+        "/ls group",
+        "/members team",
+        "/new room created",
+        "/add eve team",
+        "/kick eve team",
+        "/join team",
+        "/leave team",
+        "/owner eve team",
+        "/grant eve su",
+        "/revoke eve su",
+        "/rm group eve user team",
+        "/rm room team",
+        "/rm user eve",
+        "/enable eve",
+        "/disable eve",
+        "/rename renamed",
+        "/rename user eve renamed",
+        "/rename room team renamed",
+        "/tell eve sudo message",
+        "/react MESSAGE reaction",
+        "/reply MESSAGE sudo reply",
+        "/edit MESSAGE sudo edit",
+        "/retract MESSAGE",
+        "/history",
+        "/clean 1s @all",
+        "/bot new created team",
+        "/bot ls team",
+        "/bot info helper team",
+        "/bot rm helper @global",
+        "/bot token new helper test",
+        "/bot token ls helper",
+        "/bot token rm helper TOKEN",
+    ];
+    let tested: BTreeSet<_> = probes
+        .iter()
+        .map(|text| text.split_whitespace().next().unwrap())
+        .collect();
+    let engine_commands: BTreeSet<_> = crate::commands::available(true, false)
+        .into_iter()
+        .map(|command| command.name)
+        .filter(|name| {
+            ![
+                "/sudo", "/configs", "/passwd", "/reset", "/clear", "/logout",
+            ]
+            .contains(name)
+        })
+        .collect();
+    assert_eq!(
+        tested, engine_commands,
+        "Every engine command needs a sudo probe."
+    );
+    for probe in probes {
+        let mut e = fixture();
+        e.execute(Some("alice"), Some("team"), "original").unwrap();
+        let original = super::tests::room_messages(&e, "team")[0].clone();
+        e.execute(None, None, "/add eve team").unwrap();
+        e.execute(None, None, "/bot new helper team").unwrap();
+        e.execute(None, None, "/bot token new helper fixture")
+            .unwrap();
+        let token = e.data.bots[&e.data.users["helper"].id]
+            .tokens
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        e.execute(None, None, "/grant eve su").unwrap();
+        e.execute(None, None, "/revoke bob user team").unwrap();
+        e.execute(None, None, "/revoke bob user").unwrap();
+        for permission in ["/sudo", "x:command.sudo"] {
+            e.execute(None, None, &format!("/grant bob @global {permission}"))
+                .unwrap();
+        }
+        let caller_id = e.data.users["bob"].id.clone();
+        let audit_len = e.data.policy.audit.len();
+        let command = probe
+            .replace("MESSAGE", &original.id)
+            .replace("TOKEN", &token);
+        assert!(
+            e.execute(Some("bob"), Some("team"), &command).is_err(),
+            "ordinary {command}"
+        );
+        let result = e.execute(Some("bob"), Some("team"), &format!("/sudo {command}"));
+        assert!(result.is_ok(), "{command}: {result:?}");
+        let reply = result.unwrap();
+        let caller = if probe == "/rename renamed" {
+            "renamed"
+        } else {
+            "bob"
+        };
+        assert_eq!(e.data.users[caller].id, caller_id, "{command}");
+        assert!(!e.is_su(Some(caller)), "{command}");
+        if e.data.policy.audit.len() > audit_len {
+            assert_eq!(
+                e.data.policy.audit.back().unwrap().actor_id,
+                caller_id,
+                "{command}"
+            );
+        }
+        match probe {
+            "/whoami" => assert_eq!(reply, "Name: bob\nPermission: su"),
+            "/new room created" => assert_eq!(e.data.rooms["created"].owner_id, caller_id),
+            "/react MESSAGE reaction" => assert!(
+                super::tests::room_messages(&e, "team")[0].reactions["reaction"].contains("bob")
+            ),
+            "/reply MESSAGE sudo reply" => {
+                let messages = super::tests::room_messages(&e, "team");
+                assert_eq!(messages.back().unwrap().from, "bob");
+                assert_eq!(messages.back().unwrap().author_id, caller_id);
+            }
+            "/tell eve sudo message" => {
+                let messages = super::tests::private_messages(&e, "bob:eve");
+                assert_eq!(messages.back().unwrap().from, "bob");
+                assert_eq!(messages.back().unwrap().author_id, caller_id);
+            }
+            "/edit MESSAGE sudo edit" => assert_eq!(
+                super::tests::room_messages(&e, "team")[0].author_id,
+                original.author_id
+            ),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn sudo_join_persists_the_callers_membership_without_persisting_elevation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    for (name, admin) in [("alice", true), ("bob", false)] {
+        e.provision(name, "hash".into(), admin, false).unwrap();
+    }
+    e.execute(Some("alice"), None, "/new room team").unwrap();
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    assert!(e.execute(Some("bob"), None, "/join team").is_err());
+    assert_eq!(
+        e.execute(Some("bob"), None, "/sudo /join team").unwrap(),
+        "Joined #team."
+    );
+    assert!(e.data.rooms["team"].members.contains("bob"));
+    assert!(!e.is_su(Some("bob")));
+    let scope = e.room_scope("team").unwrap();
+    assert!(e.allows(Some("bob"), &scope, Action::Send));
+    assert!(!e.allows(Some("bob"), &scope, Action::Invite));
+    assert_eq!(e.data.rooms["team"].owner_id, e.data.users["alice"].id);
+    let before = e.data.clone();
+    assert_eq!(
+        e.execute(Some("bob"), None, "/sudo /join team").unwrap(),
+        e.execute(Some("bob"), None, "/join team").unwrap()
+    );
+    assert!(e.data == before);
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    assert!(e.data.rooms["team"].members.contains("bob"));
+    e.execute(None, None, "/revoke bob @global x:command.sudo")
+        .unwrap();
+    e.execute(Some("bob"), Some("team"), "joined participant")
+        .unwrap();
+    e.execute(Some("bob"), None, "/leave team").unwrap();
+    assert!(e.execute(Some("bob"), None, "/join team").is_err());
+}
+
+#[test]
+fn joining_as_su_saves_membership_but_ordinary_readers_do_not_gain_grants() {
+    let mut e = fixture();
+    for permission in ["/join", "x:room.join", "r:message.read"] {
+        e.execute(None, None, &format!("/grant eve team {permission}"))
+            .unwrap();
+    }
+    let before = e.data.clone();
+    e.execute(Some("eve"), None, "/join team").unwrap();
+    assert!(e.data == before);
+    assert!(!e.allows(Some("eve"), &e.room_scope("team").unwrap(), Action::Send));
+    e.execute(None, None, "/grant eve su").unwrap();
+    e.execute(Some("eve"), None, "/join team").unwrap();
+    e.execute(None, None, "/revoke eve su").unwrap();
+    assert!(e.data.rooms["team"].members.contains("eve"));
+    e.execute(Some("eve"), Some("team"), "participant after su revocation")
+        .unwrap();
+}
+
+#[test]
+fn sudo_join_storage_failure_restores_membership_and_authority() {
+    let mut e = fixture();
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant eve @global {permission}"))
+            .unwrap();
+    }
+    let before = e.data.clone();
+    let revision = e.revision;
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_join BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    assert!(
+        e.execute(Some("eve"), None, "/sudo /join team")
+            .unwrap_err()
+            .contains("Storage unavailable")
+    );
+    assert!(e.data == before);
+    assert_eq!(e.revision, revision);
+    assert!(!e.is_su(Some("eve")));
+    assert!(e.history("eve", "team").is_err());
+}
+
+#[test]
 fn sudo_restores_authority_after_storage_failure_and_preserves_policy_updates() {
     let mut e = fixture();
     for permission in ["/sudo", "x:command.sudo"] {

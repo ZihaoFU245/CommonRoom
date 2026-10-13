@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { messageActions } from "../src/features/conversation/permissions.ts";
+import {
+  debugAccess,
+  messageActions,
+} from "../src/features/conversation/permissions.ts";
 const commands = ["/react", "/reply", "/retract", "/edit"].map((name) => ({
   name,
 }));
 const other = { from: "bob" };
+test("sudo debug needs an authorized toggle and stops when either global sudo grant is revoked", () => {
+  const permissions = ["r:message.read"];
+  const globalPermissions = ["x:command.sudo"];
+  const globalCommands = [{ name: "/sudo" }];
+  assert.equal(
+    debugAccess(permissions, false, globalPermissions, globalCommands),
+    false,
+  );
+  assert.equal(
+    debugAccess(permissions, true, globalPermissions, globalCommands),
+    true,
+  );
+  assert.equal(debugAccess(permissions, true, [], globalCommands), false);
+  assert.equal(debugAccess(permissions, true, globalPermissions, []), false);
+  assert.equal(debugAccess(["r:message.metadata"], false, [], []), true);
+});
 test("read-only access never exposes mutating controls, even with command grants", () => {
   assert.deepEqual(
     messageActions(other, "alice", ["r:message.read"], commands),

@@ -83,8 +83,10 @@ returns owned rooms to the console and removes the deleted account's grants.
 Starting a new private pair requires `w:private.create`; sending to an existing
 pair requires that pair's `w:message.create` and the invoked command grant.
 
-`/join` opens an already authorized room; it does not manufacture membership or
-grants. Room names, message IDs and knowledge of a private-pair key are not access
+`/join` opens an already authorized room for ordinary accounts without adding
+membership or grants. Su accounts and `/sudo /join room` callers can admit themselves;
+this saves their membership and room user assignment, preserving access after sudo
+ends. Room names, message IDs and knowledge of a private-pair key are not access
 credentials. Explicit read grants also allow a room to appear in a user's list.
 Member lists require their own read permission.
 

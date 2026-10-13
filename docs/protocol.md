@@ -38,6 +38,8 @@ The canonical frontend declarations and runtime guards are in `web/src/api/proto
 It requires `/sudo` and `x:command.sudo` at global scope and elevates only the
 wrapped command. Snapshots retain the caller's actual groups and permissions.
 Password commands recheck sudo authorization after asynchronous hashing.
+The acknowledgement contains the wrapped command's result or error. `/sudo /join room`
+saves the caller's membership and room user grants and broadcasts updated snapshots.
 
 Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
@@ -87,6 +89,8 @@ and read grants; stdin can locate a retained message globally by ID.
 `/debug on|off` is a read-only command requiring metadata permission; a successful acknowledgement
 toggles message details locally in the requesting tab. It does not change persisted
 state or expose messages outside the account’s authorized conversations.
+`/sudo /debug on` also enables these details locally while both global sudo grants
+remain valid; revoking either grant disables the elevated toggle.
 
 Private messages include `private_id`, the stable original participant-pair ID.
 Clients route messages by this ID, so authorized inspectors can reply without

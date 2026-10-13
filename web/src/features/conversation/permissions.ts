@@ -1,5 +1,19 @@
 import type { Command, Message } from "../../api/protocol.ts";
 
+export function debugAccess(
+  permissions: string[],
+  elevated: boolean,
+  globalPermissions: string[],
+  globalCommands: Command[],
+) {
+  return (
+    permissions.includes("r:message.metadata") ||
+    (elevated &&
+      globalPermissions.includes("x:command.sudo") &&
+      globalCommands.some((command) => command.name === "/sudo"))
+  );
+}
+
 export function messageActions(
   message: Message,
   username: string,
