@@ -154,6 +154,35 @@ fn su_and_sudo_can_revoke_owner_participant_access_and_delete_owned_rooms() {
 }
 
 #[test]
+fn sudo_authority_is_cleared_even_when_policy_rebuilding_fails() {
+    let mut e = fixture();
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    let before = e.data.clone();
+    let result = e.with_command_authority(Some("bob"), None, true, |engine| {
+        engine.data.policy.grants.push(authorization::Grant {
+            owner: false,
+            subject: authorization::Subject::Account(engine.data.users["bob"].id.clone()),
+            scope: Scope::Server,
+            permissions: BTreeSet::from(["x:unknown.permission".into()]),
+            minimum_age: 0,
+        });
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(!e.is_su(Some("bob")));
+    for action in Action::ALL {
+        assert!(!e.allows(Some("bob"), &Scope::Server, *action));
+    }
+    e.data = before;
+    e.rebuild_authorization().unwrap();
+    assert!(!e.is_su(Some("bob")));
+    assert!(e.allows(Some("bob"), &Scope::Server, Action::Sudo));
+}
+
+#[test]
 fn sudo_requires_both_global_grants_and_never_persists_elevation() {
     let mut e = fixture();
     assert!(

@@ -176,6 +176,84 @@ fn real_ip_requires_trusted_peer_and_one_valid_address() {
 }
 
 #[tokio::test]
+async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let (changes, _) = broadcast::channel(1);
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/new room support")
+        .unwrap();
+    engine
+        .login("fixture".into(), "alice", "hash", None)
+        .unwrap();
+    engine
+        .execute(None, Some("support"), "/bot new helper")
+        .unwrap();
+    let credential = engine
+        .execute(None, None, "/bot token new helper read-tests")
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_owned();
+    let app = App {
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+    };
+    for path in ["/api/me", "/api/history?view=support"] {
+        for (origin, site, status) in [
+            (Some("http://localhost:5173"), None, StatusCode::OK),
+            (None, Some("same-origin"), StatusCode::OK),
+            (
+                Some("https://evil.example"),
+                Some("same-origin"),
+                StatusCode::FORBIDDEN,
+            ),
+            (None, Some("same-site"), StatusCode::FORBIDDEN),
+            (None, Some("cross-site"), StatusCode::FORBIDDEN),
+            (None, None, StatusCode::FORBIDDEN),
+        ] {
+            let mut builder = Request::builder()
+                .uri(path)
+                .header(header::COOKIE, "chat_session=fixture");
+            if let Some(origin) = origin {
+                builder = builder.header(header::ORIGIN, origin);
+            }
+            if let Some(site) = site {
+                builder = builder.header("sec-fetch-site", site);
+            }
+            let response = router(app.clone())
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{path}: {origin:?}, {site:?}");
+        }
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
 async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts() {
     let (changes, _) = broadcast::channel(1);
     let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();

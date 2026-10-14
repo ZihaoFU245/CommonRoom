@@ -131,3 +131,19 @@ pub(crate) fn check_origin_or_bot(app: &App, headers: &HeaderMap) -> Result<(), 
         check_origin(app, headers)
     }
 }
+
+// Browsers generally omit Origin on same-origin GET fetches. Fetch Metadata
+// supplies that proof without trusting same-site sibling origins.
+pub(crate) fn check_read_origin_or_bot(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
+    if headers.contains_key(header::AUTHORIZATION) || headers.contains_key(header::ORIGIN) {
+        return check_origin_or_bot(app, headers);
+    }
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        == Some("same-origin")
+    {
+        return Ok(());
+    }
+    Err(error(StatusCode::FORBIDDEN, "Untrusted request origin."))
+}

@@ -58,7 +58,8 @@ su includes both grants. A room-scoped grant does not authorize elevation.
 The wrapped command needs no separate command or action grants. It retains the
 caller's name and stable identity in messages, ownership and audit entries.
 Elevation itself does not change persisted group assignments or permissions,
-and is cleared on success, rejection and storage failure. The command can still
+and is cleared on success, rejection and storage failure. A failed policy rebuild
+replaces compiled authority with an empty deny-all index. The command can still
 explicitly assign permanent privileges, so sudo delegates full superuser trust.
 
 Password commands release temporary authority before hashing and recheck the
@@ -241,3 +242,7 @@ Direct bot access: a bot running on the configured `trust` socket IP may use HTT
 change authorship or grant access to other conversations. Like other powers
 outside the participant bundle, only su/console may delegate it; a room manager
 cannot grant it even when holding it. Ordinary participants retain edit-own.
+
+Session-bearing GET endpoints require a configured Origin or, when browsers omit
+Origin, `Sec-Fetch-Site: same-origin`. Same-site sibling requests are rejected.
+Bearer-authenticated reads retain their credential checks without requiring Origin.

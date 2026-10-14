@@ -1,4 +1,4 @@
-use super::security::{check_origin, client_ip};
+use super::security::{check_origin, check_read_origin_or_bot, client_ip};
 use super::*;
 use crate::engine::{valid_name, verify_password};
 use axum::{
@@ -224,6 +224,7 @@ pub(crate) async fn me(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    check_read_origin_or_bot(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;

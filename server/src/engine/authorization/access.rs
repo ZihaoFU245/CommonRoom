@@ -41,8 +41,16 @@ impl Engine {
     }
 
     pub(in crate::engine) fn rebuild_authorization(&mut self) -> Result<(), String> {
-        self.authorization = CompiledPolicy::compile(&self.data)?;
-        Ok(())
+        match CompiledPolicy::compile(&self.data) {
+            Ok(policy) => {
+                self.authorization = policy;
+                Ok(())
+            }
+            Err(error) => {
+                self.authorization = CompiledPolicy::default();
+                Err(error)
+            }
+        }
     }
     pub(in crate::engine) fn principal_id<'a>(&'a self, actor: Option<&str>) -> Option<&'a str> {
         match actor {
