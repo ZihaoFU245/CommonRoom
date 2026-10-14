@@ -191,6 +191,9 @@ impl Engine {
         Ok(())
     }
     pub(super) fn save(&mut self) -> Result<(), String> {
+        self.save_with_removed_rooms(&[])
+    }
+    pub(super) fn save_with_removed_rooms(&mut self, rooms: &[String]) -> Result<(), String> {
         let authorization = if self.authorization.revision != self.data.policy.revision {
             Some(super::authorization::CompiledPolicy::compile(&self.data)?)
         } else {
@@ -200,6 +203,13 @@ impl Engine {
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
         write_data(&tx, &self.data).map_err(storage_error)?;
+        for room in rooms {
+            tx.execute(
+                "DELETE FROM read_positions WHERE conversation=?1",
+                params![format!("room:{room}")],
+            )
+            .map_err(|e| storage_error(e.to_string()))?;
+        }
         for (id, sequence) in &self.pending_deletes {
             let message_id:String=tx.query_row("SELECT json_extract(json,'$.id') FROM messages WHERE conversation=?1 AND sequence=?2",params![id,sequence],|r|r.get(0)).map_err(|e|storage_error(e.to_string()))?;
             tx.execute("UPDATE messages SET json=json_set(json,'$.reply',NULL) WHERE conversation=?1 AND json_extract(json,'$.reply.id')=?2",params![id,message_id]).map_err(|e|storage_error(e.to_string()))?;
@@ -217,6 +227,12 @@ impl Engine {
             .map_err(|e| storage_error(e.to_string()))?;
         }
         tx.commit().map_err(|e| storage_error(e.to_string()))?;
+        for room in rooms {
+            let key = format!("room:{room}");
+            for positions in self.read_positions.values_mut() {
+                positions.remove(&key);
+            }
+        }
         if let Some(authorization) = authorization {
             self.authorization = authorization;
         }

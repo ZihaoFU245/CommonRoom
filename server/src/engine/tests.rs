@@ -1652,3 +1652,48 @@ fn edit_any_grants_survive_restart_and_revoke() {
     );
     assert_eq!(room_messages(&e, "team")[0].text, "after restart");
 }
+#[test]
+fn room_deletion_cleans_cursors_atomically_and_survives_name_reuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("alice", "hash".into(), true, false).unwrap();
+    e.execute(Some("alice"), None, "/new room removed").unwrap();
+    e.execute(Some("alice"), Some("removed"), "old history")
+        .unwrap();
+    let sequence = room_messages(&e, "removed")[0].sequence;
+    e.mark_read("alice", "removed", sequence).unwrap();
+    e.execute(Some("alice"), None, "/new room retained")
+        .unwrap();
+    e.execute(Some("alice"), Some("retained"), "retained history")
+        .unwrap();
+    let retained = room_messages(&e, "retained")[0].sequence;
+    e.mark_read("alice", "retained", retained).unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_cursor_deletion BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    let before = e.data.clone();
+    assert!(e.execute(Some("alice"), None, "/rm room removed").is_err());
+    assert!(e.data == before);
+    assert_eq!(e.read_position("alice", "room:removed"), sequence);
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_cursor_deletion;")
+        .unwrap();
+    e.execute(Some("alice"), None, "/rm room removed").unwrap();
+    assert_eq!(e.read_position("alice", "room:removed"), 0);
+    assert_eq!(e.read_position("alice", "room:retained"), retained);
+    let rows: usize =
+        e.db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM read_positions WHERE conversation='room:removed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+    assert_eq!(rows, 0);
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    e.execute(Some("alice"), None, "/new room removed").unwrap();
+    assert_eq!(e.read_position("alice", "room:removed"), 0);
+    assert_eq!(e.read_position("alice", "room:retained"), retained);
+}

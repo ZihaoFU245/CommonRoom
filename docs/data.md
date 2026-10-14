@@ -72,6 +72,11 @@ audit and cursors. Destination names do not inherit orphaned read positions.
 
 ## Storage layout and costs
 
+Room deletion removes that room's read-position rows in the metadata transaction.
+Cached cursors are cleared only after commit; failed writes preserve both room
+state and read positions. Recreating the room name starts without old cursors.
+This cleanup uses the existing tables and does not change the database schema.
+
 `entities` stores one account, session, room metadata, or private-conversation
 metadata per row. `messages` is keyed by stable conversation ID and sequence;
 `reactions` stores individual reaction memberships and cascades when a message is

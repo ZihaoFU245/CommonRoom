@@ -194,7 +194,13 @@ impl Engine {
                 {
                     self.data.policy.revision = before.policy.revision.wrapping_add(1);
                 }
-                if let Err(e) = self.save() {
+                let removed_rooms = before
+                    .rooms
+                    .keys()
+                    .filter(|name| !self.data.rooms.contains_key(*name))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Err(e) = self.save_with_removed_rooms(&removed_rooms) {
                     self.data = before;
                     return Err(e);
                 }
