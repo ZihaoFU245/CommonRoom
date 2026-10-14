@@ -1,7 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { groupedMessage } from "../src/features/conversation/messages.ts";
+import {
+  groupedMessage,
+  messageDate,
+} from "../src/features/conversation/messages.ts";
+
+test("invalid timestamps have a safe rendering fallback", () => {
+  for (const time of [1e15, Infinity, NaN, -Infinity]) {
+    assert.equal(messageDate(time).label, "Unknown date");
+    assert.equal(messageDate(time).iso, "");
+  }
+  assert.equal(
+    messageDate(8_640_000_000_000).iso,
+    "+275760-09-13T00:00:00.000Z",
+  );
+});
 
 test("message dates follow local timezone including midnight and DST", () => {
   const module = new URL(

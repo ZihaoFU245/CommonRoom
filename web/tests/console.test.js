@@ -9,7 +9,38 @@ import {
   redactCommand,
   helpSections,
   commandText,
+  clearedOrder,
 } from "../src/features/conversation/console.ts";
+
+test("prototype member room names preserve transcript and local clear behavior", () => {
+  const message = { id: "one", sequence: 1, time: 1 };
+  const ledger = { sequence: 2, messages: new Map([["one", 1]]) };
+  for (const view of [
+    "toString",
+    "constructor",
+    "valueOf",
+    "hasOwnProperty",
+    "propertyIsEnumerable",
+    "toLocaleString",
+    "__proto__",
+  ]) {
+    const output = [{ kind: "command", key: "local", room: view, order: 2 }];
+    assert.equal(
+      timeline([message], output, ledger, clearedOrder({}, view), view).length,
+      2,
+    );
+    assert.equal(
+      timeline(
+        [message],
+        output,
+        ledger,
+        clearedOrder({ [view]: 2 }, view),
+        view,
+      ).length,
+      0,
+    );
+  }
+});
 
 test("passwords are masked and help groups retain their commands", () => {
   assert.equal(redactCommand("/passwd old secret"), "/passwd •••• ••••");

@@ -23,6 +23,14 @@ const fullDate = new Intl.DateTimeFormat(undefined, {
 });
 export function messageDate(seconds: number): MessageDate {
   const date = new Date(seconds * 1000);
+  if (!Number.isFinite(date.getTime()))
+    return {
+      key: "invalid",
+      label: "Unknown date",
+      time: "",
+      full: "Unknown date",
+      iso: "",
+    };
   return {
     key: `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`,
     label: calendar.format(date),

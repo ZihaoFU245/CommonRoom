@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSnapshot, isHistory, parseFrame } from "../src/api/protocol.ts";
+import {
+  isSnapshot,
+  isHistory,
+  isMessage,
+  parseFrame,
+} from "../src/api/protocol.ts";
+
+test("message timestamps stay within the JavaScript Date range", () => {
+  for (const time of [0, 8_640_000_000_000])
+    assert.equal(isMessage({ ...message, time }), true);
+  for (const time of [8_640_000_000_001, 1e15, NaN, Infinity, -1])
+    assert.equal(isMessage({ ...message, time }), false);
+});
 
 const message = {
   id: "one",

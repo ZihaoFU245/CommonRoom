@@ -97,6 +97,12 @@ export function useHistory(
               oldest: latest.unread[view]?.oldest ?? 0,
             },
       );
+      // A jump applies to this fetch only. Later refreshes use the visible
+      // window's anchor, and live appends can resume their merge path.
+      if (range.around !== undefined)
+        setTarget((pending) =>
+          pending === range.around ? undefined : pending,
+        );
     } catch (error) {
       if (!controller.signal.aborted) setHistoryError(errorMessage(error));
     } finally {

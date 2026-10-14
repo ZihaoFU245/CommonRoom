@@ -162,6 +162,7 @@ export const isMessage = (v: unknown): v is Message =>
   (v.to === null || typeof v.to === "string") &&
   typeof v.text === "string" &&
   integer(v.time) &&
+  v.time <= 8_640_000_000_000 &&
   integer(v.sequence) &&
   record(v.reactions) &&
   Object.values(v.reactions).every(strings) &&

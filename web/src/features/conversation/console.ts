@@ -9,6 +9,9 @@ import type {
 } from "../../api/protocol.ts";
 import { permissionNames } from "./completion.ts";
 // Commands and output live only in this tab; chat comes from server snapshots.
+export function clearedOrder(cleared: Record<string, number>, view: string) {
+  return Object.hasOwn(cleared, view) ? (cleared[view] ?? 0) : 0;
+}
 export function ingest(
   snapshot: Pick<Snapshot, "rooms" | "direct">,
   ledger: Ledger = { sequence: 0, messages: new Map() },

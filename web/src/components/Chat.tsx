@@ -11,6 +11,7 @@ import {
 } from "../features/preferences/notifications.ts";
 import {
   timeline,
+  clearedOrder,
   privatePeers,
   privateMessages,
 } from "../features/conversation/console.ts";
@@ -309,7 +310,7 @@ export function Chat({
         messages,
         output,
         ledger.current,
-        cleared[selected] || 0,
+        clearedOrder(cleared, selected),
         selected,
       ),
     [messages, output, cleared, selected],
