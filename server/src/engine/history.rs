@@ -147,6 +147,16 @@ impl HistoryStore {
             .map_err(|_| "History storage unavailable.")?;
         query(&db)
     }
+    pub(super) fn contains_sequence(&self, id: &str, sequence: u64) -> Result<bool, String> {
+        self.read(|db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence=?2)",
+                params![id, sequence],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+    }
     pub fn stats(&self) -> Result<serde_json::Value, String> {
         let cache = self
             .cache
@@ -864,7 +874,7 @@ mod tests {
                 .unwrap()
                 .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            8
+            9
         );
     }
     #[test]

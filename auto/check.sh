@@ -6,5 +6,6 @@ cd "$(dirname "$0")/.."
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+node --check web/scripts/smoke.mjs
 pnpm --dir web check
 pnpm --dir web test

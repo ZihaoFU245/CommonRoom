@@ -3,6 +3,8 @@ pub mod authorization;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod benchmarks;
+#[path = "../bots/engine.rs"]
+mod bot_api;
 #[path = "../bots/commands.rs"]
 mod bots;
 mod dispatch;

@@ -24,7 +24,7 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
     let direct_bot = request
         .uri()
         .path()
-        .starts_with(&format!("{}api/bot/", app.config.base_url))
+        .starts_with(&format!("{}api/bot/v1/", app.config.base_url))
         && super::auth::bearer(request.headers()).is_some()
         && !request.headers().contains_key("x-forwarded-proto");
     if app.config.production

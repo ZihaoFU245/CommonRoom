@@ -141,10 +141,18 @@ impl Drop for Lease {
     }
 }
 impl Hub {
-    pub fn register(&self, target: String, sender: mpsc::Sender<Request>) -> Result<Lease, String> {
-        let mut connections = self.0.lock().map_err(|_| "Runtime registry unavailable.")?;
+    pub fn register(
+        &self,
+        target: String,
+        sender: mpsc::Sender<Request>,
+    ) -> Result<Lease, crate::bots::error::Error> {
+        use crate::bots::error::{Code, Error};
+        let mut connections = self.0.lock().map_err(Error::storage)?;
         if connections.contains_key(&target) {
-            return Err("A configuration runtime is already connected for this bot.".into());
+            return Err(Error::new(
+                Code::RuntimeRejected,
+                "A configuration runtime is already connected for this bot.",
+            ));
         }
         let id = uuid::Uuid::new_v4().to_string();
         connections.insert(
@@ -206,10 +214,18 @@ pub(crate) enum Control {
     Ready,
     #[serde(rename = "config_response")]
     Response {
+        #[serde(deserialize_with = "bounded_id")]
         id: String,
         values: Option<BTreeMap<String, String>>,
         error: Option<String>,
     },
+}
+fn bounded_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let id = String::deserialize(deserializer)?;
+    if !crate::bots::models::valid_id(&id) {
+        return Err(serde::de::Error::custom("Invalid request ID."));
+    }
+    Ok(id)
 }
 pub(crate) fn validate_response(
     values: Option<BTreeMap<String, String>>,

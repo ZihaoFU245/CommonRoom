@@ -312,7 +312,7 @@ fn registrations_and_credentials_survive_current_schema_restart() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        8
+        9
     );
 }
 
@@ -424,4 +424,436 @@ fn runtime_config_uses_existing_command_and_account_action_grants() {
     );
     e.execute(None, None, "/disable helper").unwrap();
     assert!(e.authorize_bot_config(None, None, "helper", false).is_err());
+}
+
+#[test]
+fn v8_upgrade_preserves_state_and_failed_upgrade_rolls_back_ddl() {
+    for fail in [false, true] {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("chat.sqlite");
+        let previous;
+        {
+            let mut e = Engine::open(&path).unwrap();
+            e.execute(None, None, "/new room support").unwrap();
+            e.execute(None, Some("support"), "/bot new helper").unwrap();
+            e.send_literal("helper", "support", "preserved").unwrap();
+            e.mark_read("helper", "support", 1).unwrap();
+            previous = e.data.clone();
+            e.db.lock()
+                .unwrap()
+                .execute_batch("DROP TABLE bot_receipts; PRAGMA user_version=8;")
+                .unwrap();
+            if fail {
+                e.db.lock()
+                    .unwrap()
+                    .execute_batch(
+                        "CREATE TABLE blocker(n); CREATE INDEX bot_receipts_created ON blocker(n);",
+                    )
+                    .unwrap();
+            }
+        }
+        if fail {
+            assert!(Engine::open(&path).is_err());
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                8
+            );
+            assert_eq!(
+                db.query_row::<usize, _, _>(
+                    "SELECT count(*) FROM sqlite_master WHERE name='bot_receipts'",
+                    [],
+                    |r| r.get(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            let e = Engine::open(&path).unwrap();
+            assert!(e.data == previous);
+            assert_eq!(
+                e.history("helper", "support").unwrap().messages[0].text,
+                "preserved"
+            );
+            assert_eq!(e.unreads("helper").unwrap()["support"].count, 0);
+            assert_eq!(
+                e.db.lock()
+                    .unwrap()
+                    .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                9
+            );
+        }
+    }
+}
+
+fn input(e: &Engine, view: &str, text: &str) -> crate::bots::models::MessageInput {
+    crate::bots::models::MessageInput {
+        conversation_id: e.conversation("helper", view).unwrap().1,
+        text: text.into(),
+        reply_to: None,
+        markdown: true,
+    }
+}
+
+#[test]
+fn mixed_browser_and_bot_sends_preserve_quotes_retention_and_shared_cursors() {
+    use crate::bots::error::Code;
+    let mut e = fixture();
+    new_bot(&mut e);
+    e.set_limits(64, 64, 2).unwrap();
+    e.execute(Some("admin"), Some("support"), "@helper @human question")
+        .unwrap();
+    let question = e.history("helper", "support").unwrap().messages[0].clone();
+    assert_eq!(question.mentions, BTreeSet::from(["helper".into()]));
+    let mut request = input(&e, "support", "**@admin @human answer**");
+    request.reply_to = Some(question.id.clone());
+    let answer = e
+        .send_bot_message("helper", &request, Some("mixed"))
+        .unwrap()
+        .message;
+    assert_eq!(answer.mentions, BTreeSet::from(["admin".into()]));
+    assert_eq!(answer.reply.as_ref().unwrap().id, question.id);
+    assert!(answer.markdown);
+    assert!(
+        e.bot_read("helper", &request.conversation_id, answer.sequence)
+            .unwrap()
+    );
+
+    e.execute_formatted(
+        Some("admin"),
+        Some("support"),
+        &format!("/reply {} @helper received", answer.id),
+        true,
+    )
+    .unwrap();
+    let page = e.history("helper", "support").unwrap();
+    assert_eq!(page.messages.len(), 2);
+    let reply = page.messages.last().unwrap();
+    assert_eq!(reply.reply.as_ref().unwrap().text, answer.text);
+    assert_eq!(reply.mentions, BTreeSet::from(["helper".into()]));
+    assert!(reply.markdown);
+    assert!(e.mark_read("helper", "support", reply.sequence).unwrap());
+    assert_eq!(
+        e.bot_snapshot("helper").unwrap().conversations[0]
+            .unread
+            .count,
+        0
+    );
+    assert!(
+        !e.bot_read("helper", &request.conversation_id, question.sequence)
+            .unwrap()
+    );
+    // Browser validation and frozen bot retry semantics intentionally differ here.
+    assert!(e.mark_read("helper", "support", question.sequence).is_err());
+    e.execute(Some("admin"), Some("support"), "next").unwrap();
+    assert_eq!(
+        e.send_bot_message("helper", &request, Some("mixed"))
+            .err()
+            .unwrap()
+            .code,
+        Code::MessageGone
+    );
+    assert!(e.data.rooms.values().all(|r| r.messages.is_empty()));
+}
+
+#[test]
+fn browser_toggles_and_bot_desired_reactions_share_limits_and_failure_rollback() {
+    use crate::bots::error::Code;
+    let mut e = fixture();
+    new_bot(&mut e);
+    let request = input(&e, "support", "react here");
+    let message = e
+        .send_bot_message("helper", &request, Some("reactions"))
+        .unwrap()
+        .message;
+    let id = &request.conversation_id;
+    for n in 0..32 {
+        let reaction = format!("r{n}");
+        if n % 2 == 0 {
+            e.execute(
+                Some("helper"),
+                Some("support"),
+                &format!("/react {} {reaction}", message.id),
+            )
+            .unwrap();
+        } else {
+            assert!(
+                e.bot_react("helper", id, &message.id, &reaction, true)
+                    .unwrap()
+            );
+        }
+    }
+    let before = e.data.clone();
+    let revision = e.revision;
+    assert!(!e.bot_react("helper", id, &message.id, "r0", true).unwrap());
+    assert_eq!(e.revision, revision);
+    assert_eq!(
+        e.bot_react("helper", id, &message.id, "extra", true)
+            .err()
+            .unwrap()
+            .code,
+        Code::InvalidRequest
+    );
+    assert!(
+        e.execute(
+            Some("helper"),
+            Some("support"),
+            &format!("/react {} extra", message.id)
+        )
+        .is_err()
+    );
+    assert!(e.data == before);
+
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=ON")
+        .unwrap();
+    assert_eq!(
+        e.bot_react("helper", id, &message.id, "r0", false)
+            .err()
+            .unwrap()
+            .code,
+        Code::Unavailable
+    );
+    assert!(
+        e.execute(
+            Some("helper"),
+            Some("support"),
+            &format!("/react {} r0", message.id)
+        )
+        .is_err()
+    );
+    assert!(e.data == before);
+    assert_eq!(e.revision, revision);
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=OFF")
+        .unwrap();
+    assert!(e.bot_react("helper", id, &message.id, "r0", false).unwrap());
+    assert!(!e.bot_react("helper", id, &message.id, "r0", false).unwrap());
+    e.execute(
+        Some("helper"),
+        Some("support"),
+        &format!("/react {} r0", message.id),
+    )
+    .unwrap();
+    let page = e.history("helper", "support").unwrap();
+    assert_eq!(page.messages[0].reactions.len(), 32);
+    assert!(page.messages[0].reactions["r0"].contains("helper"));
+    assert!(e.data.rooms.values().all(|r| r.messages.is_empty()));
+}
+#[test]
+fn stable_targets_cannot_follow_recreated_names_and_receipts_survive_restart_and_rename() {
+    use crate::bots::error::Code;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("chat.sqlite");
+    let original;
+    let request;
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.execute(None, None, "/new room support").unwrap();
+        e.execute(None, Some("support"), "/bot new helper").unwrap();
+        request = input(&e, "support", "**answer**");
+        original = e
+            .send_bot_message("helper", &request, Some("a"))
+            .unwrap()
+            .message
+            .id;
+        e.execute(None, None, "/rename room support renamed")
+            .unwrap();
+        e.execute(None, None, "/rename helper renamedbot").unwrap();
+    }
+    let mut e = Engine::open(&path).unwrap();
+    let replay = e
+        .send_bot_message("renamedbot", &request, Some("a"))
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.message.id, original);
+    assert_eq!(replay.message.from, "renamedbot");
+    e.execute(None, None, "/rm room renamed").unwrap();
+    e.execute(None, None, "/new room support").unwrap();
+    for action in ["r:message.read", "w:message.create"] {
+        e.execute(None, None, &format!("/grant renamedbot support {action}"))
+            .unwrap();
+    }
+    assert_eq!(
+        e.send_bot_message("renamedbot", &request, Some("fresh"))
+            .err()
+            .unwrap()
+            .code,
+        Code::NotFound
+    );
+    let mut replacement = request.clone();
+    replacement.conversation_id = e.data.rooms["support"].id.clone();
+    assert_eq!(
+        e.send_bot_message("renamedbot", &replacement, Some("a"))
+            .err()
+            .unwrap()
+            .code,
+        Code::IdempotencyConflict
+    );
+    assert!(
+        e.history("renamedbot", "support")
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+    e.execute(None, None, "/bot rm renamedbot @global").unwrap();
+    assert_eq!(
+        e.db.lock()
+            .unwrap()
+            .query_row::<usize, _, _>("SELECT count(*) FROM bot_receipts", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+}
+#[test]
+fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
+    use crate::bots::error::Code;
+    let mut e = fixture();
+    new_bot(&mut e);
+    e.execute(Some("admin"), Some("support"), "question")
+        .unwrap();
+    let question = e.history("helper", "support").unwrap().messages[0].clone();
+    let mut request = input(&e, "support", "/literal answer");
+    request.reply_to = Some(question.id.clone());
+    let previous = e.data.clone();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_receipt BEFORE INSERT ON bot_receipts BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    assert_eq!(
+        e.send_bot_message("helper", &request, Some("a"))
+            .err()
+            .unwrap()
+            .code,
+        Code::Unavailable
+    );
+    assert!(e.data == previous);
+    assert_eq!(e.history("helper", "support").unwrap().messages.len(), 1);
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_receipt;")
+        .unwrap();
+    let sent = e.send_bot_message("helper", &request, Some("a")).unwrap();
+    assert_eq!(sent.message.reply.unwrap().id, question.id);
+    assert!(sent.message.markdown);
+    assert!(
+        e.send_bot_message("helper", &request, Some("a"))
+            .unwrap()
+            .replayed
+    );
+    e.execute(None, None, "/revoke helper support /reply")
+        .unwrap();
+    assert_eq!(
+        e.send_bot_message("helper", &request, Some("a"))
+            .err()
+            .unwrap()
+            .code,
+        Code::Forbidden
+    );
+    e.execute(None, None, "/grant helper support /reply")
+        .unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=ON")
+        .unwrap();
+    assert_eq!(
+        e.bot_read("helper", &request.conversation_id, question.sequence)
+            .err()
+            .unwrap()
+            .code,
+        Code::Unavailable
+    );
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=OFF")
+        .unwrap();
+    assert!(
+        e.bot_read("helper", &request.conversation_id, question.sequence)
+            .unwrap()
+    );
+    e.execute(None, Some("support"), &format!("/retract {}", question.id))
+        .unwrap();
+    assert!(
+        !e.bot_read("helper", &request.conversation_id, question.sequence)
+            .unwrap()
+    );
+}
+#[test]
+fn live_receipts_are_not_evicted_and_expired_keys_can_be_reused() {
+    use crate::bots::{
+        error::Code,
+        models::{RECEIPT_LIMIT, RECEIPT_TTL},
+    };
+    let mut e = fixture();
+    new_bot(&mut e);
+    let request = input(&e, "support", "answer");
+    e.send_bot_message("helper", &request, Some("a")).unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute("UPDATE bot_receipts SET created=?1", [now() - RECEIPT_TTL])
+        .unwrap();
+    assert!(
+        !e.send_bot_message("helper", &request, Some("a"))
+            .unwrap()
+            .replayed
+    );
+    let account = e.data.users["helper"].id.clone();
+    for i in 1..RECEIPT_LIMIT {
+        e.db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO bot_receipts VALUES(?1,?2,'digest','conversation',1,?3)",
+                params![account, format!("key-{i}"), now()],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        e.send_bot_message("helper", &request, Some("new"))
+            .err()
+            .unwrap()
+            .code,
+        Code::IdempotencyCapacity
+    );
+    assert!(
+        e.send_bot_message("helper", &request, Some("a"))
+            .unwrap()
+            .replayed
+    );
+}
+#[test]
+fn private_ids_preserve_participants_and_cross_conversation_replies_are_rejected() {
+    use crate::bots::error::Code;
+    let mut e = fixture();
+    new_bot(&mut e);
+    e.execute(Some("admin"), None, "/tell helper question")
+        .unwrap();
+    for permission in ["r:message.read", "w:message.create", "/reply"] {
+        e.execute(
+            None,
+            None,
+            &format!("/grant helper @private:admin:helper {permission}"),
+        )
+        .unwrap();
+    }
+    let mut request = input(&e, "@direct:admin", "private answer");
+    let sent = e.send_bot_message("helper", &request, Some("a")).unwrap();
+    assert_eq!(sent.message.to.as_deref(), Some("admin"));
+    assert_eq!(sent.message.private_id, request.conversation_id);
+    request.reply_to = Some(sent.message.id);
+    assert!(
+        e.send_bot_message("helper", &request, Some("b"))
+            .unwrap()
+            .message
+            .reply
+            .is_some()
+    );
+    request.conversation_id = e.data.rooms["support"].id.clone();
+    assert_eq!(
+        e.send_bot_message("helper", &request, Some("c"))
+            .err()
+            .unwrap()
+            .code,
+        Code::NotFound
+    );
 }

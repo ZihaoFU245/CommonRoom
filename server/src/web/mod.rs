@@ -97,5 +97,9 @@ pub fn router(app: App) -> Router {
             app.clone(),
             security::security,
         ))
+        .layer(middleware::from_fn_with_state(
+            app.clone(),
+            crate::bots::contract,
+        ))
         .with_state(app)
 }

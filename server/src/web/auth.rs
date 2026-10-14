@@ -43,11 +43,6 @@ pub(crate) fn identity(engine: &Engine, headers: &HeaderMap) -> Option<String> {
         engine.session(token(headers)?)
     }
 }
-pub(crate) fn authenticate_bot(app: &App, headers: &HeaderMap) -> Result<String, ApiError> {
-    bearer(headers)
-        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Bot bearer credential required."))?;
-    authenticate(app, headers)
-}
 #[derive(Deserialize)]
 pub(crate) struct Login {
     username: String,

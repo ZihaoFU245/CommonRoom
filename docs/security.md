@@ -189,7 +189,7 @@ and scoped direct grants with constraints when the requester can inspect policy.
 
 ## Persistence and revocation
 
-Only schema v8 is supported. New empty databases initialize transactionally; existing v8 metadata is validated without migration or retired command-grant rewrites. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+The current schema is v9. New empty databases initialize transactionally; existing v8 metadata is validated and upgraded by adding durable bot retry receipts without rewriting grants. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -222,7 +222,7 @@ New room bots receive explicit direct grants rather than the user bundle: discov
 
 Credential authentication resolves stable account ID to the current active username, then uses the same command execution, history/read checks, and snapshot filtering as browser sessions. Credentials cannot specify an author or bypass grants. Only hashes of 244-bit random secrets (two UUIDv4 values) are stored. Revocation is checked on subsequent actions and WebSocket updates/heartbeats; revocation broadcasts wake connected sockets. Already-delivered content cannot be recalled. Account-wide input throttling is shared across credentials and sockets. See [Bots](bots.md).
 
-Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.
+Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/v1/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.
 
 `w:message.edit.any` permits changing another author's retained message when
 `r:message.read` and `/edit` are also granted on that conversation. It does not

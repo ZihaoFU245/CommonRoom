@@ -1,4 +1,6 @@
 mod api;
+pub(crate) mod error;
+pub(crate) use api::contract;
 pub mod models;
 pub(crate) mod runtime;
 

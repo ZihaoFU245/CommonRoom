@@ -1,134 +1,202 @@
-# Bot accounts and API
+# Bot API v1 — frozen
 
-A bot is an ordinary account with a registered machine connection. There is no human/bot flag and no agent runtime in CommonRoom. Existing grants, membership, stable account IDs, authorship, history and read cursors apply. External agents decide whether to respond to mentions or participate proactively.
+V1 is the stable, lightweight chat transport for external agents. Its endpoints,
+fields, error codes, limits and recovery rules are frozen. `/api/bot/v1/` is the
+sole bot API namespace; no alternative version is planned. Implementation and
+security fixes must preserve this contract. The schema fingerprint test enforces
+this policy. There are no unversioned routes or free-form bot command endpoint.
 
-## Management
+## Identity and provisioning
 
-Lifecycle and credential subcommands require global admins, su or stdin. A room admin or direct /bot grant alone does not authorize those operations. Remote configuration uses ordinary account-scoped action and command grants, described below.
+A bot is an ordinary account with a machine registration. The server owns
+identity, grants and chat history; an external worker owns models, tools and
+configuration. This keeps the API independent of any agent framework.
 
-| Command | Meaning |
-| --- | --- |
-| `/bot new name [scope]` | Create account, registration and default direct grants |
-| `/bot ls [scope]` | List registrations; room scope filters by membership |
-| `/bot info name [scope]` | Show identity, disabled/connection status and effective grants/commands |
-| `/bot rm name @global` | Delete the entire account and credentials with existing deletion protections |
-| `/bot token new name label` | Issue account-wide credential, displaying the secret once |
-| `/bot token ls name` | List credential IDs, labels and creation times, without secrets/hashes |
-| `/bot token rm name id` | Revoke a credential and wake/disconnect its connections |
-| `/bot config set name key value` | Ask the connected runtime to validate/apply a string setting |
-| `/bot config fetch name [key]` | Query one setting or all settings from the connected runtime |
-
-Creation/list/info default only to the selected room. In Console or private views they require an explicit room. `@global` must always be explicit; `@server` is not an alias here. Names must be new; /bot new never attaches credentials to an existing human account. Scope selection does not grant authority: creation checks account creation and each default command/action in the target scope, plus room invitation authority. Listing/info require room member-list access.
-
-Room defaults are the direct actions `r:room.discover`, `r:message.read`, `r:member.list`, `x:room.join`, `w:message.create`, `w:message.react`, and commands `/help`, `/man`, `/whoami`, `/members`, `/history`, `/join`, `/reply`, `/react`. No group is assigned. Read acknowledgements use read access; replies use read/send plus the reply command. Settings, message retraction/cleanup, private creation and management are excluded.
-
-Explicit @global creation applies this same set globally, including content access to rooms/private conversations under the existing global grant rules. It is broad authority and requires the creator to hold each corresponding global permission. An ordinary administrator with only room content access cannot provision global content access. Global registration does not automatically add room membership; ordinary mention filtering still requires room membership.
+Global administrators, su or stdin manage registrations and account-wide tokens:
 
 ```text
-# Selected support room, with appropriate admin authority:
-/bot new helper
-/bot token new helper worker
-/bot info helper
-
-# Console:
 /bot new helper support
-/bot ls support
-/bot ls @global
+/bot token new helper worker
+/bot info helper support
+/bot token ls helper
+/bot token rm helper CREDENTIAL_ID
 /bot rm helper @global
 ```
 
-Credentials follow the account's current permissions, never the issuing administrator's. Management requires `x:bot.credentials` at the account target (included in the global admin bundle) and the global /bot command. Protected su targets, including disabled ones, require su. There are at most eight uniquely labelled credentials per account. New accounts have no usable password; an authorized /reset can set one later.
+Creation requires a new name and the creator's account-create, room-invite and
+corresponding content/command grants. A selected room supplies the default scope;
+Console/private contexts require an explicit room. `@global` must be explicit
+and grants broad room/private content access. Room admins alone cannot provision
+or issue credentials. Su accounts remain protected from ordinary admins.
 
-Use `/grant` and `/revoke` to alter the initial direct grants. `/add` and group assignment remain ordinary account operations and add their ordinary bundles, which include retraction/settings privileges where applicable. `/kick` removes participation in a room. `/disable` suspends credentials, `/enable` restores them, `/rename` preserves them, and either `/rm user` or `/bot rm` deletes them atomically. Recreating a username never restores its credentials.
+Room defaults grant discover/join/read/member-list/send/react and
+`/help`, `/man`, `/whoami`, `/members`, `/history`, `/join`, `/reply`, `/react`.
+There is no group assignment, password, private-create or management permission.
+These command grants support existing engine authorization; v1 exposes only the
+HTTP operations below. `/grant` and `/revoke` adjust access. `/kick` removes room
+participation; `/disable` suspends tokens; rename preserves stable IDs; account
+deletion removes tokens and retry receipts. Name reuse restores no old authority.
 
-## HTTP
+Tokens are shown once, hashed at rest and individually revocable, with at most
+eight unique labels per account. They have the account's current permissions,
+with no independent token scope or expiry. Use separate accounts for different
+permission boundaries. Never log credentials or message bodies.
 
-All paths below are relative to `base_url` (for example `/commonroom/api/bot/me`). No version segment is used. Each request requires `Authorization: Bearer bot_...`; cookies alone cannot access these routes. Browser Origin is not required for bearer requests. Production requests must still arrive from the configured trusted socket IP. Direct bot requests without X-Forwarded-Proto can use HTTP or WS from that IP; a forwarded request must indicate https. This exception applies only to /api/bot/ and still requires a valid bearer credential.
+## HTTP contract
 
-| Endpoint | Request/response |
+All routes are relative to the configured `base_url`. Each requires
+`Authorization: Bearer bot_...`; cookies alone do not authenticate bots.
+Responses include `Bot-Api-Version: 1`. Use HTTPS/WSS through the configured
+proxy. Production always requires the trusted socket-peer IP. Direct HTTP/WS
+without `X-Forwarded-Proto` is allowed only from that IP under `/api/bot/v1/`;
+forwarded requests must indicate HTTPS. A browser Origin is unnecessary.
+
+| Method and endpoint | Payload / result |
 | --- | --- |
-| `GET /api/bot/me` | Existing authorized Snapshot, including granted command lists |
-| `GET /api/bot/history?view=...` | Same sequence pagination/query/response as /api/history |
-| `POST /api/bot/messages` | `{id,view,text,reply_to?}` → `{ok:true,id,message}` for plain sends; `{ok:true,id,text}` for reply acknowledgement |
-| `POST /api/bot/commands` | `{id,view,command}` → `{ok:true,id,text}` |
-| `POST /api/bot/read` | `{view,through}` → `{ok:true}` |
-| `GET /api/bot/ws` | Authenticated WebSocket upgrade |
+| `GET /api/bot/v1/me` | `Snapshot`: account and readable conversation directory |
+| `GET /api/bot/v1/history` | `conversation_id`, sequence bounds and `limit` query; `HistoryResponse` |
+| `POST /api/bot/v1/messages` | `MessageRequest` plus required `Idempotency-Key`; `SendResponse` |
+| `POST /api/bot/v1/read` | `{conversation_id,through}`; `{ok:true}` |
+| `PUT /api/bot/v1/reactions` | `{conversation_id,message_id,reaction,active}`; `{ok:true}` |
+| `GET /api/bot/v1/ws` | Authenticated notification/configuration socket |
+| `GET /api/bot/v1/schema` | The published JSON Schema |
 
-`id` is an unsigned integer used for request correlation. It is not an idempotency key. Do not automatically retry an ambiguous mutation after a connection failure; inspect history/state first, as with browser commands. This release does not claim exactly-once execution or durable event delivery.
+The [schema](bot-v1.schema.json) is normative for shapes and types. Validate the
+named `definitions` entry for each payload, or `ServerFrame` / `ClientFrame` for
+socket directions. Unknown request fields are rejected. UTF-8 byte bounds,
+permissions and history bound combinations have additional server checks.
+HTTP has no request-correlation `id`; its response belongs to the request.
 
-`view` is a room name, `@direct:peer` or authorized `@private:a:b`. Commands can use null for Console. Plain private sends require an existing conversation; starting one uses `/tell` with explicitly granted private-create/send/command access. Plain message text is literal even when it begins with `/`. `reply_to` invokes the existing permission-checked /reply operation. The command endpoint deliberately executes slash commands, including those explicitly granted later; it shares browser account/password execution and post-hashing authorization checks.
+A snapshot contains `{kind:"snapshot",account:{id,username},conversations}`.
+Each conversation has stable `id`, current display/routing label `view`,
+`permissions:{send,reply,react}`, filtered `members`, and `unread` metadata.
+The directory contains only readable conversations. An empty member list can
+mean member-list access is absent. The snapshot carries no message tails,
+command catalogue or browser settings.
 
-```json
-{"id":1,"view":"support","text":"/help is useful documentation."}
-```
+Use the **conversation ID** in every operation. IDs are opaque strings of 1–128 ASCII letters, digits, dots, underscores, colons or hyphens;
+never derive them from names. Rename preserves an ID. Delete/recreate uses a
+new ID, so an old request cannot be redirected into a replacement conversation.
+Existing private conversations work the same way; their participants remain
+fixed. Provision/join/create private conversations through authorized operator
+commands, outside the frozen machine API.
 
-```json
-{"id":2,"view":"support","command":"/man reply"}
-```
+## Messages and reactions
 
-```json
-{"id":3,"view":"support","text":"Here is my answer.","reply_to":"message-id"}
-```
+Send `{conversation_id,text,reply_to?,markdown?}` with a fresh idempotency key.
+Text is trimmed, supports 1–4,000 Unicode characters, and remains literal even
+when it starts with `/`. Markdown defaults to false. A reply needs current read,
+send and `/reply` grants; all v1 sends need read/send access to return the result.
+A reply target must be retained in the selected conversation.
 
-Messages accept 1–4000 characters, commands at most 4100 characters; the bot HTTP body limit is 32 KiB. Message/command inputs are limited to 30 per 10 seconds per account, shared across credentials and sockets; exhausted budgets return HTTP 429 or a WebSocket error frame. Work admission and connection limits are shared with the browser transport. No author identity is accepted from the client.
+Both plain sends and replies return `{message,replayed}`. A message contains
+stable `id` and `author_id`, current author label `from`, text/format/edit marker,
+UTC epoch-second `time`, global `sequence`, nullable reply quote, filtered
+mention usernames and reactions. Reply quotes capture at most 160 characters.
+There is no automatic invocation: an agent chooses how to act on `mentions`.
 
-Application errors use `{error:string}`; authentication is 401, denied access 403, invalid ranges/text 400, exhausted budgets 429 and unavailable workers/storage 503. Axum rejects malformed query/JSON or unknown request fields through its standard extractor responses. History can return 409 during concurrent changes.
+Reaction updates set this account's membership to `active:true` or `false`.
+Repeating the same request is a no-op, unlike a toggle command. Reactions support
+1–128 Unicode characters without controls or leading/trailing whitespace, with
+at most 32 distinct reactions per message. Read/react and `/react` grants apply.
+An HTTP success does not promise exactly-once external tool execution.
 
-## WebSocket and reconnect
+## Retries and history
 
-Connect to /api/bot/ws with the Authorization header. The existing protocol applies: initial `snapshot`, authorized `conversation` updates, `read` updates, and `notice`/`error` acknowledgements. Outbound input uses `{id,room,text}` just like the browser; slash text on this command-oriented transport executes commands. For literal slash text use the HTTP message endpoint.
+`Idempotency-Key` is required on sends: one header containing 1–128 ASCII letters,
+digits, dots, underscores, colons or hyphens. Persist the key and payload before
+sending. Keys belong to the stable account across credential rotation and rename.
+Their fingerprint covers conversation ID, trimmed text, reply target and format.
 
-Snapshots and command lists are filtered using current grants. Mention usernames are generated and filtered by the engine exactly as for other users. When `message.mentions` contains the bot's current username, the agent can choose to respond; no automatic invocation/response is performed. A mention never grants read access. An active agent may instead process all messages in its authorized conversations.
+A matching retry returns the current retained message with `replayed:true`,
+without another send or broadcast. Different content returns
+`idempotency_conflict`. A receipt and message commit in one SQLite transaction
+and survive server restart. Removed messages return `message_gone`; missing
+conversations return `not_found`. Current grants and credentials are rechecked.
 
-Conversation updates carry recent tails, not individual durable events. Deduplicate messages by stable ID/sequence. Save per-conversation sequence cursors and stable conversation identity. On reconnect, take the snapshot as a baseline and page history after the saved cursor; fetch additional pages when required. If a live tail does not cover the saved cursor, fetch the missing history pages while connected as well. Resource identity changes require a fresh baseline. Retention may remove messages before an offline agent reconnects. Snapshots/replayed history must not be mistaken for new mention notifications.
+Receipts last 24 hours from the original send; replay does not extend expiry.
+Each account holds at most 4,096 live receipts. Capacity rejects new keys rather
+than evicting a guarantee. After expiry, a reused key is a new send. Receipts
+store a digest and identifiers, not copied message text. Account deletion clears
+them. These explicit bounds keep storage predictable.
 
-Credential validity is rechecked on each action/update and heartbeat. Permission changes broadcast filtered snapshots, removing inaccessible history; credential revocation/account disabling broadcast changes that disconnect affected sockets. Presence counts authenticated bot sockets as ordinary user connections. Read acknowledgements are explicit and advance the same account cursors; receiving a message does not mark it read automatically.
+History pages are ascending, at most 100 messages and approximately 1 MiB.
+`before`/`after` are exclusive global sequence cursors and mutually exclusive;
+`start`/`end` are inclusive and ordered. `around` cannot combine with other bounds.
+`limit` is 1–100, default 100. Continue using the first/last sequence and
+`has_before`/`has_after`. Global sequence gaps are normal. Concurrent changes can
+return `conflict`; retry the page. Retention or cleanup can erase offline input.
 
-## Remote runtime configuration
+`/read` advances the account's shared read cursor monotonically. Repeating an
+already-advanced cursor succeeds even after its message expires. A new cursor
+must identify a retained message. Worker processing checkpoints are separate
+from read acknowledgements; mark read only when appropriate for your agent.
 
-Configuration is owned and persisted by the external agent, not CommonRoom. `/bot config set name key value` and `/bot config fetch name [key]` are remote control requests. Bot names are always explicit and settings apply to that runtime, independent of the selected room. A runtime must be online and implement this protocol. Fetch reports runtime values, not a stored desired configuration. CommonRoom does not start processes or apply agent settings itself.
+## WebSocket contract
 
-The normal `/bot` command gate applies in the invoking context and on the target account. Fetch requires `r:bot.config`; set requires `w:bot.config` on the bot account. These separate actions are included in the global admin bundle, not the room admin or user bundles. Existing protected-su target rules apply. A bot token grants neither action automatically, including for its own account. Delegate a particular bot from su/stdin (account-scope grants retain the existing su-only policy) with:
+The socket emits a baseline `snapshot`, then small
+`{kind:"conversation",conversation_id}` notifications or replacement snapshots
+for directory/permission/read/presence changes. It carries no durable event log.
+Treat notifications as signals to fetch history after your saved cursor. Catch
+up on reconnect and while connected; deduplicate by sequence/message ID.
+Snapshots are baselines, not instructions to replay every old mention.
 
-```text
-/grant alice @account:helper /bot
-/grant alice @account:helper r:bot.config
-/grant alice @account:helper w:bot.config
-/revoke alice @account:helper w:bot.config
-```
+Incoming text frames accept only `config_ready` and `config_response`. Chat
+writes use HTTP. Ping/pong is handled by the WebSocket library: server pings
+every 25 seconds and closes after 75 seconds without incoming traffic. Incoming frames
+are at most 64 KiB; slow sends time out after five seconds. Revocation/disabling
+closes affected sockets. Reconnect with backoff and check credentials on 401.
 
-Account-scoped command grants can be invoked in Console under the existing any-command rule. When invoking from a room/private context, `/bot` must also be granted in that context. Delegated config permissions do not grant lifecycle or credential management. These permissions govern the bot's configuration as a whole; per-key restrictions are the runtime's responsibility. Arbitrary config values never alter engine grants.
+Optional runtime configuration is worker-owned. An authorized operator uses
+`/bot config set helper key value` or `/bot config fetch helper [key]`.
+Fetch/set need `/bot` context/target grants and account-scoped `r:bot.config` /
+`w:bot.config`; room administration and a bot's own token do not supply them.
+Account-scope delegation is su-only. The worker validates/persists values and
+omits secrets from fetch results.
 
-Keys contain 1–64 ASCII letters, digits, dots, underscores or hyphens. Values are strings, at most 4096 bytes; unquoted remaining text preserves internal whitespace. A value beginning with a double quote must be a valid JSON string; `""` sets an empty value. Each backend defines its accepted keys, validation and whether changes require a restart. Configuring prompts, tools or credentials can materially change the agent's capabilities outside CommonRoom; grant write access accordingly.
+Register `{kind:"config_ready"}`; repeating it on the same socket is safe. Only
+one handler may own an account across credentials. Reconnect must register again.
+The handler receives `{kind:"config_request",id,operation,key,value}` with an
+opaque server request ID. Operations are `set` or `fetch`; fetch has `value:null`
+and `key:null` means all settings. Respond on that socket with
+`{kind:"config_response",id,values:{...}}` or `{kind:"config_response",id,error}`,
+with exactly one non-null result. Single-key responses cannot include other keys.
 
-On its bearer-authenticated WebSocket, the agent registers a handler:
+Accepted control frames receive `{kind:"config_ack",id}`; registration has
+`id:null`. Rejections use `{kind:"error",id,error:{code,message,retryable}}`.
+Keys use 1–64 ASCII letters, digits, dots, underscores or hyphens. Responses have
+at most 128 string values, 4,096 UTF-8 bytes each and 32 KiB serialized total.
+Error text is 1–1,024 UTF-8 bytes. Requests have a ten-second timeout, at most eight
+queued and eight in flight per handler. A set may apply before a timeout; fetch
+before retrying. Configuration and pending RPCs do not survive server restart.
 
-```json
-{"kind":"config_ready"}
-```
+## Errors and limits
 
-A normal `notice` with id 0 acknowledges control frames; an `error` with id 0 rejects them. Only one configuration handler can register per stable bot account, across all credentials. Other bot sockets remain usable for messaging. Registration ends on disconnect; reconnect must register again. Browser-cookie connections cannot register/respond as runtimes.
+HTTP errors use `{error:{code,message,retryable}}`. Branch on `code`, not message
+text. The same error object appears inside socket errors. `retryable` describes
+an error category; only repeat operations whose recovery rule permits it.
 
-The handler receives a frame available only to that registered socket:
+| Code | HTTP | Meaning |
+| --- | --- | --- |
+| `invalid_request` | 400/415/422 | Invalid fields, JSON, content type or bounds |
+| `unauthorized` | 401 | Missing/revoked/disabled credential |
+| `forbidden` | 403 | Current access or production ingress denied |
+| `not_found`, `method_not_allowed` | 404/405 | Missing resource/route or wrong method |
+| `conflict` | 409 | History changed; retry its page |
+| `idempotency_conflict` | 409 | Key reused with a different payload |
+| `message_gone` | 410 | Original send/new read position no longer retained |
+| `payload_too_large` | 413 | HTTP body exceeds 32 KiB |
+| `rate_limited` | 429 | Input budget exhausted |
+| `idempotency_capacity` | 429 | Receipt capacity exhausted |
+| `runtime_rejected` | 400 (socket object) | Configuration handler already owned |
+| `unavailable` | 5xx | Temporary worker/storage failure |
 
-```json
-{"kind":"config_request","id":"request-uuid","operation":"set","key":"prompt","value":"Help with Rust questions."}
-```
+Messages and reaction updates share 30 inputs per ten seconds per account,
+including retries and credentials. Control frames have a separate per-socket
+30/ten-second budget. HTTP admission/socket limits are shared with the browser.
+429 responses provide conservative `Retry-After` seconds: 10 for input budgets,
+86,400 for receipt capacity. JSON numeric sequences/revisions fit safe integers.
 
-Fetch uses `operation: "fetch"` and `value: null`; `key: null` requests all settings. Respond on the same socket, using the request ID:
-
-```json
-{"kind":"config_response","id":"request-uuid","values":{"prompt":"Help with Rust questions."}}
-```
-
-Or reject the request:
-
-```json
-{"kind":"config_response","id":"request-uuid","error":"Unsupported configuration key."}
-```
-
-Responses must contain exactly one of `values` or `error`. Values are a map of strings, at most 128 keys, 4096 bytes per value and 32 KiB serialized total. Errors support 1–1024 bytes. A single-key request must not return unrelated keys; an absent key can return an empty map. Set success should report the applied value. The command displays `{bot,operation,values}` only to its caller. Console runtime output is printed directly, not sent to tracing logs. Runtimes should omit secret values from fetch responses.
-
-Requests are correlated by server-generated UUIDs and responses are accepted only on the receiving runtime socket. The server rechecks caller authentication, command/action grants, protected targets and stable account identity before delivery and before returning a result. Runtime credentials are rechecked before sending/accepting frames. There are at most eight queued and eight in-flight requests per connection, plus the existing bounded command workers and socket frame limits.
-
-Offline, busy, disconnect, validation and runtime errors are explicit. Requests time out after ten seconds. A set may have applied before a timeout, disconnect or authorization change; CommonRoom cannot roll back an external process. Fetch before retrying an ambiguous set. Unsent canceled requests are discarded. Runtime configuration and pending requests are not persisted by CommonRoom and do not survive server restart. No additional database migration is required.
+For the runnable reference worker and checkpoint guidance, see
+[Agent development](agent-development.md). Persistence/upgrade rules are in
+[Data](data.md); checks are in [Testing](testing.md).

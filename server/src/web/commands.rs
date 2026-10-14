@@ -51,9 +51,6 @@ async fn execute_input_inner(
             return Err("Please log in.".into());
         }
     }
-    if let Some(secret) = super::auth::bearer(headers) {
-        app.engine()?.admit_bot_input(secret)?;
-    }
     let elevated = sudo_command(&input.text)?;
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();

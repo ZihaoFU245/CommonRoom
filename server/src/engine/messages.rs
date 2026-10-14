@@ -1,7 +1,138 @@
 use super::*;
 use authorization::{Action, Scope};
 
+pub(super) enum ReactionError {
+    NotFound,
+    Limit,
+}
+impl std::fmt::Display for ReactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotFound => "Message not found in this conversation.",
+            Self::Limit => "This message already has 32 different reactions.",
+        })
+    }
+}
+
+pub(super) fn reply_quote(original: &Message) -> Reply {
+    Reply {
+        id: original.id.clone(),
+        from: original.from.clone(),
+        text: original.text.chars().take(160).collect(),
+    }
+}
+
 impl Engine {
+    // Callers resolve and authorize the target before using these mutation helpers.
+    pub(super) fn append_text(
+        &mut self,
+        actor: Option<&str>,
+        view: &str,
+        text: &str,
+        markdown: bool,
+        reply: Option<Reply>,
+    ) -> Result<(), String> {
+        let recipient = if let Some(key) = view.strip_prefix("@private:") {
+            let (_, fallback) = key.split_once(':').ok_or("Invalid private conversation.")?;
+            if !self.data.private.contains_key(key) {
+                return Err("Private conversation not found.".into());
+            }
+            Some(
+                actor
+                    .and_then(|name| private_peer(key, name))
+                    .unwrap_or(fallback),
+            )
+        } else {
+            None
+        };
+        let mut message = self.message(actor, recipient, text, markdown)?;
+        message.reply = reply;
+        if let Some(key) = view.strip_prefix("@private:") {
+            message
+                .mentions
+                .retain(|name| key.split(':').any(|p| p == name));
+            self.push_private_to(key, message)
+        } else {
+            self.push_room_message(view, message)
+        }
+    }
+    fn push_room_message(&mut self, name: &str, mut message: Message) -> Result<(), String> {
+        let room = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
+        message.mentions.retain(|name| room.members.contains(name));
+        if room.messages.len() == self.max_messages {
+            room.messages.pop_front();
+        }
+        room.messages.push_back(message);
+        room.revision = room.revision.wrapping_add(1);
+        Ok(())
+    }
+    pub(super) fn require_message_action(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        scope: &Scope,
+        command: &str,
+        action: Action,
+    ) -> Result<(), String> {
+        self.require_command(actor, view, command)?;
+        self.require_target_command(actor, scope, command)?;
+        self.require(actor, scope, Action::Read)?;
+        self.require(actor, scope, action)
+    }
+    pub(super) fn update_reaction(
+        &mut self,
+        scope: &Scope,
+        user: &str,
+        message_id: &str,
+        reaction: &str,
+        active: Option<bool>,
+    ) -> Result<bool, ReactionError> {
+        let (messages, revision) = match scope {
+            Scope::Room(id) => self
+                .data
+                .rooms
+                .values_mut()
+                .find(|r| r.id == *id)
+                .map(|r| (&mut r.messages, &mut r.revision)),
+            Scope::Private(id) => self
+                .data
+                .private
+                .values_mut()
+                .find(|c| c.id == *id)
+                .map(|c| (&mut c.messages, &mut c.revision)),
+            _ => None,
+        }
+        .ok_or(ReactionError::NotFound)?;
+        let message = messages
+            .iter_mut()
+            .find(|m| m.id == message_id)
+            .ok_or(ReactionError::NotFound)?;
+        let present = message
+            .reactions
+            .get(reaction)
+            .is_some_and(|users| users.contains(user));
+        let active = active.unwrap_or(!present);
+        if present == active {
+            return Ok(false);
+        }
+        if active && !message.reactions.contains_key(reaction) && message.reactions.len() >= 32 {
+            return Err(ReactionError::Limit);
+        }
+        if active {
+            message
+                .reactions
+                .entry(reaction.into())
+                .or_default()
+                .insert(user.into());
+        } else if let Some(users) = message.reactions.get_mut(reaction) {
+            users.remove(user);
+            if users.is_empty() {
+                message.reactions.remove(reaction);
+            }
+        }
+        *revision = revision.wrapping_add(1);
+        Ok(true)
+    }
     // Resolve only the selected room, or a retained target for global su actions.
     pub(super) fn message_action_room(
         &self,
@@ -202,11 +333,11 @@ impl Engine {
                             .ok_or("Message not found in this conversation.")?,
                     )
                 };
-                self.require_target_command(actor, &scope, parts[0])?;
-                self.require(actor, &scope, Action::Read)?;
-                self.require(
+                self.require_message_action(
                     actor,
+                    context.view,
                     &scope,
+                    parts[0],
                     if parts[0] == "/react" {
                         Action::React
                     } else if parts[0] == "/edit" {
@@ -241,47 +372,8 @@ impl Engine {
                             "Reactions support 1–128 characters without control characters.".into(),
                         );
                     }
-                    let target = if let Some(name) = room {
-                        self.data
-                            .rooms
-                            .get_mut(name)
-                            .ok_or("Room not found.")?
-                            .messages
-                            .iter_mut()
-                            .find(|m| m.id == id)
-                    } else {
-                        self.data
-                            .private
-                            .values_mut()
-                            .find(|chat| matches!(&scope, Scope::Private(id) if chat.id == *id))
-                            .ok_or("Private conversation not found.")?
-                            .messages
-                            .iter_mut()
-                            .find(|m| m.id == id)
-                    }
-                    .ok_or("Message not found in this conversation.")?;
-                    if !target.reactions.contains_key(value) && target.reactions.len() >= 32 {
-                        return Err("This message already has 32 different reactions.".into());
-                    }
-                    let users = target.reactions.entry(value.into()).or_default();
-                    if !users.insert(user.into()) {
-                        users.remove(user);
-                    }
-                    if users.is_empty() {
-                        target.reactions.remove(value);
-                    }
-                    if let Some(name) = room {
-                        let room = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
-                        room.revision = room.revision.wrapping_add(1);
-                    } else {
-                        let chat = self
-                            .data
-                            .private
-                            .values_mut()
-                            .find(|chat| matches!(&scope, Scope::Private(id) if chat.id == *id))
-                            .ok_or("Message not found in this conversation.")?;
-                        chat.revision = chat.revision.wrapping_add(1);
-                    }
+                    self.update_reaction(&scope, user, id, value, None)
+                        .map_err(|e| e.to_string())?;
                     return Ok("Reaction updated.".into());
                 }
                 if value.chars().count() > 4000 {
@@ -341,21 +433,9 @@ impl Engine {
                     None
                 };
                 let mut message = self.message(actor, recipient, value, context.markdown)?;
-                message.reply = Some(Reply {
-                    id: original.id.clone(),
-                    from: original.from.clone(),
-                    text: original.text.chars().take(160).collect(),
-                });
+                message.reply = Some(reply_quote(&original));
                 if let Some(name) = room {
-                    let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
-                    message
-                        .mentions
-                        .retain(|name| target.members.contains(name));
-                    if target.messages.len() == self.max_messages {
-                        target.messages.pop_front();
-                    }
-                    target.messages.push_back(message);
-                    target.revision = target.revision.wrapping_add(1);
+                    self.push_room_message(name, message)?;
                 } else {
                     message
                         .mentions

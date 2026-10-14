@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { AgentClient, BotApi } from "./bot/client.mjs";
+import { validate, schema as botSchema } from "./bot/contract.mjs";
 import { applyConversation } from "../src/features/conversation/historyCache.ts";
 import { parseFrame, isHistory } from "../src/api/protocol.ts";
 
@@ -120,7 +122,7 @@ async function login(username, password = `${username}-long-password`) {
 async function connect(cookie, botToken = null, directBot = false) {
   const client = {
     ws: new WebSocket(
-      `${base.replace("http:", "ws:")}${botToken ? "/api/bot/ws" : "/ws"}`,
+      `${base.replace("http:", "ws:")}${botToken ? "/api/bot/v1/ws" : "/ws"}`,
       {
         headers: {
           ...(botToken
@@ -140,6 +142,7 @@ async function connect(cookie, botToken = null, directBot = false) {
   sockets.push(client);
   client.ws.on("message", (raw) => {
     const control = JSON.parse(raw.toString());
+    if (botToken) validate("ServerFrame", control);
     if (control.kind === "config_request") {
       assert.ok(botToken, "config requests never reach browser clients");
       assert.equal(typeof control.id, "string");
@@ -170,6 +173,11 @@ async function connect(cookie, botToken = null, directBot = false) {
       client.ws.send(
         JSON.stringify({ kind: "config_response", id: control.id, values }),
       );
+      return;
+    }
+    if (botToken) {
+      client.frames.push(control);
+      if (control.kind === "snapshot") client.snapshot = control;
       return;
     }
     const frame = parseFrame(raw.toString());
@@ -1367,7 +1375,7 @@ try {
   await request("logout", pagingCookie, {});
   assert.equal((await request("history?view=paged", pagingCookie)).status, 401);
   await stop();
-  // Bot API uses bearer credentials, existing grants, and the same validated frames.
+  // Frozen bot profile: every real response/frame passes the published schema.
   const botData = join(temporary, "bots");
   await start(botData, true, undefined, "/commonroom/");
   child.stdin.write(
@@ -1382,45 +1390,86 @@ try {
     .text.split("\n")
     .at(-1);
   assert.match(botSecret, /^bot_[a-f0-9]{64}$/);
-  assert.ok(
-    !logs.includes(botSecret),
-    "credentials must not enter application logs",
+  assert.ok(!logs.includes(botSecret));
+  const botFetch = async (
+    path,
+    body,
+    key,
+    method = body === undefined ? "GET" : "POST",
+  ) => {
+    const response = await fetch(`${base}/api/bot/v1/${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${botSecret}`,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(key ? { "Idempotency-Key": key } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    assert.equal(response.headers.get("bot-api-version"), "1");
+    const value = await response.json();
+    const endpoint = path.split("?")[0];
+    if (!response.ok) validate("ErrorResponse", value);
+    else if (endpoint === "schema") assert.deepEqual(value, botSchema);
+    else
+      validate(
+        {
+          me: "Snapshot",
+          history: "HistoryResponse",
+          messages: "SendResponse",
+          read: "Ok",
+          reactions: "Ok",
+        }[endpoint],
+        value,
+      );
+    return { status: response.status, value };
+  };
+  const baseline = await botFetch("me");
+  assert.equal(baseline.status, 200);
+  assert.deepEqual(
+    baseline.value.conversations.map((c) => c.view),
+    ["support"],
   );
-  const botFetch = async (path, body) =>
-    fetch(`${base}/api/bot/${path}`, {
-      method: body === undefined ? "GET" : "POST",
+  const conversationId = baseline.value.conversations[0].id;
+  const history = () => botFetch(`history?conversation_id=${conversationId}`);
+  await botFetch("schema");
+  for (const [method, endpoint] of [
+    ["GET", "me"],
+    ["GET", "history"],
+    ["POST", "read"],
+    ["POST", "commands"],
+    ["POST", "messages"],
+    ["GET", "ws"],
+  ]) {
+    const removed = await fetch(`${base}/api/bot/${endpoint}`, {
+      method,
       headers: {
         Authorization: `Bearer ${botSecret}`,
         "X-Forwarded-Proto": "https",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  const directBotResponse = await fetch(`${base}/api/bot/me`, {
-    headers: { Authorization: `Bearer ${botSecret}` },
-  });
-  assert.equal(directBotResponse.status, 200, "trusted direct HTTP bot access");
-  const directBotDenied = await fetch(`${base}/api/bot/me`, {
-    headers: { Authorization: "Bearer invalid" },
-  });
+    assert.equal(removed.status, 404);
+  }
   assert.equal(
-    directBotDenied.status,
-    401,
-    "trusted IP never replaces bot authentication",
+    (await botFetch("commands", { command: "/whoami" })).status,
+    404,
   );
   const agent = await connect(null, botSecret, true);
-  assert.deepEqual(
-    agent.snapshot.rooms.map((r) => r.name),
-    ["support"],
+  agent.ws.send(
+    JSON.stringify({ id: 99, room: "support", text: "/rm user alice" }),
   );
-  await send(botAdmin, "/bot config fetch helper", null, "error");
-  assert.match(
-    botAdmin.frames.find((f) => f.id === botAdmin.serial).text,
-    /offline/,
-  );
-  agent.ws.send(JSON.stringify({ kind: "config_ready" }));
   await until(
-    () => agent.frames.some((f) => f.id === 0 && f.kind === "notice"),
+    () =>
+      agent.frames.some(
+        (f) => f.kind === "error" && f.error.code === "invalid_request",
+      ),
+    "bot socket rejects chat commands",
+  );
+  agent.ws.send(
+    JSON.stringify(validate("ClientFrame", { kind: "config_ready" })),
+  );
+  await until(
+    () => agent.frames.some((f) => f.kind === "config_ack" && f.id === null),
     "runtime registration",
   );
   await send(botAdmin, '/bot config set helper prompt "Help with Rust"');
@@ -1431,18 +1480,7 @@ try {
       .values,
     { prompt: "Help with Rust" },
   );
-  await send(botAdmin, "/bot config fetch helper");
-  assert.deepEqual(
-    JSON.parse(botAdmin.frames.find((f) => f.id === botAdmin.serial).text)
-      .values,
-    agent.runtimeConfig,
-  );
   await send(botAdmin, "/bot config set helper unsupported x", null, "error");
-  assert.match(
-    botAdmin.frames.find((f) => f.id === botAdmin.serial).text,
-    /Unsupported key/,
-  );
-  // Room ownership/admin alone cannot control another account's runtime.
   child.stdin.write(
     "/new user delegate delegate-long-password user\n/grant delegate admin support\n",
   );
@@ -1461,79 +1499,179 @@ try {
   await send(botAdmin, "/sudo /grant delegate @account:helper w:bot.config");
   await send(delegate, "/bot config set helper prompt delegated");
   assert.equal(agent.runtimeConfig.prompt, "delegated");
-  await send(delegate, "/bot token new helper stolen", null, "error");
   await send(botAdmin, "/sudo /revoke delegate @account:helper w:bot.config");
   await send(delegate, "/bot config set helper prompt denied", null, "error");
+  const duplicate = await connect(null, botSecret, true);
+  duplicate.ws.send(JSON.stringify({ kind: "config_ready" }));
+  await until(
+    () =>
+      duplicate.frames.some(
+        (f) => f.kind === "error" && f.error.code === "runtime_rejected",
+      ),
+    "duplicate configuration handler",
+  );
+  duplicate.ws.close();
   agent.ws.send(
-    JSON.stringify({
-      kind: "config_response",
-      id: "unknown",
-      values: { prompt: "spoofed" },
-    }),
+    JSON.stringify({ kind: "config_response", id: "unknown", values: {} }),
   );
   await until(
     () =>
       agent.frames.some(
-        (f) => f.id === 0 && f.kind === "error" && /Unknown/.test(f.text),
+        (f) =>
+          f.kind === "error" &&
+          f.id === "unknown" &&
+          f.error.code === "not_found",
       ),
     "unsolicited response rejected",
   );
-  // A second socket cannot silently take over runtime control.
-  const duplicateRuntime = await connect(null, botSecret, true);
-  duplicateRuntime.ws.send(JSON.stringify({ kind: "config_ready" }));
-  await until(
-    () => duplicateRuntime.frames.some((f) => f.id === 0 && f.kind === "error"),
-    "duplicate runtime rejected",
-  );
-  duplicateRuntime.ws.close();
-  assert.ok(agent.snapshot.rooms[0].commands.some((c) => c.name === "/man"));
-  assert.ok(!agent.snapshot.commands.some((c) => c.name === "/retract"));
   await send(botAdmin, "@helper please help", "support");
   await until(
     () =>
-      agent.snapshot.rooms[0].messages.some((m) =>
-        m.mentions.includes("helper"),
+      agent.frames.some(
+        (f) =>
+          f.kind === "conversation" && f.conversation_id === conversationId,
       ),
-    "normal bot mention",
+    "conversation notification",
   );
-  const mention = agent.snapshot.rooms[0].messages.find((m) =>
+  const mention = (await history()).value.messages.find((m) =>
     m.mentions.includes("helper"),
   );
-  await send(agent, `/reply ${mention.id} Here is my answer.`, "support");
-  await until(
-    () => botAdmin.snapshot.rooms[0].messages.some((m) => m.from === "helper"),
-    "bot reply delivery",
+  const reply = await botFetch(
+    "messages",
+    {
+      conversation_id: conversationId,
+      text: "**answer**",
+      reply_to: mention.id,
+      markdown: true,
+    },
+    "reply-1",
   );
-  await send(agent, `/retract ${mention.id}`, "support", "error");
-  assert.equal((await botFetch("history?view=secret")).status, 403);
+  assert.equal(reply.status, 200);
+  assert.equal(reply.value.message.reply.id, mention.id);
+  const reaction = {
+    conversation_id: conversationId,
+    message_id: mention.id,
+    reaction: "👍",
+    active: true,
+  };
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (await botFetch("reactions", reaction, undefined, "PUT")).status,
+      200,
+    );
+  assert.deepEqual(
+    (await history()).value.messages.find((m) => m.id === mention.id).reactions[
+      "👍"
+    ],
+    ["helper"],
+  );
   assert.equal(
     (
-      await botFetch("messages", {
-        id: 1,
-        view: "support",
-        text: "/rm user alice",
+      await botFetch("read", {
+        conversation_id: conversationId,
+        through: mention.sequence,
       })
     ).status,
     200,
   );
+  assert.equal(
+    (await botFetch("read", { conversation_id: "missing", through: 1 })).value
+      .error.code,
+    "not_found",
+  );
+  const durable = {
+    conversation_id: conversationId,
+    text: "/rm user alice",
+    markdown: true,
+  };
+  const durableResponse = await botFetch("messages", durable, "restart-proof");
+  assert.equal(durableResponse.status, 200);
+  assert.equal(durableResponse.value.replayed, false);
+  assert.equal(durableResponse.value.message.text, "/rm user alice");
+  // A new room with the same label cannot receive a write using a retired ID.
+  await send(botAdmin, "/new room scratch");
+  await send(botAdmin, "/grant helper scratch r:message.read");
+  await send(botAdmin, "/grant helper scratch w:message.create");
+  const stale = (await botFetch("me")).value.conversations.find(
+    (c) => c.view === "scratch",
+  ).id;
+  await send(botAdmin, "/rm room scratch");
+  await send(botAdmin, "/new room scratch");
+  await send(botAdmin, "/grant helper scratch r:message.read");
+  await send(botAdmin, "/grant helper scratch w:message.create");
+  assert.equal(
+    (
+      await botFetch(
+        "messages",
+        { conversation_id: stale, text: "stale destination" },
+        "stale",
+      )
+    ).value.error.code,
+    "not_found",
+  );
+  const checkpoint = join(temporary, "reference-agent.json");
+  let handled = 0;
+  const startReference = () => {
+    const controller = new AbortController();
+    const reference = new AgentClient({
+      api: new BotApi({ url: base, token: botSecret }),
+      statePath: checkpoint,
+      onMessage: async (message, { client, username }) => {
+        if (message.mentions.includes(username)) {
+          await client.send("Reference answer", { replyTo: message.id });
+          handled++;
+        }
+      },
+    });
+    let error;
+    const done = reference
+      .run({ signal: controller.signal })
+      .catch((failure) => {
+        error = failure;
+      });
+    return { controller, reference, done, error: () => error };
+  };
+  const worker = startReference();
+  await until(
+    () => worker.reference.snapshot !== null || worker.error(),
+    "reference worker baseline",
+  );
+  assert.equal(worker.error(), undefined);
+  await send(botAdmin, "@helper live request", "support");
+  await until(() => handled === 1 || worker.error(), "reference live reply");
+  assert.equal(worker.error(), undefined);
+  worker.controller.abort();
+  await worker.done;
+  await send(botAdmin, "@helper offline request", "support");
+  const resumedWorker = startReference();
+  await until(
+    () => handled === 2 || resumedWorker.error(),
+    "reference checkpoint recovery",
+  );
+  assert.equal(resumedWorker.error(), undefined);
+  resumedWorker.controller.abort();
+  await resumedWorker.done;
   await send(botAdmin, "/revoke helper support r:message.read", "support");
   await until(
-    () => agent.snapshot.rooms.length === 0,
-    "bot permission revocation clears live history",
+    () => !agent.snapshot.conversations.some((c) => c.id === conversationId),
+    "permission removal snapshot",
   );
-  assert.equal((await botFetch("history?view=support")).status, 403);
+  assert.equal((await history()).value.error.code, "forbidden");
   await send(botAdmin, "/grant helper support r:message.read", "support");
-  await until(() => agent.snapshot.rooms.length === 1, "bot regrant");
-  const after = agent.snapshot.rooms[0].messages.at(-1).sequence;
+  const after = (await history()).value.messages.at(-1).sequence;
   await stop();
   await start(botData, true, undefined, "/commonroom/");
   const offlineAdmin = await connect(await login("alice"));
   await send(offlineAdmin, "while agent offline", "support");
-  const recovered = await botFetch(`history?view=support&after=${after}`);
-  assert.equal(recovered.status, 200);
-  const recoveryPage = await recovered.json();
-  assert.ok(isHistory(recoveryPage));
-  assert.equal(recoveryPage.messages.at(-1).text, "while agent offline");
+  const replay = await botFetch("messages", durable, "restart-proof");
+  assert.equal(replay.value.replayed, true);
+  assert.equal(replay.value.message.id, durableResponse.value.message.id);
+  assert.equal(
+    (
+      await botFetch(`history?conversation_id=${conversationId}&after=${after}`)
+    ).value.messages.at(-1).text,
+    "while agent offline",
+  );
   const botReconnected = await connect(null, botSecret, true);
   await send(offlineAdmin, "/bot token ls helper");
   const credentialId = offlineAdmin.frames
@@ -1545,7 +1683,7 @@ try {
     () => botReconnected.ws.readyState === WebSocket.CLOSED,
     "credential revocation disconnects bot",
   );
-  assert.equal((await botFetch("me")).status, 401);
+  assert.equal((await botFetch("me")).value.error.code, "unauthorized");
   await stop();
   await start(join(temporary, "untrusted-proxy"), true, "10.0.0.2");
   const spoofed = await fetch(`${base}/api/health`, {
@@ -1561,7 +1699,7 @@ try {
     "forwarded headers cannot impersonate a trusted socket peer",
   );
   console.log(
-    "PASS: bot bearer API, mentions, replies, scoped permissions, credential revocation, reconnect recovery, base paths, bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, message editing and room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
+    "PASS: v1 bot API, durable keyed sends, Markdown, reference-worker live/reconnect recovery, bot bearer API, mentions, replies, scoped permissions, credential revocation, reconnect recovery, base paths, bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, message editing and room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );
 } finally {
   try {

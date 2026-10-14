@@ -50,6 +50,10 @@ impl Engine {
         }
         self.changed_conversation = None;
         let result = self.execute_inner(actor, room, input, markdown);
+        self.clear_working_messages();
+        result
+    }
+    pub(super) fn clear_working_messages(&mut self) {
         // Working messages are transient. Durable history and bounded pages live in storage.
         for room in self.data.rooms.values_mut() {
             room.messages.clear();
@@ -59,7 +63,6 @@ impl Engine {
         }
         self.pending_deletes.clear();
         self.pending_cleanups.clear();
-        result
     }
     fn load_command_message(
         &mut self,
@@ -177,19 +180,7 @@ impl Engine {
         }
         if let Some(change) = self.message_change(actor, room, &parts, input) {
             let result = self.apply(actor, room, input, markdown);
-            match result {
-                Ok(reply) => {
-                    if let Err(error) = self.save_message_change(&change) {
-                        self.restore_message_change(change);
-                        return Err(error);
-                    }
-                    return Ok(reply);
-                }
-                Err(error) => {
-                    self.restore_message_change(change);
-                    return Err(error);
-                }
-            }
+            return self.finish_message_change(change, result, None, std::convert::identity);
         }
         let before = self.data.clone();
         let result = self.apply(actor, room, input, markdown);
@@ -228,74 +219,11 @@ impl Engine {
         let room = room.ok_or("Select a room first.")?;
         if let Some(key) = room.strip_prefix("@private:") {
             self.require(actor, &self.private_scope(key), authorization::Action::Send)?;
-            let (_, recipient) = key.split_once(':').ok_or("Invalid private conversation.")?;
-            if !self.data.private.contains_key(key) {
-                return Err("Private conversation not found.".into());
-            }
-            let recipient = actor
-                .and_then(|name| private_peer(key, name))
-                .unwrap_or(recipient);
-            let mut message = self.message(actor, Some(recipient), input, markdown)?;
-            message
-                .mentions
-                .retain(|name| key.split(':').any(|p| p == name));
-            return self.push_private_to(key, message).map(|()| String::new());
+        } else {
+            self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
         }
-
-        self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
-        let mut message = self.message(actor, None, input, markdown)?;
-        let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
-        if target.messages.len() == self.max_messages {
-            target.messages.pop_front();
-        }
-        message
-            .mentions
-            .retain(|name| target.members.contains(name));
-        target.messages.push_back(message);
-        target.revision = target.revision.wrapping_add(1);
+        self.append_text(actor, room, input, markdown, None)?;
         Ok(String::new())
-    }
-
-    pub fn send_literal(&mut self, user: &str, view: &str, text: &str) -> Result<Message, String> {
-        if !self.active(user) {
-            return Err("Account unavailable.".into());
-        }
-        let text = text.trim();
-        if text.is_empty() || text.chars().count() > 4000 {
-            return Err("Messages support 1–4000 characters.".into());
-        }
-        let normalized = view
-            .strip_prefix("@direct:")
-            .map(|peer| format!("@private:{}", private_key(user, peer)));
-        let view = normalized.as_deref().unwrap_or(view);
-        self.changed_conversation = None;
-        // Use the same bounded transaction/rollback path as ordinary browser sends.
-        let change = self
-            .message_change(Some(user), Some(view), &["literal"], "literal")
-            .ok_or("Select an existing room or private conversation.")?;
-        let result = self
-            .apply_text(Some(user), Some(view), text, false)
-            .and_then(|_| {
-                let message = if let Some(key) = view.strip_prefix("@private:") {
-                    self.data.private.get(key).and_then(|c| c.messages.back())
-                } else {
-                    self.data.rooms.get(view).and_then(|r| r.messages.back())
-                }
-                .cloned()
-                .ok_or("Message unavailable.")?;
-                self.save_message_change(&change)?;
-                Ok(message)
-            });
-        if result.is_err() {
-            self.restore_message_change(change);
-        }
-        for room in self.data.rooms.values_mut() {
-            room.messages.clear();
-        }
-        for chat in self.data.private.values_mut() {
-            chat.messages.clear();
-        }
-        result
     }
 
     pub(super) fn apply(
@@ -390,7 +318,7 @@ impl MessageChange {
     }
 }
 impl Engine {
-    fn message_change(
+    pub(super) fn message_change(
         &self,
         actor: Option<&str>,
         view: Option<&str>,
@@ -435,6 +363,29 @@ impl Engine {
                 .clone();
             (true, key)
         };
+        let view = if private {
+            format!("@private:{key}")
+        } else {
+            key
+        };
+        self.capture_message_change(
+            &view,
+            if reaction || command == "/edit" {
+                parts.get(1).copied()
+            } else {
+                None
+            },
+            reaction,
+        )
+    }
+    pub(super) fn capture_message_change(
+        &self,
+        view: &str,
+        message_id: Option<&str>,
+        reaction: bool,
+    ) -> Option<MessageChange> {
+        let private = view.starts_with("@private:");
+        let key = view.strip_prefix("@private:").unwrap_or(view).to_owned();
         let conversation = if private {
             self.data
                 .private
@@ -443,13 +394,8 @@ impl Engine {
         } else {
             self.data.rooms.get(&key).map(|r| (&r.messages, r.revision))
         };
-        let index = if reaction || command == "/edit" {
-            Some(
-                conversation?
-                    .0
-                    .iter()
-                    .position(|m| Some(m.id.as_str()) == parts.get(1).copied())?,
-            )
+        let index = if let Some(id) = message_id {
+            Some(conversation?.0.iter().position(|m| m.id == id)?)
         } else {
             None
         };
@@ -472,7 +418,24 @@ impl Engine {
             revision: conversation.map(|(_, r)| r),
         })
     }
-    fn restore_message_change(&mut self, change: MessageChange) {
+    pub(super) fn finish_message_change<T, E>(
+        &mut self,
+        change: MessageChange,
+        result: Result<T, E>,
+        receipt: Option<&crate::bots::models::Receipt>,
+        storage_error: impl FnOnce(String) -> E,
+    ) -> Result<T, E> {
+        let result = result.and_then(|value| {
+            self.save_message_change_with_receipt(&change, receipt)
+                .map_err(storage_error)?;
+            Ok(value)
+        });
+        if result.is_err() {
+            self.restore_message_change(change);
+        }
+        result
+    }
+    pub(super) fn restore_message_change(&mut self, change: MessageChange) {
         self.data.next_sequence = change.sequence;
         if change.private && change.revision.is_none() {
             self.data.private.remove(&change.key);

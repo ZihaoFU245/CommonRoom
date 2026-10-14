@@ -84,3 +84,12 @@ Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` conta
 5. Add tests for permissions, persistence failures, privacy, or synchronization risks introduced by the change. Run the checks in [Testing](testing.md).
 
 The JavaScript files in `web/tests/` and `web/scripts/` are runtime test harnesses. Node loads the application's TypeScript helpers directly; fixtures intentionally include malformed/partial input. Production application source and Vite configuration are TypeScript and are checked before every web build.
+
+## External agent development
+
+Start with [Agent development](agent-development.md). The reference worker is
+`web/scripts/bot/agent.mjs`; its client and tests use the existing Node/`ws`
+development dependencies. It is independent of the browser UI. Extend its handler
+with model/tool calls while preserving its outbox and cursor ordering. V1 is frozen:
+implementation fixes must preserve its schema fingerprint and contract tests.
+Keep `/api/bot/v1/` as the sole bot API namespace; no alternative version is planned.

@@ -31,8 +31,10 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 8 {
-            return Err("Unsupported database schema; only schema v8 is supported.".into());
+        if version != 0 && version != 8 && version != 9 {
+            return Err(
+                "Unsupported database schema; supported schemas are v8 (upgrade) and v9.".into(),
+            );
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -58,12 +60,15 @@ impl Engine {
             transaction
                 .execute_batch(SCHEMA)
                 .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(RECEIPT_SCHEMA)
+                .map_err(|e| e.to_string())?;
             write_data(&transaction, &data)?;
             transaction
                 .execute_batch(INDEXES)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=8;")
+                .execute_batch("PRAGMA user_version=9;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -102,6 +107,16 @@ impl Engine {
         }
         for chat in data.private.values_mut() {
             chat.messages.clear();
+        }
+        // Validate existing metadata and cursors before upgrading. DDL and the
+        // version advance commit together; a failed upgrade leaves v8 intact.
+        if version == 8 {
+            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(RECEIPT_SCHEMA)
+                .map_err(|e| e.to_string())?;
+            tx.execute_batch("PRAGMA user_version=9;")
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
         }
         Ok(Self {
             authorization,
@@ -325,6 +340,9 @@ CREATE TABLE reactions(conversation TEXT NOT NULL,sequence INTEGER NOT NULL,reac
 CREATE TABLE counters(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL);
 CREATE INDEX read_positions_conversation ON read_positions(conversation);";
 
+const RECEIPT_SCHEMA: &str = "CREATE TABLE bot_receipts(account_id TEXT NOT NULL,key TEXT NOT NULL,digest TEXT NOT NULL,conversation TEXT NOT NULL,sequence INTEGER NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(account_id,key)) WITHOUT ROWID;
+CREATE INDEX bot_receipts_created ON bot_receipts(created);";
+
 const INDEXES: &str =
     "CREATE INDEX messages_id ON messages(json_extract(json,'$.id'),conversation);
 CREATE INDEX messages_author ON messages(conversation,json_extract(json,'$.from'),sequence);
@@ -500,6 +518,10 @@ fn write_data(db: &Connection, data: &Data) -> Result<(), String> {
     }
     db.execute_batch("DELETE FROM messages WHERE conversation IN (SELECT json_extract(e.json,'$.id') FROM entities e WHERE e.kind IN ('room','private') AND NOT EXISTS(SELECT 1 FROM entities current JOIN live_entities l ON l.kind=current.kind AND l.key=current.key WHERE current.kind=e.kind AND json_extract(current.json,'$.id')=json_extract(e.json,'$.id'))); DELETE FROM entities WHERE NOT EXISTS(SELECT 1 FROM live_entities l WHERE l.kind=entities.kind AND l.key=entities.key); DELETE FROM live_entities;").map_err(|e| e.to_string())?;
     db.execute("INSERT INTO counters VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence", params![data.next_sequence]).map_err(|e| e.to_string())?;
+    // Account deletion must also remove its machine request receipts. Renames
+    // preserve them because they use stable account IDs.
+    db.execute("DELETE FROM bot_receipts WHERE account_id NOT IN (SELECT json_extract(json,'$.id') FROM entities WHERE kind='account')", [])
+        .map_err(|e| e.to_string())?;
     write_state(db, data)
 }
 pub(super) fn load_entities(db: &Connection, data: &mut Data) -> Result<(), String> {
@@ -564,9 +586,10 @@ pub(super) fn load_entities(db: &Connection, data: &mut Data) -> Result<(), Stri
 }
 
 impl Engine {
-    pub(super) fn save_message_change(
+    pub(super) fn save_message_change_with_receipt(
         &mut self,
         change: &super::dispatch::MessageChange,
+        receipt: Option<&crate::bots::models::Receipt>,
     ) -> Result<(), String> {
         let (id, messages) = if change.private {
             let chat = self
@@ -664,9 +687,64 @@ impl Engine {
             params![kind, change.key, revision],
         )
         .map_err(|e| storage_error(e.to_string()))?;
+        if let Some(receipt) = receipt {
+            tx.execute(
+                "DELETE FROM bot_receipts WHERE created<=?1",
+                [receipt
+                    .created
+                    .saturating_sub(crate::bots::models::RECEIPT_TTL)],
+            )
+            .map_err(|e| storage_error(e.to_string()))?;
+            tx.execute(
+                "INSERT INTO bot_receipts VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    receipt.account_id,
+                    receipt.key,
+                    receipt.digest,
+                    receipt.conversation,
+                    receipt.sequence,
+                    receipt.created
+                ],
+            )
+            .map_err(|e| storage_error(e.to_string()))?;
+        }
         tx.commit().map_err(|e| storage_error(e.to_string()))?;
         self.changed_conversation = (!change.new_conversation()).then(|| id.clone());
         self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+
+    pub(super) fn bot_receipt(
+        &self,
+        account: &str,
+        key: &str,
+    ) -> Result<Option<crate::bots::models::Receipt>, String> {
+        use rusqlite::OptionalExtension;
+        let db = self.db.lock().map_err(|_| "Storage unavailable.")?;
+        db.query_row("SELECT digest,conversation,sequence,created FROM bot_receipts WHERE account_id=?1 AND key=?2 AND created>?3", params![account, key, now().saturating_sub(crate::bots::models::RECEIPT_TTL)], |r| Ok(crate::bots::models::Receipt {
+            account_id: account.into(), key: key.into(), digest: r.get(0)?, conversation: r.get(1)?, sequence: r.get(2)?, created: r.get(3)?,
+        })).optional().map_err(|_| "Storage unavailable.".into())
+    }
+
+    pub(super) fn admit_bot_receipt(&self, account: &str) -> Result<(), crate::bots::error::Error> {
+        use crate::bots::error::{Code, Error};
+        let db = self.db.lock().map_err(Error::storage)?;
+        let count: usize = db
+            .query_row(
+                "SELECT count(*) FROM bot_receipts WHERE account_id=?1 AND created>?2",
+                params![
+                    account,
+                    now().saturating_sub(crate::bots::models::RECEIPT_TTL)
+                ],
+                |r| r.get(0),
+            )
+            .map_err(Error::storage)?;
+        if count >= crate::bots::models::RECEIPT_LIMIT {
+            return Err(Error::new(
+                Code::IdempotencyCapacity,
+                "Wait for receipts to expire.",
+            ));
+        }
         Ok(())
     }
 }

@@ -24,6 +24,7 @@
     "@preact/preset-vite": "^2.10.2",
     "@types/node": "^26.6.4",
     "@typescript/native": "npm:typescript@7.0.2",
+    "ajv": "6.15.0",
     "eslint": "^10.12.0",
     "prettier": "^3.9.9",
     "typescript": "~6.0.3",

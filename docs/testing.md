@@ -8,7 +8,7 @@ From the repository root:
 rtk proxy ./auto/check.sh
 ```
 
-This runs Rust formatting, Clippy with warnings as errors, Rust tests, TypeScript
+This runs Rust formatting, Clippy with warnings as errors, Rust tests, integration-harness syntax, TypeScript
 checks, type-aware ESLint, web formatting, and web tests. Dependencies must be
 installed first. To run individual checks:
 
@@ -57,7 +57,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v8 restart, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v9 restart, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -100,7 +100,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v8 restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v9 restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -206,13 +206,19 @@ privacy and sudo inspection without joining or retaining elevated authority.
 
 ## Bot coverage
 
-Rust bot tests cover explicit scope resolution; safe direct defaults and filtered command lists; admin-only management; protected active/disabled su targets; ordinary grants/revokes; room/history privacy; mentions/replies/reactions/read cursors; literal slash text; credential hashing, labels, rotation/revocation; disable/enable/rename/delete and name reuse; creation/credential/message rollback; v8 restart; HTTP bearer-only boundaries, malformed requests, payload limits, Unicode, account-wide input budgets, shutdown and base paths.
+Lifecycle tests cover scoped safe defaults, admin/su boundaries, credentials,
+revocation/disable/delete, name reuse, persistence and failed-write rollback.
+Frozen v1 tests cover stable targets through rename/recreate, atomic retry
+receipts, expiry/capacity, replies, desired-state reactions, read cursor retries,
+permissions, Unicode, body limits, typed failures and production ingress.
+Runtime tests check delegated account grants, result authorization rechecks,
+offline/disconnected handlers, limits, timeout/cancellation and response privacy.
 
-The integration harness additionally connects a real bot WebSocket in production under /commonroom/, validates every frame with the frontend guards, checks normal mention delivery and bot replies, live permission revocation, credential revocation/disconnection, and history recovery after restart. It uses isolated temporary data.
-
-Trusted direct bot transport regressions additionally check production HTTP/WS without a forwarded-protocol header, valid/invalid/missing credentials, IPv4-mapped loopback, missing/untrusted socket identity, spoofed forwarding headers, forwarded-http rejection, base paths, unchanged browser HTTPS requirements, and direct bot message sends. The real socket integration suite connects the bot using direct WS and verifies revocation/disconnection.
-
-Remote bot configuration regressions cover separate read/write account grants, command/context gates, cross-account denial, lifecycle restrictions, protected/disabled targets, result authorization rechecks, offline/disconnected runtimes, duplicate handler registration, malformed/oversized responses and timeout/cancellation. The real production WebSocket harness checks registration, set/fetch round trips, runtime rejection, delegated access/revocation and unsolicited responses.
+The integration harness uses real production HTTP/WebSockets under a base path.
+Every bot response and frame passes the published JSON Schema. It checks runtime
+control, command rejection, permission/credential removal, stale destination IDs,
+reference-worker catch-up and keyed sends across server restart. Isolated
+temporary data keeps working credentials/history untouched.
 
 Editing regressions cover ownership, separate action/command grants, room and
 private scope isolation, Unicode limits, expired messages, renamed authors,
@@ -231,3 +237,14 @@ shrinkage while typing, and reflow at compact widths.
 Editor scroll geometry tests cover keeping the last message's footer anchored
 when the textarea grows/shrinks, temporary measurement collapse, and scroll
 bounds. Browser checks exercise this with the virtualized conversation list.
+
+
+## Frozen contract guardrails
+
+`web/tests/botContract.test.js` locks the v1 schema fingerprint and validates
+payloads in both socket directions. `web/tests/botClient.test.js` covers bounded
+retries, multipage recovery, duplicate signals, original outbox payload/key reuse,
+account mismatch and expired/corrupt checkpoints. These run with the normal web
+suite. V1 is the sole bot API contract; do not update its fingerprint to make a
+breaking change pass. Rebuild both binaries before running the real
+integration suite.

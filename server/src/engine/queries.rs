@@ -58,32 +58,32 @@ impl Engine {
     }
     pub fn mark_read(&mut self, user: &str, view: &str, through: u64) -> Result<bool, String> {
         let (key, id, _) = self.conversation(user, view)?;
-        let exists: bool = self.history_store.read(|db| {
-            db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence=?2)",
-                params![id, through],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())
-        })?;
-        if !exists {
+        if !self.history_store.contains_sequence(&id, through)? {
             return Err("Message is no longer in this conversation.".into());
         }
-        if self
-            .read_positions
+        self.advance_read_position(user, &key, through)
+    }
+    pub(super) fn read_position(&self, user: &str, key: &str) -> u64 {
+        self.read_positions
             .get(user)
-            .and_then(|p| p.get(&key))
+            .and_then(|p| p.get(key))
             .copied()
             .unwrap_or(0)
-            >= through
-        {
+    }
+    pub(super) fn advance_read_position(
+        &mut self,
+        user: &str,
+        key: &str,
+        through: u64,
+    ) -> Result<bool, String> {
+        if self.read_position(user, key) >= through {
             return Ok(false);
         }
-        self.store_read_position(user, &key, through)?;
+        self.store_read_position(user, key, through)?;
         self.read_positions
             .entry(user.into())
             .or_default()
-            .insert(key, through);
+            .insert(key.into(), through);
         Ok(true)
     }
     pub fn unreads(&self, name: &str) -> Result<BTreeMap<String, Unread>, String> {
@@ -121,12 +121,7 @@ impl Engine {
                     }),
             )
         {
-            let read = self
-                .read_positions
-                .get(name)
-                .and_then(|p| p.get(&key))
-                .copied()
-                .unwrap_or(0);
+            let read = self.read_position(name, &key);
             result.insert(view, self.history_store.unread(&id, name, read, revision)?);
         }
         Ok(result)

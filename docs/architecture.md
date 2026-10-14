@@ -22,7 +22,20 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
 | `tests.rs` | Engine regression tests using isolated storage |
 
-`server/src/bots/` contains credential models, token hashing, API transport and /bot management. The engine loads `bots/commands.rs` as its bot domain extension so account/grant mutations retain the single state owner and existing transaction/rollback rules. bots/runtime.rs owns a transient, bounded WebSocket request/reply registry for remote configuration. The external worker owns configuration and persistence; the engine authorizes account-scoped config access using ordinary grants. Bot registrations reference ordinary stable account IDs; no account-kind field is introduced. SQL remains in engine/storage.rs. Browser and bot commands share web/commands.rs, with authentication rechecked after asynchronous work.
+`server/src/bots/` owns the frozen machine profile, credential management and
+runtime configuration. `bots/engine.rs` is an engine extension for typed chat
+operations using stable conversation IDs. Browser and bot adapters share message
+insertion, reply quotes, action authorization and reaction mutation in
+`engine/messages.rs`, transaction completion/rollback in `engine/dispatch.rs`,
+and cursor persistence in `engine/queries.rs`. The bot adapter owns v1-specific
+validation, retry receipts and error projection. SQL remains in the engine's
+storage/history modules.
+HTTP writes and compact notification/config sockets are separate from browser
+commands/snapshots. Runtime configuration uses a transient bounded request/reply
+registry; the external worker owns its settings. Registrations and receipts use
+stable ordinary account IDs. `web/scripts/bot/` is a reference worker with its own
+checkpoint/outbox, not a server-side agent runtime.
+
 
 `commands.rs` outside the engine owns help/completion metadata and the shared account-provisioning syntax used by stdin and web password jobs. `manual.rs` provides read-only command and grant-system manuals. The domain dispatcher executes commands; the registry does not authorize them.
 
@@ -54,7 +67,7 @@ Server snapshots are authoritative for membership, scoped permissions and comman
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. Only the current v8 schema is supported.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v9; validated v8 folders upgrade transactionally.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 

@@ -2,18 +2,28 @@
 
 ## Database compatibility
 
-The supported schema is v8, matching master HEAD. Empty databases are initialized
-transactionally as v8. Existing v8 databases reopen without migration or command-grant
-rewrites. All older, newer and existing unversioned databases are rejected before
-changing SQLite journal settings, schema, state or version. No historical schema
-migration is included in this binary.
+The current schema is v9. Empty databases initialize transactionally as v9.
+Existing v8 databases upgrade automatically after validating metadata, grants,
+credentials and read cursors. The upgrade adds `bot_receipts` and its expiry index;
+it preserves existing entities, history, sessions, grants and cursors. Table/index
+creation and the version advance commit together. A failed upgrade rolls back DDL
+and leaves the version at v8. Existing v9 databases reopen without migrations.
 
-Back up the entire data folder with the server stopped. Tests use isolated temporary
-data and never modify working `data/`.
+Schemas v1–v7, versions newer than v9, and existing unversioned databases are
+rejected before changing journal settings, schema, state or version. Back up v8
+before first starting this binary. Older v8 binaries cannot open an upgraded v9
+folder. To roll back the binary, stop it and restore the entire pre-upgrade backup;
+messages received since that backup will need separate recovery. Do not lower
+`user_version` manually on a working database.
+
+Back up the entire data folder with the server stopped. Stop any reference agent
+writing its checkpoint there too. Tests use isolated temporary data and never
+modify working `data/`.
 
 ## Move to another machine
 
-1. Stop the old server with Ctrl + C or SIGTERM. Wait for it to exit.
+1. Stop the old server and any reference agent using its data folder with Ctrl + C
+   or SIGTERM. Wait for them to exit.
 2. Copy the **entire `data/` folder** to the new machine, preserving it privately.
 3. Place a compatible `chat` binary built for that machine's OS/architecture
    beside `data/`. Start it from that directory with `rtk proxy ./chat`.
@@ -29,14 +39,15 @@ service/
 └── data/
     ├── config.json      # listener, public origin, production mode
     ├── chat.sqlite      # accounts, password hashes, rooms, memberships,
-    │                    # messages, read positions, and unexpired login sessions
-    └── chat.lock        # exclusive OS lock; safe to move after shutdown
+    │                    # messages, read positions, bot retry receipts, login sessions
+    ├── chat.lock        # exclusive OS lock; safe to move after shutdown
+    └── bot-agent-state.json # optional reference-agent checkpoint/outbox
 ```
 
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary supports only v8. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v9 and upgrades v8. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -47,7 +58,7 @@ backups private as well.
 
 Account renames use the current schema. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. No new schema migration is required.
 
-Room renames also use v8. Room metadata and every name-based read cursor move
+Room renames retain the existing metadata layout. Room metadata and every name-based read cursor move
 in one transaction. Stable room IDs keep history, ownership and scoped grants
 attached to the renamed room. Failed writes preserve the old name, revision,
 audit and cursors. Destination names do not inherit orphaned read positions.
@@ -76,6 +87,25 @@ false, preserving plain-text rendering for existing messages. This additive JSON
 field does not change the SQLite schema or require a migration.
 
 Message JSON may include an `edited` boolean. Missing values default to false.
-This additive field uses the existing v8 storage schema. Edits update the
+This additive field uses the existing message storage. Edits update the
 message payload and conversation revision in one transaction; failed writes
 roll back both. Existing reply quotes retain the text captured when replying.
+
+
+## Bot retry receipts
+
+`bot_receipts` stores the stable bot account ID, caller key, request digest,
+stable conversation ID, resulting sequence and original send time. It contains
+no credential or copied message text. Inserts share the message transaction.
+Receipts survive restart, account/room rename and credential rotation. Account
+deletion clears its receipts atomically with the other account data. Removing a
+message leaves its receipt intact until expiry so a retry cannot recreate it.
+
+A receipt is usable for 24 hours. New keyed sends remove expired rows; each
+account admits at most 4,096 live rows, rejecting capacity exhaustion rather than
+evicting a still-valid key. These are disk records, not startup-loaded history.
+See [Bots](bots.md#retries-and-history) for replay, access and expiry semantics.
+The reference agent's checkpoint/outbox defaults to `data/bot-agent-state.json`
+(under `CHAT_DATA` when set), alongside the server files. `BOT_STATE` overrides
+its path. The agent owns this file independently; the server does not read or
+modify it. A separately deployed agent keeps its own local data folder.
