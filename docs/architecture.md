@@ -67,6 +67,11 @@ Server snapshots are authoritative for membership, scoped permissions and comman
 
 ## Scaling and extension
 
+Snapshots log and omit individual unavailable history tails or unread entries
+while retaining healthy conversation data. Missing unread data is not reported
+as zero unread. Poisoned history-store locks fail closed with a restart diagnostic;
+HTTP snapshots return 503 and browser sockets send an error frame before closing.
+
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
 `max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v9; validated v8 folders upgrade transactionally.

@@ -232,7 +232,8 @@ pub(crate) async fn me(
         let username = authenticate(&app, &headers)?;
         let snapshot = app
             .engine_read_api()?
-            .snapshot(&username)
+            .try_snapshot(&username)
+            .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?
             .ok_or_else(|| error(StatusCode::SERVICE_UNAVAILABLE, "Snapshot unavailable."))?;
         Ok(Json(json!(snapshot)))
     })

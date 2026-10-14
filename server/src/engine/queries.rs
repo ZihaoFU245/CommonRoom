@@ -87,6 +87,14 @@ impl Engine {
         Ok(true)
     }
     pub fn unreads(&self, name: &str) -> Result<BTreeMap<String, Unread>, String> {
+        self.collect_unreads(name, false)
+    }
+    fn collect_unreads(
+        &self,
+        name: &str,
+        partial: bool,
+    ) -> Result<BTreeMap<String, Unread>, String> {
+        self.history_store.ensure_available()?;
         let mut result = BTreeMap::new();
         for (view, id, revision, key) in self
             .data
@@ -122,7 +130,15 @@ impl Engine {
             )
         {
             let read = self.read_position(name, &key);
-            result.insert(view, self.history_store.unread(&id, name, read, revision)?);
+            match self.history_store.unread(&id, name, read, revision) {
+                Ok(unread) => {
+                    result.insert(view, unread);
+                }
+                Err(_) if partial => {
+                    tracing::warn!(conversation_id = %id, "Conversation unread data unavailable; snapshot entry omitted.");
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(result)
     }
@@ -189,7 +205,17 @@ impl Engine {
             serde_json::json!({"kind":"conversation","view":view,"id":id,"messages":page.messages,"unread":unread}),
         ))
     }
+    pub fn try_snapshot(&self, name: &str) -> Result<Option<Snapshot>, String> {
+        self.history_store.ensure_available()?;
+        let snapshot = self.snapshot_inner(name);
+        self.history_store.ensure_available()?;
+        Ok(snapshot)
+    }
+    #[cfg(test)]
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
+        self.try_snapshot(name).ok().flatten()
+    }
+    fn snapshot_inner(&self, name: &str) -> Option<Snapshot> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         let account_scope = Scope::Account(account.id.clone());
         let mut tails = BTreeMap::new();
@@ -208,21 +234,28 @@ impl Engine {
             )
         {
             if self.allows(Some(name), &scope, Action::Read) && tail_budget > 0 {
-                let page = self
-                    .history_store
-                    .page(
-                        id,
-                        revision,
-                        history::HistoryRange {
-                            limit: Some(VISIBLE_HISTORY),
-                            ..Default::default()
-                        },
-                        "",
-                    )
-                    .ok()?;
+                let page = match self.history_store.page(
+                    id,
+                    revision,
+                    history::HistoryRange {
+                        limit: Some(VISIBLE_HISTORY),
+                        ..Default::default()
+                    },
+                    "",
+                ) {
+                    Ok(page) => page,
+                    Err(_) => {
+                        tracing::warn!(conversation_id = %id, "Conversation history unavailable; snapshot tail omitted.");
+                        continue;
+                    }
+                };
                 let mut messages = Vec::new();
                 for message in page.messages.into_iter().rev() {
-                    let bytes = serde_json::to_vec(&message).ok()?.len();
+                    let Ok(encoded) = serde_json::to_vec(&message) else {
+                        tracing::warn!(conversation_id = %id, "Message serialization failed; snapshot message omitted.");
+                        continue;
+                    };
+                    let bytes = encoded.len();
                     if bytes > byte_budget || tail_budget == 0 {
                         break;
                     }
@@ -367,7 +400,7 @@ impl Engine {
                 .filter_map(|key| private_peer(key, name))
                 .map(String::from)
                 .collect(),
-            unread: self.unreads(name).ok()?,
+            unread: self.collect_unreads(name, true).ok()?,
             commands: self.commands_for(Some(name), None),
             available_rooms: self
                 .data

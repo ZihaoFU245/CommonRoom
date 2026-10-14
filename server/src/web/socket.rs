@@ -48,21 +48,32 @@ pub(crate) async fn snapshot(
 ) -> bool {
     let app = app.clone();
     let headers = headers.clone();
-    let value = tokio::task::spawn_blocking(move || {
-        let engine = app.engine_read().ok()?;
-        let user = super::auth::identity(&engine, &headers)?;
-        if bot {
-            serde_json::to_string(&engine.bot_snapshot(&user).ok()?).ok()
-        } else {
-            serde_json::to_string(&engine.snapshot(&user)?).ok()
-        }
-    })
-    .await
-    .ok()
-    .flatten();
+    let value = tokio::task::spawn_blocking(move || snapshot_value(&app, &headers, bot))
+        .await
+        .unwrap_or_else(|_| Err("Snapshot worker unavailable.".into()));
     match value {
-        Some(value) => send(socket, Message::Text(value.into())).await,
-        None => false,
+        Ok(value) => send(socket, Message::Text(value.into())).await,
+        Err(error) => {
+            let frame = if bot {
+                json!({"kind":"error", "id":null, "error":crate::bots::error::Error::storage(error)})
+            } else {
+                json!({"kind":"error", "id":0, "text":error})
+            };
+            let _sent = send(socket, Message::Text(frame.to_string().into())).await;
+            let _closed = send(socket, Message::Close(None)).await;
+            false
+        }
+    }
+}
+pub(super) fn snapshot_value(app: &App, headers: &HeaderMap, bot: bool) -> Result<String, String> {
+    let engine = app.engine_read()?;
+    let user = super::auth::identity(&engine, headers).ok_or("Credential revoked.")?;
+    if bot {
+        serde_json::to_string(&engine.bot_snapshot(&user).map_err(|e| e.to_string())?)
+            .map_err(|_| "Snapshot serialization failed.".into())
+    } else {
+        let snapshot = engine.try_snapshot(&user)?.ok_or("Snapshot unavailable.")?;
+        serde_json::to_string(&snapshot).map_err(|_| "Snapshot serialization failed.".into())
     }
 }
 pub(crate) async fn send(socket: &mut WebSocket, message: Message) -> bool {

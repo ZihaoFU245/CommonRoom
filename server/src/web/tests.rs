@@ -49,6 +49,55 @@ fn proxy_trust_uses_the_socket_peer() {
     assert!(!trusted_proxy(&config, "127.0.0.2".parse().unwrap()));
     assert!(!trusted_proxy(&config, "10.0.0.2".parse().unwrap()));
 }
+
+#[tokio::test]
+#[allow(clippy::panic)] // Simulate a reader panic while its mutex is held.
+async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapshots() {
+    let (changes, _) = broadcast::channel(1);
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision("alice", "hash".into(), false, false)
+        .unwrap();
+    engine
+        .login("fixture".into(), "alice", "hash", None)
+        .unwrap();
+    let store = engine.history_store.clone();
+    assert!(
+        std::thread::spawn(move || store.read::<()>(|_| panic!("poison reader")))
+            .join()
+            .is_err()
+    );
+    let app = App {
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        HeaderValue::from_static("chat_session=fixture"),
+    );
+    headers.insert(
+        header::ORIGIN,
+        HeaderValue::from_static("http://localhost:5173"),
+    );
+    let error = auth::me(axum::extract::State(app.clone()), headers.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(error.1.0.to_string().contains("restart the service"));
+    assert!(
+        socket::snapshot_value(&app, &headers, false)
+            .unwrap_err()
+            .contains("restart the service")
+    );
+}
 #[test]
 fn cookies_are_http_only_and_secure_in_production() {
     let config = Config {
