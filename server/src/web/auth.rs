@@ -1,6 +1,6 @@
 use super::security::{check_origin, client_ip};
 use super::*;
-use crate::engine::verify_password;
+use crate::engine::{valid_name, verify_password};
 use axum::{
     extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, header},
@@ -8,6 +8,16 @@ use axum::{
 };
 use serde::Deserialize;
 use std::time::Duration;
+
+// Valid PHC encoding with the default Argon2 work parameters. Its verification
+// result is discarded: missing and disabled accounts must never authenticate.
+const DUMMY_PASSWORD_HASH: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+fn verify_login_password(password: &str, expected: Option<&str>) -> bool {
+    let valid = verify_password(password, expected.unwrap_or(DUMMY_PASSWORD_HASH));
+    expected.is_some() && valid
+}
 
 pub(crate) fn token(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -77,7 +87,7 @@ async fn login_inner(
     Json(input): Json<Login>,
 ) -> Result<Response, ApiError> {
     check_origin(&app, &headers)?;
-    if input.username.len() > 32 || input.password.len() > 128 {
+    if !valid_name(&input.username) || input.password.len() > 128 {
         return Err(error(
             StatusCode::UNAUTHORIZED,
             "Invalid username or password.",
@@ -119,7 +129,7 @@ async fn login_inner(
     })?;
     let valid = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        expected.is_some_and(|h| verify_password(&password, &h))
+        verify_login_password(&password, expected.as_deref())
     })
     .await
     .unwrap_or(false);
@@ -158,6 +168,7 @@ async fn login_inner(
     );
     Ok(response)
 }
+
 pub(crate) fn cookie(app: &App, value: &str, age: u32) -> String {
     format!(
         "chat_session={value}; HttpOnly; SameSite=Strict; Path={}; Max-Age={age}{}",
@@ -232,4 +243,29 @@ pub(crate) async fn me(
             "Snapshot worker unavailable.",
         )
     })?
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Test assertions intentionally fail on invalid fixtures.
+mod tests {
+    use super::*;
+    #[test]
+    fn dummy_login_hash_uses_the_same_work_parameters_as_real_passwords() {
+        let real = crate::engine::hash_password("test-password").unwrap();
+        let real = argon2::PasswordHash::new(&real).unwrap();
+        let dummy = argon2::PasswordHash::new(DUMMY_PASSWORD_HASH).unwrap();
+        assert_eq!(real.algorithm, dummy.algorithm);
+        assert_eq!(real.version, dummy.version);
+        assert_eq!(real.params, dummy.params);
+        assert_eq!(real.hash.unwrap().len(), dummy.hash.unwrap().len());
+        assert!(!verify_login_password("test-password", None));
+        assert!(!verify_login_password(
+            "wrong-password",
+            Some(&real.to_string())
+        ));
+        assert!(verify_login_password(
+            "test-password",
+            Some(&real.to_string())
+        ));
+    }
 }

@@ -127,6 +127,55 @@ fn real_ip_requires_trusted_peer_and_one_valid_address() {
 }
 
 #[tokio::test]
+async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts() {
+    let (changes, _) = broadcast::channel(1);
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    let password = "unicode-password";
+    let hash = crate::engine::hash_password(password).unwrap();
+    let names = ["界".repeat(32), "😀".repeat(32)];
+    for name in &names {
+        engine.provision(name, hash.clone(), false, false).unwrap();
+    }
+    engine.provision("disabled", hash, false, false).unwrap();
+    engine.execute(None, None, "/disable disabled").unwrap();
+    let app = App {
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+    };
+    for (name, succeeds) in names
+        .iter()
+        .map(|n| (n.as_str(), true))
+        .chain([("missing", false), ("disabled", false)])
+    {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://localhost:5173"),
+        );
+        let input = serde_json::from_value(json!({"username":name,"password":password})).unwrap();
+        let result = auth::login(
+            axum::extract::State(app.clone()),
+            axum::extract::ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            headers,
+            Json(input),
+        )
+        .await;
+        if succeeds {
+            assert_eq!(result.unwrap().status(), StatusCode::OK);
+        } else {
+            assert_eq!(result.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        }
+    }
+}
+
+#[tokio::test]
 async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
     let (changes, _) = broadcast::channel(1);
     let app = App {

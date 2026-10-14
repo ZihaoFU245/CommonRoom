@@ -197,6 +197,10 @@ and scoped direct grants with constraints when the requester can inspect policy.
 
 ## Persistence and revocation
 
+Login uses the same 1–32 Unicode character name rules as account creation.
+Missing and disabled accounts perform dummy Argon2 verification with the default
+password work parameters before returning the common invalid-credentials error.
+
 The current schema is v9. New empty databases initialize transactionally; existing v8 metadata is validated and upgraded by adding durable bot retry receipts without rewriting grants. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.

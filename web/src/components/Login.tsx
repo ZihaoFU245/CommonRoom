@@ -48,7 +48,7 @@ export function Login({
             id="username"
             autoComplete="username"
             autoFocus
-            maxLength={32}
+            maxLength={64}
             value={username}
             onInput={(e) => setUsername(e.currentTarget.value)}
             required
