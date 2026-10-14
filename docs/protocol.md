@@ -65,7 +65,7 @@ Examples:
 - `history?view=study&after=1099`: load the next page.
 - `history?view=study&around=1000`: load a visible/unread anchor directly.
 
-Use the first/last returned sequence with `has_before`/`has_after` to continue. The server never returns more than 100 records even for a wide range. Large messages can shorten a page at a 1 MiB payload target (one oversized message is still returned so paging can progress). Invalid bounds return 400; concurrent content changes return 409, prompting a fresh page request. Access/session/resource identity are rechecked after database I/O. A selected browser window retains at most 1,000 entries, evicts the opposite edge when scrolling, and reloads evicted pages when scrolling back. Message history is not persisted in browser storage.
+Use the first/last returned sequence with `has_before`/`has_after` to continue. The server never returns more than 100 records even for a wide range. Large messages can shorten a page at a 1 MiB payload target (one oversized message is still returned so paging can progress). Invalid bounds return 400; concurrent content changes return 409, prompting a fresh page request. Storage and worker failures return 503, consistently with the bot API. Access/session/resource identity are rechecked after database I/O. A selected browser window retains at most 1,000 entries, evicts the opposite edge when scrolling, and reloads evicted pages when scrolling back. Message history is not persisted in browser storage.
 
 ## Synchronization rules
 

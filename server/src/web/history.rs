@@ -48,8 +48,15 @@ pub(crate) async fn history(
         };
         // WAL readers overlap the writer without holding the engine lock across disk I/O.
         let page = store
-            .page(&id, revision, range, &input.view)
-            .map_err(|e| error(StatusCode::CONFLICT, &e))?;
+            .page_checked(&id, revision, range, &input.view)
+            .map_err(|e| {
+                let status = match &e {
+                    crate::engine::HistoryError::Changed => StatusCode::CONFLICT,
+                    crate::engine::HistoryError::InvalidRange(_) => StatusCode::BAD_REQUEST,
+                    crate::engine::HistoryError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+                };
+                error(status, &e.to_string())
+            })?;
         let current = authenticate(&app, &headers)?;
         let engine = app.engine_read_api()?;
         let (_, current_id, current_revision) = engine

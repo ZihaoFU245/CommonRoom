@@ -108,13 +108,17 @@ async fn history(
             let user = recheck(&engine, headers, user)?;
             (engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision, engine.history_store.clone())
         };
-        let page = store.page(&input.conversation_id, revision, range, "");
+        let page = store.page_checked(&input.conversation_id, revision, range, "");
         let engine = app.engine_read().map_err(Error::storage)?;
         let user = recheck(&engine, headers, user)?;
         if engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision != revision {
             return Err(Error::new(Code::Conflict, "History changed; retry the page."));
         }
-        let page = page.map_err(Error::storage)?;
+        let page = page.map_err(|error| match error {
+            crate::engine::HistoryError::Changed => Error::new(Code::Conflict, "History changed; retry the page."),
+            crate::engine::HistoryError::InvalidRange(error) => Error::new(Code::InvalidRequest, error),
+            crate::engine::HistoryError::Unavailable(error) => Error::storage(error),
+        })?;
         Ok(json!({"conversation_id":input.conversation_id,"messages":page.messages.iter().map(models::message_json).collect::<Vec<_>>(),"revision":page.revision,"has_before":page.has_before,"has_after":page.has_after}))
     }).await
 }
@@ -164,10 +168,10 @@ async fn read(
 ) -> Result<Json<Value>, Error> {
     work(app, headers, move |app, headers, user| {
         let mut engine = app.engine().map_err(Error::storage)?;
-        let user = recheck(&engine, headers, user)?;
         if input.through > 9_007_199_254_740_991 {
             return Err(Error::new(Code::InvalidRequest, "Invalid sequence."));
         }
+        let user = admit(&mut engine, headers, user)?;
         if engine.bot_read(&user, &input.conversation_id, input.through)? {
             let _ = app.changes.send(Change::Read(user));
         }

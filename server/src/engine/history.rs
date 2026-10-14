@@ -12,6 +12,31 @@ const CACHE_MESSAGES: usize = 10_000;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
 const PAGE_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug)]
+pub enum HistoryError {
+    Changed,
+    InvalidRange(String),
+    Unavailable(String),
+}
+impl From<String> for HistoryError {
+    fn from(error: String) -> Self {
+        Self::Unavailable(error)
+    }
+}
+impl From<&str> for HistoryError {
+    fn from(error: &str) -> Self {
+        Self::Unavailable(error.into())
+    }
+}
+impl std::fmt::Display for HistoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed => formatter.write_str("History changed; retry the current page."),
+            Self::InvalidRange(error) | Self::Unavailable(error) => formatter.write_str(error),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct HistoryRange {
     pub start: Option<u64>,
@@ -185,8 +210,18 @@ impl HistoryStore {
         range: HistoryRange,
         view: &str,
     ) -> Result<History, String> {
+        self.page_checked(id, revision, range, view)
+            .map_err(|error| error.to_string())
+    }
+    pub fn page_checked(
+        &self,
+        id: &str,
+        revision: u64,
+        range: HistoryRange,
+        view: &str,
+    ) -> Result<History, HistoryError> {
         self.ensure_available()?;
-        let limit = range.validate()?;
+        let limit = range.validate().map_err(HistoryError::InvalidRange)?;
         {
             let mut cache = self
                 .cache
@@ -231,7 +266,7 @@ impl HistoryStore {
         let result = self.read(|db| {
             let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
             let stored: u64 = tx.query_row("SELECT revision FROM entities WHERE kind IN ('room','private') AND json_extract(json,'$.id')=?1", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
-            if stored != revision { return Err("History changed; retry the current page.".into()); }
+            if stored != revision { return Ok(None); }
             let ascending=range.after.is_some() || range.start.is_some() || range.around.is_some();
             let start=if let Some(around)=range.around {
                 use rusqlite::OptionalExtension;
@@ -257,14 +292,14 @@ impl HistoryStore {
             let after = messages.last().map(|m|m.sequence).unwrap_or(if ascending { range.after.or(range.end).unwrap_or(9_007_199_254_740_991) } else { upper });
             let has_before = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence<?2)", params![id,before], |r| r.get(0)).map_err(|e|e.to_string())?;
             let has_after = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence>?2)", params![id,after], |r| r.get(0)).map_err(|e|e.to_string())?;
-            Ok(History { view:view.into(),messages,revision,has_before,has_after })
-        })?;
+            Ok(Some(History { view:view.into(),messages,revision,has_before,has_after }))
+        })?.ok_or(HistoryError::Changed)?;
         // Large preceding rows must not prevent an around request from reaching its anchor.
         if let Some(around) = range.around
             && result.has_after
             && result.messages.last().is_some_and(|m| m.sequence < around)
         {
-            return self.page(
+            return self.page_checked(
                 id,
                 revision,
                 HistoryRange {

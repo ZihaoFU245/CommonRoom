@@ -490,6 +490,138 @@ async fn keyed_plain_sends_and_replies_are_atomic_literal_and_uniform() {
     assert_eq!(page["messages"][1]["reactions"]["👍"], json!(["helper"]));
 }
 #[tokio::test]
+async fn read_cursor_inputs_share_the_budget_across_credentials_and_mutations() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let sequence = {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(Some("admin"), Some("support"), "read target")
+            .unwrap();
+        engine
+            .try_snapshot("admin")
+            .unwrap()
+            .unwrap()
+            .rooms
+            .iter()
+            .find(|room| room.name == "support")
+            .unwrap()
+            .messages[0]
+            .sequence
+    };
+    for _ in 0..30 {
+        assert_eq!(
+            request(
+                &app,
+                Some(&token),
+                "POST",
+                "/api/bot/v1/read",
+                json!({"conversation_id":id,"through":sequence})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+    let second = app
+        .engine()
+        .unwrap()
+        .execute(Some("admin"), None, "/bot token new helper second")
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_owned();
+    for credential in [&token, &second] {
+        let blocked = request(
+            &app,
+            Some(credential),
+            "POST",
+            "/api/bot/v1/read",
+            json!({"conversation_id":id,"through":sequence}),
+        )
+        .await;
+        assert_eq!(blocked.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(blocked.1["error"]["code"], "rate_limited");
+    }
+    let blocked = send(
+        &app,
+        &second,
+        "budget-blocked",
+        json!({"conversation_id":id,"text":"must not send"}),
+    )
+    .await;
+    assert_eq!(blocked.0, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn browser_and_bot_history_distinguish_revision_conflicts_from_storage_failures() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let (store, revision) = {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(Some("admin"), Some("support"), "history target")
+            .unwrap();
+        (
+            engine.history_store.clone(),
+            engine.data.rooms["support"].revision,
+        )
+    };
+    store
+        .read(|db| {
+            db.execute_batch("PRAGMA query_only=OFF;")
+                .map_err(|e| e.to_string())?;
+            db.execute(
+                "UPDATE entities SET revision=?1 WHERE kind='room' AND key='support'",
+                [revision + 1],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute_batch("PRAGMA query_only=ON;")
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+    for path in [
+        format!("/api/bot/v1/history?conversation_id={id}"),
+        "/api/history?view=support".into(),
+    ] {
+        let response = request(&app, Some(&token), "GET", &path, json!({})).await;
+        assert_eq!(response.0, StatusCode::CONFLICT);
+        if path.contains("/bot/") {
+            assert_eq!(response.1["error"]["code"], "conflict");
+        }
+    }
+    store
+        .read(|db| {
+            db.execute_batch("PRAGMA query_only=OFF;")
+                .map_err(|e| e.to_string())?;
+            db.execute(
+                "UPDATE entities SET revision=?1 WHERE kind='room' AND key='support'",
+                [revision],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute(
+                "UPDATE messages SET json=json_set(json,'$.time','invalid') WHERE conversation=?1",
+                [&id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute_batch("PRAGMA query_only=ON;")
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+    for path in [
+        format!("/api/bot/v1/history?conversation_id={id}"),
+        "/api/history?view=support".into(),
+    ] {
+        let response = request(&app, Some(&token), "GET", &path, json!({})).await;
+        assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+        if path.contains("/bot/") {
+            assert_eq!(response.1["error"]["code"], "unavailable");
+        }
+    }
+}
+
+#[tokio::test]
 async fn typed_errors_distinguish_permissions_missing_records_and_failed_storage() {
     let (app, token) = fixture();
     let id = conversation(&app);

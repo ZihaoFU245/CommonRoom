@@ -191,7 +191,8 @@ an error category; only repeat operations whose recovery rule permits it.
 | `runtime_rejected` | 400 (socket object) | Configuration handler already owned |
 | `unavailable` | 5xx | Temporary worker/storage failure |
 
-Messages and reaction updates share 30 inputs per ten seconds per account,
+Messages, reaction updates, and read-cursor requests share 30 inputs per ten
+seconds per account,
 including retries and credentials. Control frames have a separate per-socket
 30/ten-second budget. HTTP admission/socket limits are shared with the browser.
 429 responses provide conservative `Retry-After` seconds: 10 for input budgets,

@@ -26,7 +26,7 @@ use dispatch::CommandContext;
 pub use dispatch::sudo_command;
 use helpers::*;
 pub use helpers::{hash_password, valid_name, verify_password};
-pub use history::HistoryRange;
+pub use history::{HistoryError, HistoryRange};
 pub use models::*;
 use rusqlite::{Connection, params};
 use std::{
