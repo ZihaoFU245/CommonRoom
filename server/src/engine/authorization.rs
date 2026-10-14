@@ -47,7 +47,6 @@ actions! {
     Enable => "x:account.enable",
     DeleteAccount => "x:account.delete",
     AssignAdmin => "x:group.admin.assign",
-    AssignSu => "x:group.su.assign",
     PolicyWrite => "x:policy.change",
     Sudo => "x:command.sudo",
     BotCredentials => "x:bot.credentials",
@@ -398,6 +397,11 @@ impl CompiledPolicy {
         for grant in &data.policy.grants {
             let mut mask = Rights::default();
             for p in &grant.permissions {
+                // Previously advertised but never enforced. Preserve old
+                // databases without accepting new grants of this name.
+                if p == "x:group.su.assign" {
+                    continue;
+                }
                 mask.insert(p)?;
             }
             let ids: Vec<_> = match &grant.subject {

@@ -139,6 +139,43 @@ impl Engine {
     pub fn allows(&self, actor: Option<&str>, scope: &Scope, action: Action) -> bool {
         self.effective(actor, scope).has(action)
     }
+    /// Global policy inspection does not disclose another resource's grants.
+    pub(in crate::engine) fn can_inspect_policy(&self, actor: Option<&str>, scope: &Scope) -> bool {
+        self.is_su(actor)
+            || self
+                .principal_id(actor)
+                .and_then(|id| self.authorization.scopes.get(id))
+                .and_then(|scopes| scopes.get(scope))
+                .is_some_and(|rights| rights.has(Action::PolicyRead))
+    }
+    pub(in crate::engine) fn policy_scope(
+        &self,
+        actor: Option<&str>,
+        value: &str,
+        write: bool,
+    ) -> Result<Scope, String> {
+        let denied = "Scope not found or access denied.";
+        let scope = self.parse_scope(value).map_err(|error| {
+            if self.is_su(actor) {
+                error
+            } else {
+                denied.into()
+            }
+        })?;
+        if !self.is_su(actor) {
+            let allowed = if write {
+                matches!(scope, Scope::Room(_)) && self.allows(actor, &scope, Action::PolicyWrite)
+            } else {
+                scope == Scope::Server
+                    || self.can_inspect_policy(actor, &scope)
+                    || self.allows(actor, &scope, Action::Read)
+            };
+            if !allowed {
+                return Err(denied.into());
+            }
+        }
+        Ok(scope)
+    }
     pub fn require(
         &self,
         actor: Option<&str>,

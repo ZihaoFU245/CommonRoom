@@ -17,6 +17,143 @@ fn fixture() -> Engine {
 }
 
 #[test]
+fn policy_inspection_requires_resource_authority_and_hides_scope_existence() {
+    let mut e = fixture();
+    e.execute(Some("bob"), None, "/tell eve secret").unwrap();
+    e.execute(Some("mallory"), None, "/new room hidden")
+        .unwrap();
+    for actor in ["alice", "bob"] {
+        for (existing, missing) in [
+            ("@private:bob:eve", "@private:alice:mallory"),
+            ("@account:eve", "@account:missing"),
+            ("hidden", "missing"),
+        ] {
+            // Bob can inspect his own effective private access, but not its assignments.
+            if actor == "bob" && existing.starts_with("@private:") {
+                let output = e
+                    .execute(Some(actor), None, &format!("/permissions {existing}"))
+                    .unwrap();
+                assert!(!output.contains("## Direct grants"));
+            } else {
+                let error = e
+                    .execute(Some(actor), None, &format!("/permissions {existing}"))
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    e.execute(Some(actor), None, &format!("/permissions {missing}"))
+                        .unwrap_err()
+                );
+            }
+            for command in ["/grant", "/revoke"] {
+                let error = e
+                    .execute(
+                        Some(actor),
+                        Some("team"),
+                        &format!("{command} eve {existing} r:message.read"),
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    e.execute(
+                        Some(actor),
+                        Some("team"),
+                        &format!("{command} eve {missing} r:message.read")
+                    )
+                    .unwrap_err()
+                );
+            }
+        }
+    }
+    // Global admin access may show effective rights in a readable room, but
+    // only local policy readers can inspect other accounts' assignments.
+    let output = e
+        .execute(Some("bob"), Some("team"), "/permissions")
+        .unwrap();
+    assert!(!output.contains("## Direct grants"));
+    assert!(
+        e.execute(Some("alice"), Some("team"), "/permissions")
+            .unwrap()
+            .contains("## Direct grants")
+    );
+    e.execute(None, None, "/grant mallory user team").unwrap();
+    assert!(
+        !e.execute(Some("mallory"), None, "/permissions team")
+            .unwrap()
+            .contains("## Direct grants")
+    );
+    for scope in ["@private:bob:eve", "@account:eve", "hidden"] {
+        e.execute(None, None, &format!("/grant alice {scope} r:policy.read"))
+            .unwrap();
+        assert!(
+            e.execute(Some("alice"), None, &format!("/permissions {scope}"))
+                .unwrap()
+                .contains("## Direct grants")
+        );
+        assert!(
+            e.execute(None, None, &format!("/permissions {scope}"))
+                .unwrap()
+                .contains("## Direct grants")
+        );
+    }
+}
+
+#[test]
+fn room_owner_participant_group_requires_transfer_or_su_before_revocation() {
+    let mut e = fixture();
+    for permission in ["x:policy.change", "/revoke", "/rm"] {
+        e.execute(None, None, &format!("/grant bob team {permission}"))
+            .unwrap();
+    }
+    for actor in [Some("bob"), Some("alice")] {
+        for command in ["/revoke", "/rm group"] {
+            let before = e.data.clone();
+            let revision = e.revision;
+            let error = e
+                .execute(actor, Some("team"), &format!("{command} alice user team"))
+                .unwrap_err();
+            assert!(
+                error.contains("Transfer room ownership"),
+                "{actor:?} {command}: {error}"
+            );
+            assert!(e.data == before);
+            assert_eq!(e.revision, revision);
+            assert!(e.history("alice", "team").is_ok());
+            e.execute(Some("alice"), Some("team"), "owner still has access")
+                .unwrap();
+        }
+    }
+    e.execute(Some("alice"), Some("team"), "/owner bob")
+        .unwrap();
+    e.execute(Some("bob"), Some("team"), "/revoke alice user team")
+        .unwrap();
+    assert!(e.history("alice", "team").is_err());
+    assert!(e.history("bob", "team").is_ok());
+}
+
+#[test]
+fn su_and_sudo_can_revoke_owner_participant_access_and_delete_owned_rooms() {
+    for command in ["/revoke", "/rm group"] {
+        for (actor, prefix) in [(None, ""), (Some("mallory"), ""), (Some("bob"), "/sudo ")] {
+            let mut e = fixture();
+            e.execute(None, None, "/grant mallory su").unwrap();
+            for permission in ["/sudo", "x:command.sudo"] {
+                e.execute(None, None, &format!("/grant bob @global {permission}"))
+                    .unwrap();
+            }
+            let owner_id = e.data.users["alice"].id.clone();
+            e.execute(actor, None, &format!("{prefix}{command} alice user team"))
+                .unwrap();
+            assert_eq!(e.data.rooms["team"].owner_id, owner_id);
+            assert!(e.history("alice", "team").is_err());
+            assert!(!e.is_su(Some("bob")));
+            e.execute(actor, None, &format!("{prefix}/rm room team"))
+                .unwrap();
+            assert!(!e.data.rooms.contains_key("team"));
+        }
+    }
+}
+
+#[test]
 fn sudo_requires_both_global_grants_and_never_persists_elevation() {
     let mut e = fixture();
     assert!(
@@ -342,6 +479,81 @@ fn sudo_restores_authority_after_storage_failure_and_preserves_policy_updates() 
         .unwrap();
     assert!(e.execute(Some("bob"), None, "/sudo /whoami").is_err());
 }
+#[test]
+fn removed_su_assignment_permission_preserves_database_and_command_compatibility() {
+    use authorization::{Grant, Subject};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("bob", "hash".into(), false, false).unwrap();
+    let legacy = "x:group.su.assign";
+    e.data.policy.grants.push(Grant {
+        owner: false,
+        subject: Subject::Account(e.data.users["bob"].id.clone()),
+        scope: Scope::Server,
+        permissions: BTreeSet::from([legacy.into(), "w:room.create".into()]),
+        minimum_age: 0,
+    });
+    // Persist a policy with the old name, as a previous release could do.
+    e.execute(None, None, "/grant bob @global /new").unwrap();
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    assert!(
+        e.data
+            .policy
+            .grants
+            .iter()
+            .any(|g| g.permissions.contains(legacy))
+    );
+    assert!(!e.is_su(Some("bob")));
+    assert!(
+        !e.effective(Some("bob"), &Scope::Server)
+            .names()
+            .contains(&legacy.into())
+    );
+    assert!(
+        !e.execute(Some("bob"), None, "/permissions @groups")
+            .unwrap()
+            .contains(legacy)
+    );
+    assert!(e.execute(Some("bob"), None, "/grant bob su").is_err());
+    let before = e.data.clone();
+    let error = e
+        .execute(None, None, &format!("/grant bob @global {legacy}"))
+        .unwrap_err();
+    assert!(error.contains("Unknown permission"));
+    assert!(e.data == before);
+    e.execute(Some("bob"), None, "/new room compatible")
+        .unwrap();
+    e.execute(None, None, &format!("/revoke bob @global {legacy}"))
+        .unwrap();
+    assert!(e.allows(Some("bob"), &Scope::Server, Action::CreateRoom));
+    for permission in ["/sudo", "x:command.sudo"] {
+        e.execute(None, None, &format!("/grant bob @global {permission}"))
+            .unwrap();
+    }
+    e.execute(Some("bob"), None, "/sudo /grant bob su").unwrap();
+    assert!(e.is_su(Some("bob")));
+    e.execute(Some("bob"), None, "/revoke bob su").unwrap();
+    drop(e);
+    let e = Engine::open(&path).unwrap();
+    assert!(
+        !e.data
+            .policy
+            .grants
+            .iter()
+            .any(|g| g.permissions.contains(legacy))
+    );
+    assert!(!e.is_su(Some("bob")));
+    assert!(e.allows(Some("bob"), &Scope::Server, Action::CreateRoom));
+    let version: u32 =
+        e.db.lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+    assert_eq!(version, 9);
+}
+
 #[test]
 fn su_is_a_grant_group_and_only_su_can_assign_it() {
     let mut e = fixture();
@@ -830,7 +1042,6 @@ fn permissions_and_command_gates_are_independent_and_target_scoped() {
     );
     for permission in [
         "x:policy.change",
-        "x:group.su.assign",
         "w:message.retract.any",
         "/grant",
         "x:account.password.reset",

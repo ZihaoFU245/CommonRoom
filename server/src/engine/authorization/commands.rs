@@ -64,13 +64,12 @@ impl Engine {
                 }
                 let scope = parts
                     .get(1)
-                    .map(|value| self.parse_scope(value))
+                    .map(|value| self.policy_scope(actor, value, false))
                     .transpose()?
                     .unwrap_or_else(|| context.scope.clone());
                 self.require_target_command(actor, &scope, parts[0])?;
-                if scope != Scope::Server {
-                    self.require(actor, &scope, Action::PolicyRead)
-                        .or_else(|_| self.require(actor, &scope, Action::Read))?;
+                if scope != Scope::Server && !self.can_inspect_policy(actor, &scope) {
+                    self.require(actor, &scope, Action::Read)?;
                 }
                 let label = self.scope_label(&scope);
                 let label = if matches!(scope, Scope::Room(_)) {
@@ -112,7 +111,7 @@ impl Engine {
                         text.push_str("\n\nThese limits apply to individual grants. Any unrestricted cleanup grant still allows cleanup without this limit.");
                     }
                 }
-                if !self.allows(actor, &scope, Action::PolicyRead) {
+                if !self.can_inspect_policy(actor, &scope) {
                     text.push_str("\n\n## Grant assignments\n\nViewing assignments requires `r:policy.read`. Only your effective access is shown.");
                     return Ok(text);
                 }
@@ -209,7 +208,7 @@ impl Engine {
                 if !(4..=5).contains(&parts.len()) {
                     return Err("Usage: /grant user scope permission [minimum-age] or /revoke user scope permission".into());
                 }
-                let scope = self.parse_scope(parts[2])?;
+                let scope = self.policy_scope(actor, parts[2], true)?;
                 let label = self.scope_label(&scope);
                 self.require_target_command(actor, &scope, parts[0])?;
                 let target = self
@@ -223,7 +222,9 @@ impl Engine {
                 self.require_target_command(actor, &scope, parts[0])?;
                 self.require(actor, &scope, Action::PolicyWrite)?;
                 let mut requested = Rights::default();
-                requested.insert(parts[3])?;
+                if !(parts[0] == "/revoke" && parts[3] == "x:group.su.assign") {
+                    requested.insert(parts[3])?;
+                }
                 if !matches!(scope, Scope::Room(_)) && !self.is_su(actor) {
                     return Err("Only su can change @global, account or private grants.".into());
                 }
@@ -398,6 +399,20 @@ impl Engine {
                             .insert(parts[1].into());
                     }
                 } else {
+                    if group == Group::User
+                        && !self.is_su(actor)
+                        && let Scope::Room(room_id) = &scope
+                        && self
+                            .data
+                            .rooms
+                            .values()
+                            .any(|room| room.id == *room_id && room.owner_id == target)
+                    {
+                        return Err(
+                            "Transfer room ownership before revoking the owner's user group, or ask su."
+                                .into(),
+                        );
+                    }
                     self.data.policy.assignments.retain(|a| {
                         !(a.account_id == target && a.group == group && a.scope == scope)
                     });

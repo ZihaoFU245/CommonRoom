@@ -9,6 +9,12 @@ it preserves existing entities, history, sessions, grants and cursors. Table/ind
 creation and the version advance commit together. A failed upgrade rolls back DDL
 and leaves the version at v8. Existing v9 databases reopen without migrations.
 
+The removed `x:group.su.assign` permission is accepted only in existing stored
+grants and supplies no authority. Those entries are preserved and can be removed
+with `/revoke user scope x:group.su.assign`; new grants of this name are rejected.
+Su group assignment still requires su authority, including authorized `/sudo`.
+This catalog change does not change the v9 schema or require a migration.
+
 Schemas v1–v7, versions newer than v9, and existing unversioned databases are
 rejected before changing journal settings, schema, state or version. Back up v8
 before first starting this binary. Older v8 binaries cannot open an upgraded v9

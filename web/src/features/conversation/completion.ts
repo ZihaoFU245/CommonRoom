@@ -32,7 +32,6 @@ export const permissionNames = [
   "x:account.enable",
   "x:account.delete",
   "x:group.admin.assign",
-  "x:group.su.assign",
   "x:policy.change",
   "x:command.sudo",
   "x:bot.credentials",

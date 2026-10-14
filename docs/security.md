@@ -79,6 +79,9 @@ retraction of other authors' messages or account/server management. A transfer
 moves only the creator's management grants; existing participant access remains.
 Owners must transfer ownership before leaving or being kicked. Disabling or deleting an account
 returns owned rooms to the console and removes the deleted account's grants.
+Ordinary room managers, including the owner, must transfer ownership before
+revoking the owner's room `user` assignment. Su authority, including `/sudo`,
+can revoke that assignment without transferring ownership.
 
 Starting a new private pair requires `w:private.create`; sending to an existing
 pair requires that pair's `w:message.create` and the invoked command grant.
@@ -102,7 +105,7 @@ The permission catalog has individual actions in three families:
   `room.rename`,
   `room.owner.transfer`, `history.clean`, `account.create`,
   `account.password.reset`, `account.disable`, `account.enable`, `account.delete`,
-  `group.admin.assign`, `group.su.assign`, `policy.change`, `command.sudo`,
+  `group.admin.assign`, `policy.change`, `command.sudo`,
   `account.rename.any`, `bot.credentials`.
 
 Prefix the action with its family, for example `r:message.read`. A slash command
@@ -130,8 +133,13 @@ inspection of other pairs. Inspection grants still apply to those resources.
 Scopes accepted by policy commands are a room name, `@global` (legacy alias `@server`),
 `@account:username`, or an existing `@private:a:b` pair. Server grants apply across
 target scopes; room/account/private grants apply only to the identified resource.
-Only `su` can edit server, account, or private grants. Room managers can delegate
-only participant actions and commands they themselves hold. `/add` and room user
+Only `su` can edit server, account, or private grants. Policy inspection
+requires `r:policy.read` at the specific resource scope or su authority; global
+policy-read grants only permit inspection of global assignments. Read access
+alone permits viewing the caller's effective access without disclosing assignments.
+Missing and inaccessible explicit policy scopes return the same error.
+Room managers can delegate only participant actions and commands they themselves
+hold. `/add` and room user
 group assignment require authority to delegate the complete participant bundle.
 Owners may additionally grant or revoke `x:member.add` and `/add` in their own
 room, provided they hold those permissions. This lets room participants invite

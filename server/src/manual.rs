@@ -414,7 +414,7 @@ Authorship uses stable account IDs, so reusing a username does not inherit old m
 ```
 
 - `/permissions [scope]` shows your effective actions and command grants.
-- `r:policy.read` allows viewing scoped grant assignments.
+- `r:policy.read` allows viewing grant assignments at its own scope. Global policy-read grants do not disclose resource assignments; su can inspect all scopes. Read access alone shows only your effective access. Missing and inaccessible explicit policy scopes return the same error.
 - `/permissions @groups` lists predefined bundles.
 - `/permissions @audit` shows the audit log to su.
 
@@ -624,6 +624,7 @@ Ownership does not grant account/server management or permission to retract othe
 
 This transfers ownership and its management grants. Existing participant access remains.
 An owner must transfer ownership before leaving or being kicked.
+Ordinary room managers, including the owner, must transfer ownership before revoking the owner's room user group. Su authority, including /sudo, can revoke it without a transfer.
 
 ## Recovery
 
