@@ -40,6 +40,7 @@ impl Engine {
         self.registered_id(name)
     }
 
+    #[cfg(test)]
     pub fn admit_bot_input(&mut self, secret: &str) -> Result<(), String> {
         let name = self.bot_identity(secret).ok_or("Credential revoked.")?;
         let id = self
@@ -49,10 +50,13 @@ impl Engine {
             .ok_or("Account unavailable.")?
             .id
             .clone();
+        self.admit_bot_account(&id)
+    }
+    pub(crate) fn admit_bot_account(&mut self, id: &str) -> Result<(), String> {
         let now = std::time::Instant::now();
         self.bot_budgets
             .retain(|_, (at, _)| now.duration_since(*at).as_secs() < 10);
-        let entry = self.bot_budgets.entry(id).or_insert((now, 0));
+        let entry = self.bot_budgets.entry(id.to_owned()).or_insert((now, 0));
         if entry.1 >= 30 {
             return Err("Slow down; at most 30 bot inputs per 10 seconds per account.".into());
         }
@@ -65,22 +69,21 @@ impl Engine {
             return None;
         }
         let digest = crate::bots::digest(secret);
-        let account_id = self
-            .data
-            .bots
-            .iter()
-            .find(|(_, registration)| {
-                registration
-                    .tokens
-                    .values()
-                    .any(|token| token.digest == digest)
-            })?
-            .0;
+        let (account_id, id) = self.bot_index.credentials.get(&digest)?;
+        let token = self.data.bots.get(account_id)?.tokens.get(id)?;
+        // Restricted credentials are accepted only by the versioned bot adapter.
+        if token.conversations.is_some()
+            || token.operations.is_some()
+            || token.expires.is_some_and(|at| at <= now())
+        {
+            return None;
+        }
+        let name = self.bot_index.accounts.get(account_id)?;
         self.data
             .users
-            .iter()
-            .find(|(_, account)| account.id == *account_id && !account.disabled)
-            .map(|(name, _)| name.clone())
+            .get(name)
+            .filter(|a| a.id == *account_id && !a.disabled)
+            .map(|_| name.clone())
     }
 
     fn bot_scope(&self, view: Option<&str>, explicit: Option<&str>) -> Result<Scope, String> {
@@ -221,7 +224,7 @@ impl Engine {
                 if registration.tokens.values().any(|t| t.label == *label) { return Err("Credential label already exists.".into()); }
                 let token_id = uuid::Uuid::new_v4().to_string();
                 let secret = format!("bot_{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-                registration.tokens.insert(token_id.clone(), Credential { label: (*label).into(), digest: crate::bots::digest(&secret), created: now() });
+                registration.tokens.insert(token_id.clone(), Credential { label: (*label).into(), digest: crate::bots::digest(&secret), created: now(), expires: None, conversations: None, operations: None });
                 self.audit(actor, "/bot token new", name);
                 Ok(format!("Account-wide credential {token_id} for {name}; save now, shown once:\n{secret}"))
             }

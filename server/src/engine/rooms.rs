@@ -38,6 +38,7 @@ impl Engine {
                 positions.insert(new_key.clone(), sequence);
             }
         }
+        self.bot_index = crate::bots::models::Index::build(&self.data);
         self.revision = self.revision.wrapping_add(1);
         Ok(format!("Renamed #{name} to #{new_name}."))
     }

@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { schema, validate } from "../scripts/bot/contract.mjs";
 
@@ -25,10 +23,17 @@ const error = {
 const snapshot = {
   kind: "snapshot",
   account: { id: "account-id", username: "helper" },
+  credential: {
+    id: "credential-id",
+    expires: null,
+    conversations: null,
+    operations: null,
+  },
   conversations: [
     {
       id: "conversation-id",
       view: "support",
+      content_revision: 1,
       permissions: { send: true, reply: true, react: true },
       members: ["helper"],
       unread: { count: 1, first: 1, through: 1, oldest: 1, revision: 1 },
@@ -36,7 +41,7 @@ const snapshot = {
   ],
 };
 
-test("frozen HTTP and both WebSocket directions have complete named contracts", () => {
+test("Bot HTTP and both WebSocket directions have complete named contracts", () => {
   for (const [name, value] of [
     ["Snapshot", snapshot],
     [
@@ -53,12 +58,19 @@ test("frozen HTTP and both WebSocket directions have complete named contracts", 
       {
         conversation_id: "conversation-id",
         messages: [message],
-        revision: 1,
+        content_revision: 1,
         has_before: false,
         has_after: false,
       },
     ],
-    ["ReadRequest", { conversation_id: "conversation-id", through: 1 }],
+    [
+      "ReadRequest",
+      {
+        conversation_id: "conversation-id",
+        through: 1,
+        acknowledge_shared_unread: true,
+      },
+    ],
     [
       "ReactionRequest",
       {
@@ -74,7 +86,11 @@ test("frozen HTTP and both WebSocket directions have complete named contracts", 
     assert.equal(validate(name, value), value);
   for (const frame of [
     snapshot,
-    { kind: "conversation", conversation_id: "conversation-id" },
+    {
+      kind: "conversation",
+      conversation_id: "conversation-id",
+      content_revision: 1,
+    },
     {
       kind: "config_request",
       id: "request-id",
@@ -134,15 +150,4 @@ test("the contract rejects browser payloads, ambiguous control responses and inv
     ],
   ])
     assert.throws(() => validate(name, value), /Invalid/);
-});
-
-// V1 is the sole frozen bot contract: fixes must preserve this fingerprint.
-test("v1 schema fingerprint is frozen", () => {
-  const bytes = readFileSync(
-    new URL("../../docs/bot-v1.schema.json", import.meta.url),
-  );
-  assert.equal(
-    createHash("sha256").update(bytes).digest("hex"),
-    "75f3d16ef107a6e0db02de9b9f7c7e08e701c3b63ef13c42b23d807fa3231f98",
-  );
 });

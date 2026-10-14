@@ -205,7 +205,7 @@ Direct bot access: a bot running on the configured `trust` socket IP may use HTT
 
 ## Deploying an external agent
 
-Use the frozen `/api/bot/v1/` for agent integrations; the existing `/api/` Nginx location
+Use `/api/bot/v1/` for agent integrations; the existing `/api/` Nginx location
 already proxies these HTTP and WebSocket routes, including the configured base
 path. Keep `Authorization` and `Idempotency-Key` headers intact. The external
 worker needs its own runtime/dependencies, process supervisor, secret injection

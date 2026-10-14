@@ -1,11 +1,12 @@
-//! Frozen v1 HTTP transport; mutations use stable IDs and typed engine errors.
+//! V1 HTTP transport; mutations use stable IDs and typed engine errors.
 use super::{
+    auth::Context,
     error::{Code, Error},
     models,
 };
 use crate::{
     engine::{HistoryRange, authorization::Action},
-    web::{App, Change, auth, socket},
+    web::{App, Change},
 };
 use axum::{
     Json, Router,
@@ -24,6 +25,8 @@ pub(super) fn routes() -> Router<App> {
             "/api/bot/v1",
             Router::new()
                 .route("/me", get(me))
+                .route("/credentials", post(credential))
+                .route("/conversations", post(conversation))
                 .route("/history", get(history))
                 .route("/messages", post(message))
                 .route("/read", post(read))
@@ -34,52 +37,28 @@ pub(super) fn routes() -> Router<App> {
         .layer(axum::extract::DefaultBodyLimit::max(32768))
 }
 
-fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, Error> {
-    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(Error::new(Code::Unavailable, "Server stopping."));
-    }
-    let secret = auth::bearer(headers)
-        .ok_or_else(|| Error::new(Code::Unauthorized, "Bot credential required."))?;
-    let engine = app.engine_read().map_err(Error::storage)?;
-    let user = engine
-        .bot_identity(secret)
-        .ok_or_else(|| Error::new(Code::Unauthorized, "Invalid bot credential."))?;
-    engine
-        .data
-        .users
-        .get(&user)
-        .map(|a| a.id.clone())
-        .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))
-}
-fn recheck(
-    engine: &crate::engine::Engine,
-    headers: &HeaderMap,
-    account: &str,
-) -> Result<String, Error> {
-    let user = auth::identity(engine, headers)
-        .filter(|name| engine.data.users.get(name).is_some_and(|a| a.id == account))
-        .ok_or_else(|| Error::new(Code::Unauthorized, "Credential changed or revoked."))?;
-    Ok(user)
+fn authenticate(app: &App, headers: &HeaderMap) -> Result<Context, Error> {
+    Context::authenticate(app, headers)
 }
 async fn work<T: Serialize + Send + 'static>(
     app: App,
     headers: HeaderMap,
-    job: impl FnOnce(&App, &HeaderMap, &str) -> Result<T, Error> + Send + 'static,
+    job: impl FnOnce(&App, &Context) -> Result<T, Error> + Send + 'static,
 ) -> Result<Json<T>, Error> {
     let permit = app.io_permit().map_err(Error::storage)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let user = authenticate(&app, &headers)?;
-        job(&app, &headers, &user).map(Json)
+        let context = authenticate(&app, &headers)?;
+        job(&app, &context).map(Json)
     })
     .await
     .map_err(Error::storage)?
 }
 async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Json<models::Snapshot>, Error> {
-    work(app, headers, |app, headers, user| {
+    work(app, headers, |app, context| {
         let engine = app.engine_read().map_err(Error::storage)?;
-        let user = recheck(&engine, headers, user)?;
-        engine.bot_snapshot(&user)
+        context.user(&engine)?;
+        context.snapshot(&engine)
     })
     .await
 }
@@ -93,24 +72,28 @@ struct HistoryQuery {
     after: Option<u64>,
     around: Option<u64>,
     limit: Option<usize>,
+    content_revision: Option<u64>,
 }
 async fn history(
     State(app): State<App>,
     headers: HeaderMap,
     Query(input): Query<HistoryQuery>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, headers, user| {
+    work(app, headers, move |app, context| {
         if input.limit.is_some_and(|limit| limit > 100) { return Err(Error::new(Code::InvalidRequest,"History limit is at most 100.")); }
         let range = HistoryRange { start: input.start, end: input.end, before: input.before, after: input.after, around: input.around, limit: input.limit };
         range.validate().map_err(|e| Error::new(Code::InvalidRequest, e))?;
         let (revision, store) = {
             let engine = app.engine_read().map_err(Error::storage)?;
-            let user = recheck(&engine, headers, user)?;
+            let user = context.user(&engine)?;
+            context.permits(&engine, "read", Some(&input.conversation_id))?;
             (engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision, engine.history_store.clone())
         };
+        if input.content_revision.is_some_and(|expected| expected != revision) { return Err(Error::new(Code::Conflict, "Content revision changed; rescan history.")); }
         let page = store.page_checked(&input.conversation_id, revision, range, "");
         let engine = app.engine_read().map_err(Error::storage)?;
-        let user = recheck(&engine, headers, user)?;
+        let user = context.user(&engine)?;
+        context.permits(&engine, "read", Some(&input.conversation_id))?;
         if engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision != revision {
             return Err(Error::new(Code::Conflict, "History changed; retry the page."));
         }
@@ -119,20 +102,33 @@ async fn history(
             crate::engine::HistoryError::InvalidRange(error) => Error::new(Code::InvalidRequest, error),
             crate::engine::HistoryError::Unavailable(error) => Error::storage(error),
         })?;
-        Ok(json!({"conversation_id":input.conversation_id,"messages":page.messages.iter().map(models::message_json).collect::<Vec<_>>(),"revision":page.revision,"has_before":page.has_before,"has_after":page.has_after}))
+        Ok(json!({"conversation_id":input.conversation_id,"messages":page.messages.iter().map(models::message_json).collect::<Vec<_>>(),"content_revision":page.revision,"has_before":page.has_before,"has_after":page.has_after}))
     }).await
 }
-fn admit(
-    engine: &mut crate::engine::Engine,
-    headers: &HeaderMap,
-    account: &str,
-) -> Result<String, Error> {
-    let user = recheck(engine, headers, account)?;
-    engine
-        .admit_bot_input(
-            auth::bearer(headers)
-                .ok_or_else(|| Error::new(Code::Unauthorized, "Bot credential required."))?,
+// Capture authorization and revision, release the engine lock for SQLite reads.
+fn inspect<T>(
+    app: &App,
+    context: &Context,
+    id: &str,
+    read: impl FnOnce(&crate::engine::HistoryStore) -> Result<T, String>,
+) -> Result<(u64, T), Error> {
+    let (revision, store) = {
+        let engine = app.engine_read().map_err(Error::storage)?;
+        let user = context.user(&engine)?;
+        context.permits(&engine, "read", Some(id))?;
+        (
+            engine.bot_target(&user, id, Action::Read)?.revision,
+            engine.history_store.clone(),
         )
+    };
+    read(&store)
+        .map(|value| (revision, value))
+        .map_err(Error::storage)
+}
+fn admit(engine: &mut crate::engine::Engine, context: &Context) -> Result<String, Error> {
+    let user = context.user(engine)?;
+    engine
+        .admit_bot_account(&context.account)
         .map_err(|e| Error::new(Code::RateLimited, e))?;
     Ok(user)
 }
@@ -142,9 +138,10 @@ async fn message(
     Json(input): Json<models::MessageInput>,
 ) -> Result<Json<Value>, Error> {
     let key = idempotency_key(&headers)?;
-    work(app, headers, move |app, headers, user| {
+    work(app, headers, move |app, context| {
         let mut engine = app.engine().map_err(Error::storage)?;
-        let user = admit(&mut engine, headers, user)?;
+        let user = admit(&mut engine, context)?;
+        context.permits(&engine, "send", Some(&input.conversation_id))?;
         let sent = engine.send_bot_message(&user, &input, Some(&key))?;
         if !sent.replayed {
             let _ = app
@@ -160,19 +157,40 @@ async fn message(
 struct Read {
     conversation_id: String,
     through: u64,
+    acknowledge_shared_unread: bool,
 }
 async fn read(
     State(app): State<App>,
     headers: HeaderMap,
     Json(input): Json<Read>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, headers, user| {
+    work(app, headers, move |app, context| {
+        let (revision, retained) = inspect(app, context, &input.conversation_id, |store| {
+            store.contains_sequence(&input.conversation_id, input.through)
+        })?;
         let mut engine = app.engine().map_err(Error::storage)?;
         if input.through > 9_007_199_254_740_991 {
             return Err(Error::new(Code::InvalidRequest, "Invalid sequence."));
         }
-        let user = admit(&mut engine, headers, user)?;
-        if engine.bot_read(&user, &input.conversation_id, input.through)? {
+        let user = admit(&mut engine, context)?;
+        if !input.acknowledge_shared_unread {
+            return Err(Error::new(
+                Code::InvalidRequest,
+                "Explicit shared unread acknowledgement required.",
+            ));
+        }
+        context.permits(&engine, "read_ack", Some(&input.conversation_id))?;
+        if engine
+            .bot_target(&user, &input.conversation_id, Action::Read)?
+            .revision
+            != revision
+        {
+            return Err(Error::new(
+                Code::Conflict,
+                "Conversation changed; retry acknowledgement.",
+            ));
+        }
+        if engine.bot_read_checked(&user, &input.conversation_id, input.through, retained)? {
             let _ = app.changes.send(Change::Read(user));
         }
         Ok(json!({"ok":true}))
@@ -202,13 +220,31 @@ async fn react(
             "Reactions support 1–128 characters without controls.",
         ));
     }
-    work(app, headers, move |app, headers, user| {
+    work(app, headers, move |app, context| {
+        let (revision, original) = inspect(app, context, &input.conversation_id, |store| {
+            store.locate(&input.message_id)
+        })?;
+        let original = original
+            .filter(|(id, _)| id == &input.conversation_id)
+            .map(|(_, m)| m)
+            .ok_or_else(|| Error::new(Code::NotFound, "Message not found in this conversation."))?;
         let mut engine = app.engine().map_err(Error::storage)?;
-        let user = admit(&mut engine, headers, user)?;
-        if engine.bot_react(
+        let user = admit(&mut engine, context)?;
+        context.permits(&engine, "react", Some(&input.conversation_id))?;
+        if engine
+            .bot_target(&user, &input.conversation_id, Action::Read)?
+            .revision
+            != revision
+        {
+            return Err(Error::new(
+                Code::Conflict,
+                "Conversation changed; retry reaction.",
+            ));
+        }
+        if engine.bot_react_loaded(
             &user,
             &input.conversation_id,
-            &input.message_id,
+            original,
             &input.reaction,
             input.active,
         )? {
@@ -220,27 +256,47 @@ async fn react(
     })
     .await
 }
+async fn credential(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<models::CredentialInput>,
+) -> Result<Json<Value>, Error> {
+    work(app, headers, move |app, context| {
+        let mut engine = app.engine().map_err(Error::storage)?;
+        admit(&mut engine, context)?;
+        engine.issue_bot_credential(context, input)
+    })
+    .await
+}
+async fn conversation(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<models::ConversationInput>,
+) -> Result<Json<Value>, Error> {
+    work(app, headers, move |app, context| {
+        let mut engine = app.engine().map_err(Error::storage)?;
+        let user = admit(&mut engine, context)?;
+        context.permits(&engine, "create", None)?;
+        if context.metadata(&engine)?.conversations.is_some() {
+            return Err(Error::new(
+                Code::Forbidden,
+                "Creation requires an account-wide credential.",
+            ));
+        }
+        let id = engine.create_bot_conversation(&user, input)?;
+        let _ = app.changes.send(Change::All);
+        Ok(json!({"conversation_id":id}))
+    })
+    .await
+}
 async fn upgrade(
     State(app): State<App>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, Error> {
-    if auth::bearer(&headers).is_none() {
-        return Err(Error::new(Code::Unauthorized, "Bot credential required."));
-    }
-    socket::upgrade(State(app), headers, ws)
-        .await
-        .map_err(|(status, _)| {
-            Error::new(
-                if status == StatusCode::UNAUTHORIZED {
-                    Code::Unauthorized
-                } else {
-                    Code::Unavailable
-                },
-                "Socket unavailable.",
-            )
-        })
+    super::socket::upgrade(app, headers, ws).await
 }
+
 fn idempotency_key(headers: &HeaderMap) -> Result<String, Error> {
     let mut values = headers.get_all("idempotency-key").iter();
     let key = values.next().and_then(|v| v.to_str().ok()).filter(|key| {
@@ -259,7 +315,7 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, Error> {
     }
 }
 async fn schema(State(app): State<App>, headers: HeaderMap) -> Result<Json<Value>, Error> {
-    work(app, headers, |_, _, _| {
+    work(app, headers, |_, _| {
         serde_json::from_str(include_str!("../../../docs/bot-v1.schema.json"))
             .map_err(Error::storage)
     })

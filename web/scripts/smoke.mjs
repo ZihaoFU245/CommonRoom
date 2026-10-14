@@ -1385,7 +1385,7 @@ try {
   await request("logout", pagingCookie, {});
   assert.equal((await request("history?view=paged", pagingCookie)).status, 401);
   await stop();
-  // Frozen bot profile: every real response/frame passes the published schema.
+  // Bot profile: every real response/frame passes the published schema.
   const botData = join(temporary, "bots");
   await start(botData, true, undefined, "/commonroom/");
   child.stdin.write(
@@ -1429,6 +1429,8 @@ try {
           messages: "SendResponse",
           read: "Ok",
           reactions: "Ok",
+          credentials: "CredentialResponse",
+          conversations: "ConversationResponse",
         }[endpoint],
         value,
       );
@@ -1463,6 +1465,23 @@ try {
   assert.equal(
     (await botFetch("commands", { command: "/whoami" })).status,
     404,
+  );
+  const scoped = await botFetch("credentials", {
+    label: "reader",
+    expires: Math.floor(Date.now() / 1000) + 600,
+    conversations: [conversationId],
+    operations: ["read"],
+  });
+  assert.equal(scoped.status, 200);
+  const scopedResponse = await fetch(`${base}/api/bot/v1/me`, {
+    headers: { Authorization: `Bearer ${scoped.value.token}` },
+  });
+  const scopedSnapshot = validate("Snapshot", await scopedResponse.json());
+  assert.equal(scopedSnapshot.conversations[0].permissions.send, false);
+  const scopedSocket = await connect(null, scoped.value.token, true);
+  assert.equal(
+    scopedSocket.frames.find((f) => f.kind === "snapshot").credential.id,
+    scoped.value.id,
   );
   const agent = await connect(null, botSecret, true);
   agent.ws.send(
@@ -1534,6 +1553,42 @@ try {
       ),
     "unsolicited response rejected",
   );
+  agent.ws.send(
+    JSON.stringify(
+      validate("ClientFrame", {
+        kind: "activity",
+        conversation_id: conversationId,
+        state: "working",
+      }),
+    ),
+  );
+  await until(
+    () =>
+      agent.frames.some((f) => f.kind === "activity" && f.state === "working"),
+    "bot activity signal",
+  );
+  await until(
+    () =>
+      scopedSocket.frames.some(
+        (f) => f.kind === "activity" && f.state === "working",
+      ),
+    "scoped activity observer",
+  );
+  scopedSocket.ws.send(
+    JSON.stringify({
+      kind: "activity",
+      conversation_id: conversationId,
+      state: "working",
+    }),
+  );
+  await until(
+    () =>
+      scopedSocket.frames.some(
+        (f) => f.kind === "error" && f.error.code === "forbidden",
+      ),
+    "read-only token cannot publish activity",
+  );
+  scopedSocket.ws.close();
   await send(botAdmin, "@helper please help", "support");
   await until(
     () =>
@@ -1580,13 +1635,19 @@ try {
       await botFetch("read", {
         conversation_id: conversationId,
         through: mention.sequence,
+        acknowledge_shared_unread: true,
       })
     ).status,
     200,
   );
   assert.equal(
-    (await botFetch("read", { conversation_id: "missing", through: 1 })).value
-      .error.code,
+    (
+      await botFetch("read", {
+        conversation_id: "missing",
+        through: 1,
+        acknowledge_shared_unread: true,
+      })
+    ).value.error.code,
     "not_found",
   );
   const durable = {
@@ -1682,11 +1743,20 @@ try {
     ).value.messages.at(-1).text,
     "while agent offline",
   );
+  const persistedCredential = await fetch(`${base}/api/bot/v1/me`, {
+    headers: { Authorization: `Bearer ${scoped.value.token}` },
+  });
+  assert.equal(persistedCredential.status, 200);
+  assert.equal(
+    validate("Snapshot", await persistedCredential.json()).credential.id,
+    scoped.value.id,
+  );
   const botReconnected = await connect(null, botSecret, true);
   await send(offlineAdmin, "/bot token ls helper");
   const credentialId = offlineAdmin.frames
     .find((f) => f.id === offlineAdmin.serial)
-    .text.split("\n")[1]
+    .text.split("\n")
+    .find((line) => line.includes(" runner created="))
     .split(" ")[0];
   await send(offlineAdmin, `/bot token rm helper ${credentialId}`);
   await until(

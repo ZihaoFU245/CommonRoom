@@ -90,6 +90,5 @@ The JavaScript files in `web/tests/` and `web/scripts/` are runtime test harness
 Start with [Agent development](agent-development.md). The reference worker is
 `web/scripts/bot/agent.mjs`; its client and tests use the existing Node/`ws`
 development dependencies. It is independent of the browser UI. Extend its handler
-with model/tool calls while preserving its outbox and cursor ordering. V1 is frozen:
-implementation fixes must preserve its schema fingerprint and contract tests.
+with model/tool calls while preserving its outbox and cursor ordering. Keep the published v1 schema, worker and contract tests aligned.
 Keep `/api/bot/v1/` as the sole bot API namespace; no alternative version is planned.

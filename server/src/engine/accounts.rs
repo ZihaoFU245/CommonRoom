@@ -84,6 +84,7 @@ impl Engine {
                 }
             }
         }
+        self.bot_index = crate::bots::models::Index::build(&self.data);
         self.revision = self.revision.wrapping_add(1);
         Ok(format!("Renamed {name} to {new_name}."))
     }
@@ -357,6 +358,7 @@ impl Engine {
         for positions in self.read_positions.values_mut() {
             positions.retain(|view, _| !removed.contains(view));
         }
+        self.bot_index = crate::bots::models::Index::build(&self.data);
         self.revision = self.revision.wrapping_add(1);
         Ok(format!(
             "Deleted account {name} and its private conversations. Room messages retained as {deleted_author}."

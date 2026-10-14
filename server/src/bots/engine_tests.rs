@@ -476,6 +476,8 @@ fn mixed_browser_and_bot_sends_preserve_quotes_retention_and_shared_cursors() {
     assert_eq!(
         e.bot_snapshot("helper").unwrap().conversations[0]
             .unread
+            .as_ref()
+            .unwrap()
             .count,
         0
     );

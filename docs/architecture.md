@@ -22,8 +22,12 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
 | `tests.rs` | Engine regression tests using isolated storage |
 
-`server/src/bots/` owns the frozen machine profile, credential management and
-runtime configuration. `bots/engine.rs` is an engine extension for typed chat
+`server/src/bots/` owns the machine profile, credential management and
+runtime configuration. Bot-only account/credential/conversation indexes rebuild
+after metadata commits; new private chats add their index entry on commit.
+`bots/socket.rs` caches credential context and rechecks live expiry/revocation without
+rehashing credentials. Read/reaction preflight reads release the engine lock and
+recheck conversation revisions before committing. `bots/engine.rs` is an engine extension for typed chat
 operations using stable conversation IDs. Browser and bot adapters share message
 insertion, reply quotes, action authorization and reaction mutation in
 `engine/messages.rs`, transaction completion/rollback in `engine/dispatch.rs`,

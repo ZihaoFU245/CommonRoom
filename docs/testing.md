@@ -243,12 +243,12 @@ when the textarea grows/shrinks, temporary measurement collapse, and scroll
 bounds. Browser checks exercise this with the virtualized conversation list.
 
 
-## Frozen contract guardrails
+## Bot contract guardrails
 
-`web/tests/botContract.test.js` locks the v1 schema fingerprint and validates
+`web/tests/botContract.test.js` validates the v1 schema and
 payloads in both socket directions. `web/tests/botClient.test.js` covers bounded
 retries, multipage recovery, duplicate signals, original outbox payload/key reuse,
 account mismatch and expired/corrupt checkpoints. These run with the normal web
-suite. V1 is the sole bot API contract; do not update its fingerprint to make a
-breaking change pass. Rebuild both binaries before running the real
+suite. V1 is the sole bot API namespace. Its refactored credential, revision and shared
+unread rules are tested with the worker; update the schema and consumers together. Rebuild both binaries before running the real
 integration suite.

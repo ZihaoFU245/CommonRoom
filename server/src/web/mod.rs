@@ -67,7 +67,7 @@ impl App {
     }
     // Extra tabs only change a counter; preserve shared baselines unless the
     // visible online directory changes.
-    pub(super) fn update_presence(
+    pub(crate) fn update_presence(
         &self,
         old: Option<&str>,
         current: Option<&str>,

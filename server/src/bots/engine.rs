@@ -19,28 +19,36 @@ impl Engine {
         if !self.active(user) {
             return Err(Error::new(Code::Unauthorized, "Account unavailable."));
         }
-        let target = self
-            .data
-            .rooms
-            .iter()
-            .find(|(_, r)| r.id == id)
-            .map(|(view, r)| Target {
+        let view = self
+            .bot_index
+            .conversations
+            .get(id)
+            .ok_or_else(|| Error::new(Code::NotFound, "Conversation not found."))?;
+        let target = if let Some(key) = view.strip_prefix("@private:") {
+            let chat = self
+                .data
+                .private
+                .get(key)
+                .filter(|c| c.id == id)
+                .ok_or_else(|| Error::new(Code::NotFound, "Conversation not found."))?;
+            Target {
+                view: view.clone(),
+                scope: self.private_scope(key),
+                revision: chat.revision,
+            }
+        } else {
+            let room = self
+                .data
+                .rooms
+                .get(view)
+                .filter(|r| r.id == id)
+                .ok_or_else(|| Error::new(Code::NotFound, "Conversation not found."))?;
+            Target {
                 view: view.clone(),
                 scope: Scope::Room(id.into()),
-                revision: r.revision,
-            })
-            .or_else(|| {
-                self.data
-                    .private
-                    .iter()
-                    .find(|(_, c)| c.id == id)
-                    .map(|(key, c)| Target {
-                        view: format!("@private:{key}"),
-                        scope: self.private_scope(key),
-                        revision: c.revision,
-                    })
-            })
-            .ok_or_else(|| Error::new(Code::NotFound, "Conversation not found."))?;
+                revision: room.revision,
+            }
+        };
         if !self.allows(Some(user), &target.scope, action) {
             return Err(Error::new(
                 Code::Forbidden,
@@ -56,7 +64,9 @@ impl Engine {
             .get(user)
             .filter(|a| !a.disabled)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?;
-        let unread = self.unreads(user).map_err(Error::storage)?;
+        self.history_store
+            .ensure_available()
+            .map_err(Error::storage)?;
         let mut conversations = Vec::new();
         for (id, view) in self
             .data
@@ -111,14 +121,18 @@ impl Engine {
                     reply: command("/reply", Action::Send),
                     react: command("/react", Action::React),
                 },
-                unread: unread
-                    .get(&view)
-                    .cloned()
-                    .ok_or_else(|| Error::storage("Missing unread metadata"))?,
+                content_revision: target.revision,
+                unread: {
+                    let key = target.view.strip_prefix("@private:").map_or_else(|| format!("room:{}", target.view), |pair| format!("dm:{pair}"));
+                    self.history_store.unread(id, user, self.read_position(user, &key), target.revision).map_err(|_| {
+                        tracing::warn!(conversation_id = %id, "Bot conversation unread metadata unavailable");
+                    }).ok()
+                },
             });
         }
         Ok(models::Snapshot {
             kind: "snapshot",
+            credential: serde_json::Value::Null,
             account: models::Account {
                 id: account.id.clone(),
                 username: user.into(),
@@ -126,7 +140,151 @@ impl Engine {
             conversations,
         })
     }
+    pub(crate) fn issue_bot_credential(
+        &mut self,
+        context: &crate::bots::auth::Context,
+        input: models::CredentialInput,
+    ) -> Result<serde_json::Value, Error> {
+        context.permits(self, "credentials", None)?;
+        if context.metadata(self)?.conversations.is_some() {
+            return Err(Error::new(
+                Code::Forbidden,
+                "Only an account-wide provisioning credential may issue tokens.",
+            ));
+        }
+        if !valid_name(&input.label)
+            || input.expires <= now()
+            || input.expires > now().saturating_add(86400)
+            || input.operations.is_empty()
+            || input
+                .operations
+                .iter()
+                .any(|op| !models::OPERATIONS.contains(&op.as_str()))
+            || input.conversations.iter().any(|id| !models::valid_id(id))
+        {
+            return Err(Error::new(
+                Code::InvalidRequest,
+                "Use valid scopes, operations and an expiry within 24 hours.",
+            ));
+        }
+        let user = context.user(self)?;
+        for id in &input.conversations {
+            self.bot_target(&user, id, Action::Read)?;
+        }
+        let registration = self
+            .data
+            .bots
+            .get_mut(&context.account)
+            .ok_or_else(|| Error::new(Code::Unauthorized, "Registration gone."))?;
+        if registration.tokens.len() >= 8
+            || registration.tokens.values().any(|c| c.label == input.label)
+        {
+            return Err(Error::new(
+                Code::InvalidRequest,
+                "Credential limit or duplicate label.",
+            ));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let secret = format!(
+            "bot_{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        registration.tokens.insert(
+            id.clone(),
+            models::Credential {
+                label: input.label,
+                digest: crate::bots::digest(&secret),
+                created: now(),
+                expires: Some(input.expires),
+                conversations: Some(input.conversations),
+                operations: Some(input.operations),
+            },
+        );
+        if let Err(error) = self.save() {
+            if let Some(r) = self.data.bots.get_mut(&context.account) {
+                r.tokens.remove(&id);
+            }
+            return Err(Error::storage(error));
+        }
+        Ok(serde_json::json!({"id":id,"token":secret,"expires":input.expires}))
+    }
+    pub(crate) fn create_bot_conversation(
+        &mut self,
+        user: &str,
+        input: models::ConversationInput,
+    ) -> Result<String, Error> {
+        match input {
+            models::ConversationInput::Room { name } => {
+                if !valid_name(&name) {
+                    return Err(Error::new(Code::InvalidRequest, "Invalid room name."));
+                }
+                self.require(Some(user), &Scope::Server, Action::CreateRoom)
+                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                self.require_target_command(Some(user), &Scope::Server, "/new")
+                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                if self.data.rooms.contains_key(&name) {
+                    return Err(Error::new(Code::Conflict, "Room already exists."));
+                }
+                self.execute(Some(user), None, &format!("/new room {name}"))
+                    .map_err(Error::storage)?;
+                self.data
+                    .rooms
+                    .get(&name)
+                    .map(|r| r.id.clone())
+                    .ok_or_else(|| Error::storage("Missing room"))
+            }
+            models::ConversationInput::Direct { username } => {
+                if !valid_name(&username) {
+                    return Err(Error::new(Code::InvalidRequest, "Invalid username."));
+                }
+                if !self.active(&username) {
+                    return Err(Error::new(Code::NotFound, "Account not found."));
+                }
+                let key = private_key(user, &username);
+                let scope = self.private_scope(&key);
+                self.require_target_command(Some(user), &scope, "/tell")
+                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                self.require(Some(user), &scope, Action::Send)
+                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                if let Some(c) = self.data.private.get(&key) {
+                    return Ok(c.id.clone());
+                }
+                self.require(Some(user), &Scope::Server, Action::Direct)
+                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                let Scope::Private(id) = scope else {
+                    return Err(Error::storage("Missing private scope"));
+                };
+                self.data.private.insert(
+                    key.clone(),
+                    PrivateChat {
+                        id: id.clone(),
+                        ..Default::default()
+                    },
+                );
+                if let Err(error) = self.save() {
+                    self.data.private.remove(&key);
+                    return Err(Error::storage(error));
+                }
+                Ok(id)
+            }
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn bot_read(&mut self, user: &str, id: &str, through: u64) -> Result<bool, Error> {
+        let retained = self
+            .history_store
+            .contains_sequence(id, through)
+            .map_err(Error::storage)?;
+        self.bot_read_checked(user, id, through, retained)
+    }
+    pub(crate) fn bot_read_checked(
+        &mut self,
+        user: &str,
+        id: &str,
+        through: u64,
+        retained: bool,
+    ) -> Result<bool, Error> {
         let target = self.bot_target(user, id, Action::Read)?;
         let key = target.view.strip_prefix("@private:").map_or_else(
             || format!("room:{}", target.view),
@@ -135,11 +293,7 @@ impl Engine {
         if self.read_position(user, &key) >= through {
             return Ok(false);
         }
-        if !self
-            .history_store
-            .contains_sequence(id, through)
-            .map_err(Error::storage)?
-        {
+        if !retained {
             return Err(Error::new(
                 Code::MessageGone,
                 "Read position is no longer retained.",
@@ -149,6 +303,7 @@ impl Engine {
         self.advance_read_position(user, &key, through)
             .map_err(Error::storage)
     }
+    #[cfg(test)]
     pub(crate) fn bot_react(
         &mut self,
         user: &str,
@@ -157,7 +312,25 @@ impl Engine {
         reaction: &str,
         active: bool,
     ) -> Result<bool, Error> {
-        if !models::valid_id(message_id) {
+        let original = self
+            .history_store
+            .locate(message_id)
+            .map_err(Error::storage)?
+            .filter(|(conversation, _)| conversation == id)
+            .map(|(_, m)| m)
+            .ok_or_else(|| Error::new(Code::NotFound, "Message not found in this conversation."))?;
+        self.bot_react_loaded(user, id, original, reaction, active)
+    }
+    pub(crate) fn bot_react_loaded(
+        &mut self,
+        user: &str,
+        id: &str,
+        original: Message,
+        reaction: &str,
+        active: bool,
+    ) -> Result<bool, Error> {
+        let message_id = original.id.clone();
+        if !models::valid_id(&message_id) {
             return Err(Error::new(Code::InvalidRequest, "Invalid message ID."));
         }
         let target = self.bot_target(user, id, Action::Read)?;
@@ -173,13 +346,6 @@ impl Engine {
         {
             return Err(Error::new(Code::Forbidden, "Reaction permission denied."));
         }
-        let original = self
-            .history_store
-            .locate(message_id)
-            .map_err(Error::storage)?
-            .filter(|(conversation, _)| conversation == id)
-            .map(|(_, m)| m)
-            .ok_or_else(|| Error::new(Code::NotFound, "Message not found in this conversation."))?;
         // Load only the affected row, then share mutation/rollback with browser toggles.
         let messages = if let Some(pair) = target.view.strip_prefix("@private:") {
             self.data.private.get_mut(pair).map(|c| &mut c.messages)
@@ -192,11 +358,11 @@ impl Engine {
         .ok_or_else(|| Error::storage("Missing conversation"))?;
         messages.push_back(original);
         let change = self
-            .capture_message_change(&target.view, Some(message_id), true)
+            .capture_message_change(&target.view, Some(&message_id), true)
             .ok_or_else(|| Error::storage("Missing reaction rollback"))?;
         self.changed_conversation = None;
         let result = self
-            .update_reaction(&target.scope, user, message_id, reaction, Some(active))
+            .update_reaction(&target.scope, user, &message_id, reaction, Some(active))
             .map_err(|error| match error {
                 messages::ReactionError::Limit => {
                     Error::new(Code::InvalidRequest, "At most 32 reactions per message.")

@@ -1,7 +1,7 @@
-# Building an agent against frozen v1
+# Building an agent against v1
 
 This guide describes the worker responsibilities and our recommended starting
-point. [Bots](bots.md) and its [schema](bot-v1.schema.json) define the frozen wire
+point. [Bots](bots.md) and its [schema](bot-v1.schema.json) define the wire
 contract. Keep models, tools and scheduling outside CommonRoom; the server owns
 identity, scoped chat access and retained history.
 
@@ -14,7 +14,8 @@ schema. This separation makes transport behavior reusable without an agent
 framework. Node 22.18+ and the project's locked development dependencies suffice.
 
 Provision `/bot new helper support` and `/bot token new helper worker`, then
-inject the one-time secret as `BOT_TOKEN`. Never put it in code, URLs or logs.
+use the operator credential to issue a restricted expiring worker token through
+`POST /api/bot/v1/credentials`, then inject that secret as `BOT_TOKEN`. Never put it in code, URLs or logs.
 
 ```sh
 rtk pnpm --dir web install --frozen-lockfile
@@ -50,8 +51,20 @@ calls `onGap`; global sequence gaps alone do not prove lost input.
 `onMessage(message,{view,conversation,username,client})` runs sequentially for
 incoming messages. Own messages are skipped by `author_id`. Advance the cursor
 only after the handler succeeds. `/read` controls shared unread state and is
-separate from this processing checkpoint. Edits/reactions preserve sequence;
-an agent responding to those changes needs its own explicit state and policy.
+separate from this processing checkpoint. **Never call `/read` to acknowledge processing**: it changes the
+human-facing unread badge for the whole account. Leave `read_ack` out of worker
+credentials unless shared unread changes are intentional.
+
+Edits/reactions/retractions change `content_revision` without advancing message
+sequence. `onRevision({conversation,view,previous,revision,client})` runs when a
+saved revision differs, even with no new input. Stateful workers should use it to
+rescan retained history with a pinned `content_revision`, compare message IDs and
+content with their own durable state, and cancel/update affected tasks. It can also
+fire for sends; it is not a classified change event. Commit the worker's changes
+before returning; failed callbacks leave the saved revision unchanged. The default
+reference handler consumes new mentions only. A null unread entry defers that
+conversation without resetting its checkpoint. Checkpoint format is now version 2;
+old checkpoints require deliberate reconciliation before replacement.
 
 ## Produce reliable output
 
@@ -69,7 +82,17 @@ with pending sends preserve the outbox for inspection. Removed input or an
 inaccessible pending destination also stops for inspection. GET/read/desired-state
 reaction operations have bounded retries; unavailable upstream responses back off.
 
-External tools need their own durable task IDs/retry policy. A chat receipt does
+Use `client.sendLong(text,options)` for long outputs; it preserves numbered part
+slots and adds `[i/n]` continuation markers. Send an `activity` socket frame with
+`state:"working"` while waiting on a model/tool, refresh it within 30 seconds, then
+send `idle`. This ephemeral signal does not acknowledge or claim an input.
+
+**Chat retries deduplicate delivery, not external effects.** External tools need
+their own durable task IDs/retry policy. `client.taskId(slot)` returns a stable
+conversation/input-message/slot identifier during `onMessage`; supply it to an
+external idempotent API or durable execution ledger. It does not itself prevent
+an effect. Include a worker-owned content revision in task policy when edits
+should deliberately create a new operation. A chat receipt does
 not make a payment, file write or other side effect exactly-once. We recommend
 starting with one mention-triggered model call and one reply, then adding tool
 budgets, deadlines, cancellation and bot-to-bot loop rules deliberately.
@@ -88,6 +111,5 @@ Run [Testing](testing.md), then check the real hostname/base path, credential
 rotation, network interruption, restart and expired input. Log operational IDs
 sparingly and omit message bodies, prompts and credentials.
 
-V1's fields, endpoints, limits and meanings are frozen. Keep implementation fixes
-compatible; v1 is the sole bot API contract. The schema fingerprint and live
-contract-validation tests are the guardrails for future development.
+V1 is the sole bot API namespace. Keep the published schema, worker and live
+contract tests aligned when changing it; browser endpoints remain separate.

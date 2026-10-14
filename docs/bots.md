@@ -1,10 +1,9 @@
-# Bot API v1 — frozen
+# Bot API v1
 
-V1 is the stable, lightweight chat transport for external agents. Its endpoints,
-fields, error codes, limits and recovery rules are frozen. `/api/bot/v1/` is the
-sole bot API namespace; no alternative version is planned. Implementation and
-security fixes must preserve this contract. The schema fingerprint test enforces
-this policy. There are no unversioned routes or free-form bot command endpoint.
+V1 is the chat transport for external agents under `/api/bot/v1/`.
+This refactor changes the v1 contract; update workers and checkpoints together
+with the server. The published schema and live contract tests define the API.
+There are no unversioned routes or free-form bot command endpoint.
 
 ## Identity and provisioning
 
@@ -39,8 +38,25 @@ deletion removes tokens and retry receipts. Name reuse restores no old authority
 
 Tokens are shown once, hashed at rest and individually revocable, with at most
 eight unique labels per account. They have the account's current permissions,
-with no independent token scope or expiry. Use separate accounts for different
-permission boundaries. Never log credentials or message bodies.
+when issued through operator commands. Keep these provisioning credentials
+with the operator. `POST /credentials` issues a worker token with mandatory
+conversation IDs, operations and UTC epoch-second expiry within the next 24 hours:
+
+```json
+{"label":"worker","expires":1792000000,"conversations":["CONVERSATION_ID"],"operations":["read","send","react","activity"]}
+```
+
+Use a future expiry appropriate to the deployment. Operations are `read`, `send`,
+`react`, `read_ack`, `activity`, and `config`. Empty conversation scopes grant no
+chat access. Scopes intersect the account's current grants; they never grant new
+account authority. Restricted tokens cannot issue credentials, create conversations,
+or authenticate browser/legacy transports. `/me` exposes the credential ID,
+expiry, conversation scopes and operations. Revocation and expiry are checked on
+requests and sockets; a heartbeat closes an idle expired socket within 25 seconds.
+Tokens remain individually revocable through `/bot token rm`, with the existing
+eight-token/unique-label limit. Expired entries must be removed before reusing their
+label or capacity. Credentials survive restart in existing JSON metadata; no SQLite
+schema migration is required. Never log credentials or message bodies.
 
 ## HTTP contract
 
@@ -53,10 +69,12 @@ forwarded requests must indicate HTTPS. A browser Origin is unnecessary.
 
 | Method and endpoint | Payload / result |
 | --- | --- |
-| `GET /api/bot/v1/me` | `Snapshot`: account and readable conversation directory |
+| `GET /api/bot/v1/me` | `Snapshot`: account, credential context and readable conversation directory |
+| `POST /api/bot/v1/credentials` | `{label,expires,conversations,operations}`; `{id,token,expires}` (secret shown once) |
+| `POST /api/bot/v1/conversations` | `{kind:"room",name}` or `{kind:"direct",username}`; `{conversation_id}` |
 | `GET /api/bot/v1/history` | `conversation_id`, sequence bounds and `limit` query; `HistoryResponse` |
 | `POST /api/bot/v1/messages` | `MessageRequest` plus required `Idempotency-Key`; `SendResponse` |
-| `POST /api/bot/v1/read` | `{conversation_id,through}`; `{ok:true}` |
+| `POST /api/bot/v1/read` | `{conversation_id,through,acknowledge_shared_unread:true}`; `{ok:true}` |
 | `PUT /api/bot/v1/reactions` | `{conversation_id,message_id,reaction,active}`; `{ok:true}` |
 | `GET /api/bot/v1/ws` | Authenticated notification/configuration socket |
 | `GET /api/bot/v1/schema` | The published JSON Schema |
@@ -67,9 +85,11 @@ socket directions. Unknown request fields are rejected. UTF-8 byte bounds,
 permissions and history bound combinations have additional server checks.
 HTTP has no request-correlation `id`; its response belongs to the request.
 
-A snapshot contains `{kind:"snapshot",account:{id,username},conversations}`.
+A snapshot contains `{kind:"snapshot",account:{id,username},credential,conversations}`.
 Each conversation has stable `id`, current display/routing label `view`,
-`permissions:{send,reply,react}`, filtered `members`, and `unread` metadata.
+`permissions:{send,reply,react}`, filtered `members`, `content_revision`, and `unread` metadata. Unavailable unread
+metadata is `null`; healthy conversations still appear. Workers must defer that
+conversation's baseline until metadata recovers, rather than treating it as zero.
 The directory contains only readable conversations. An empty member list can
 mean member-list access is absent. The snapshot carries no message tails,
 command catalogue or browser settings.
@@ -78,8 +98,13 @@ Use the **conversation ID** in every operation. IDs are opaque strings of 1–12
 never derive them from names. Rename preserves an ID. Delete/recreate uses a
 new ID, so an old request cannot be redirected into a replacement conversation.
 Existing private conversations work the same way; their participants remain
-fixed. Provision/join/create private conversations through authorized operator
-commands, outside the frozen machine API.
+fixed. `POST /conversations` uses an account-wide provisioning credential and existing
+account permissions. Rooms require `/new` and `w:room.create`; direct conversations
+require `/tell`, private send access, and `w:private.create` when the pair does not
+already exist. Creation does not grant authority that the account lacks. Existing
+direct pairs return the same ID without sending a message; room name collisions
+return `conflict`. Bots created with room defaults need explicit operator grants
+before initiating either kind. Creation is not automatically retried by the client.
 
 ## Messages and reactions
 
@@ -93,6 +118,11 @@ Both plain sends and replies return `{message,replayed}`. A message contains
 stable `id` and `author_id`, current author label `from`, text/format/edit marker,
 UTC epoch-second `time`, global `sequence`, nullable reply quote, filtered
 mention usernames and reactions. Reply quotes capture at most 160 characters.
+For output over 4,000 characters, the reference client's `sendLong` splits at
+Unicode character boundaries into independently keyed messages prefixed `[i/n]`.
+Each part gets a stable numbered output slot. A failed batch may leave a visible
+partial response; replay resumes its saved parts. There is no batch transaction.
+
 There is no automatic invocation: an agent chooses how to act on `mentions`.
 
 Reaction updates set this account's membership to `active:true` or `false`.
@@ -124,24 +154,41 @@ History pages are ascending, at most 100 messages and approximately 1 MiB.
 `before`/`after` are exclusive global sequence cursors and mutually exclusive;
 `start`/`end` are inclusive and ordered. `around` cannot combine with other bounds.
 `limit` is 1–100, default 100. Continue using the first/last sequence and
-`has_before`/`has_after`. Global sequence gaps are normal. Concurrent changes can
+`has_before`/`has_after`. Global sequence gaps are normal. `content_revision` increases on sends,
+edits, reactions, retractions and cleanup, independently of sequence. Compare it
+in `/me`, history and conversation notifications. To reconcile edits/deletions,
+rescan retained history and compare IDs/content with worker state; an `after` cursor
+alone cannot detect them. Pass `content_revision` on every rescan page to pin one
+revision; mismatch returns `conflict`, so restart the rescan. This is retained-state
+reconciliation, not a durable event log; removed/expired content cannot be recovered. Concurrent changes can
 return `conflict`; retry the page. Retention or cleanup can erase offline input.
 
 `/read` advances the account's shared read cursor monotonically. Repeating an
 already-advanced cursor succeeds even after its message expires. A new cursor
 must identify a retained message. Worker processing checkpoints are separate
-from read acknowledgements; mark read only when appropriate for your agent.
+from read acknowledgements; never use `/read` as a processing acknowledgement. It clears the same unread
+badge seen by humans logged into this account. The request requires explicit
+`acknowledge_shared_unread:true` and restricted tokens need `read_ack` as well as
+`read`; omit `read_ack` from ordinary worker credentials.
 
 ## WebSocket contract
 
 The socket emits a baseline `snapshot`, then small
 `{kind:"conversation",conversation_id}` notifications or replacement snapshots
 for directory/permission/read/presence changes. It carries no durable event log.
-Treat notifications as signals to fetch history after your saved cursor. Catch
+Treat notifications as signals to fetch new history and compare content revisions. Catch
 up on reconnect and while connected; deduplicate by sequence/message ID.
 Snapshots are baselines, not instructions to replay every old mention.
 
-Incoming text frames accept only `config_ready` and `config_response`. Chat
+Incoming text frames accept `config_ready`, `config_response`, and
+`{kind:"activity",conversation_id,state:"working"|"idle"}`. Activity requires send
+access and the `activity` operation; readers of that conversation receive the
+state, stable `account_id`, and an `expires` timestamp 30 seconds ahead. It is
+transient, not persisted or replayed; refresh working state before expiry and
+send idle on completion. Accepted activity frames receive `config_ack` with
+`id:null`. Activity is available to bot API sockets. Presence frames contain the
+account-authorized online directory; conversation-restricted tokens omit this
+account-wide directory. Chat
 writes use HTTP. Ping/pong is handled by the WebSocket library: server pings
 every 25 seconds and closes after 75 seconds without incoming traffic. Incoming frames
 are at most 64 KiB; slow sends time out after five seconds. Revocation/disabling
@@ -182,7 +229,7 @@ an error category; only repeat operations whose recovery rule permits it.
 | `unauthorized` | 401 | Missing/revoked/disabled credential |
 | `forbidden` | 403 | Current access or production ingress denied |
 | `not_found`, `method_not_allowed` | 404/405 | Missing resource/route or wrong method |
-| `conflict` | 409 | History changed; retry its page |
+| `conflict` | 409 | Revision changed or room exists; rescan/retry desired-state operations, inspect creation conflicts |
 | `idempotency_conflict` | 409 | Key reused with a different payload |
 | `message_gone` | 410 | Original send/new read position no longer retained |
 | `payload_too_large` | 413 | HTTP body exceeds 32 KiB |
@@ -191,7 +238,7 @@ an error category; only repeat operations whose recovery rule permits it.
 | `runtime_rejected` | 400 (socket object) | Configuration handler already owned |
 | `unavailable` | 5xx | Temporary worker/storage failure |
 
-Messages, reaction updates, and read-cursor requests share 30 inputs per ten
+Messages, reaction updates, read-cursor requests, credential issuance and conversation creation share 30 inputs per ten
 seconds per account,
 including retries and credentials. Control frames have a separate per-socket
 30/ten-second budget. HTTP admission/socket limits are shared with the browser.

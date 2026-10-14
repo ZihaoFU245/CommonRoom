@@ -122,8 +122,16 @@ struct Connection {
     id: String,
     sender: mpsc::Sender<Request>,
 }
-#[derive(Clone, Default)]
-pub(crate) struct Hub(Arc<Mutex<BTreeMap<String, Connection>>>);
+#[derive(Clone)]
+pub(crate) struct Hub(
+    Arc<Mutex<BTreeMap<String, Connection>>>,
+    pub tokio::sync::broadcast::Sender<serde_json::Value>,
+);
+impl Default for Hub {
+    fn default() -> Self {
+        Self(Arc::default(), tokio::sync::broadcast::channel(64).0)
+    }
+}
 pub(crate) struct Lease {
     hub: Hub,
     target: String,
@@ -243,5 +251,104 @@ pub(crate) fn validate_response(
             Err(format!("External runtime: {error}"))
         }
         _ => Err("Invalid external runtime configuration response.".into()),
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SocketRuntime {
+    lease: Option<crate::bots::runtime::Lease>,
+    pub(crate) pending: std::collections::BTreeMap<String, crate::bots::runtime::Request>,
+}
+impl SocketRuntime {
+    pub(crate) async fn control(
+        &mut self,
+        app: &App,
+        headers: &HeaderMap,
+        raw: &str,
+        count: u32,
+        sender: &tokio::sync::mpsc::Sender<crate::bots::runtime::Request>,
+    ) -> (Option<String>, Result<(), crate::bots::error::Error>) {
+        use crate::bots::{
+            error::{Code, Error},
+            runtime::{Control, validate_response},
+        };
+        if count > 30 {
+            return (
+                None,
+                Err(Error::new(
+                    Code::RateLimited,
+                    "At most 30 control frames per 10 seconds.",
+                )),
+            );
+        }
+        match serde_json::from_str::<Control>(raw) {
+            Ok(Control::Ready) => {
+                let result = if self.lease.is_some() {
+                    Ok(())
+                } else {
+                    let app = app.clone();
+                    let headers = headers.clone();
+                    let sender = sender.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        let context = crate::bots::auth::Context::authenticate(&app, &headers)?;
+                        let engine = app.engine_read().map_err(Error::storage)?;
+                        context.permits(&engine, "config", None)?;
+                        let id = context.account;
+                        app.bot_runtimes.register(id, sender)
+                    })
+                    .await
+                    {
+                        Ok(Ok(lease)) => {
+                            self.lease = Some(lease);
+                            Ok(())
+                        }
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(Error::storage("Runtime registration worker unavailable.")),
+                    }
+                };
+                (None, result)
+            }
+            Ok(Control::Response { id, values, error }) => {
+                let result = (|| {
+                    let request = self.pending.remove(&id).ok_or_else(|| {
+                        Error::new(Code::NotFound, "Unknown or expired configuration request.")
+                    })?;
+                    if request.reply.is_closed() {
+                        return Err(Error::new(Code::NotFound, "Configuration request expired."));
+                    }
+                    let remote_error = values.is_none()
+                        && error
+                            .as_ref()
+                            .is_some_and(|e| !e.is_empty() && e.len() <= 1024);
+                    let response = validate_response(values, error);
+                    let invalid = response.is_err() && !remote_error
+                        || request.command.key.as_ref().is_some_and(|key| {
+                            response.as_ref().is_ok_and(|v| v.keys().any(|k| k != key))
+                        });
+                    let response = if invalid {
+                        Err("Invalid runtime configuration response.".into())
+                    } else {
+                        response
+                    };
+                    let _ = request.reply.send(response);
+                    if invalid {
+                        Err(Error::new(
+                            Code::InvalidRequest,
+                            "Invalid runtime configuration response.",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })();
+                (Some(id), result)
+            }
+            Err(_) => (
+                None,
+                Err(Error::new(
+                    Code::InvalidRequest,
+                    "Only config_ready and config_response frames are accepted; send chat through HTTP.",
+                )),
+            ),
+        }
     }
 }

@@ -21,10 +21,17 @@ const message = (sequence, author = "human") => ({
 const snapshot = (through = 0, id = "room-id", view = "support") => ({
   kind: "snapshot",
   account: { id: "bot-id", username: "helper" },
+  credential: {
+    id: "credential-id",
+    expires: null,
+    conversations: null,
+    operations: null,
+  },
   conversations: [
     {
       id,
       view,
+      content_revision: 1,
       permissions: { send: true, reply: true, react: true },
       members: ["helper"],
       unread: {
@@ -40,7 +47,7 @@ const snapshot = (through = 0, id = "room-id", view = "support") => ({
 const page = (messages, hasAfter = false, id = "room-id") => ({
   conversation_id: id,
   messages,
-  revision: 1,
+  content_revision: 1,
   has_before: false,
   has_after: hasAfter,
 });
@@ -214,7 +221,8 @@ test("crash recovery preserves the original payload and key until the input curs
 test("expired ambiguous sends and corrupt or mismatched checkpoints stop without resending", async () =>
   fixture(async (statePath) => {
     const state = {
-      version: 1,
+      version: 2,
+      revisions: {},
       account: "bot-id",
       cursors: { "room-id": 0 },
       outbox: {
@@ -271,4 +279,91 @@ test("opaque identifiers do not inherit object properties", async () =>
     await restored.load();
     assert.equal(Object.getPrototypeOf(restored.state.cursors), null);
     assert.equal(restored.state.cursors["__proto__"], 0);
+  }));
+
+test("revision callbacks survive restart and run even with no new sequences", async () =>
+  fixture(async (statePath) => {
+    const revisions = [];
+    const options = {
+      statePath,
+      api: { request: async () => page([]) },
+      onMessage: async () => assert.fail("no new input"),
+      onRevision: async (change) => revisions.push(change.revision),
+    };
+    const client = new AgentClient(options);
+    await client.sync(snapshot(1));
+    const edited = snapshot(1);
+    edited.conversations[0].content_revision = 2;
+    await client.sync(edited);
+    const restored = new AgentClient(options);
+    await restored.load();
+    const removed = snapshot(1);
+    removed.conversations[0].content_revision = 3;
+    await restored.sync(removed);
+    assert.deepEqual(revisions, [2, 3]);
+  }));
+
+test("long output splits Unicode safely and assigns stable part slots", async () =>
+  fixture(async (statePath) => {
+    const inputs = [];
+    const client = new AgentClient({
+      statePath,
+      replayHistory: true,
+      api: {
+        request: async (path, options) => {
+          if (path.startsWith("history")) return page([message(1)]);
+          inputs.push(options.body);
+          return { message: message(2, "bot-id"), replayed: false };
+        },
+      },
+      onMessage: async (_message, { client }) => {
+        assert.equal(client.taskId("ticket"), "room-id:m-1:ticket");
+        await client.sendLong("🙂".repeat(8100), { slot: "report" });
+      },
+    });
+    await client.sync(snapshot(1));
+    assert.equal(inputs.length, 3);
+    assert.ok(inputs.every((input) => Array.from(input.text).length <= 4000));
+    assert.equal(
+      inputs.map((input) => input.text.replace(/^\[\d+\/\d+\] /, "")).join(""),
+      "🙂".repeat(8100),
+    );
+  }));
+
+test("long output recovery retains the entire original batch when the model changes", async () =>
+  fixture(async (statePath) => {
+    let failed = false;
+    const delivered = [];
+    const api = {
+      request: async (path, options) => {
+        if (path.startsWith("history")) return page([message(1)]);
+        const saved = JSON.parse(await readFile(statePath, "utf8"));
+        assert.equal(Object.keys(saved.outbox).length, 3);
+        if (!failed) {
+          failed = true;
+          throw new TypeError("lost response");
+        }
+        delivered.push(options.body.text);
+        return { message: message(2, "bot-id"), replayed: false };
+      },
+    };
+    const first = new AgentClient({
+      api,
+      statePath,
+      replayHistory: true,
+      onMessage: async (_m, { client }) => client.sendLong("🙂".repeat(8100)),
+    });
+    await assert.rejects(first.sync(snapshot(1)), TypeError);
+    const restored = new AgentClient({
+      api,
+      statePath,
+      onMessage: async (_m, { client }) => client.sendLong("short replacement"),
+    });
+    await restored.load();
+    await restored.sync(snapshot(1));
+    assert.equal(delivered.length, 3);
+    assert.equal(
+      delivered.map((text) => text.replace(/^\[\d+\/\d+\] /, "")).join(""),
+      "🙂".repeat(8100),
+    );
   }));

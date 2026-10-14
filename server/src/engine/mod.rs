@@ -26,6 +26,7 @@ use dispatch::CommandContext;
 pub use dispatch::sudo_command;
 use helpers::*;
 pub use helpers::{hash_password, valid_name, verify_password};
+pub(crate) use history::HistoryStore;
 pub use history::{HistoryError, HistoryRange};
 pub use models::*;
 use rusqlite::{Connection, params};
@@ -48,6 +49,7 @@ pub struct Engine {
     pending_deletes: Vec<(String, u64)>,
     pending_cleanups: Vec<(String, u64)>,
     online_connections: BTreeMap<String, usize>,
+    pub(crate) bot_index: crate::bots::models::Index,
     bot_budgets: BTreeMap<String, (std::time::Instant, u32)>,
     read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     authorization: authorization::CompiledPolicy,

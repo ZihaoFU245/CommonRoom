@@ -107,6 +107,7 @@ impl Engine {
             chat.messages.clear();
         }
         Ok(Self {
+            bot_index: crate::bots::models::Index::build(&data),
             authorization,
             online_connections: BTreeMap::new(),
             bot_budgets: BTreeMap::new(),
@@ -224,6 +225,7 @@ impl Engine {
         if let Some(authorization) = authorization {
             self.authorization = authorization;
         }
+        self.bot_index = crate::bots::models::Index::build(&self.data);
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
@@ -714,6 +716,11 @@ impl Engine {
         }
         tx.commit().map_err(|e| storage_error(e.to_string()))?;
         self.changed_conversation = (!change.new_conversation()).then(|| id.clone());
+        if change.new_conversation() {
+            self.bot_index
+                .conversations
+                .insert(id.clone(), format!("@private:{}", change.key));
+        }
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }

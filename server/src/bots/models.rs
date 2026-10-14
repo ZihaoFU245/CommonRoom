@@ -20,6 +20,7 @@ pub struct SendResult {
 pub struct Snapshot {
     pub kind: &'static str,
     pub account: Account,
+    pub credential: serde_json::Value,
     pub conversations: Vec<Conversation>,
 }
 #[derive(Serialize)]
@@ -33,7 +34,8 @@ pub struct Conversation {
     pub view: String,
     pub permissions: Permissions,
     pub members: Vec<String>,
-    pub unread: crate::engine::Unread,
+    pub unread: Option<crate::engine::Unread>,
+    pub content_revision: u64,
 }
 #[derive(Serialize)]
 pub struct Permissions {
@@ -49,7 +51,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
-// An explicit projection insulates frozen fields from browser/model additions.
+// An explicit projection insulates bot fields from browser/model additions.
 pub(crate) fn message_json(m: &crate::engine::Message) -> serde_json::Value {
     serde_json::json!({"id":m.id,"from":m.from,"author_id":m.author_id,"text":m.text,
         "markdown":m.markdown,"edited":m.edited,"time":m.time,"sequence":m.sequence,
@@ -77,6 +79,12 @@ pub struct Credential {
     pub label: String,
     pub digest: String,
     pub created: u64,
+    #[serde(default)]
+    pub expires: Option<u64>,
+    #[serde(default)]
+    pub conversations: Option<std::collections::BTreeSet<String>>,
+    #[serde(default)]
+    pub operations: Option<std::collections::BTreeSet<String>>,
 }
 
 pub(crate) fn validate(data: &crate::engine::Data) -> Result<(), String> {
@@ -89,6 +97,14 @@ pub(crate) fn validate(data: &crate::engine::Data) -> Result<(), String> {
         for (token_id, token) in &registration.tokens {
             if uuid::Uuid::parse_str(token_id).is_err()
                 || token.label.is_empty()
+                || token.expires.is_some_and(|at| at > 9_007_199_254_740_991)
+                || token
+                    .conversations
+                    .as_ref()
+                    .is_some_and(|ids| ids.iter().any(|id| !valid_id(id)))
+                || token.operations.as_ref().is_some_and(|ops| {
+                    ops.is_empty() || ops.iter().any(|op| !OPERATIONS.contains(&op.as_str()))
+                })
                 || token.digest.len() != 64
                 || !token.digest.bytes().all(|b| b.is_ascii_hexdigit())
                 || !digests.insert(&token.digest)
@@ -99,4 +115,60 @@ pub(crate) fn validate(data: &crate::engine::Data) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Bot-only lookup tables, rebuilt after metadata commits, never per heartbeat.
+#[derive(Default)]
+pub(crate) struct Index {
+    pub accounts: std::collections::HashMap<String, String>,
+    pub credentials: std::collections::HashMap<String, (String, String)>,
+    pub conversations: std::collections::HashMap<String, String>,
+}
+impl Index {
+    pub fn build(data: &crate::engine::Data) -> Self {
+        Self {
+            accounts: data
+                .users
+                .iter()
+                .map(|(name, a)| (a.id.clone(), name.clone()))
+                .collect(),
+            credentials: data
+                .bots
+                .iter()
+                .flat_map(|(account, r)| {
+                    r.tokens
+                        .iter()
+                        .map(move |(id, c)| (c.digest.clone(), (account.clone(), id.clone())))
+                })
+                .collect(),
+            conversations: data
+                .rooms
+                .iter()
+                .map(|(name, r)| (r.id.clone(), name.clone()))
+                .chain(
+                    data.private
+                        .iter()
+                        .map(|(key, c)| (c.id.clone(), format!("@private:{key}"))),
+                )
+                .collect(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CredentialInput {
+    pub label: String,
+    pub expires: u64,
+    pub conversations: std::collections::BTreeSet<String>,
+    pub operations: std::collections::BTreeSet<String>,
+}
+pub(crate) const OPERATIONS: &[&str] = &["read", "send", "react", "read_ack", "activity", "config"];
+#[derive(Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(crate) enum ConversationInput {
+    #[serde(rename = "room")]
+    Room { name: String },
+    #[serde(rename = "direct")]
+    Direct { username: String },
 }

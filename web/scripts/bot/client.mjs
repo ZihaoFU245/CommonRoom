@@ -42,6 +42,8 @@ export class BotApi {
       messages: "MessageRequest",
       read: "ReadRequest",
       reactions: "ReactionRequest",
+      credentials: "CredentialRequest",
+      conversations: "ConversationRequest",
     };
     const responses = {
       me: "Snapshot",
@@ -49,6 +51,8 @@ export class BotApi {
       messages: "SendResponse",
       read: "Ok",
       reactions: "Ok",
+      credentials: "CredentialResponse",
+      conversations: "ConversationResponse",
     };
     if (body !== undefined) validate(requests[endpoint], body);
     if (endpoint === "messages") validate("IdempotencyKey", key);
@@ -130,14 +134,23 @@ export class AgentClient {
     statePath,
     onMessage,
     onGap = () => {},
+    onRevision = () => {},
     replayHistory = false,
   }) {
-    Object.assign(this, { api, statePath, onMessage, onGap, replayHistory });
+    Object.assign(this, {
+      api,
+      statePath,
+      onMessage,
+      onGap,
+      onRevision,
+      replayHistory,
+    });
     this.state = {
-      version: 1,
+      version: 2,
       account: null,
       cursors: Object.create(null),
       outbox: Object.create(null),
+      revisions: Object.create(null),
     };
     this.snapshot = null;
     this.active = null;
@@ -147,10 +160,14 @@ export class AgentClient {
       const state = JSON.parse(await readFile(this.statePath, "utf8"));
       const record = (v) => v && typeof v === "object" && !Array.isArray(v);
       if (
-        state.version !== 1 ||
+        state.version !== 2 ||
         (state.account !== null && typeof state.account !== "string") ||
         !record(state.cursors) ||
         !record(state.outbox) ||
+        !record(state.revisions) ||
+        !Object.values(state.revisions).every(
+          (n) => Number.isSafeInteger(n) && n >= 0,
+        ) ||
         !Object.values(state.cursors).every(
           (n) => Number.isSafeInteger(n) && n >= 0,
         )
@@ -171,6 +188,7 @@ export class AgentClient {
           validate("SendResponse", entry.response);
       }
       state.cursors = Object.assign(Object.create(null), state.cursors);
+      state.revisions = Object.assign(Object.create(null), state.revisions);
       state.outbox = Object.assign(Object.create(null), state.outbox);
       this.state = state;
     } catch (error) {
@@ -184,7 +202,7 @@ export class AgentClient {
     });
     await rename(temporary, this.statePath);
   }
-  async send(text, { replyTo, markdown = true, slot = "answer" } = {}) {
+  queue(text, { replyTo, markdown = true, slot = "answer" } = {}) {
     if (!this.active) throw new Error("Send inside onMessage.");
     const source = `${this.active.conversation}:${this.active.message.id}`;
     const operation = `${source}:${slot}`;
@@ -206,6 +224,10 @@ export class AgentClient {
         source,
       };
     }
+    return entry;
+  }
+  async send(text, options = {}) {
+    const entry = this.queue(text, options);
     if (entry.response) return entry.response;
     if (Date.now() - entry.created >= 23 * 60 * 60 * 1000)
       throw new Error(
@@ -220,6 +242,50 @@ export class AgentClient {
     await this.save();
     return entry.response;
   }
+  taskId(slot = "tool") {
+    if (!this.active) throw new Error("Use taskId inside onMessage.");
+    return `${this.active.conversation}:${this.active.message.id}:${slot}`;
+  }
+  async sendLong(text, options = {}) {
+    const slot = options.slot || "answer";
+    const prefix = `${this.taskId(slot)}:`;
+    const pending = Object.keys(this.state.outbox)
+      .filter(
+        (key) =>
+          key.startsWith(prefix) &&
+          /^[1-9][0-9]*$/.test(key.slice(prefix.length)),
+      )
+      .sort(
+        (a, b) =>
+          Number(a.slice(prefix.length)) - Number(b.slice(prefix.length)),
+      );
+    if (pending.length === 0) {
+      const characters = Array.from(text);
+      if (characters.length <= 4000 || this.state.outbox[this.taskId(slot)])
+        return [await this.send(text, options)];
+      const count = Math.ceil(characters.length / 3900);
+      if (Object.keys(this.state.outbox).length + count > 4096)
+        throw new Error("Agent outbox is full.");
+      for (let part = 1; part <= count; part++) {
+        this.queue(
+          `[${part}/${count}] ${characters.slice((part - 1) * 3900, part * 3900).join("")}`,
+          { ...options, slot: `${slot}:${part}` },
+        );
+        pending.push(`${prefix}${part}`);
+      }
+      await this.save();
+    }
+    const sent = [];
+    for (const key of pending) {
+      sent.push(
+        await this.send(this.state.outbox[key].input.text, {
+          ...options,
+          slot: `${slot}:${key.slice(prefix.length)}`,
+        }),
+      );
+    }
+    return sent;
+  }
   async sync(snapshot) {
     this.snapshot = validate("Snapshot", snapshot);
     const account = snapshot.account.id;
@@ -232,7 +298,23 @@ export class AgentClient {
         throw new Error(
           "Pending send target is inaccessible; inspect the outbox.",
         );
-    for (const { id, view, unread } of snapshot.conversations) {
+    for (const {
+      id,
+      view,
+      unread,
+      content_revision: revision,
+    } of snapshot.conversations) {
+      if (unread === null) continue;
+      const previousRevision = this.state.revisions[id];
+      if (previousRevision !== undefined && previousRevision !== revision) {
+        await this.onRevision({
+          conversation: id,
+          view,
+          previous: previousRevision,
+          revision,
+          client: this,
+        });
+      }
       if (this.state.cursors[id] === undefined) {
         this.state.cursors[id] = this.replayHistory ? 0 : unread.through;
         await this.save();
@@ -293,9 +375,14 @@ export class AgentClient {
         if (after === this.state.cursors[id])
           throw new Error("History pagination made no progress.");
       }
+      this.state.revisions[id] = revision;
+      await this.save();
     }
     for (const id of Object.keys(this.state.cursors))
-      if (!live.has(id)) delete this.state.cursors[id];
+      if (!live.has(id)) {
+        delete this.state.cursors[id];
+        delete this.state.revisions[id];
+      }
     await this.save();
   }
   async run({ signal } = {}) {

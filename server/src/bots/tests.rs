@@ -372,7 +372,7 @@ async fn send(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 #[tokio::test]
-async fn frozen_profile_is_bearer_only_scoped_and_has_no_command_transport() {
+async fn profile_is_bearer_only_scoped_and_has_no_command_transport() {
     let (app, token) = fixture();
     assert_eq!(
         request(&app, None, "GET", "/api/bot/v1/me", json!({}))
@@ -459,7 +459,7 @@ async fn keyed_plain_sends_and_replies_are_atomic_literal_and_uniform() {
             Some(&token),
             "POST",
             "/api/bot/v1/read",
-            json!({"conversation_id":id,"through":seq})
+            json!({"conversation_id":id,"through":seq,"acknowledge_shared_unread":true})
         )
         .await
         .0,
@@ -517,7 +517,7 @@ async fn read_cursor_inputs_share_the_budget_across_credentials_and_mutations() 
                 Some(&token),
                 "POST",
                 "/api/bot/v1/read",
-                json!({"conversation_id":id,"through":sequence})
+                json!({"conversation_id":id,"through":sequence,"acknowledge_shared_unread":true})
             )
             .await
             .0,
@@ -539,7 +539,7 @@ async fn read_cursor_inputs_share_the_budget_across_credentials_and_mutations() 
             Some(credential),
             "POST",
             "/api/bot/v1/read",
-            json!({"conversation_id":id,"through":sequence}),
+            json!({"conversation_id":id,"through":sequence,"acknowledge_shared_unread":true}),
         )
         .await;
         assert_eq!(blocked.0, StatusCode::TOO_MANY_REQUESTS);
@@ -633,7 +633,7 @@ async fn typed_errors_distinguish_permissions_missing_records_and_failed_storage
             Some(&token),
             "POST",
             "/api/bot/v1/read",
-            json!({"conversation_id":view,"through":1}),
+            json!({"conversation_id":view,"through":1,"acknowledge_shared_unread":true}),
         )
         .await;
         assert_eq!(body["error"]["code"], expected);
@@ -824,13 +824,13 @@ async fn authentication_tracks_stable_accounts_through_rename_and_rejects_cookie
         .execute(None, None, "/rename helper renamed")
         .unwrap();
     assert_eq!(
-        recheck(&app.engine_read().unwrap(), &headers, &account).unwrap(),
+        account.user(&app.engine_read().unwrap()).unwrap(),
         "renamed"
     );
     let snapshot = request(&app, Some(&token), "GET", "/api/bot/v1/me", json!({}))
         .await
         .1;
-    assert_eq!(snapshot["account"]["id"], account);
+    assert_eq!(snapshot["account"]["id"], account.account);
     assert_eq!(snapshot["account"]["username"], "renamed");
     let hash = app.engine_read().unwrap().data.users["renamed"]
         .hash
@@ -852,4 +852,266 @@ async fn authentication_tracks_stable_accounts_through_rename_and_rejects_cookie
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     headers.append(header::AUTHORIZATION, "Bearer invalid".parse().unwrap());
     assert!(authenticate(&app, &headers).is_err());
+}
+
+#[tokio::test]
+async fn revisions_detect_edits_and_retractions_without_advancing_sequence() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let sent = send(
+        &app,
+        &token,
+        "revision",
+        json!({"conversation_id":id,"text":"original"}),
+    )
+    .await
+    .1;
+    let path = format!("/api/bot/v1/history?conversation_id={id}");
+    let first = request(&app, Some(&token), "GET", &path, json!({})).await.1;
+    let revision = first["content_revision"].as_u64().unwrap();
+    let message = sent["message"]["id"].as_str().unwrap();
+    app.engine()
+        .unwrap()
+        .execute(None, Some("support"), &format!("/edit {message} edited"))
+        .unwrap();
+    let edited = request(&app, Some(&token), "GET", &path, json!({})).await.1;
+    assert_eq!(
+        edited["messages"][0]["sequence"],
+        sent["message"]["sequence"]
+    );
+    assert!(edited["content_revision"].as_u64().unwrap() > revision);
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            &format!("{path}&content_revision={revision}"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, Some("support"), &format!("/retract {message}"))
+        .unwrap();
+    let removed = request(&app, Some(&token), "GET", &path, json!({})).await.1;
+    assert!(removed["messages"].as_array().unwrap().is_empty());
+    assert!(
+        removed["content_revision"].as_u64().unwrap()
+            > edited["content_revision"].as_u64().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn restricted_credentials_are_scoped_expiring_and_cannot_escape_v1() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let expires = crate::bots::now() + 300;
+    let issued = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/credentials",
+        json!({"label":"reader","expires":expires,"conversations":[id],"operations":["read"]}),
+    )
+    .await;
+    assert_eq!(issued.0, StatusCode::OK);
+    let restricted = issued.1["token"].as_str().unwrap();
+    let snapshot = request(&app, Some(restricted), "GET", "/api/bot/v1/me", json!({}))
+        .await
+        .1;
+    assert_eq!(snapshot["credential"]["expires"], expires);
+    assert_eq!(snapshot["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["conversations"][0]["permissions"]["send"], false);
+    assert_eq!(
+        send(
+            &app,
+            restricted,
+            "denied",
+            json!({"conversation_id":id,"text":"no"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(&app, Some(restricted), "GET", "/api/me", json!({}))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(restricted),
+            "POST",
+            "/api/bot/v1/credentials",
+            json!({"label":"escape","expires":expires,"conversations":[id],"operations":["send"]})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(None, None, "/rename helper renamed")
+            .unwrap();
+        engine
+            .execute(None, None, "/rename room support renamed_room")
+            .unwrap();
+    }
+    let snapshot = request(&app, Some(restricted), "GET", "/api/bot/v1/me", json!({}))
+        .await
+        .1;
+    assert_eq!(snapshot["account"]["username"], "renamed");
+    assert_eq!(snapshot["conversations"][0]["id"], id);
+    let account = app.engine_read().unwrap().data.users["renamed"].id.clone();
+    app.engine()
+        .unwrap()
+        .data
+        .bots
+        .get_mut(&account)
+        .unwrap()
+        .tokens
+        .get_mut(issued.1["id"].as_str().unwrap())
+        .unwrap()
+        .expires = Some(crate::bots::now());
+    assert_eq!(
+        request(&app, Some(restricted), "GET", "/api/bot/v1/me", json!({}))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn conversation_creation_uses_existing_grants_and_shared_read_requires_consent() {
+    let (app, token) = fixture();
+    let room = json!({"kind":"room","name":"created"});
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper @global w:room.create")
+        .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "POST",
+            "/api/bot/v1/conversations",
+            room.clone()
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper @global /new")
+        .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "POST",
+            "/api/bot/v1/conversations",
+            room
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let direct = json!({"kind":"direct","username":"admin"});
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper @global w:private.create")
+        .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "POST",
+            "/api/bot/v1/conversations",
+            direct.clone()
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper @global /tell")
+        .unwrap();
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper @global w:message.create")
+        .unwrap();
+    let created = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/conversations",
+        direct.clone(),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    let repeated = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/conversations",
+        direct,
+    )
+    .await;
+    assert_eq!(created.1, repeated.1);
+    let id = conversation(&app);
+    for consent in [
+        json!({"conversation_id":id,"through":0}),
+        json!({"conversation_id":id,"through":0,"acknowledge_shared_unread":false}),
+    ] {
+        assert!(
+            request(&app, Some(&token), "POST", "/api/bot/v1/read", consent)
+                .await
+                .0
+                .is_client_error()
+        );
+    }
+}
+
+#[tokio::test]
+async fn unhealthy_unread_metadata_does_not_hide_healthy_bot_conversations() {
+    let (app, token) = fixture();
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper secret r:message.read")
+        .unwrap();
+    let id = conversation(&app);
+    send(
+        &app,
+        &token,
+        "corrupt",
+        json!({"conversation_id":id,"text":"fixture"}),
+    )
+    .await;
+    let store = app.engine_read().unwrap().history_store.clone();
+    store
+        .read(|db| {
+            db.execute_batch(
+                "PRAGMA query_only=OFF; UPDATE messages SET sequence=-1; PRAGMA query_only=ON;",
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+    let (status, snapshot) = request(&app, Some(&token), "GET", "/api/bot/v1/me", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(snapshot["conversations"].as_array().unwrap().len(), 2);
+    let broken = snapshot["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["view"] == "support")
+        .unwrap();
+    assert!(broken["unread"].is_null());
 }

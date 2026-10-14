@@ -301,7 +301,7 @@ impl HistoryStore {
             .map_err(|_| "History storage poisoned; restart the service.")?;
         query(&db)
     }
-    pub(super) fn contains_sequence(&self, id: &str, sequence: u64) -> Result<bool, String> {
+    pub(crate) fn contains_sequence(&self, id: &str, sequence: u64) -> Result<bool, String> {
         self.read(|db| {
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence=?2)",

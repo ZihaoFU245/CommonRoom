@@ -113,3 +113,8 @@ The reference agent's checkpoint/outbox defaults to `data/bot-agent-state.json`
 (under `CHAT_DATA` when set), alongside the server files. `BOT_STATE` overrides
 its path. The agent owns this file independently; the server does not read or
 modify it. A separately deployed agent keeps its own local data folder.
+
+Bot credential JSON may include `expires`, `conversations` and `operations`.
+Operator-issued provisioning credentials leave these null; v1-issued worker
+credentials persist restricted scopes and an expiry. These metadata additions
+use the existing entities JSON and require no SQLite schema migration.
