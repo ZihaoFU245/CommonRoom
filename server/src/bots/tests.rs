@@ -40,6 +40,7 @@ fn fixture() -> (App, String) {
             connections: Arc::new(tokio::sync::Semaphore::new(128)),
             io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
             password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+            snapshots: Default::default(),
             bot_runtimes: Default::default(),
             stopping: Default::default(),
         },

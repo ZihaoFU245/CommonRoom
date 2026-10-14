@@ -191,6 +191,8 @@ async function connect(cookie, botToken = null, directBot = false) {
       client.snapshot = applyConversation(client.snapshot, frame);
       assert.ok(client.snapshot);
     }
+    if (frame.kind === "presence")
+      client.snapshot = { ...client.snapshot, online: frame.online };
     if (frame.kind === "read")
       client.snapshot = { ...client.snapshot, unread: frame.unread };
   });
@@ -383,6 +385,9 @@ try {
     () => alice.snapshot.online.includes("bob"),
     "online presence broadcast",
   );
+  const presenceSnapshots = alice.frames.filter(
+    (frame) => frame.kind === "snapshot",
+  ).length;
   const presenceTab = await connect(cookies.bob);
   assert.equal(
     presenceTab.snapshot.online.filter((name) => name === "bob").length,
@@ -395,6 +400,11 @@ try {
   );
   assert.ok(
     (await (await request("me", cookies.alice)).json()).online.includes("bob"),
+  );
+  assert.equal(
+    alice.frames.filter((frame) => frame.kind === "snapshot").length,
+    presenceSnapshots,
+    "extra tabs do not rebuild presence snapshots",
   );
   assert.deepEqual(bob.snapshot.rooms, [], "new users start without rooms");
   assert.deepEqual(

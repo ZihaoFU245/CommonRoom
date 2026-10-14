@@ -19,6 +19,7 @@ fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -75,6 +76,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -93,7 +95,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
     assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
     assert!(error.1.0.to_string().contains("restart the service"));
     assert!(
-        socket::snapshot_value(&app, &headers, false)
+        snapshots::value(&app, &headers, false)
             .unwrap_err()
             .contains("restart the service")
     );
@@ -117,6 +119,7 @@ fn cookies_are_http_only_and_secure_in_production() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -208,6 +211,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -273,6 +277,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -315,6 +320,7 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -394,6 +400,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -566,6 +573,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                 connections: Arc::new(tokio::sync::Semaphore::new(128)),
                 io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
                 password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+                snapshots: Default::default(),
                 bot_runtimes: Default::default(),
                 stopping: Default::default(),
             };
@@ -696,6 +704,7 @@ fn engine_readers_overlap_and_io_admission_is_bounded() {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
     };
@@ -725,4 +734,132 @@ fn configs_with_cache_statistics_remain_one_json_document() {
     assert_eq!(result["history_cache"], stats);
     assert_eq!(result["max_messages"], 1000);
     assert_eq!(result["bind"], config.bind);
+}
+
+#[test]
+fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutations() {
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/new room support")
+        .unwrap();
+    engine
+        .execute(Some("alice"), Some("support"), "initial")
+        .unwrap();
+    engine
+        .provision("bob", "hash".into(), false, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), Some("support"), "/add bob")
+        .unwrap();
+    engine.login("bob".into(), "bob", "hash", None).unwrap();
+    engine.login("one".into(), "alice", "hash", None).unwrap();
+    engine.login("two".into(), "alice", "hash", None).unwrap();
+    let (changes, _) = broadcast::channel(1);
+    let app = App {
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+    };
+    app.update_presence(None, Some("alice")).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let workers: Vec<_> = (0..8)
+        .map(|index| {
+            let app = app.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::COOKIE,
+                    HeaderValue::from_static(if index % 2 == 0 {
+                        "chat_session=one"
+                    } else {
+                        "chat_session=two"
+                    }),
+                );
+                barrier.wait();
+                snapshots::value(&app, &headers, false).unwrap()
+            })
+        })
+        .collect();
+    let values: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert!(
+        values
+            .iter()
+            .all(|value| value.as_str().as_ptr() == values[0].as_str().as_ptr())
+    );
+    assert_eq!(
+        app.engine_read().unwrap().history_store.stats().unwrap()["misses"],
+        1
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(header::COOKIE, HeaderValue::from_static("chat_session=two"));
+    let mut events = app.changes.subscribe();
+    app.update_presence(None, Some("alice")).unwrap();
+    app.update_presence(Some("alice"), None).unwrap();
+    assert!(matches!(
+        events.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+    assert_eq!(
+        snapshots::value(&app, &headers, false)
+            .unwrap()
+            .as_str()
+            .as_ptr(),
+        values[0].as_str().as_ptr()
+    );
+    // Simulate a token expiring while the user's cached baseline remains available.
+    app.engine
+        .write()
+        .unwrap()
+        .data
+        .sessions
+        .get_mut("one")
+        .unwrap()
+        .expires = 0;
+    let mut expired = HeaderMap::new();
+    expired.insert(header::COOKIE, HeaderValue::from_static("chat_session=one"));
+    assert!(snapshots::value(&app, &expired, false).is_err());
+    assert_eq!(
+        snapshots::value(&app, &headers, false)
+            .unwrap()
+            .as_str()
+            .as_ptr(),
+        values[0].as_str().as_ptr()
+    );
+    app.engine()
+        .unwrap()
+        .execute(Some("alice"), Some("support"), "changed")
+        .unwrap();
+    let changed = snapshots::value(&app, &headers, false).unwrap();
+    assert!(changed.contains("changed"));
+    assert_ne!(changed.as_str().as_ptr(), values[0].as_str().as_ptr());
+    let mut bob_headers = HeaderMap::new();
+    bob_headers.insert(header::COOKIE, HeaderValue::from_static("chat_session=bob"));
+    assert!(
+        snapshots::value(&app, &bob_headers, false)
+            .unwrap()
+            .contains("changed")
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/revoke bob user support")
+        .unwrap();
+    let revoked = snapshots::value(&app, &bob_headers, false).unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(&revoked).unwrap();
+    assert!(snapshot["rooms"].as_array().unwrap().is_empty());
+    app.engine().unwrap().logout("two").unwrap();
+    assert!(snapshots::value(&app, &headers, false).is_err());
 }

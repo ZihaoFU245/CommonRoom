@@ -142,16 +142,30 @@ impl Engine {
         }
         Ok(result)
     }
-    pub fn connect(&mut self, name: &str) {
-        *self.online_connections.entry(name.into()).or_default() += 1;
+    pub fn connect(&mut self, name: &str) -> bool {
+        let count = self.online_connections.entry(name.into()).or_default();
+        *count += 1;
+        *count == 1
     }
-    pub fn disconnect(&mut self, name: &str) {
+    pub fn disconnect(&mut self, name: &str) -> bool {
         if let Some(count) = self.online_connections.get_mut(name) {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 self.online_connections.remove(name);
+                return true;
             }
         }
+        false
+    }
+    pub fn online(&self, name: &str) -> Vec<String> {
+        if !self.allows(Some(name), &Scope::Server, Action::Directory) {
+            return Vec::new();
+        }
+        self.online_connections
+            .keys()
+            .filter(|online| self.active(online))
+            .cloned()
+            .collect()
     }
     pub fn conversation_update(
         &self,
@@ -206,6 +220,9 @@ impl Engine {
         ))
     }
     pub fn try_snapshot(&self, name: &str) -> Result<Option<Snapshot>, String> {
+        Ok(self.snapshot_baseline(name)?.map(|(snapshot, _)| snapshot))
+    }
+    pub(crate) fn snapshot_baseline(&self, name: &str) -> Result<Option<(Snapshot, bool)>, String> {
         self.history_store.ensure_available()?;
         let snapshot = self.snapshot_inner(name);
         self.history_store.ensure_available()?;
@@ -215,10 +232,12 @@ impl Engine {
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
         self.try_snapshot(name).ok().flatten()
     }
-    fn snapshot_inner(&self, name: &str) -> Option<Snapshot> {
+    fn snapshot_inner(&self, name: &str) -> Option<(Snapshot, bool)> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         let account_scope = Scope::Account(account.id.clone());
         let mut tails = BTreeMap::new();
+        let mut complete = true;
+        let mut readable = 0;
         let mut tail_budget = 1000usize;
         let mut byte_budget = 4 * 1024 * 1024usize;
         for (id, revision, scope) in self
@@ -233,7 +252,11 @@ impl Engine {
                     .map(|(key, c)| (&c.id, c.revision, self.private_scope(key))),
             )
         {
-            if self.allows(Some(name), &scope, Action::Read) && tail_budget > 0 {
+            if self.allows(Some(name), &scope, Action::Read) {
+                readable += 1;
+                if tail_budget == 0 {
+                    continue;
+                }
                 let page = match self.history_store.page(
                     id,
                     revision,
@@ -246,28 +269,19 @@ impl Engine {
                     Ok(page) => page,
                     Err(_) => {
                         tracing::warn!(conversation_id = %id, "Conversation history unavailable; snapshot tail omitted.");
+                        complete = false;
                         continue;
                     }
                 };
-                let mut messages = Vec::new();
-                for message in page.messages.into_iter().rev() {
-                    let Ok(encoded) = serde_json::to_vec(&message) else {
-                        tracing::warn!(conversation_id = %id, "Message serialization failed; snapshot message omitted.");
-                        continue;
-                    };
-                    let bytes = encoded.len();
-                    if bytes > byte_budget || tail_budget == 0 {
-                        break;
-                    }
-                    byte_budget -= bytes;
-                    tail_budget -= 1;
-                    messages.push(message);
-                }
-                messages.reverse();
+                let messages = page
+                    .messages
+                    .bounded_tail(&mut tail_budget, &mut byte_budget);
                 tails.insert(id.clone(), messages);
             }
         }
-        Some(Snapshot {
+        let unread = self.collect_unreads(name, true).ok()?;
+        complete &= unread.len() == readable;
+        let snapshot = Snapshot {
             kind: "snapshot",
             username: name.into(),
             admin: self.is_admin(name),
@@ -311,15 +325,7 @@ impl Engine {
                 .names(),
             private_commands: self.commands_for(Some(name), Some(&format!("@direct:{name}"))),
             policy_revision: self.data.policy.revision,
-            online: self
-                .online_connections
-                .keys()
-                .filter(|online| {
-                    self.active(online)
-                        && self.allows(Some(name), &Scope::Server, Action::Directory)
-                })
-                .cloned()
-                .collect(),
+            online: self.online(name),
             users: self
                 .data
                 .users
@@ -387,7 +393,13 @@ impl Engine {
                         private_peer(key, name).is_some()
                             && self.allows(Some(name), &self.private_scope(key), Action::Read)
                     })
-                    .flat_map(|(_, chat)| tails.get(&chat.id).into_iter().flatten().cloned())
+                    .flat_map(|(_, chat)| {
+                        tails
+                            .get(&chat.id)
+                            .into_iter()
+                            .flat_map(|page| page.iter())
+                            .cloned()
+                    })
                     .collect();
                 messages.sort_by_key(|m| m.sequence);
                 messages
@@ -400,7 +412,7 @@ impl Engine {
                 .filter_map(|key| private_peer(key, name))
                 .map(String::from)
                 .collect(),
-            unread: self.collect_unreads(name, true).ok()?,
+            unread,
             commands: self.commands_for(Some(name), None),
             available_rooms: self
                 .data
@@ -412,7 +424,8 @@ impl Engine {
                 })
                 .map(|(n, _)| n.clone())
                 .collect(),
-        })
+        };
+        Some((snapshot, complete))
     }
     pub(super) fn apply_queries(&mut self, context: &CommandContext<'_>) -> Result<String, String> {
         let CommandContext {

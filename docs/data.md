@@ -3,11 +3,7 @@
 ## Database compatibility
 
 The current schema is v9. Empty databases initialize transactionally as v9.
-Existing v8 databases upgrade automatically after validating metadata, grants,
-credentials and read cursors. The upgrade adds `bot_receipts` and its expiry index;
-it preserves existing entities, history, sessions, grants and cursors. Table/index
-creation and the version advance commit together. A failed upgrade rolls back DDL
-and leaves the version at v8. Existing v9 databases reopen without migrations.
+Existing v9 databases reopen without migrations. Older schemas are unsupported.
 
 The removed `x:group.su.assign` permission is accepted only in existing stored
 grants and supplies no authority. Those entries are preserved and can be removed
@@ -15,12 +11,9 @@ with `/revoke user scope x:group.su.assign`; new grants of this name are rejecte
 Su group assignment still requires su authority, including authorized `/sudo`.
 This catalog change does not change the v9 schema or require a migration.
 
-Schemas v1–v7, versions newer than v9, and existing unversioned databases are
-rejected before changing journal settings, schema, state or version. Back up v8
-before first starting this binary. Older v8 binaries cannot open an upgraded v9
-folder. To roll back the binary, stop it and restore the entire pre-upgrade backup;
-messages received since that backup will need separate recovery. Do not lower
-`user_version` manually on a working database.
+Schemas other than v9 and existing unversioned databases are rejected before
+changing journal settings, schema, state or version. Do not lower `user_version`
+manually on a working database.
 
 Back up the entire data folder with the server stopped. Stop any reference agent
 writing its checkpoint there too. Tests use isolated temporary data and never
@@ -53,7 +46,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v9 and upgrades v8. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads only v9. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.

@@ -5,7 +5,7 @@ import {
   boundSnapshot,
   bytes,
   mergePage,
-  storeHistory,
+  HistoryCache,
 } from "../src/features/conversation/historyCache.ts";
 const message = (sequence) => ({
   id: String(sequence),
@@ -41,9 +41,9 @@ test("sliding windows evict the opposite end without losing paging direction", (
   assert.equal(newer.has_before, true);
 });
 test("conversation caches also enforce a global entry budget", () => {
-  const cache = new Map();
+  const cache = new HistoryCache();
   for (let index = 0; index < 10; index++)
-    storeHistory(cache, page(String(index), 1, 1000));
+    cache.store(page(String(index), 1, 1000));
   assert.ok(
     [...cache.values()].reduce(
       (count, entry) => count + entry.messages.length,
@@ -98,18 +98,18 @@ test("byte eviction retains the requested edge and permits an oversized single r
   assert.equal(newer.has_before, true);
 });
 test("global cache evicts by recency, view count, and payload budget", () => {
-  const cache = new Map();
-  for (let i = 0; i < 32; i++) storeHistory(cache, page(String(i), 1, 1));
-  storeHistory(cache, cache.get("0"));
-  storeHistory(cache, page("new", 1, 1));
+  const cache = new HistoryCache();
+  for (let i = 0; i < 32; i++) cache.store(page(String(i), 1, 1));
+  cache.store(cache.get("0"));
+  cache.store(page("new", 1, 1));
   assert.ok(cache.has("0"));
   assert.ok(!cache.has("1"));
   assert.equal(cache.size, 32);
   const large = page("large", 1, 10);
   for (const m of large.messages) m.text = "x".repeat(500000);
-  storeHistory(cache, large);
+  cache.store(large);
   const next = { ...large, view: "next", id: "next" };
-  storeHistory(cache, next);
+  cache.store(next);
   assert.ok(!cache.has("large"));
   assert.ok(cache.has("next"));
   assert.ok(
@@ -184,4 +184,17 @@ test("private updates use stable pair IDs and preserve other conversations", () 
   });
   assert.deepEqual(result.direct, [b, replacement]);
   assert.deepEqual(original.direct, [a, b]);
+});
+
+test("deleting and replacing entries updates budgets without evicting unrelated views", () => {
+  const cache = new HistoryCache();
+  for (let i = 0; i < 5; i++) cache.store(page(String(i), 1, 1000));
+  cache.delete("0");
+  cache.store(page("next", 1, 1000));
+  assert.equal(cache.size, 5);
+  assert.ok(cache.has("1"));
+  cache.store(page("1", 1, 100));
+  cache.store(page("small", 1, 900));
+  assert.equal(cache.size, 6);
+  assert.ok(cache.has("2"));
 });

@@ -12,24 +12,34 @@ import { permissionNames } from "./completion.ts";
 export function clearedOrder(cleared: Record<string, number>, view: string) {
   return Object.hasOwn(cleared, view) ? (cleared[view] ?? 0) : 0;
 }
+const ingestIds = new WeakMap<Ledger, Set<string>>();
+const noExtras: Message[] = [];
 export function ingest(
   snapshot: Pick<Snapshot, "rooms" | "direct">,
   ledger: Ledger = { sequence: 0, messages: new Map() },
-  extras: Message[] = [],
+  extras: Message[] = noExtras,
 ) {
-  const messages = [
-    ...new Map(
-      [
-        ...extras,
-        ...snapshot.rooms.flatMap((r) => r.messages),
-        ...snapshot.direct,
-      ].map((message) => [message.id, message]),
-    ).values(),
-  ].sort((a, b) => a.sequence - b.sequence || a.time - b.time);
-  const current = new Set(messages.map((message) => message.id));
+  const current = ingestIds.get(ledger) ?? new Set<string>();
+  ingestIds.set(ledger, current);
+  current.clear();
+  const messages: Message[] = [];
+  let additions = false;
+  function collect(source: Message[]) {
+    for (const message of source) {
+      if (current.has(message.id)) continue;
+      current.add(message.id);
+      messages.push(message);
+      if (!ledger.messages.has(message.id)) additions = true;
+    }
+  }
+  collect(extras);
+  for (const room of snapshot.rooms) collect(room.messages);
+  collect(snapshot.direct);
   for (const key of ledger.messages.keys()) {
     if (!current.has(key)) ledger.messages.delete(key);
   }
+  if (!additions) return ledger;
+  messages.sort((a, b) => a.sequence - b.sequence || a.time - b.time);
   // Insert fetched older history before known messages without moving local
   // command output. New live messages still append to the tab's ledger.
   for (let i = 0; i < messages.length;) {

@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connections: Arc::new(tokio::sync::Semaphore::new(128)),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };

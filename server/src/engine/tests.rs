@@ -840,14 +840,14 @@ fn granted_role_survives_restart() {
 fn online_presence_counts_tabs_and_excludes_disabled_accounts() {
     let mut e = engine();
     let revision = e.revision;
-    e.connect("bob");
-    e.connect("bob");
-    e.connect("eve");
+    assert!(e.connect("bob"));
+    assert!(!e.connect("bob"));
+    assert!(e.connect("eve"));
     assert_eq!(e.snapshot("alice").unwrap().online, vec!["bob", "eve"]);
-    e.disconnect("bob");
+    assert!(!e.disconnect("bob"));
     assert_eq!(e.snapshot("alice").unwrap().online, vec!["bob", "eve"]);
-    e.disconnect("bob");
-    e.disconnect("bob");
+    assert!(e.disconnect("bob"));
+    assert!(!e.disconnect("bob"));
     assert_eq!(e.snapshot("alice").unwrap().online, vec!["eve"]);
     assert_eq!(e.revision, revision);
     e.execute(Some("alice"), None, "/disable eve").unwrap();
@@ -1037,7 +1037,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 5, 6, 7, 10, 99] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 99] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1697,68 +1697,29 @@ fn room_deletion_cleans_cursors_atomically_and_survives_name_reuse() {
     assert_eq!(e.read_position("alice", "room:removed"), 0);
     assert_eq!(e.read_position("alice", "room:retained"), retained);
 }
+
 #[test]
-fn exact_4aba0a6_database_preserves_baseline_data_and_accepts_current_writes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    let fixture = include_str!("../../tests/fixtures/4aba0a6-v8.sql");
-    {
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch(fixture).unwrap();
-    }
-    let mut e = Engine::open(&path).unwrap();
-    assert_eq!(e.data.users.len(), 3);
-    assert!(e.data.users.contains_key(&"界".repeat(32)));
-    assert!(verify_password(
-        "compat-password",
-        &e.data.users["bob"].hash
-    ));
-    assert!(e.data.sessions.contains_key("compat-session"));
-    let sessions = e.data.sessions.clone();
-    let old_room_id = e.data.rooms["baseline"].id.clone();
-    let room_message = room_messages(&e, "baseline")[0].clone();
-    assert_eq!(room_message.text, "baseline room message");
-    assert_eq!(
-        e.read_position("bob", "room:baseline"),
-        room_message.sequence
-    );
-    assert_eq!(
-        e.history("bob", "@direct:alice").unwrap().messages[0].text,
-        "baseline private message"
-    );
-    assert!(!e.is_su(Some("bob")));
-    assert!(
-        e.data
-            .policy
-            .grants
-            .iter()
-            .any(|g| g.permissions.contains("x:group.su.assign"))
-    );
-    e.execute(Some("bob"), Some("baseline"), "current server write")
+fn session_only_rollback_preserves_expired_and_replaced_sessions_on_failure() {
+    let mut e = engine();
+    e.login("existing".into(), "bob", "test-hash", None)
         .unwrap();
-    e.execute(None, None, "/revoke bob @global x:group.su.assign")
+    e.data.sessions.insert(
+        "expired".into(),
+        Session {
+            username: "alice".into(),
+            expires: 0,
+        },
+    );
+    let before = e.data.clone();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("PRAGMA query_only=ON;")
         .unwrap();
-    drop(e);
-    let e = Engine::open(&path).unwrap();
-    assert!(e.data.sessions == sessions);
-    assert_eq!(e.data.rooms["baseline"].id, old_room_id);
-    assert_eq!(room_messages(&e, "baseline").len(), 2);
-    assert_eq!(room_messages(&e, "baseline")[0].id, room_message.id);
-    assert_eq!(
-        e.read_position("bob", "room:baseline"),
-        room_message.sequence
-    );
     assert!(
-        !e.data
-            .policy
-            .grants
-            .iter()
-            .any(|g| g.permissions.contains("x:group.su.assign"))
+        e.login("new".into(), "bob", "test-hash", Some("existing"))
+            .is_err()
     );
-    let version: u32 =
-        e.db.lock()
-            .unwrap()
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-    assert_eq!(version, 9);
+    assert!(e.data == before);
+    assert!(e.logout("existing").is_err());
+    assert!(e.data == before);
 }

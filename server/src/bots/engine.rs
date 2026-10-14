@@ -286,7 +286,7 @@ impl Engine {
                         "",
                     )
                     .map_err(Error::storage)?;
-                let message = page.messages.into_iter().next().ok_or_else(|| {
+                let message = page.messages.first().cloned().ok_or_else(|| {
                     Error::new(Code::MessageGone, "Original message is no longer retained.")
                 })?;
                 return Ok(SendResult {

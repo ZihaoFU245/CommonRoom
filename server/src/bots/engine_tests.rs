@@ -426,68 +426,6 @@ fn runtime_config_uses_existing_command_and_account_action_grants() {
     assert!(e.authorize_bot_config(None, None, "helper", false).is_err());
 }
 
-#[test]
-fn v8_upgrade_preserves_state_and_failed_upgrade_rolls_back_ddl() {
-    for fail in [false, true] {
-        let folder = tempfile::tempdir().unwrap();
-        let path = folder.path().join("chat.sqlite");
-        let previous;
-        {
-            let mut e = Engine::open(&path).unwrap();
-            e.execute(None, None, "/new room support").unwrap();
-            e.execute(None, Some("support"), "/bot new helper").unwrap();
-            e.send_literal("helper", "support", "preserved").unwrap();
-            e.mark_read("helper", "support", 1).unwrap();
-            previous = e.data.clone();
-            e.db.lock()
-                .unwrap()
-                .execute_batch("DROP TABLE bot_receipts; PRAGMA user_version=8;")
-                .unwrap();
-            if fail {
-                e.db.lock()
-                    .unwrap()
-                    .execute_batch(
-                        "CREATE TABLE blocker(n); CREATE INDEX bot_receipts_created ON blocker(n);",
-                    )
-                    .unwrap();
-            }
-        }
-        if fail {
-            assert!(Engine::open(&path).is_err());
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                8
-            );
-            assert_eq!(
-                db.query_row::<usize, _, _>(
-                    "SELECT count(*) FROM sqlite_master WHERE name='bot_receipts'",
-                    [],
-                    |r| r.get(0)
-                )
-                .unwrap(),
-                0
-            );
-        } else {
-            let e = Engine::open(&path).unwrap();
-            assert!(e.data == previous);
-            assert_eq!(
-                e.history("helper", "support").unwrap().messages[0].text,
-                "preserved"
-            );
-            assert_eq!(e.unreads("helper").unwrap()["support"].count, 0);
-            assert_eq!(
-                e.db.lock()
-                    .unwrap()
-                    .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                9
-            );
-        }
-    }
-}
-
 fn input(e: &Engine, view: &str, text: &str) -> crate::bots::models::MessageInput {
     crate::bots::models::MessageInput {
         conversation_id: e.conversation("helper", view).unwrap().1,

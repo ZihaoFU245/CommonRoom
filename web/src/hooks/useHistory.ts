@@ -12,7 +12,7 @@ import { api } from "../api/client.ts";
 import { ingest } from "../features/conversation/console.ts";
 import {
   mergePage,
-  storeHistory,
+  HistoryCache,
 } from "../features/conversation/historyCache.ts";
 import type { CachedHistory } from "../features/conversation/historyCache.ts";
 import type { ValueRef } from "./refs.ts";
@@ -26,7 +26,7 @@ export function useHistory(
   virtualTimeline: RefObject<VirtualTimelineHandle>,
   atBottom: RefObject<boolean>,
 ) {
-  const cache = useRef(new Map<string, CachedHistory>());
+  const cache = useRef(new HistoryCache());
   const [loaded, setLoaded] = useState<CachedHistory | null>(null);
   const [historyError, setHistoryError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -50,7 +50,7 @@ export function useHistory(
     const metadata = currentState.current.unread[page.view];
     if (metadata)
       page = { ...page, through: metadata.through, oldest: metadata.oldest };
-    storeHistory(cache.current, page);
+    cache.current.store(page);
     current.current = page;
     setLoaded(page);
     ingest(currentState.current, ledger.current, page.messages);

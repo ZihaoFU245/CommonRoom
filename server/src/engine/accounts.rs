@@ -152,13 +152,13 @@ impl Engine {
         {
             return Err("Account changed. Please try again.".into());
         }
-        let before = self.data.clone();
+        let before = self.data.sessions.clone();
         self.data.sessions.retain(|_, s| s.expires > now());
         if let Some(old) = old {
             self.data.sessions.remove(old);
         }
         if self.data.sessions.len() >= 256 {
-            self.data = before;
+            self.data.sessions = before;
             return Err("Session limit reached.".into());
         }
         self.data.sessions.insert(
@@ -169,16 +169,16 @@ impl Engine {
             },
         );
         if let Err(e) = self.save() {
-            self.data = before;
+            self.data.sessions = before;
             return Err(e);
         }
         Ok(())
     }
     pub fn logout(&mut self, token: &str) -> Result<(), String> {
-        let before = self.data.clone();
+        let before = self.data.sessions.clone();
         self.data.sessions.remove(token);
         if let Err(e) = self.save() {
-            self.data = before;
+            self.data.sessions = before;
             return Err(e);
         }
         Ok(())

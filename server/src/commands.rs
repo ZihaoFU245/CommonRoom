@@ -18,7 +18,18 @@ pub struct Command {
     pub console: bool,
 }
 
-pub fn available(admin: bool, console: bool) -> Vec<Command> {
+pub fn available(admin: bool, console: bool) -> &'static [Command] {
+    static CATALOGUES: std::sync::LazyLock<[Vec<Command>; 4]> = std::sync::LazyLock::new(|| {
+        [
+            catalogue(false, false),
+            catalogue(false, true),
+            catalogue(true, false),
+            catalogue(true, true),
+        ]
+    });
+    &CATALOGUES[usize::from(admin) * 2 + usize::from(console)]
+}
+fn catalogue(admin: bool, console: bool) -> Vec<Command> {
     let definitions = [
         (
             "Server",
@@ -340,7 +351,7 @@ pub fn requirements(command: &str) -> &'static str {
 }
 
 pub fn help(admin: bool, console: bool) -> String {
-    help_for(&available(admin, console))
+    help_for(available(admin, console))
 }
 
 pub fn help_for(commands: &[Command]) -> String {

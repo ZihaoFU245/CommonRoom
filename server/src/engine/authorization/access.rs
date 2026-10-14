@@ -305,9 +305,37 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
     ) -> Vec<crate::commands::Command> {
+        let Some(id) = self.principal_id(actor) else {
+            return Vec::new();
+        };
+        let Ok(scope) = self.command_scope(actor, room) else {
+            return Vec::new();
+        };
+        let mut allowed = self.effective(actor, &scope);
+        if room.is_none() {
+            if let Some(scopes) = self.authorization.scopes.get(id) {
+                for rights in scopes.values() {
+                    allowed.add(*rights);
+                }
+            }
+            if actor.is_some_and(|name| {
+                self.authorization
+                    .groups
+                    .get(id)
+                    .is_some_and(|groups| !groups.is_empty())
+                    && self
+                        .data
+                        .private
+                        .keys()
+                        .any(|key| private_peer(key, name).is_some())
+            }) {
+                allowed.add(member_rights());
+            }
+        }
         crate::commands::available(true, actor.is_none())
-            .into_iter()
-            .filter(|c| self.require_command(actor, room, c.name).is_ok())
+            .iter()
+            .filter(|command| allowed.command(command.name))
+            .cloned()
             .collect()
     }
     pub(in crate::engine) fn assign(&mut self, account_id: String, group: Group, scope: Scope) {

@@ -68,11 +68,78 @@ impl HistoryRange {
         Ok(limit)
     }
 }
+// Responses and cache entries share immutable messages and exact wire-size accounting.
+#[derive(Default)]
+struct PageData {
+    messages: Vec<Message>,
+    sizes: Vec<usize>,
+}
+#[derive(Clone, Default)]
+pub struct MessagePage {
+    data: Arc<PageData>,
+    start: usize,
+    end: usize,
+}
+impl MessagePage {
+    fn new(messages: Vec<Message>, sizes: Vec<usize>) -> Self {
+        let end = messages.len();
+        Self {
+            data: Arc::new(PageData { messages, sizes }),
+            start: 0,
+            end,
+        }
+    }
+    fn latest(&self, limit: usize) -> Self {
+        Self {
+            data: self.data.clone(),
+            start: self.end.saturating_sub(limit).max(self.start),
+            end: self.end,
+        }
+    }
+    pub(super) fn bounded_tail(&self, count: &mut usize, bytes: &mut usize) -> Self {
+        let mut start = self.end;
+        while start > self.start && *count > 0 {
+            let size = self.data.sizes[start - 1];
+            if size > *bytes {
+                break;
+            }
+            *bytes -= size;
+            *count -= 1;
+            start -= 1;
+        }
+        Self {
+            data: self.data.clone(),
+            start,
+            end: self.end,
+        }
+    }
+    fn accounted_bytes(&self) -> usize {
+        self.data.sizes[self.start..self.end]
+            .iter()
+            .sum::<usize>()
+            .saturating_add(self.len().saturating_sub(1))
+            .saturating_add(2)
+            .saturating_mul(4)
+            .saturating_add(self.len().saturating_mul(512))
+    }
+}
+impl std::ops::Deref for MessagePage {
+    type Target = [Message];
+    fn deref(&self) -> &Self::Target {
+        &self.data.messages[self.start..self.end]
+    }
+}
+impl serde::Serialize for MessagePage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&**self, serializer)
+    }
+}
+
 struct CachedPage {
     conversation: String,
     revision: u64,
     range: HistoryRange,
-    messages: Arc<Vec<Message>>,
+    messages: MessagePage,
     bytes: usize,
     before: bool,
     after: bool,
@@ -123,14 +190,65 @@ impl Cache {
         }
     }
 }
-type UnreadEntry = (String, String, u64, u64, Unread);
+struct UnreadEntry {
+    read: u64,
+    revision: u64,
+    unread: Unread,
+    used: u64,
+}
+#[derive(Default)]
+struct UnreadCache {
+    entries: std::collections::HashMap<String, std::collections::HashMap<String, UnreadEntry>>,
+    recency: BTreeMap<u64, (String, String)>,
+    clock: u64,
+}
+impl UnreadCache {
+    fn get(&mut self, id: &str, user: &str, read: u64, revision: u64) -> Option<Unread> {
+        let entry = self.entries.get_mut(id)?.get_mut(user)?;
+        if entry.read != read || entry.revision != revision {
+            return None;
+        }
+        let key = self.recency.remove(&entry.used)?;
+        self.clock += 1;
+        entry.used = self.clock;
+        self.recency.insert(entry.used, key);
+        Some(entry.unread.clone())
+    }
+    fn insert(&mut self, id: &str, user: &str, read: u64, revision: u64, unread: Unread) {
+        let users = self.entries.entry(id.into()).or_default();
+        if let Some(previous) = users.remove(user) {
+            self.recency.remove(&previous.used);
+        }
+        self.clock += 1;
+        users.insert(
+            user.into(),
+            UnreadEntry {
+                read,
+                revision,
+                unread,
+                used: self.clock,
+            },
+        );
+        self.recency.insert(self.clock, (id.into(), user.into()));
+        while self.recency.len() > 4096 {
+            if let Some((_, (id, user))) = self.recency.pop_first()
+                && let Some(users) = self.entries.get_mut(&id)
+            {
+                users.remove(&user);
+                if users.is_empty() {
+                    self.entries.remove(&id);
+                }
+            }
+        }
+    }
+}
 pub struct HistoryStore {
     readers: Vec<Mutex<Connection>>,
     next: AtomicUsize,
     cache: Mutex<Cache>,
     hits: AtomicU64,
     misses: AtomicU64,
-    unread_cache: Mutex<VecDeque<UnreadEntry>>,
+    unread_cache: Mutex<UnreadCache>,
 }
 impl HistoryStore {
     pub fn ensure_available(&self) -> Result<(), String> {
@@ -164,7 +282,7 @@ impl HistoryStore {
             cache: Mutex::new(Cache::default()),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
-            unread_cache: Mutex::new(VecDeque::new()),
+            unread_cache: Mutex::new(UnreadCache::default()),
         })
     }
     pub fn read<T>(
@@ -248,12 +366,7 @@ impl HistoryStore {
                 let result = History {
                     view: view.into(),
                     revision,
-                    messages: page
-                        .messages
-                        .iter()
-                        .skip(page.messages.len().saturating_sub(limit))
-                        .cloned()
-                        .collect(),
+                    messages: page.messages.latest(limit),
                     has_before: page.before || page.messages.len() > limit,
                     has_after: page.after,
                 };
@@ -278,21 +391,21 @@ impl HistoryStore {
             let sql = format!("SELECT json FROM messages WHERE conversation=?1 AND sequence>=?2 AND sequence<=?3 ORDER BY sequence {} LIMIT ?4", if ascending { "ASC" } else { "DESC" });
             let mut query = tx.prepare(&sql).map_err(|e| e.to_string())?;
             let rows = query.query_map(params![id,lower,upper,limit], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-            let mut messages = Vec::new();let mut payload_bytes=0usize;
+            let mut messages = Vec::new();let mut sizes = Vec::new();let mut payload_bytes=0usize;
             for row in rows {
                 let mut message: Message = serde_json::from_str(&row.map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
                 load_reactions(&tx, id, &mut message)?;
                 let size=serde_json::to_vec(&message).map_err(|e|e.to_string())?.len();
                 if !messages.is_empty() && payload_bytes.saturating_add(size)>PAGE_BYTES {break;}
                 payload_bytes=payload_bytes.saturating_add(size);
-                messages.push(message);
+                sizes.push(size); messages.push(message);
             }
-            if !ascending { messages.reverse(); }
+            if !ascending { messages.reverse(); sizes.reverse(); }
             let before = messages.first().map(|m|m.sequence).unwrap_or(if ascending { lower } else { range.before.or(range.start).unwrap_or(0) });
             let after = messages.last().map(|m|m.sequence).unwrap_or(if ascending { range.after.or(range.end).unwrap_or(9_007_199_254_740_991) } else { upper });
             let has_before = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence<?2)", params![id,before], |r| r.get(0)).map_err(|e|e.to_string())?;
             let has_after = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence>?2)", params![id,after], |r| r.get(0)).map_err(|e|e.to_string())?;
-            Ok(Some(History { view:view.into(),messages,revision,has_before,has_after }))
+            Ok(Some(History { view:view.into(),messages: MessagePage::new(messages, sizes),revision,has_before,has_after }))
         })?.ok_or(HistoryError::Changed)?;
         // Large preceding rows must not prevent an around request from reaching its anchor.
         if let Some(around) = range.around
@@ -310,11 +423,7 @@ impl HistoryStore {
                 view,
             );
         }
-        let bytes = serde_json::to_vec(&result.messages)
-            .map_err(|e| e.to_string())?
-            .len()
-            .saturating_mul(4)
-            .saturating_add(result.messages.len().saturating_mul(512));
+        let bytes = result.messages.accounted_bytes();
         if bytes <= CACHE_BYTES {
             self.cache
                 .lock()
@@ -323,7 +432,7 @@ impl HistoryStore {
                     conversation: id.into(),
                     revision,
                     range,
-                    messages: Arc::new(result.messages.clone()),
+                    messages: result.messages.clone(),
                     bytes,
                     before: result.has_before,
                     after: result.has_after,
@@ -358,14 +467,8 @@ impl HistoryStore {
                 .unread_cache
                 .lock()
                 .map_err(|_| "Unread cache unavailable.")?;
-            if let Some(index) = cache
-                .iter()
-                .position(|(c, u, r, v, _)| c == id && u == user && *r == read && *v == revision)
-            {
-                let entry = cache.remove(index).ok_or("Unread cache changed.")?;
-                let result = entry.4.clone();
-                cache.push_back(entry);
-                return Ok(result);
+            if let Some(unread) = cache.get(id, user, read, revision) {
+                return Ok(unread);
             }
         }
         let result=self.read(|db| {
@@ -381,11 +484,7 @@ impl HistoryStore {
             .unread_cache
             .lock()
             .map_err(|_| "Unread cache unavailable.")?;
-        cache.retain(|(c, u, _, _, _)| c != id || u != user);
-        cache.push_back((id.into(), user.into(), read, revision, result.clone()));
-        while cache.len() > 4096 {
-            cache.pop_front();
-        }
+        cache.insert(id, user, read, revision, result.clone());
         Ok(result)
     }
 }
@@ -421,6 +520,71 @@ mod tests {
             .iter()
             .map(|message| message.sequence)
             .collect()
+    }
+    #[test]
+    fn shared_latest_pages_reuse_payload_and_exact_byte_budgets() {
+        let mut engine = super::super::tests::engine();
+        for _ in 0..6 {
+            engine
+                .execute(Some("alice"), Some("lobby"), "Unicode 🦀 \"quoted\"")
+                .unwrap();
+        }
+        let page = engine.history("bob", "lobby").unwrap();
+        let latest = engine
+            .history_page(
+                "bob",
+                "lobby",
+                HistoryRange {
+                    limit: Some(3),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&page.messages.data, &latest.messages.data));
+        assert_eq!(sequences(&latest), vec![4, 5, 6]);
+        let budget = serde_json::to_vec(&latest.messages[2]).unwrap().len();
+        let mut bytes = budget;
+        let mut count = 100;
+        let tail = latest.messages.bounded_tail(&mut count, &mut bytes);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].sequence, 6);
+        assert_eq!(bytes, 0);
+        assert!(Arc::ptr_eq(&tail.data, &page.messages.data));
+        assert_eq!(
+            serde_json::to_vec(&latest.messages).unwrap(),
+            serde_json::to_vec(&latest.messages[..]).unwrap()
+        );
+    }
+    #[test]
+    fn indexed_unread_cache_keeps_recency_and_replaces_cursor_revision_entries() {
+        let mut cache = UnreadCache::default();
+        let unread = Unread {
+            count: 3,
+            first: Some(1),
+            through: 3,
+            oldest: 1,
+            revision: 1,
+        };
+        for index in 0..4096 {
+            cache.insert(&index.to_string(), "bob", 0, 1, unread.clone());
+        }
+        assert!(cache.get("0", "bob", 0, 1).is_some());
+        cache.insert("new", "bob", 0, 1, unread.clone());
+        assert!(cache.get("1", "bob", 0, 1).is_none());
+        assert!(cache.get("0", "bob", 0, 1).is_some());
+        cache.insert("0", "bob", 2, 2, unread);
+        assert!(cache.get("0", "bob", 0, 1).is_none());
+        assert!(cache.get("0", "bob", 2, 2).is_some());
+        assert!(cache.get("0", "alice", 2, 2).is_none());
+        assert_eq!(cache.recency.len(), 4096);
+        assert_eq!(
+            cache
+                .entries
+                .values()
+                .map(std::collections::HashMap::len)
+                .sum::<usize>(),
+            4096
+        );
     }
     #[test]
     fn pagination_matches_gapped_sequences_in_both_directions() {
@@ -707,12 +871,12 @@ mod tests {
         engine
             .execute(Some("alice"), Some("lobby"), "seed")
             .unwrap();
-        let message = engine.history("alice", "lobby").unwrap().messages.remove(0);
+        let message = engine.history("alice", "lobby").unwrap().messages[0].clone();
         let make = |id: String, revision, count, bytes| CachedPage {
             conversation: id,
             revision,
             range: HistoryRange::default(),
-            messages: Arc::new(vec![message.clone(); count]),
+            messages: MessagePage::new(vec![message.clone(); count], vec![1; count]),
             bytes,
             before: false,
             after: false,
@@ -977,7 +1141,8 @@ mod snapshot_failure_tests {
                 [&id],
             )
             .unwrap();
-        let snapshot = e.try_snapshot("alice").unwrap().unwrap();
+        let (snapshot, complete) = e.snapshot_baseline("alice").unwrap().unwrap();
+        assert!(!complete);
         assert!(
             snapshot
                 .rooms

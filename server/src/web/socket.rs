@@ -48,11 +48,11 @@ pub(crate) async fn snapshot(
 ) -> bool {
     let app = app.clone();
     let headers = headers.clone();
-    let value = tokio::task::spawn_blocking(move || snapshot_value(&app, &headers, bot))
+    let value = tokio::task::spawn_blocking(move || super::snapshots::value(&app, &headers, bot))
         .await
         .unwrap_or_else(|_| Err("Snapshot worker unavailable.".into()));
     match value {
-        Ok(value) => send(socket, Message::Text(value.into())).await,
+        Ok(value) => send(socket, Message::Text(value)).await,
         Err(error) => {
             let frame = if bot {
                 json!({"kind":"error", "id":null, "error":crate::bots::error::Error::storage(error)})
@@ -63,17 +63,6 @@ pub(crate) async fn snapshot(
             let _closed = send(socket, Message::Close(None)).await;
             false
         }
-    }
-}
-pub(super) fn snapshot_value(app: &App, headers: &HeaderMap, bot: bool) -> Result<String, String> {
-    let engine = app.engine_read()?;
-    let user = super::auth::identity(&engine, headers).ok_or("Credential revoked.")?;
-    if bot {
-        serde_json::to_string(&engine.bot_snapshot(&user).map_err(|e| e.to_string())?)
-            .map_err(|_| "Snapshot serialization failed.".into())
-    } else {
-        let snapshot = engine.try_snapshot(&user)?.ok_or("Snapshot unavailable.")?;
-        serde_json::to_string(&snapshot).map_err(|_| "Snapshot serialization failed.".into())
     }
 }
 pub(crate) async fn send(socket: &mut WebSocket, message: Message) -> bool {
@@ -94,11 +83,8 @@ impl Presence {
         let current = tokio::task::spawn_blocking(move || {
             let current = authenticate(&app, &headers)?;
             if current != old {
-                let mut engine = app
-                    .engine()
+                app.update_presence(Some(&old), Some(&current))
                     .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-                engine.disconnect(&old);
-                engine.connect(&current);
             }
             Ok(current)
         })
@@ -118,10 +104,9 @@ impl Drop for Presence {
         let app = self.app.clone();
         let user = self.user.clone();
         let _job = tokio::task::spawn_blocking(move || {
-            if let Ok(mut engine) = app.engine() {
-                engine.disconnect(&user);
+            if let Err(error) = app.update_presence(Some(&user), None) {
+                tracing::error!(%error, "Presence cleanup failed");
             }
-            let _ = app.changes.send(Change::All);
         });
     }
 }
@@ -137,8 +122,7 @@ pub(crate) async fn connection(
     let presence_user = user.clone();
     if !matches!(
         tokio::task::spawn_blocking(move || {
-            presence_app.engine()?.connect(&presence_user);
-            Ok::<_, String>(())
+            presence_app.update_presence(None, Some(&presence_user))
         })
         .await,
         Ok(Ok(()))
@@ -149,7 +133,6 @@ pub(crate) async fn connection(
         app: app.clone(),
         user: user.clone(),
     };
-    let _ = app.changes.send(Change::All);
     if presence.authenticate(&headers).await.is_err() {
         return;
     }
@@ -174,6 +157,16 @@ pub(crate) async fn connection(
                 user = match presence.authenticate(&headers).await { Ok(user) => user, Err(_) => break };
                 if matches!(&change, Ok(Change::Read(name)) if name != &user) { continue; }
                 if matches!(change, Err(broadcast::error::RecvError::Closed)) { break; }
+                if matches!(change, Ok(Change::Presence)) {
+                    if bot { continue; }
+                    let read_app = app.clone(); let read_user = user.clone();
+                    let online = tokio::task::spawn_blocking(move || Ok::<_, String>(read_app.engine_read()?.online(&read_user))).await;
+                    match online {
+                        Ok(Ok(online)) => { if !send(&mut socket, Message::Text(json!({"kind":"presence","online":online}).to_string().into())).await { break; } },
+                        _ => break,
+                    }
+                    continue;
+                }
                 if bot {
                     if let Ok(Change::Conversation(id)) = &change {
                         let read_app=app.clone(); let read_headers=headers.clone(); let id=id.clone();
@@ -205,7 +198,10 @@ pub(crate) async fn connection(
                 if request.reply.is_closed() { continue; }
                 runtime.pending.retain(|_, request| !request.reply.is_closed());
                 if presence.authenticate(&headers).await.is_err() { break; }
-                let authorized = request.authority.authorize(&app, &request.command);
+                let authorization_app = app.clone();
+                let authority = request.authority.clone();
+                let command = request.command.clone();
+                let authorized = tokio::task::spawn_blocking(move || authority.authorize(&authorization_app, &command)).await.unwrap_or_else(|_| Err("Authorization worker unavailable.".into()));
                 if authorized.as_ref() != Ok(&request.target) {
                     let _ = request.reply.send(Err(authorized.err().unwrap_or_else(|| "Bot account changed.".into())));
                     continue;
@@ -227,7 +223,7 @@ pub(crate) async fn connection(
                         if budget.0.elapsed() > Duration::from_secs(10) { budget = (Instant::now(), 0); }
                         budget.1 += 1;
                         if bot {
-                            let (id,result) = runtime.control(&app, &headers, &raw, budget.1, &runtime_sender);
+                            let (id,result) = runtime.control(&app, &headers, &raw, budget.1, &runtime_sender).await;
                             let frame = match result {
                                 Ok(()) => json!({"kind":"config_ack","id":id}),
                                 Err(error) => json!({"kind":"error","id":id,"error":error}),
@@ -253,6 +249,7 @@ pub(crate) async fn connection(
         }
     }
     let _ = send(&mut socket, Message::Close(None)).await;
+    let _job = tokio::task::spawn_blocking(move || drop(runtime));
 }
 
 #[derive(Default)]
@@ -261,7 +258,7 @@ struct Runtime {
     pending: std::collections::BTreeMap<String, crate::bots::runtime::Request>,
 }
 impl Runtime {
-    fn control(
+    async fn control(
         &mut self,
         app: &App,
         headers: &HeaderMap,
@@ -283,12 +280,16 @@ impl Runtime {
             );
         }
         match serde_json::from_str::<Control>(raw) {
-            Ok(Control::Ready) => (
-                None,
-                (|| {
-                    if self.lease.is_none() {
+            Ok(Control::Ready) => {
+                let result = if self.lease.is_some() {
+                    Ok(())
+                } else {
+                    let app = app.clone();
+                    let headers = headers.clone();
+                    let sender = sender.clone();
+                    match tokio::task::spawn_blocking(move || {
                         let engine = app.engine_read().map_err(Error::storage)?;
-                        let user = super::auth::identity(&engine, headers)
+                        let user = super::auth::identity(&engine, &headers)
                             .ok_or_else(|| Error::new(Code::Unauthorized, "Credential revoked."))?;
                         let id = engine
                             .data
@@ -297,11 +298,20 @@ impl Runtime {
                             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?
                             .id
                             .clone();
-                        self.lease = Some(app.bot_runtimes.register(id, sender.clone())?);
+                        app.bot_runtimes.register(id, sender)
+                    })
+                    .await
+                    {
+                        Ok(Ok(lease)) => {
+                            self.lease = Some(lease);
+                            Ok(())
+                        }
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(Error::storage("Runtime registration worker unavailable.")),
                     }
-                    Ok(())
-                })(),
-            ),
+                };
+                (None, result)
+            }
             Ok(Control::Response { id, values, error }) => {
                 let result = (|| {
                     let request = self.pending.remove(&id).ok_or_else(|| {

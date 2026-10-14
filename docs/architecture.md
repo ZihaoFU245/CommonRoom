@@ -74,14 +74,26 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v9; validated v8 folders upgrade transactionally.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v9; older schemas are rejected.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
 Schema v7 adds indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback clones metadata rather than history. Account rename/deletion streams 100-row batches inside one transaction. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
 
-New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy/presence changes still use a full snapshot. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
+New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy changes use a full snapshot. Presence changes send only the authorized online directory, and extra tabs do not broadcast unchanged presence. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
 
 History uses stable sequence cursors, not deep OFFSET pagination. Requesting a range near sequence 1,000 reads that page directly without reading the first 999 messages. `around` probes at most half a page backwards before reading the page. Browsing beyond a 1,000-entry window evicts the opposite end; returning to it reloads only that page. The old all-history HTTP/UI path and all-history startup loader are removed. See [Data](data.md) and [Protocol](protocol.md).
 
 This release is a single-process service. Multiple application replicas must not share a data folder; an OS lock enforces one owner. Horizontal scaling would require shared persistence and cross-process event delivery. A reverse proxy/load balancer currently supplies TLS and routes to that single process.
+
+Socket baselines share serialized buffers per account and browser/bot profile.
+The cache is bounded to 128 entries/32 MiB and cleared under the engine writer
+lock before mutable access; every socket rechecks its own credential before
+reuse. Concurrent readers share one baseline build per key; partial baselines are not retained. History responses
+share immutable page slices and exact per-message wire sizes, so cache hits and
+snapshot byte budgets do not copy or serialize message bodies again. Unread
+lookup uses a hash index with bounded ordered recency tracking. Command lists
+filter a shared catalogue using one effective-rights calculation per scope.
+Browser cache entries retain byte counts and global running totals; ordered page
+merges and directional trimming are linear. Ledger ingestion reuses its ID set
+and skips sorting when no new message IDs arrive.

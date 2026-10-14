@@ -2,6 +2,7 @@ pub(crate) mod auth;
 pub(crate) mod commands;
 pub(crate) mod history;
 pub(crate) mod security;
+mod snapshots;
 pub(crate) mod socket;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
@@ -26,6 +27,7 @@ use tokio::sync::broadcast;
 #[derive(Clone, Debug)]
 pub enum Change {
     All,
+    Presence,
     Read(String),
     Conversation(String),
 }
@@ -39,6 +41,7 @@ pub struct App {
     pub connections: Arc<tokio::sync::Semaphore>,
     pub io_jobs: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
+    pub snapshots: Arc<Mutex<snapshots::SnapshotCache>>,
     pub bot_runtimes: crate::bots::runtime::Hub,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -52,9 +55,37 @@ impl App {
 
     // Fail closed after a panic; a poisoned engine may contain a partial mutation.
     pub fn engine(&self) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, String> {
-        self.engine
+        let engine = self
+            .engine
             .write()
-            .map_err(|_| "Server state unavailable; restart the service.".into())
+            .map_err(|_| "Server state unavailable; restart the service.")?;
+        self.snapshots
+            .lock()
+            .map_err(|_| "Snapshot cache unavailable.")?
+            .clear();
+        Ok(engine)
+    }
+    // Extra tabs only change a counter; preserve shared baselines unless the
+    // visible online directory changes.
+    pub(super) fn update_presence(
+        &self,
+        old: Option<&str>,
+        current: Option<&str>,
+    ) -> Result<(), String> {
+        let mut engine = self
+            .engine
+            .write()
+            .map_err(|_| "Server state unavailable; restart the service.")?;
+        let disconnected = old.is_some_and(|name| engine.disconnect(name));
+        let connected = current.is_some_and(|name| engine.connect(name));
+        if disconnected || connected {
+            self.snapshots
+                .lock()
+                .map_err(|_| "Snapshot cache unavailable.")?
+                .clear();
+            let _ = self.changes.send(Change::Presence);
+        }
+        Ok(())
     }
     pub fn engine_read(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, String> {
         self.engine

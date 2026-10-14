@@ -213,6 +213,5 @@ and private checkpoint directory; the chat server does not start it. Run one
 worker per checkpoint and use a distinct bot account when permissions differ.
 See [Agent development](agent-development.md) for the runnable reference worker.
 
-This release automatically upgrades v8 data to v9 for retry receipts. Back up
-the stopped server's complete data folder before upgrading. Restoring an older
-binary requires restoring its compatible backup; see [Data](data.md).
+This release requires an existing v9 database or an empty data folder. It does
+not migrate older databases. See [Data](data.md) for backups and compatibility.

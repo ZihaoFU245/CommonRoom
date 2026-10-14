@@ -78,6 +78,8 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
             return;
           }
           sync.receive(next, false);
+        } else if (data.kind === "presence") {
+          sync.receive({ ...currentState.current, online: data.online }, true);
         } else if (data.kind === "read") {
           sync.receive({ ...currentState.current, unread: data.unread }, true);
         } else if (data.kind === "notice" || data.kind === "error") {

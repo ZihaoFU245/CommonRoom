@@ -215,3 +215,15 @@ test("edited markers accept legacy messages and reject malformed values", () => 
     );
   }
 });
+
+test("presence frames validate the online directory without carrying history", () => {
+  assert.deepEqual(
+    parseFrame(JSON.stringify({ kind: "presence", online: ["alice", "界"] })),
+    { kind: "presence", online: ["alice", "界"] },
+  );
+  for (const online of [null, {}, "alice", ["alice", 42]])
+    assert.equal(
+      parseFrame(JSON.stringify({ kind: "presence", online })),
+      null,
+    );
+});

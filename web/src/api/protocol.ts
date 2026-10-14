@@ -99,6 +99,7 @@ export type ServerFrame =
   | Snapshot
   | ConversationUpdate
   | Acknowledgement
+  | { kind: "presence"; online: string[] }
   | { kind: "read"; unread: Record<string, Unread> };
 export interface ClientFrame {
   markdown?: boolean;
@@ -267,6 +268,8 @@ export function parseFrame(raw: string): ServerFrame | null {
       messages: value.messages,
       unread: value.unread,
     };
+  if (value.kind === "presence" && strings(value.online))
+    return { kind: "presence", online: value.online };
   if (value.kind === "read" && unreads(value.unread))
     return { kind: "read", unread: value.unread };
   if (

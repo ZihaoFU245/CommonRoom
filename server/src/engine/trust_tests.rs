@@ -314,7 +314,7 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         .map(|text| text.split_whitespace().next().unwrap())
         .collect();
     let engine_commands: BTreeSet<_> = crate::commands::available(true, false)
-        .into_iter()
+        .iter()
         .map(|command| command.name)
         .filter(|name| {
             ![
@@ -2226,7 +2226,7 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
     assert!(e.data.policy.assignments == assignments);
     assert!(e.data.policy.grants == grants);
     assert_eq!(e.data.policy.revision, policy_revision);
-    assert!(e.history("bob", "改名🚀").unwrap().messages == history);
+    assert!(*e.history("bob", "改名🚀").unwrap().messages == *history);
     assert!(e.history("bob", "team").is_err());
     for user in ["alice", "bob"] {
         assert_eq!(e.read_positions[user]["room:改名🚀"], message.sequence);
@@ -2251,7 +2251,7 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
     drop(e);
     let mut e = Engine::open(&path).unwrap();
     assert_eq!(e.data.rooms["改名🚀"].id, room.id);
-    assert!(e.history("bob", "改名🚀").unwrap().messages == history);
+    assert!(*e.history("bob", "改名🚀").unwrap().messages == *history);
     assert_eq!(e.read_positions["bob"]["room:改名🚀"], message.sequence);
     assert_eq!(e.unreads("bob").unwrap()["改名🚀"].count, unread);
     assert_eq!(e.unreads("bob").unwrap()["team"].count, 1);
@@ -2270,7 +2270,7 @@ fn existing_owner_grants_are_preserved_and_room_rename_can_be_explicitly_delegat
     let mut e = Engine::open(&path).unwrap();
     e.provision("alice", "hash".into(), true, false).unwrap();
     e.execute(Some("alice"), None, "/new room team").unwrap();
-    // Model an existing v8 owner grant issued before room rename was available.
+    // An existing owner grant may omit room rename; inspection cannot add authority.
     for grant in e.data.policy.grants.iter_mut().filter(|grant| grant.owner) {
         grant.permissions.remove("x:room.rename");
         grant.permissions.remove("/rename");

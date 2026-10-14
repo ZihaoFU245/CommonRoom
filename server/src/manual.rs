@@ -17,7 +17,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         _ => {
             let name = format!("/{topic}");
             let command = commands::available(true, false)
-                .into_iter()
+                .iter()
                 .find(|command| command.name == name)
                 .ok_or_else(|| format!("No manual for '{topic}'. Use /man to list topics."))?;
             return Ok(format!(

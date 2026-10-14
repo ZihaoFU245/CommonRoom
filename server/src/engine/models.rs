@@ -70,7 +70,7 @@ pub struct RoomView {
     pub commands: Vec<crate::commands::Command>,
     pub name: String,
     pub members: BTreeSet<String>,
-    pub messages: Vec<Message>,
+    pub messages: super::history::MessagePage,
 }
 #[derive(Clone, Serialize)]
 pub struct Unread {
@@ -83,7 +83,7 @@ pub struct Unread {
 #[derive(Serialize)]
 pub struct History {
     pub view: String,
-    pub messages: Vec<Message>,
+    pub messages: super::history::MessagePage,
     pub revision: u64,
     pub has_before: bool,
     pub has_after: bool,

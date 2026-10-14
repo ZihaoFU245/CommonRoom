@@ -31,10 +31,8 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 8 && version != 9 {
-            return Err(
-                "Unsupported database schema; supported schemas are v8 (upgrade) and v9.".into(),
-            );
+        if version != 0 && version != 9 {
+            return Err("Unsupported database schema; only v9 is supported.".into());
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -107,16 +105,6 @@ impl Engine {
         }
         for chat in data.private.values_mut() {
             chat.messages.clear();
-        }
-        // Validate existing metadata and cursors before upgrading. DDL and the
-        // version advance commit together; a failed upgrade leaves v8 intact.
-        if version == 8 {
-            let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            tx.execute_batch(RECEIPT_SCHEMA)
-                .map_err(|e| e.to_string())?;
-            tx.execute_batch("PRAGMA user_version=9;")
-                .map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
         }
         Ok(Self {
             authorization,
