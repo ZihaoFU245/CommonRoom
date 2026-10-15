@@ -653,20 +653,14 @@ Scope defaults to the current room. Console/private views need an explicit room.
 
 Tokens follow the account's current grants.
 
-## Remote configuration
-
-- `/bot config set name key value` — ask the connected runtime to apply a setting.
-- `/bot config fetch name [key]` — fetch one setting, or all when key is omitted.
-
-Values are strings; quote with JSON syntax when needed. The external runtime validates and saves settings. It must be online; requests time out after 10 seconds. Fetch before retrying an uncertain set.
+Configure an online worker through its advertised chat commands, such as
+`@helper /config get` and `@helper /config set prompt "Help with Rust questions."`.
+The worker validates settings and enforces its owner/admin policy.
 
 ## Permissions
 
 - Every operation needs `/bot` command access in its context and target.
 - Accounts/tokens: global admin, su or stdin; ordinary account/scope permissions also apply. Tokens require `x:bot.credentials`.
-- Config fetch: `r:bot.config` on `@account:name`.
-- Config set: `w:bot.config` on `@account:name`.
-- Config access can be delegated; account-scope grants require su/stdin. Protected su accounts require su.
 
 Use `/grant`, `/revoke`, `/add`, `/kick`, `/disable`, `/enable` and `/rename` as for any user.
 
@@ -675,8 +669,6 @@ Use `/grant`, `/revoke`, `/add`, `/kick`, `/disable`, `/enable` and `/rename` as
 ```
 /bot new helper support
 /bot token new helper worker
-/bot config set helper prompt "Help with Rust questions."
-/bot config fetch helper
-/grant alice @account:helper /bot
-/grant alice @account:helper w:bot.config
+@helper /config set prompt "Help with Rust questions."
+@helper /config get
 ```"#;

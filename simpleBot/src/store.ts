@@ -58,6 +58,8 @@ export interface TaskRecord {
   slots: string[];
   /** Durable output family for the version currently being answered. */
   outputHash?: string;
+  /** Persist a completed decision to send no reply for this input version. */
+  silentHash?: string;
   outputSlot?: string;
   pass?: number;
   error?: string;
@@ -173,6 +175,7 @@ function validate(value: unknown): State {
       !Number.isSafeInteger(task.sequence) ||
       task.sequence < 1 ||
       typeof task.promptHash !== "string" ||
+      (task.silentHash !== undefined && typeof task.silentHash !== "string") ||
       (task.privateCommand !== undefined &&
         typeof task.privateCommand !== "boolean") ||
       (task.actions !== undefined &&

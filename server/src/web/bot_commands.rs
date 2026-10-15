@@ -28,7 +28,7 @@ pub(crate) async fn get(
             .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))?;
         let bots = app
             .bot_runtimes
-            .2
+            .commands
             .visible(&engine, &user, &input.conversation_id)
             .map_err(|e| error(StatusCode::FORBIDDEN, &e))?;
         Ok(Json(

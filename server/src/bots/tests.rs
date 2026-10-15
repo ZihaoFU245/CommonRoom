@@ -80,273 +80,39 @@ async fn request(
 }
 
 #[tokio::test]
-async fn runtime_config_roundtrip_is_private_delegated_and_rechecked() {
-    use crate::bots::runtime::ConfigCommand;
-    let (app, secret) = fixture();
-    let target = app.engine_read().unwrap().data.users["helper"].id.clone();
-    let (sender, mut requests) = tokio::sync::mpsc::channel(8);
-    let lease = app
-        .bot_runtimes
-        .register(target.clone(), sender.clone())
-        .unwrap();
-    assert!(app.bot_runtimes.register(target, sender).is_err());
-    let admin_hash = app.engine_read().unwrap().data.users["admin"].hash.clone();
+async fn removed_remote_config_is_rejected_by_browser_and_engine() {
+    let (app, _) = fixture();
     app.engine()
         .unwrap()
-        .login("operator".into(), "admin", &admin_hash, None)
+        .login("operator".into(), "admin", "hash", None)
         .unwrap();
     let mut headers = HeaderMap::new();
     headers.insert(header::COOKIE, "chat_session=operator".parse().unwrap());
-    let input = commands::Input {
-        markdown: false,
-        id: 1,
-        room: None,
-        text: "/bot config set helper prompt \"Help with Rust\"".into(),
-    };
-    let worker = tokio::spawn(async move {
-        let request = requests.recv().await.unwrap();
-        assert_eq!(request.command.value.as_deref(), Some("Help with Rust"));
-        request
-            .reply
-            .send(Ok(std::collections::BTreeMap::from([(
-                "prompt".into(),
-                "Help with Rust".into(),
-            )])))
-            .unwrap();
-        requests
-    });
-    let (output, change) = commands::execute_input(&app, &headers, "admin", &input)
-        .await
-        .unwrap();
-    assert!(change.is_none());
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&output).unwrap()["values"]["prompt"],
-        "Help with Rust"
-    );
-    let mut requests = worker.await.unwrap();
-    let worker_app = app.clone();
-    let worker = tokio::spawn(async move {
-        let request = requests.recv().await.unwrap();
-        worker_app
-            .engine()
-            .unwrap()
-            .execute(None, None, "/disable admin")
-            .unwrap();
-        request
-            .reply
-            .send(Ok(std::collections::BTreeMap::from([(
-                "prompt".into(),
-                "hidden after revocation".into(),
-            )])))
-            .unwrap();
-    });
-    let error = commands::execute_input(
-        &app,
-        &headers,
-        "admin",
-        &commands::Input {
-            markdown: false,
-            id: 2,
-            room: None,
-            text: "/bot config fetch helper".into(),
-        },
-    )
-    .await
-    .unwrap_err();
-    assert!(error.contains("log in"));
-    worker.await.unwrap();
-    drop(lease);
-    // A bot token does not grant self-configuration or administration.
-    assert_eq!(
-        request(
-            &app,
-            Some(&secret),
-            "POST",
-            "/api/bot/v1/commands",
-            json!({"id":3,"view":"support","command":"/bot config set helper prompt bypass"})
-        )
-        .await
-        .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert!(ConfigCommand::parse("/bot config fetch helper prompt extra").is_err());
-    assert!(ConfigCommand::parse("/bot config set helper bad/key x").is_err());
-    assert!(ConfigCommand::parse("/bot config set helper prompt \"\"").is_ok());
-}
-
-#[tokio::test]
-async fn sudo_runtime_config_keeps_the_caller_and_rechecks_elevation() {
-    let (app, _) = fixture();
-    {
-        let mut engine = app.engine().unwrap();
-        engine
-            .provision("caller", "hash".into(), false, false)
-            .unwrap();
-        engine.execute(None, None, "/revoke caller user").unwrap();
-        for permission in ["/sudo", "x:command.sudo"] {
-            engine
-                .execute(None, None, &format!("/grant caller @global {permission}"))
-                .unwrap();
-        }
-        engine
-            .login("sudo-config".into(), "caller", "hash", None)
-            .unwrap();
-    }
-    let mut headers = HeaderMap::new();
-    headers.insert(header::COOKIE, "chat_session=sudo-config".parse().unwrap());
-    let target = app.engine_read().unwrap().data.users["helper"].id.clone();
-    let (sender, mut requests) = tokio::sync::mpsc::channel(8);
-    let _lease = app.bot_runtimes.register(target, sender).unwrap();
-    for text in [
+    for command in [
         "/bot config set helper prompt test",
-        "/bot config fetch helper prompt",
+        "/bot config fetch helper",
     ] {
-        let input = commands::Input {
-            markdown: false,
-            id: 1,
-            room: Some("secret".into()),
-            text: text.into(),
-        };
-        assert!(
-            commands::execute_input(&app, &headers, "caller", &input)
-                .await
-                .is_err()
-        );
-        let elevated = commands::Input {
-            text: format!("/sudo {text}"),
-            ..input
-        };
-        let command = commands::execute_input(&app, &headers, "caller", &elevated);
-        let worker = async {
-            let request = requests.recv().await.unwrap();
-            assert_eq!(request.authority.actor.as_deref(), Some("caller"));
-            assert!(request.authority.sudo);
-            assert!(!app.engine_read().unwrap().is_su(Some("caller")));
-            request
-                .reply
-                .send(Ok(std::collections::BTreeMap::from([(
-                    "prompt".into(),
-                    "test".into(),
-                )])))
-                .unwrap();
-        };
-        let (result, ()) = tokio::join!(command, worker);
-        let (output, change) = result.unwrap();
-        assert!(change.is_none());
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&output).unwrap()["values"]["prompt"],
-            "test"
-        );
-        assert!(!app.engine_read().unwrap().is_su(Some("caller")));
+        for prefix in ["", "/sudo "] {
+            let input = commands::Input {
+                markdown: false,
+                id: 1,
+                room: None,
+                text: format!("{prefix}{command}"),
+            };
+            assert!(
+                commands::execute_input(&app, &headers, "admin", &input)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                app.engine()
+                    .unwrap()
+                    .execute(None, None, &input.text)
+                    .is_err()
+            );
+        }
     }
-    for permission in ["/sudo", "x:command.sudo"] {
-        let input = commands::Input {
-            markdown: false,
-            id: 2,
-            room: None,
-            text: "/sudo /bot config fetch helper prompt".into(),
-        };
-        let command = commands::execute_input(&app, &headers, "caller", &input);
-        let worker = async {
-            let request = requests.recv().await.unwrap();
-            app.engine()
-                .unwrap()
-                .execute(None, None, &format!("/revoke caller @global {permission}"))
-                .unwrap();
-            request
-                .reply
-                .send(Ok(std::collections::BTreeMap::from([(
-                    "prompt".into(),
-                    "must not be disclosed".into(),
-                )])))
-                .unwrap();
-        };
-        let (result, ()) = tokio::join!(command, worker);
-        assert!(result.is_err());
-        assert!(!app.engine_read().unwrap().is_su(Some("caller")));
-        app.engine()
-            .unwrap()
-            .execute(None, None, &format!("/grant caller @global {permission}"))
-            .unwrap();
-    }
-}
-
-#[tokio::test]
-async fn runtime_config_offline_disconnect_and_response_limits_fail_cleanly() {
-    use crate::bots::runtime::{Authority, ConfigCommand, validate_response};
-    let (app, _) = fixture();
-    let authority = Authority {
-        actor: None,
-        headers: Default::default(),
-        view: None,
-        sudo: false,
-    };
-    let command = ConfigCommand::parse("/bot config fetch helper")
-        .unwrap()
-        .unwrap();
-    assert!(
-        app.bot_runtimes
-            .execute(&app, authority.clone(), command.clone())
-            .await
-            .unwrap_err()
-            .contains("offline")
-    );
-    let target = app.engine_read().unwrap().data.users["helper"].id.clone();
-    let (sender, mut requests) = tokio::sync::mpsc::channel(8);
-    let lease = app.bot_runtimes.register(target, sender).unwrap();
-    let worker = tokio::spawn(async move {
-        drop(requests.recv().await.unwrap());
-    });
-    assert!(
-        app.bot_runtimes
-            .execute(&app, authority, command)
-            .await
-            .unwrap_err()
-            .contains("disconnected")
-    );
-    worker.await.unwrap();
-    drop(lease);
-    assert!(validate_response(None, None).is_err());
-    assert!(validate_response(Some(Default::default()), Some("error".into())).is_err());
-    assert!(
-        validate_response(
-            Some(std::collections::BTreeMap::from([(
-                "prompt".into(),
-                "x".repeat(4097)
-            )])),
-            None
-        )
-        .is_err()
-    );
-    assert!(
-        validate_response(None, Some("unsupported key".into()))
-            .unwrap_err()
-            .contains("unsupported key")
-    );
-}
-
-#[tokio::test]
-async fn runtime_config_timeout_cancels_the_pending_request() {
-    use crate::bots::runtime::{Authority, ConfigCommand};
-    let (app, _) = fixture();
-    let target = app.engine_read().unwrap().data.users["helper"].id.clone();
-    let (sender, mut requests) = tokio::sync::mpsc::channel(8);
-    let _lease = app.bot_runtimes.register(target, sender).unwrap();
-    let authority = Authority {
-        actor: None,
-        headers: Default::default(),
-        view: None,
-        sudo: false,
-    };
-    let command = ConfigCommand::parse("/bot config set helper prompt unanswered")
-        .unwrap()
-        .unwrap();
-    let (result, pending) = tokio::join!(
-        app.bot_runtimes.execute(&app, authority, command),
-        requests.recv()
-    );
-    assert!(result.unwrap_err().contains("timed out"));
-    assert!(pending.unwrap().reply.is_closed());
+    assert!(!crate::commands::help(true, true).contains("config fetch"));
 }
 
 fn conversation(app: &App) -> String {

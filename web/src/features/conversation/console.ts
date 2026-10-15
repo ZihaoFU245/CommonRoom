@@ -256,13 +256,11 @@ export function suggestions(
   ];
   if (name === "/bot") {
     const operation = parts[1];
-    if (position === 1)
-      values = ["new", "ls", "info", "owner", "rm", "token", "config"];
+    if (position === 1) values = ["new", "ls", "info", "owner", "rm", "token"];
     if (position === 2 && operation === "token") values = ["new", "ls", "rm"];
-    if (position === 2 && operation === "config") values = ["set", "fetch"];
     if (
       (position === 2 && ["info", "owner", "rm"].includes(operation || "")) ||
-      (position === 3 && ["token", "config"].includes(operation || ""))
+      (position === 3 && operation === "token")
     )
       values = users;
     if (

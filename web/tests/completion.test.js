@@ -51,7 +51,7 @@ test("command and argument matches are unlimited and navigation wraps in both di
 test("bot subcommands complete operations, account names and valid scopes", () => {
   assert.deepEqual(
     values("/bot "),
-    ["new", "ls", "info", "owner", "rm", "token", "config"].map(
+    ["new", "ls", "info", "owner", "rm", "token"].map(
       (value) => `/bot ${value} `,
     ),
   );
@@ -59,10 +59,7 @@ test("bot subcommands complete operations, account names and valid scopes", () =
     values("/bot token "),
     ["new", "ls", "rm"].map((value) => `/bot token ${value} `),
   );
-  assert.deepEqual(
-    values("/bot config "),
-    ["set", "fetch"].map((value) => `/bot config ${value} `),
-  );
+  assert.deepEqual(values("/bot config "), [null]);
   for (const prefix of [
     "/bot info ",
     "/bot owner ",
@@ -70,8 +67,6 @@ test("bot subcommands complete operations, account names and valid scopes", () =
     "/bot token new ",
     "/bot token ls ",
     "/bot token rm ",
-    "/bot config set ",
-    "/bot config fetch ",
   ]) {
     assert.deepEqual(values(prefix), [prefix + "alice ", prefix + "bob "]);
   }
@@ -107,10 +102,8 @@ test("remaining command arguments complete known values and wrapped commands", (
   assert.deepEqual(values("/grant bob team w:bot"), [
     "/grant bob team w:bot.config ",
   ]);
-  assert.deepEqual(values("/alias /hi /bot config f"), [
-    "/alias /hi /bot config fetch ",
-  ]);
-  assert.deepEqual(values("/sudo /bot config f"), ["/sudo /bot config fetch "]);
+  assert.deepEqual(values("/alias /hi /bot config f"), [null]);
+  assert.deepEqual(values("/sudo /bot config f"), [null]);
 });
 test("cursor completion replaces only the current token and preserves following Unicode text", () => {
   const draft = "/tell bo hello 🙂";

@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BotApi } from "../src/api.ts";
+import { Store } from "../src/store.ts";
 import type { ChatMessage, FunctionTool } from "../src/model.ts";
 import {
   isBotCommandDirectory,
@@ -95,23 +96,27 @@ test(
             : reaction
               ? `/react ${reaction} 👍`
               : "/whoami";
-          message = {
-            content: null,
-            tool_calls: [
-              {
-                id: `call-${modelRequests.length}`,
-                type: "function",
-                function: {
-                  name: historyBefore ? "read_history" : "run_server_command",
-                  arguments: JSON.stringify(
-                    historyBefore
-                      ? { before: Number(historyBefore), limit: 2 }
-                      : { command },
-                  ),
-                },
-              },
-            ],
-          };
+          message = text.includes("finish silently")
+            ? { content: "" }
+            : {
+                content: null,
+                tool_calls: [
+                  {
+                    id: `call-${modelRequests.length}`,
+                    type: "function",
+                    function: {
+                      name: historyBefore
+                        ? "read_history"
+                        : "run_server_command",
+                      arguments: JSON.stringify(
+                        historyBefore
+                          ? { before: Number(historyBefore), limit: 2 }
+                          : { command },
+                      ),
+                    },
+                  },
+                ],
+              };
         }
         if (input.stream) {
           response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -471,6 +476,13 @@ test(
       );
       assert.equal(modelRequests[0]?.model, "second");
       assert.ok(
+        modelRequests[0]?.messages.some(
+          (message) =>
+            message.content.includes('"username":"bob"') &&
+            message.content.includes('"author_id":'),
+        ),
+      );
+      assert.ok(
         !modelRequests[0]?.messages[0]?.content.includes(
           "concise explanations after reload",
         ),
@@ -558,6 +570,24 @@ test(
           ),
         ),
       );
+      const repliesBeforeSilence = (await ownMessages()).length;
+      await say(bob, "@helper finish silently");
+      await until(
+        () =>
+          Store.load(statePath)
+            .tasks()
+            .some(
+              (task) =>
+                task.status === "answered" && task.silentHash !== undefined,
+            ),
+        "silent turn checkpointed",
+      );
+      assert.equal(
+        (await ownMessages()).length,
+        repliesBeforeSilence,
+        "silent turn sends no reply",
+      );
+      const repliesBeforeRestart = (await ownMessages()).length;
       const count = modelRequests.length;
       await stop(bot);
       await until(
@@ -574,6 +604,18 @@ test(
         modelRequests.length,
         count,
         "restart does not replay model actions",
+      );
+      assert.equal(
+        (await ownMessages()).length,
+        repliesBeforeRestart,
+        "restart sends no duplicate replies",
+      );
+      assert.equal(
+        (await ownMessages()).filter(
+          (message) => message.reply?.id === input.id,
+        ).length,
+        1,
+        "one reply for one mention despite tool actions and reconnect",
       );
       await say(alice, "/bot owner helper alice", null);
       await until(

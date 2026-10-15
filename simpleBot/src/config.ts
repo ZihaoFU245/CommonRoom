@@ -1,9 +1,8 @@
 // Runtime configuration owned by this worker.
 //
-// The server never stores these values: `/bot config set|fetch` forwards an
-// operator request over the bot socket and this module answers it. That is why
-// startup can succeed with no config at all and why every setting can be
-// changed live from chat.
+// The worker owns these values; its `/config` chat command applies an
+// owner/admin request locally. Startup can succeed with no configuration,
+// and settings can be changed live from chat.
 import {
   readFileSync,
   renameSync,
@@ -338,14 +337,14 @@ export class ConfigStore {
     return { changed };
   }
 
-  /** Answer a `config_response` payload for `set`; exactly one key is returned. */
+  /** Apply one setting and return its redacted value. */
   apply(key: ConfigKey, raw: string): Record<string, string> {
     const value = coerce(key, raw);
     this.set(key, value);
     return { [key]: redact(key, value) };
   }
 
-  /** Answer a `config_response` payload for `fetch`. */
+  /** Read redacted worker settings. */
   fetch(key: string | null): Record<string, string> {
     if (key === null) {
       const out: Record<string, string> = {};

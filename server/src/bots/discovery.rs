@@ -291,7 +291,7 @@ impl Runtime {
             .take(256)
             .cloned()
             .collect();
-        app.bot_runtimes.2.clear(lease)?;
+        app.bot_runtimes.commands.clear(lease)?;
         self.pending.clear();
         self.queue = ids.into();
         Ok(())
@@ -318,7 +318,7 @@ impl Runtime {
             Control::Ready => {
                 context.permits(&*app.engine_read().map_err(Error::storage)?, "read", None)?;
                 if self.lease.is_none() {
-                    self.lease = Some(app.bot_runtimes.2.register(context, &app.changes)?);
+                    self.lease = Some(app.bot_runtimes.commands.register(context, &app.changes)?);
                     self.refresh(app, context)?;
                 }
                 Ok(None)
@@ -351,7 +351,9 @@ impl Runtime {
                 let lease = self.lease.as_ref().ok_or_else(|| {
                     Error::new(Code::Unavailable, "Command runtime disconnected.")
                 })?;
-                app.bot_runtimes.2.publish(lease, &conversation, commands)?;
+                app.bot_runtimes
+                    .commands
+                    .publish(lease, &conversation, commands)?;
                 Ok(Some(id))
             }
         }

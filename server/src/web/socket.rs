@@ -1,7 +1,6 @@
 use super::commands::{Input, execute_input};
 use super::*;
 use super::{auth::authenticate, security::check_origin_or_bot};
-use crate::bots::runtime::SocketRuntime as Runtime;
 use axum::{
     extract::{
         State,
@@ -143,14 +142,10 @@ pub(crate) async fn connection(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
     let mut budget = (Instant::now(), 0u32);
     let mut last_seen = Instant::now();
-    let (runtime_sender, mut runtime_requests) =
-        tokio::sync::mpsc::channel::<crate::bots::runtime::Request>(8);
-    let mut runtime = Runtime::default();
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
                 if presence.authenticate(&headers).await.is_err() { break; }
-                runtime.pending.retain(|_, request| !request.reply.is_closed());
                 if last_seen.elapsed() > Duration::from_secs(75) { break; }
                 if !send(&mut socket, Message::Ping(Vec::new().into())).await { break; }
             },
@@ -207,27 +202,6 @@ pub(crate) async fn connection(
                     }
                 } else if !snapshot(&app, &mut socket, bot, &headers).await { break; }
             },
-            request = runtime_requests.recv() => {
-                let Some(request) = request else { break; };
-                if request.reply.is_closed() { continue; }
-                runtime.pending.retain(|_, request| !request.reply.is_closed());
-                if presence.authenticate(&headers).await.is_err() { break; }
-                let authorization_app = app.clone();
-                let authority = request.authority.clone();
-                let command = request.command.clone();
-                let authorized = tokio::task::spawn_blocking(move || authority.authorize(&authorization_app, &command)).await.unwrap_or_else(|_| Err("Authorization worker unavailable.".into()));
-                if authorized.as_ref() != Ok(&request.target) {
-                    let _ = request.reply.send(Err(authorized.err().unwrap_or_else(|| "Bot account changed.".into())));
-                    continue;
-                }
-                if runtime.pending.len() >= 8 {
-                    let _ = request.reply.send(Err("Bot configuration runtime busy.".into()));
-                    continue;
-                }
-                let frame = request.command.frame(&request.id).to_string();
-                if !send(&mut socket, Message::Text(frame.into())).await { break; }
-                runtime.pending.insert(request.id.clone(), request);
-            },
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else { break; };
                 last_seen = Instant::now();
@@ -237,11 +211,7 @@ pub(crate) async fn connection(
                         if budget.0.elapsed() > Duration::from_secs(10) { budget = (Instant::now(), 0); }
                         budget.1 += 1;
                         if bot {
-                            let (id,result) = runtime.control(&app, &headers, &raw, budget.1, &runtime_sender).await;
-                            let frame = match result {
-                                Ok(()) => json!({"kind":"config_ack","id":id}),
-                                Err(error) => json!({"kind":"error","id":id,"error":error}),
-                            };
+                            let frame = json!({"kind":"error","id":null,"error":crate::bots::error::Error::new(crate::bots::error::Code::InvalidRequest,"Use /api/bot/v1/ws for bot controls.")});
                             if !send(&mut socket,Message::Text(frame.to_string().into())).await {break;}
                             continue;
                         }
@@ -263,5 +233,4 @@ pub(crate) async fn connection(
         }
     }
     let _ = send(&mut socket, Message::Close(None)).await;
-    let _job = tokio::task::spawn_blocking(move || drop(runtime));
 }

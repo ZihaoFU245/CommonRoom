@@ -116,7 +116,7 @@ This field describes action requirements and never authorizes an operation.
 
 The frozen `/api/bot/v1/` profile is independent of browser snapshots and command
 frames. It uses stable conversation IDs, required keyed sends, desired-state
-reactions, typed errors, compact directories and notification/configuration
+reactions, typed errors, compact directories and notification/command-discovery
 sockets. Its complete contract, limits and freeze policy are in [Bots](bots.md)
 and [the published schema](bot-v1.schema.json). Browser shapes above remain the
 browser contract. Direct trusted bot access has the production HTTP/WS exception

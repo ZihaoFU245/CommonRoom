@@ -1,4 +1,4 @@
-// Bot WebSocket: notifications in, configuration/activity frames out.
+// Bot WebSocket: notifications in, command discovery/activity frames out.
 //
 // The socket is a signal channel, not a log. On every `conversation` frame the
 // agent refetches the snapshot and compares `content_revision`; a `Lagged`
@@ -12,7 +12,6 @@ export interface SocketEvents {
   conversation(conversationId: string, contentRevision: number): void;
   presence(online: string[]): void;
   activity(frame: Extract<ServerFrame, { kind: "activity" }>): void;
-  configRequest(frame: Extract<ServerFrame, { kind: "config_request" }>): void;
   commandsRequest(
     frame: Extract<ServerFrame, { kind: "commands_request" }>,
   ): void;
@@ -45,7 +44,6 @@ export class BotSocket {
   private activityEnabled = false;
   private activityScope: Set<string> | null = null;
   private activityAllowed = false;
-  private configRegistered = false;
   private commandsRegistered = false;
 
   constructor(options: BotSocketOptions) {
@@ -94,15 +92,6 @@ export class BotSocket {
     this.send({ kind: "activity", conversation_id: conversationId, state });
   }
 
-  /** Answer a configuration request; exactly one of values/error must be set. */
-  respond(
-    id: string,
-    values: Record<string, string> | null,
-    error: string | null,
-  ): void {
-    this.send({ kind: "config_response", id, values, error });
-  }
-
   respondCommands(
     id: string,
     commands: import("./wire.ts").BotCommand[],
@@ -132,7 +121,6 @@ export class BotSocket {
     if (this.closed) return;
     this.activityEnabled = false;
     this.activityAllowed = false;
-    this.configRegistered = false;
     this.commandsRegistered = false;
     const generation = ++this.generation;
     let socket: WebSocket;
@@ -246,13 +234,6 @@ export class BotSocket {
         ) {
           this.commandsRegistered = this.send({ kind: "commands_ready" });
         }
-        if (
-          !this.configRegistered &&
-          (frame.credential.operations === null ||
-            frame.credential.operations.includes("config"))
-        ) {
-          this.configRegistered = this.send({ kind: "config_ready" });
-        }
         this.activityAllowed =
           frame.credential.operations === null ||
           frame.credential.operations.includes("activity");
@@ -275,16 +256,13 @@ export class BotSocket {
       case "activity":
         this.options.events.activity(frame);
         return;
-      case "config_request":
-        this.options.events.configRequest(frame);
-        return;
       case "commands_request":
         this.options.events.commandsRequest(frame);
         return;
       case "config_ack":
         this.options.log(
           "debug",
-          `server acknowledged ${frame.id ?? "config_ready"}`,
+          `server acknowledged ${frame.id ?? "control"}`,
         );
         return;
       case "error":

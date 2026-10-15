@@ -45,7 +45,7 @@ fn catalogue_lifecycle_is_session_owned_and_rechecks_credentials_and_members() {
     let conversation = publish(&app, &context, &mut runtime);
     let visible = app
         .bot_runtimes
-        .2
+        .commands
         .visible(&app.engine_read().unwrap(), "admin", &conversation)
         .unwrap();
     assert_eq!(visible[0]["username"], "helper");
@@ -73,7 +73,7 @@ fn catalogue_lifecycle_is_session_owned_and_rechecks_credentials_and_members() {
             .unwrap();
         assert!(
             app.bot_runtimes
-                .2
+                .commands
                 .visible(&engine, "reader", &conversation)
                 .unwrap()
                 .is_empty(),
@@ -85,7 +85,7 @@ fn catalogue_lifecycle_is_session_owned_and_rechecks_credentials_and_members() {
             .unwrap();
         assert!(
             app.bot_runtimes
-                .2
+                .commands
                 .visible(&engine, "admin", &conversation)
                 .unwrap()
                 .is_empty(),
@@ -95,7 +95,7 @@ fn catalogue_lifecycle_is_session_owned_and_rechecks_credentials_and_members() {
     drop(runtime);
     assert!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&app.engine_read().unwrap(), "admin", &conversation)
             .unwrap()
             .is_empty()
@@ -110,7 +110,7 @@ fn changed_catalogues_cancel_old_requests_and_responses_cannot_inject_targets() 
     runtime.control(&app, &context, Control::Changed).unwrap();
     assert!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&app.engine_read().unwrap(), "admin", &conversation)
             .unwrap()
             .is_empty()
@@ -267,7 +267,7 @@ async fn scoped_runtime_discovery_does_not_require_configuration_or_operator_gra
         .unwrap();
     assert_eq!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&app.engine_read().unwrap(), "admin", &conversation)
             .unwrap()
             .len(),
@@ -361,7 +361,7 @@ fn private_catalogues_are_visible_only_to_authorized_participants() {
     let engine = app.engine_read().unwrap();
     assert_eq!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&engine, "admin", &id)
             .unwrap()
             .len(),
@@ -369,7 +369,7 @@ fn private_catalogues_are_visible_only_to_authorized_participants() {
     );
     assert!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&engine, "outsider", &id)
             .is_err()
     );
@@ -409,7 +409,7 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
         let engine = app.engine_read().unwrap();
         assert_eq!(
             app.bot_runtimes
-                .2
+                .commands
                 .visible(&engine, "admin", id)
                 .unwrap()
                 .len(),
@@ -417,7 +417,7 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
         );
         assert_eq!(
             app.bot_runtimes
-                .2
+                .commands
                 .visible(&engine, "bob", id)
                 .unwrap()
                 .len(),
@@ -425,7 +425,7 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
         );
         assert!(
             app.bot_runtimes
-                .2
+                .commands
                 .visible(&engine, "carol", id)
                 .unwrap()
                 .is_empty()
@@ -438,14 +438,14 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
     let engine = app.engine_read().unwrap();
     assert!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&engine, "bob", id)
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         app.bot_runtimes
-            .2
+            .commands
             .visible(&engine, "carol", id)
             .unwrap()
             .len(),

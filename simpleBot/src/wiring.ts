@@ -1,8 +1,6 @@
 // Socket event wiring, shared by the entrypoint and the tests so the live
-// configuration path is exercised by the same code in both.
+// command discovery path is exercised by the same code in both.
 import type { Agent } from "./agent.ts";
-import type { ConfigStore } from "./config.ts";
-import { isConfigKey } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { Store } from "./store.ts";
 import type { SocketEvents } from "./socket.ts";
@@ -12,36 +10,20 @@ import type { ServerFrame } from "./wire.ts";
 export interface SocketSink {
   respondCommands(id: string, commands: import("./wire.ts").BotCommand[]): void;
   commandsChanged(): void;
-  respond(
-    id: string,
-    values: Record<string, string> | null,
-    error: string | null,
-  ): void;
 }
 
 export interface WiringContext {
-  config: ConfigStore;
   store: Store;
   log: Logger;
   /** Current agent, or null before the first build. */
   agent(): Agent | null;
-  /** Current socket, for answering configuration requests. */
+  /** Current socket, for answering command catalogue requests. */
   socket(): SocketSink | null;
-  /** Called after a configuration change that affects the transport. */
-  onTransportChange(): void;
 }
 
 /** Build the socket event handlers. */
 export function createSocketEvents(context: WiringContext): SocketEvents {
-  const { config, store, log } = context;
-  const answer = (
-    id: string,
-    values: Record<string, string> | null,
-    error: string | null,
-  ): void => {
-    context.socket()?.respond(id, values, error);
-  };
-
+  const { store, log } = context;
   return {
     commandsRequest(frame) {
       const agent = context.agent();
@@ -83,51 +65,6 @@ export function createSocketEvents(context: WiringContext): SocketEvents {
     },
     activity: () => {
       // Other accounts' activity signals are advisory; this worker ignores them.
-    },
-    configRequest(frame) {
-      if (frame.operation === "set") {
-        if (frame.key === null || frame.value === null) {
-          answer(frame.id, null, "set requires both key and value");
-          return;
-        }
-        if (!isConfigKey(frame.key)) {
-          answer(frame.id, null, `unsupported key ${frame.key}`);
-          return;
-        }
-        const before = {
-          url: config.get("chat.url"),
-          token: config.get("chat.token"),
-        };
-        try {
-          const values = config.apply(frame.key, frame.value);
-          log("info", `config ${frame.key} updated by operator`);
-          answer(frame.id, values, null);
-          context.socket()?.commandsChanged();
-        } catch (error) {
-          answer(frame.id, null, `rejected: ${(error as Error).message}`);
-          return;
-        }
-        if (
-          config.get("chat.url") !== before.url ||
-          config.get("chat.token") !== before.token
-        ) {
-          log("info", "transport settings changed; reconnecting");
-          context.onTransportChange();
-        }
-        return;
-      }
-      try {
-        const diagnostics = context.agent()?.operatorValues() ?? {};
-        const values =
-          frame.key === null
-            ? { ...config.fetch(null), ...diagnostics }
-            : frame.key in diagnostics
-              ? { [frame.key]: diagnostics[frame.key] ?? "" }
-              : config.fetch(frame.key);
-        answer(frame.id, values, null);
-      } catch (error) {
-        answer(frame.id, null, `rejected: ${(error as Error).message}`);
-      }
     },
     socketError(frame) {
       log(

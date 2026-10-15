@@ -100,7 +100,7 @@ function main(): void {
     setImmediate(() => {
       transportChange = transportChange
         .then(async () => {
-          // Let the command/RPC acknowledgement finish on the existing transport.
+          // Let the command acknowledgement finish on the existing transport.
           while (agent.busy)
             await new Promise((resolve) => setTimeout(resolve, 10));
           await agent.stop();
@@ -122,16 +122,14 @@ function main(): void {
     });
   }
 
-  /** Only one socket may own the configuration runtime for an account. */
+  /** Only one socket may own command discovery for an account. */
   function connect(): void {
     const endpoint = api.socket();
     const events = createSocketEvents({
-      config,
       store,
       log,
       agent: () => agent,
       socket: () => socket,
-      onTransportChange: scheduleTransportChange,
     });
     socket = new BotSocket({
       ...endpoint,
@@ -157,6 +155,7 @@ function main(): void {
 
   agent = buildAgent();
   config.onReload(() => {
+    socket.commandsChanged();
     model = buildModel();
     agent.setModel(model);
     store.taskLimit = config.get("chat.stateLimit");
@@ -230,13 +229,13 @@ function main(): void {
   if (config.get("chat.token").length === 0) {
     log(
       "warn",
-      "chat.token is unset; set BOT_TOKEN or use `/bot config set <bot> chat.token <secret>`",
+      "chat.token is unset; set BOT_TOKEN or use the local config CLI",
     );
   }
   if (config.created)
     log(
       "info",
-      `created ${configPath} with defaults; edit it or use /bot config set`,
+      `created ${configPath} with defaults; edit it or use the local config CLI`,
     );
   log(
     "debug",

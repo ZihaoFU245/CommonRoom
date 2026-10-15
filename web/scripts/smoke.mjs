@@ -135,46 +135,11 @@ async function connect(cookie, botToken = null, directBot = false) {
     frames: [],
     serial: 0,
     snapshot: null,
-    runtimeConfig: {},
-    configRequests: [],
-    ignoreConfig: false,
   };
   sockets.push(client);
   client.ws.on("message", (raw) => {
     const control = JSON.parse(raw.toString());
     if (botToken) validate("ServerFrame", control);
-    if (control.kind === "config_request") {
-      assert.ok(botToken, "config requests never reach browser clients");
-      assert.equal(typeof control.id, "string");
-      assert.match(control.id, /^[a-f0-9-]{36}$/);
-      assert.ok(["set", "fetch"].includes(control.operation));
-      assert.ok(control.key === null || typeof control.key === "string");
-      assert.ok(control.value === null || typeof control.value === "string");
-      client.configRequests.push(control);
-      if (client.ignoreConfig) return;
-      if (control.key === "unsupported") {
-        client.ws.send(
-          JSON.stringify({
-            kind: "config_response",
-            id: control.id,
-            error: "Unsupported key",
-          }),
-        );
-        return;
-      }
-      if (control.operation === "set")
-        client.runtimeConfig[control.key] = control.value;
-      const values =
-        control.key === null
-          ? client.runtimeConfig
-          : Object.hasOwn(client.runtimeConfig, control.key)
-            ? { [control.key]: client.runtimeConfig[control.key] }
-            : {};
-      client.ws.send(
-        JSON.stringify({ kind: "config_response", id: control.id, values }),
-      );
-      return;
-    }
     if (botToken) {
       client.frames.push(control);
       if (control.kind === "snapshot") client.snapshot = control;
@@ -1494,65 +1459,26 @@ try {
       ),
     "bot socket rejects chat commands",
   );
-  agent.ws.send(
-    JSON.stringify(validate("ClientFrame", { kind: "config_ready" })),
+  for (const kind of ["config_ready", "config_response"]) {
+    const start = agent.frames.length;
+    agent.ws.send(JSON.stringify({ kind, id: "removed", values: {} }));
+    await until(
+      () =>
+        agent.frames
+          .slice(start)
+          .some(
+            (f) => f.kind === "error" && f.error.code === "invalid_request",
+          ),
+      "removed configuration frames rejected",
+    );
+  }
+  await send(
+    botAdmin,
+    '/bot config set helper prompt "Help with Rust"',
+    null,
+    "error",
   );
-  await until(
-    () => agent.frames.some((f) => f.kind === "config_ack" && f.id === null),
-    "runtime registration",
-  );
-  await send(botAdmin, '/bot config set helper prompt "Help with Rust"');
-  assert.equal(agent.runtimeConfig.prompt, "Help with Rust");
-  await send(botAdmin, "/bot config fetch helper prompt");
-  assert.deepEqual(
-    JSON.parse(botAdmin.frames.find((f) => f.id === botAdmin.serial).text)
-      .values,
-    { prompt: "Help with Rust" },
-  );
-  await send(botAdmin, "/bot config set helper unsupported x", null, "error");
-  child.stdin.write(
-    "/new user delegate delegate-long-password user\n/grant delegate admin support\n",
-  );
-  await until(
-    () => logs.includes("Account delegate created."),
-    "delegate fixture",
-  );
-  const delegate = await connect(
-    await login("delegate", "delegate-long-password"),
-  );
-  await send(delegate, "/bot config fetch helper", null, "error");
-  await send(botAdmin, "/sudo /grant delegate @account:helper /bot");
-  await send(botAdmin, "/sudo /grant delegate @account:helper r:bot.config");
-  await send(delegate, "/bot config fetch helper prompt");
-  await send(delegate, "/bot config set helper prompt denied", null, "error");
-  await send(botAdmin, "/sudo /grant delegate @account:helper w:bot.config");
-  await send(delegate, "/bot config set helper prompt delegated");
-  assert.equal(agent.runtimeConfig.prompt, "delegated");
-  await send(botAdmin, "/sudo /revoke delegate @account:helper w:bot.config");
-  await send(delegate, "/bot config set helper prompt denied", null, "error");
-  const duplicate = await connect(null, botSecret, true);
-  duplicate.ws.send(JSON.stringify({ kind: "config_ready" }));
-  await until(
-    () =>
-      duplicate.frames.some(
-        (f) => f.kind === "error" && f.error.code === "runtime_rejected",
-      ),
-    "duplicate configuration handler",
-  );
-  duplicate.ws.close();
-  agent.ws.send(
-    JSON.stringify({ kind: "config_response", id: "unknown", values: {} }),
-  );
-  await until(
-    () =>
-      agent.frames.some(
-        (f) =>
-          f.kind === "error" &&
-          f.id === "unknown" &&
-          f.error.code === "not_found",
-      ),
-    "unsolicited response rejected",
-  );
+  await send(botAdmin, "/bot config fetch helper prompt", null, "error");
   agent.ws.send(
     JSON.stringify(
       validate("ClientFrame", {

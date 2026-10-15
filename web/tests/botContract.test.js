@@ -91,22 +91,15 @@ test("Bot HTTP and both WebSocket directions have complete named contracts", () 
       conversation_id: "conversation-id",
       content_revision: 1,
     },
-    {
-      kind: "config_request",
-      id: "request-id",
-      operation: "fetch",
-      key: null,
-      value: null,
-    },
     { kind: "config_ack", id: null },
     { kind: "config_ack", id: "request-id" },
     { kind: "error", id: null, error },
   ])
     validate("ServerFrame", frame);
   for (const frame of [
-    { kind: "config_ready" },
-    { kind: "config_response", id: "request-id", values: { prompt: "帮助" } },
-    { kind: "config_response", id: "request-id", error: "Unsupported key" },
+    { kind: "commands_ready" },
+    { kind: "commands_changed" },
+    { kind: "commands_response", id: "request-id", commands: [] },
   ])
     validate("ClientFrame", frame);
   assert.equal(schema.$id, "urn:commonroom:bot-api:v1");
@@ -114,6 +107,18 @@ test("Bot HTTP and both WebSocket directions have complete named contracts", () 
 
 test("the contract rejects browser payloads, ambiguous control responses and invalid bounds", () => {
   for (const [name, value] of [
+    ["ClientFrame", { kind: "config_ready" }],
+    ["ClientFrame", { kind: "config_response", id: "id", values: {} }],
+    [
+      "ServerFrame",
+      {
+        kind: "config_request",
+        id: "id",
+        operation: "fetch",
+        key: null,
+        value: null,
+      },
+    ],
     ["MessageRequest", { view: "support", id: 1, text: "answer" }],
     [
       "MessageRequest",

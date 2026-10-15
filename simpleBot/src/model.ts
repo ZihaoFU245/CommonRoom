@@ -478,7 +478,14 @@ export class ModelClient implements ChatModel {
     const calls = toolCalls(message.tool_calls);
     const content =
       typeof message.content === "string" ? message.content.trim() : "";
-    if (!content && !calls.length)
+    if (
+      !content &&
+      !calls.length &&
+      !(
+        choice.finish_reason === "stop" &&
+        (message.content === null || typeof message.content === "string")
+      )
+    )
       throw new ModelError(200, "model response had no text content");
     const usage = modelUsage(value.usage);
     return {
@@ -659,7 +666,11 @@ export class ModelClient implements ChatModel {
     if (!done) consume((buffer + decoder.decode()).trim());
     if (!done) throw new ModelError(0, "model stream ended before completion");
     if (finishReason === "length") throw this.tokenLimit(request);
-    if (assembled.trim().length === 0 && calls.size === 0)
+    if (
+      assembled.trim().length === 0 &&
+      calls.size === 0 &&
+      finishReason !== "stop"
+    )
       throw new ModelError(0, "model stream produced no text");
     return {
       text: assembled.trim(),

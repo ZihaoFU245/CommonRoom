@@ -132,8 +132,8 @@ storage failure. Web command checks verify the wrapped result and snapshot updat
 The sudo command matrix covers every registered engine command with a caller
 holding only sudo grants, including caller identity in reactions, replies,
 private messages, ownership and audit entries. Transport tests cover configuration,
-password/account commands, clear/logout, and remote bot configuration; bot results
-are withheld if either sudo grant is revoked while awaiting the runtime.
+password/account commands and clear/logout. Removed remote bot configuration
+commands are rejected, including sudo-wrapped requests.
 Sudo debug checks cover the successful tab-local toggle and invalidation when
 either global sudo grant is revoked.
 
@@ -216,11 +216,11 @@ revocation/disable/delete, name reuse, persistence and failed-write rollback.
 Frozen v1 tests cover stable targets through rename/recreate, atomic retry
 receipts, expiry/capacity, replies, desired-state reactions, read cursor retries,
 permissions, Unicode, body limits, typed failures and production ingress.
-Runtime tests check delegated account grants, result authorization rechecks,
-offline/disconnected handlers, limits, timeout/cancellation and response privacy.
+Discovery tests check credential/access rechecks, socket lifetimes and bounded
+catalogues. Removed configuration RPC frames are rejected.
 
 The integration harness uses real production HTTP/WebSockets under a base path.
-Every bot response and frame passes the published JSON Schema. It checks runtime
+Every bot response and frame passes the published JSON Schema. It checks activity
 control, command rejection, permission/credential removal, stale destination IDs,
 reference-worker catch-up and keyed sends across server restart. Isolated
 temporary data keeps working credentials/history untouched.
@@ -313,3 +313,9 @@ SimpleBot regressions cover public help/ping without model calls, fresh context
 on restart, quoted-message retrieval, model-driven paging, bounded/deduplicated
 context, keyed pending-command recovery, scoped credential issuance/revocation,
 typed room/DM creation and desired-state reactions.
+
+Agent-turn regressions verify sender usernames in current model context, one
+reply despite overlapping signals/reconnect, outbox-only reply publication,
+silent decisions (with and without tool effects) across restart, and edit races
+between queuing and locating input. Both buffered and streamed models accept
+explicit empty completions without treating transport truncation as silence.

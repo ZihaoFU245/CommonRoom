@@ -40,30 +40,6 @@ impl Engine {
             .find(|(_, user)| &user.id == owner)
             .map(|(name, _)| name.clone())
     }
-    pub fn authorize_bot_config(
-        &self,
-        actor: Option<&str>,
-        view: Option<&str>,
-        name: &str,
-        write: bool,
-    ) -> Result<String, String> {
-        self.require_command(actor, view, "/bot")?;
-        let scope = self.account_target(
-            actor,
-            name,
-            if write {
-                Action::BotConfigWrite
-            } else {
-                Action::BotConfigRead
-            },
-        )?;
-        self.require_target_command(actor, &scope, "/bot")?;
-        if !self.active(name) {
-            return Err("Bot account disabled.".into());
-        }
-        self.registered_id(name)
-    }
-
     #[cfg(test)]
     pub fn admit_bot_input(&mut self, secret: &str) -> Result<(), String> {
         let name = self.bot_identity(secret).ok_or("Credential revoked.")?;
@@ -139,12 +115,6 @@ impl Engine {
         parts: &[&str],
     ) -> Result<String, String> {
         self.require_command(actor, view, "/bot")?;
-        if parts.get(1) == Some(&"config") {
-            let request = crate::bots::runtime::ConfigCommand::parse(&parts.join(" "))?
-                .ok_or("Invalid config command.")?;
-            self.authorize_bot_config(actor, view, &request.name, request.operation == "set")?;
-            return Err("Bot configuration requires a connected external runtime; use the server console or API/WebSocket command transport.".into());
-        }
         if !(self.is_su(actor) || self.has_group(actor, Group::Admin)) {
             return Err("Only global administrators may manage bot connections.".into());
         }
@@ -276,7 +246,7 @@ impl Engine {
                 self.audit(actor, "/bot token rm", name);
                 Ok(format!("Revoked account-wide credential {token_id} for {name}."))
             }
-            _ => Err("Usage: /bot new name [room|@global] | ls [room|@global] | info name [room|@global] | owner name user | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]".into()),
+            _ => Err("Usage: /bot new name [room|@global] | ls [room|@global] | info name [room|@global] | owner name user | rm name @global | token new name label | token ls name | token rm name id".into()),
         }
     }
 }

@@ -34,7 +34,7 @@ documentation:
 | Revision-pinned history rescans (`409 conflict` → restart) | `src/api.ts` (`history`)                             |
 | Replies, mentions, desired-state reactions                 | native command tools and typed `BotApi.react`        |
 | Transient `working`/`idle` activity signals                | `beginActivity`, `setActivity`                       |
-| Live runtime configuration over the socket                 | `src/wiring.ts`, `src/config.ts`                     |
+| Owner/admin configuration through chat commands            | `src/agent.ts`, `src/config.ts`                     |
 | Secret redaction in configuration fetches                  | `ConfigStore.fetch`                                  |
 | Presence directory (account-wide credentials)              | `src/main.ts`, private status reports                |
 | Shared-unread acknowledgement behind explicit opt-in       | `acknowledge_read` tool, `chat.acknowledgeReads`     |
@@ -54,7 +54,7 @@ simpleBot/
 │   ├── tokens.ts      provider token baselines and bounded context compaction
 │   ├── metrics.ts     numeric model/cache diagnostics per conversation
 │   ├── api.ts         typed HTTP client, idempotency, chunking, retries
-│   ├── socket.ts      WebSocket notifications, config/activity frames, reconnect
+│   ├── socket.ts      WebSocket notifications, discovery/activity frames, reconnect
 │   ├── wiring.ts      socket event handlers (shared by the entrypoint and tests)
 │   ├── config.ts      runtime settings, validation, redaction
 │   ├── store.ts       checkpoint: cursors, revisions, task ledger, outbox
@@ -116,21 +116,21 @@ waits for configuration.
 ## 3. Configure it at runtime
 
 ```text
-/bot config set helper chat.url https://chat.example.com/
-/bot config set helper model.endpoint https://ai.snowy-richter.ts.net/
-/bot config set helper model.name deepseek-flash
-/bot config set helper model.reasoningEffort none
+@helper /config set chat.url "https://chat.example.com/"
+@helper /config set model.endpoint "https://ai.snowy-richter.ts.net/"
+@helper /config set model.name "deepseek-flash"
+@helper /config set model.reasoningEffort "none"
 # This endpoint needs no model.token; leave it empty.
-/bot config fetch helper
+@helper /config get
 ```
 
-`/bot config fetch` returns every key with secrets redacted as
-`<set:abcd…yz>`. Changing `chat.url` or `chat.token` reconnects the worker with
+`@helper /config get` returns every key with secrets redacted as
+`<set>`. Changing `chat.url` or `chat.token` reconnects the worker with
 the new transport immediately. Values are validated on arrival; an invalid value
 is rejected with a reason and leaves the previous setting untouched, for example:
 
 ```text
-/bot config set helper model.timeoutMs soon
+@helper /config set model.timeoutMs "soon"
 # → rejected: timeout must be an integer 1000-600000 ms
 ```
 
@@ -244,8 +244,7 @@ owner/admin policy. Claimed roles in message text grant nothing. Configuration
 reports and command definitions are excluded from model context. Changing transport
 credentials/destinations reconnects after the acknowledgement. Environment seeds
 remain in memory unless explicitly replaced by a runtime set.
-The same reports are available to authorized remote operators as
-`/bot config fetch helper worker.status` (or `worker.model`, `worker.features`).
+Use `@helper /status`, `@helper /model` or `@helper /features` for worker reports.
 
 `/bot ...` manages bot accounts, credentials and ownership. New registrations
 record their creator as owner; stdin-created and legacy registrations default to
@@ -473,7 +472,16 @@ The real integration test is an executable API walkthrough: it issues/revokes a
 scoped credential using `issueCredential`, sends through that credential, creates
 a room and a stable DM through `createConversation`, sets/removes reactions with
 `react`, and exercises native commands, discovery and model history tools. It
-runs entirely against disposable data. Runtime configuration is demonstrated
-separately through chat controls and the configuration socket. Credential issuance
+runs entirely against disposable data. Chat configuration is demonstrated
+through owner/admin chat commands. Credential issuance
 and conversation creation lack retry keys and are deliberately not retried after
 an ambiguous transport failure.
+
+Each mention triggers one agent turn. The model receives the current sender's
+username and stable account ID and may use tools, reply, or finish silently with
+an empty final response. A silent decision is checkpointed and is not retriggered
+by notifications or reconnects. Replies use the durable outbox; model command
+tools omit `/reply` and `/tell` to prevent a tool send plus a second final answer.
+
+The default system prompt favors brief, natural conversation in the user's
+language, with only the detail needed and no routine preamble or formal summary.

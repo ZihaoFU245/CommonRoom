@@ -2,7 +2,6 @@
 use super::{
     auth::Context,
     error::{Code, Error},
-    runtime::SocketRuntime as Runtime,
 };
 use crate::{
     engine::authorization::Action,
@@ -41,7 +40,7 @@ pub(super) async fn upgrade(
         .max_frame_size(65536)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
-            connection(app, headers, context, socket).await;
+            connection(app, context, socket).await;
         }))
 }
 #[derive(Deserialize)]
@@ -87,9 +86,9 @@ impl Drop for Presence {
         let _job = tokio::task::spawn_blocking(move || app.update_presence(Some(&user), None));
     }
 }
-async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: WebSocket) {
+async fn connection(app: App, context: Context, mut socket: WebSocket) {
     let mut changes = app.changes.subscribe();
-    let mut activities = app.bot_runtimes.1.subscribe();
+    let mut activities = app.bot_runtimes.activities.subscribe();
     let init_app = app.clone();
     let init_context = context.clone();
     let initial = tokio::task::spawn_blocking(move || {
@@ -113,8 +112,6 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
     let mut last_seen = Instant::now();
     let mut budget = (Instant::now(), 0u32);
-    let (sender, mut requests) = tokio::sync::mpsc::channel::<super::runtime::Request>(8);
-    let mut runtime = Runtime::default();
     let mut commands = super::discovery::Runtime::default();
     let mut command_tick = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -137,7 +134,6 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
                     if app.update_presence(Some(&presence.user), Some(&user)).is_err() { break; }
                     presence.user = user;
                 }
-                runtime.pending.retain(|_, r| !r.reply.is_closed());
                 if !send(&mut socket, Message::Ping(Vec::new().into())).await { break; }
             }
             change = changes.recv() => {
@@ -157,19 +153,6 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
                     engine.bot_target(&user, &id, Action::Read).map(|_| ())
                 }).await;
                 if matches!(allowed, Ok(Ok(()))) && !send(&mut socket, Message::Text(activity.to_string().into())).await { break; }
-            }
-            request = requests.recv() => {
-                let Some(request) = request else { break; };
-                if request.reply.is_closed() { continue; }
-                runtime.pending.retain(|_, r| !r.reply.is_closed());
-                let check_app = app.clone(); let check_context = context.clone(); let authority = request.authority.clone(); let command = request.command.clone();
-                let allowed = tokio::task::spawn_blocking(move || {
-                    check_context.permits(&*check_app.engine_read()?, "config", None).map_err(|e| e.to_string())?;
-                    authority.authorize(&check_app, &command)
-                }).await;
-                if !matches!(allowed, Ok(Ok(ref id)) if id == &request.target) || runtime.pending.len() >= 8 { let _ = request.reply.send(Err("Configuration unavailable.".into())); continue; }
-                if !send(&mut socket, Message::Text(request.command.frame(&request.id).to_string().into())).await { break; }
-                runtime.pending.insert(request.id.clone(), request);
             }
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else { break; };
@@ -194,13 +177,12 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
                                 let user = activity_context.user(&engine)?;
                                 activity_context.permits(&engine, "activity", Some(&activity.conversation_id))?;
                                 engine.bot_target(&user, &activity.conversation_id, Action::Send)?;
-                                let _ = activity_app.bot_runtimes.1.send(json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30}));
+                                let _ = activity_app.bot_runtimes.activities.send(json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30}));
                                 Ok(())
                             }).await.map_err(Error::storage).and_then(|r| r);
                             (None, result)
                         } else {
-                            let allowed = app.engine_read().map_err(Error::storage).and_then(|e| context.permits(&e, "config", None));
-                            match allowed { Ok(()) => runtime.control(&app, &headers, &raw, budget.1, &sender).await, Err(e) => (None, Err(e)) }
+                            (None, Err(Error::new(Code::InvalidRequest, "Only command discovery and activity frames are accepted; send chat through HTTP.")))
                         };
                         let frame = match result { (id, Ok(())) => json!({"kind":"config_ack","id":id}), (id, Err(e)) => json!({"kind":"error","id":id,"error":e}) };
                         if !send(&mut socket, Message::Text(frame.to_string().into())).await { break; }

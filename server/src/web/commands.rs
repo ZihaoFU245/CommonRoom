@@ -55,19 +55,6 @@ async fn execute_input_inner(
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
     let parts: Vec<_> = text.split_whitespace().collect();
-    if let Some(command) = crate::bots::runtime::ConfigCommand::parse(text)? {
-        let authority = crate::bots::runtime::Authority {
-            actor: Some(user.to_owned()),
-            headers: headers.clone(),
-            view: input.room.clone(),
-            sudo,
-        };
-        return app
-            .bot_runtimes
-            .execute(app, authority, command)
-            .await
-            .map(|reply| (reply, None));
-    }
     let provision = crate::commands::provision_command(&parts)?;
     if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
         return app.engine()?.with_command_authority(

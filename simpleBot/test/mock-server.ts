@@ -48,11 +48,7 @@ export class MockServer {
     }[],
     reads: [] as { through: number }[],
     activities: [] as { conversation_id: string; state: string }[],
-    configResponses: [] as {
-      id: string;
-      values: Record<string, string> | null;
-      error: string | null;
-    }[],
+
     historyCalls: 0,
     commands: [] as string[],
   };
@@ -195,13 +191,6 @@ export class MockServer {
       this.state.activities.push({
         conversation_id: frame.conversation_id,
         state: frame.state,
-      });
-    }
-    if (frame.kind === "config_response") {
-      this.state.configResponses.push({
-        id: frame.id,
-        values: frame.values,
-        error: frame.error,
       });
     }
   }

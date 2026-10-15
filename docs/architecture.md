@@ -23,7 +23,7 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `tests.rs` | Engine regression tests using isolated storage |
 
 `server/src/bots/` owns the machine profile, credential management and
-runtime configuration and transient command discovery. `bots/control.rs` owns the native command and verified source-context HTTP adapters.
+transient activity and command discovery. `bots/control.rs` owns the native command and verified source-context HTTP adapters.
 `bots/discovery.rs` owns
 the bounded socket-lifetime catalogue registry and correlated requests; browser
 metadata reads recheck current engine permissions and publisher credentials.
@@ -38,9 +38,9 @@ insertion, reply quotes, action authorization and reaction mutation in
 and cursor persistence in `engine/queries.rs`. The bot adapter owns v1-specific
 validation, retry receipts and error projection. SQL remains in the engine's
 storage/history modules.
-HTTP writes and compact notification/config sockets are separate from browser
-commands/snapshots. Runtime configuration uses a transient bounded request/reply
-registry; the external worker owns its settings. Registrations and receipts use
+HTTP writes and compact notification/discovery sockets are separate from browser
+commands/snapshots. Workers configure their own settings through advertised chat
+commands and enforce their own owner/admin policy. Registrations and receipts use
 stable ordinary account IDs. `web/scripts/bot/` is a reference worker with its own
 checkpoint/outbox, not a server-side agent runtime.
 

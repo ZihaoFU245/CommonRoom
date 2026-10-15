@@ -99,11 +99,11 @@ budgets, deadlines, cancellation and bot-to-bot loop rules deliberately.
 
 ## Configuration and deployment
 
-The reference does not register a configuration handler. Add one using the
-schema's `ClientFrame`/`ServerFrame` definitions when live settings are needed.
-The worker validates accepted keys, persists settings and redacts secrets; the
-server authorizes/correlates requests. Ambiguous sets require fetching current
-state before retrying.
+Workers own configuration. Advertise chat commands to inspect/change settings,
+validate values locally and check verified source identity/ownership through
+`/message-context` before private commands. There is no `/bot config` socket RPC.
+Each mention starts one decision turn: an agent may act, reply, or stay silent.
+Include the current message's `from` username and `author_id` in model context.
 
 Use a supervisor, private checkpoint storage and secret injection. Permanent
 credential/contract errors stop the worker; inspect its state before restarting.
@@ -122,5 +122,5 @@ an empty `commands` array when no message commands are implemented (the referenc
 worker does this). The optional, separately supplied simpleBot demo returns its
 owner/admin control catalogue, separately from the server
 commands given to the model, and sends `commands_changed` after configuration
-changes. Discovery is independent of privileged runtime configuration. See
+changes. Discovery requires no operator configuration grant. See
 [Bots](bots.md#command-discovery) for limits, lifecycle and browser visibility.

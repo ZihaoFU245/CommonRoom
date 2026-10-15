@@ -81,13 +81,6 @@ class FakeSocket {
   get connected(): boolean {
     return true;
   }
-  respond(
-    id: string,
-    values: Record<string, string> | null,
-    error: string | null,
-  ): void {
-    this.server.receive({ kind: "config_response", id, values, error });
-  }
 }
 
 async function harness(
@@ -125,20 +118,12 @@ async function harness(
   agent = build();
 
   const events = createSocketEvents({
-    config,
     get store() {
       return store;
     },
     log: () => {},
     agent: () => agent,
     socket: () => fake,
-    onTransportChange: () => {
-      api = new BotApi({
-        baseUrl: config.get("chat.url"),
-        token: config.get("chat.token"),
-      });
-      agent = build();
-    },
   });
 
   const waitFor = async (
@@ -181,9 +166,6 @@ async function harness(
           return;
         case "conversation":
           events.conversation(frame.conversation_id, frame.content_revision);
-          return;
-        case "config_request":
-          events.configRequest(frame);
           return;
         case "commands_request":
           events.commandsRequest(frame);
@@ -419,89 +401,24 @@ test("a scoped credential without the send operation fails the task and surfaces
   }
 });
 
-test("configuration set/fetch round-trips over the socket and redacts secrets", async () => {
+test("owner configuration uses chat commands, validates values and redacts secrets", async () => {
   const h = await harness();
   try {
-    h.config.set("chat.token", "bot_supersecretvalue");
-    h.deliver({
-      kind: "config_request",
-      id: "req-set",
-      operation: "set",
-      key: "chat.historyWindow",
-      value: "12",
-    });
-    h.deliver({
-      kind: "config_request",
-      id: "req-get",
-      operation: "fetch",
-      key: "chat.token",
-      value: null,
-    });
-    h.deliver({
-      kind: "config_request",
-      id: "req-all",
-      operation: "fetch",
-      key: null,
-      value: null,
-    });
-    h.deliver({
-      kind: "config_request",
-      id: "req-bad",
-      operation: "set",
-      key: "nope.key",
-      value: "x",
-    });
-    await h.waitFor(
-      "config responses",
-      () => h.server.state.configResponses.length >= 4,
-    );
-    const responses = h.server.state.configResponses;
-    assert.deepEqual(
-      responses.find((response) => response.id === "req-set")?.values,
-      { "chat.historyWindow": "12" },
-      "a set echoes exactly the key it changed",
-    );
-    assert.match(
-      responses.find((response) => response.id === "req-get")!.values![
-        "chat.token"
-      ]!,
-      /^<set:/,
-    );
-    assert.match(
-      responses.find((response) => response.id === "req-all")!.values![
-        "chat.token"
-      ]!,
-      /^<set:/,
-      "a full fetch redacts the secret",
-    );
-    assert.match(
-      responses.find((response) => response.id === "req-bad")!.error!,
-      /unsupported key/,
-    );
+    h.server.addMessage('@helper /config set chat.historyWindow "12"');
+    await h.agent.requestSync();
     assert.equal(h.config.get("chat.historyWindow"), 12);
-  } finally {
-    await h.stop();
-  }
-});
-
-test("a rejected configuration value leaves the setting untouched", async () => {
-  const h = await harness();
-  try {
-    h.deliver({
-      kind: "config_request",
-      id: "req-bad-value",
-      operation: "set",
-      key: "model.timeoutMs",
-      value: "soon",
-    });
-    await h.waitFor(
-      "rejection",
-      () => h.server.state.configResponses.length >= 1,
+    h.server.addMessage('@helper /config set model.timeoutMs "soon"');
+    await h.agent.requestSync();
+    assert.match(
+      h.server.state.sends.at(-1)!.text,
+      /timeout must be an integer/,
     );
-    const response = h.server.state.configResponses[0]!;
-    assert.equal(response.values, null);
-    assert.match(response.error!, /timeout must be an integer/);
     assert.equal(h.config.get("model.timeoutMs"), 120_000);
+    h.server.addMessage("@helper /config get chat.token");
+    await h.agent.requestSync();
+    assert.match(h.server.state.sends.at(-1)!.text, /<set>/);
+    assert.ok(!h.server.state.sends.at(-1)!.text.includes(h.server.token));
+    assert.equal(h.model.requests.length, 0);
   } finally {
     await h.stop();
   }
@@ -1041,15 +958,8 @@ test("model knows server grants and never receives worker administration or lega
       await request.executeTool!("read_history", '{"limit":21}'),
       /bounded/,
     );
-    h.deliver({
-      kind: "config_request",
-      id: "diagnostics",
-      operation: "fetch",
-      key: "worker.model",
-      value: null,
-    });
     assert.match(
-      h.server.state.configResponses.at(-1)!.values?.["worker.model"] ?? "",
+      h.agent.operatorValues()["worker.model"] ?? "",
       /Model: stub-model/,
     );
   } finally {
@@ -1701,6 +1611,169 @@ test("restart resumes from a known command result when the model answer was inte
       h.store.task(h.server.conversationId, source.id)?.status,
       "answered",
     );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("one mention starts one turn with sender identity despite overlapping signals and restart", async () => {
+  const h = await harness();
+  try {
+    const input = h.server.addMessage("@helper who am I?", {
+      from: "小明",
+      authorId: "acct-xiaoming",
+    });
+    await Promise.all([
+      h.agent.requestSync(),
+      h.agent.requestSync(),
+      h.agent.handleSnapshot(h.server.snapshot()),
+    ]);
+    await h.agent.requestSync();
+    await h.restart();
+    assert.equal(h.model.requests.length, 1);
+    assert.equal(h.server.state.sends.length, 1);
+    assert.ok(
+      h.model.requests[0]!.messages.some(
+        (message) =>
+          message.content.includes('"username":"小明"') &&
+          message.content.includes('"author_id":"acct-xiaoming"'),
+      ),
+    );
+    assert.equal(h.server.state.sends[0]!.replyTo, input.id);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("an agent can finish silently and the decision survives signals and restart", async () => {
+  const h = await harness({ reply: "" });
+  try {
+    const input = h.server.addMessage("@helper no response needed");
+    await h.agent.requestSync();
+    await h.agent.requestSync();
+    // Crash after the silent decision was saved but before terminal status.
+    h.store.task(h.server.conversationId, input.id)!.status = "running";
+    h.store.save();
+    await h.restart();
+    assert.equal(h.server.state.sends.length, 0);
+    assert.equal(h.model.requests.length, 1);
+    assert.equal(
+      h.store.task(h.server.conversationId, input.id)?.status,
+      "answered",
+    );
+    assert.equal(h.store.cursor(h.server.conversationId), input.sequence);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a tool action can complete without publishing a reply", async () => {
+  const h = await harness({ reply: "" });
+  try {
+    const complete = h.model.complete.bind(h.model);
+    h.model.complete = async (request) => {
+      await request.executeTool!(
+        "run_server_command",
+        JSON.stringify({ command: "/new room support" }),
+      );
+      return complete(request);
+    };
+    h.server.addMessage("@helper create support without a reply");
+    await h.agent.requestSync();
+    await h.restart();
+    assert.deepEqual(h.server.state.commands, ["/new room support"]);
+    assert.equal(h.model.requests.length, 1);
+    assert.equal(h.server.state.sends.length, 0);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("model send commands cannot publish a second reply alongside the final answer", async () => {
+  const h = await harness();
+  try {
+    const catalogue = h.api.serverCommands.bind(h.api);
+    h.api.serverCommands = async (id) => ({
+      ...(await catalogue(id)),
+      commands: [
+        { name: "/reply", usage: "/reply id text", description: "Reply" },
+        { name: "/tell", usage: "/tell user text", description: "Send" },
+        { name: "/sudo", usage: "/sudo command", description: "Elevate" },
+      ],
+    });
+    const complete = h.model.complete.bind(h.model);
+    h.model.complete = async (request) => {
+      const system = request.messages[0]!.content;
+      assert.ok(!system.includes("/reply id text"));
+      for (const command of [
+        "/reply m1 duplicate",
+        "/tell alice duplicate",
+        "/sudo /reply m1 duplicate",
+        "/sudo /tell alice duplicate",
+      ]) {
+        const result = await request.executeTool!(
+          "run_server_command",
+          JSON.stringify({ command }),
+        );
+        assert.match(result, /error/);
+      }
+      return complete(request);
+    };
+    h.server.addMessage("@helper hello");
+    await h.agent.requestSync();
+    assert.equal(h.server.state.commands.length, 0);
+    assert.equal(h.server.state.sends.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("an edit between queuing and locating is answered once for the located version", async () => {
+  const h = await harness();
+  try {
+    const input = h.server.addMessage("@helper first");
+    const history = h.api.history.bind(h.api);
+    let edited = false;
+    h.api.history = async (query) => {
+      if (query.around === input.sequence && query.limit === 1 && !edited) {
+        edited = true;
+        h.server.editMessage(input.id, "@helper current");
+      }
+      return history(query);
+    };
+    await h.agent.requestSync();
+    await h.agent.requestSync();
+    assert.equal(h.model.requests.length, 1);
+    assert.equal(h.model.prompts[0], "@helper current");
+    assert.equal(h.server.state.sends.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a silent decision during an edit does not consume the newer input", async () => {
+  const h = await harness();
+  try {
+    const input = h.server.addMessage("@helper stay silent");
+    const complete = h.model.complete.bind(h.model);
+    let first = true;
+    h.model.complete = async (request) => {
+      if (first) {
+        first = false;
+        h.server.editMessage(input.id, "@helper now answer");
+        await h.agent.sync();
+        return "";
+      }
+      return complete(request);
+    };
+    await h.agent.requestSync();
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(
+      h.model.prompts[0],
+      "The earlier version of this message was edited. Answer the current version:\n\n@helper now answer",
+    );
+    await h.restart();
+    assert.equal(h.server.state.sends.length, 1);
   } finally {
     await h.stop();
   }

@@ -139,7 +139,7 @@ a match, Tab completes it, and repeated Tab cycles the matches. Shift+Tab moves
 focus backward. Completion replaces the token at the cursor and preserves
 following text. Command arguments suggest known users, rooms, scopes, permissions,
 retained message IDs/reactions, and bot subcommands. New names, passwords, bot
-token IDs, and remote configuration keys/values remain free-form.
+token IDs remain free-form.
 
 Connected bots advertise their own message commands through Bot API v1. Type
 `@BOT /` to see that bot's commands in the current conversation. Structured
@@ -173,9 +173,9 @@ outside or press Escape to close it.
 
 ## Bot management
 
-Lifecycle and credential subcommands require global admins, su or stdin. Remote /bot config uses the existing scoped command and account action grants. `/bot new name` defaults to the selected room; Console/private views require an explicit room, and global scope always requires `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /kick to remove room participation.
+Lifecycle and credential subcommands require global admins, su or stdin. `/bot new name` defaults to the selected room; Console/private views require an explicit room, and global scope always requires `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /kick to remove room participation.
 
-Credentials are account-wide: `/bot token new name label` shows a secret once, `/bot token ls name` lists IDs/labels/creation times, and `/bot token rm name id` revokes one. Token management requires x:bot.credentials and respects protected-su targets. Use /man bot or [Bots](bots.md) for the full contract. `/bot config set name key value` asks the connected external runtime to apply a string setting; `/bot config fetch name [key]` queries one/all runtime settings. These require w:bot.config or r:bot.config on the bot account and /bot command access in the invoking context and target. Settings are owned by the external runtime; /bot does not launch agents.
+Credentials are account-wide: `/bot token new name label` shows a secret once, `/bot token ls name` lists IDs/labels/creation times, and `/bot token rm name id` revokes one. Token management requires x:bot.credentials and respects protected-su targets. Use /man bot or [Bots](bots.md) for the full contract. Configure workers using their advertised chat commands, such as `@helper /config get` and `@helper /config set key "value"`. The worker enforces its owner/admin policy; /bot does not launch agents.
 
 ## Markdown messages
 

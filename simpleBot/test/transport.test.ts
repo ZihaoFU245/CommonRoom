@@ -192,7 +192,7 @@ test("malformed HTTP and socket responses are rejected at the boundary", async (
     {
       kind: "config_request",
       id: "id",
-      operation: "erase",
+      operation: "fetch",
       key: null,
       value: null,
     },
@@ -317,7 +317,6 @@ for (const supported of [true, false]) {
       conversation() {},
       presence() {},
       activity() {},
-      configRequest() {},
       commandsRequest() {},
       socketError() {},
       status() {},
@@ -341,13 +340,17 @@ for (const supported of [true, false]) {
     wire.receive(snapshot);
     socket.activity("conv-1", "working");
     socket.activity("conv-1", "idle");
-    assert.equal(wire.sent.length, supported ? 4 : 2);
+    assert.equal(wire.sent.length, supported ? 3 : 1);
     snapshot.credential.operations = ["read", "send"];
     wire.receive(snapshot);
     socket.activity("conv-1", "working");
-    assert.equal(wire.sent.length, supported ? 4 : 2);
+    assert.equal(wire.sent.length, supported ? 3 : 1);
     assert.deepEqual(wire.sent[0], { kind: "commands_ready" });
-    assert.deepEqual(wire.sent[1], { kind: "config_ready" });
+    assert.ok(
+      !wire.sent.some((frame) =>
+        JSON.stringify(frame).includes("config_ready"),
+      ),
+    );
     wire.receive({ kind: "error", id: null, error: null });
   });
 }
@@ -486,3 +489,26 @@ test("unpinned history conflicts retry a fresh page while pinned rescans fail im
   );
   assert.equal(calls, 2);
 });
+
+for (const stream of [false, true]) {
+  test(`an explicit empty completion finishes silently (stream=${stream})`, async (t) => {
+    t.mock.method(globalThis, "fetch", async () =>
+      stream
+        ? new Response(
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          )
+        : Response.json({
+            choices: [{ message: { content: "" }, finish_reason: "stop" }],
+          }),
+    );
+    const client = new ModelClient({
+      endpoint: "http://localhost/",
+      model: "test",
+      token: "",
+      stream,
+      timeoutMs: 1000,
+      log: () => {},
+    });
+    assert.equal(await client.complete(completion), "");
+  });
+}

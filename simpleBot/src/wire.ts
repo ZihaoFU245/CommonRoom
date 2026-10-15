@@ -137,13 +137,6 @@ export type ServerFrame =
       account_id: string;
       expires: number;
     }
-  | {
-      kind: "config_request";
-      id: string;
-      operation: "set" | "fetch";
-      key: string | null;
-      value: string | null;
-    }
   | { kind: "config_ack"; id: string | null }
   | { kind: "error"; id: string | null; error: ApiErrorBody };
 
@@ -154,13 +147,6 @@ export type ClientFrame =
   | { kind: "commands_ready" }
   | { kind: "commands_response"; id: string; commands: BotCommand[] }
   | { kind: "commands_changed" }
-  | { kind: "config_ready" }
-  | {
-      kind: "config_response";
-      id: string;
-      values: Record<string, string> | null;
-      error: string | null;
-    }
   | { kind: "activity"; conversation_id: string; state: ActivityState };
 
 export interface BotCommand {
@@ -301,13 +287,6 @@ export function parseServerFrame(value: unknown): ServerFrame | null {
         typeof value.account_id === "string" &&
         (value.state === "working" || value.state === "idle") &&
         natural(value.expires);
-      break;
-    case "config_request":
-      valid =
-        typeof value.id === "string" &&
-        (value.operation === "set" || value.operation === "fetch") &&
-        nullableString(value.key) &&
-        nullableString(value.value);
       break;
     case "config_ack":
       valid = nullableString(value.id);

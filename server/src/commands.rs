@@ -34,8 +34,8 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Server",
             "/bot",
-            "/bot new name [scope] | ls [scope] | info name [scope] | owner name user | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]",
-            "Manage bot accounts, credentials and remote configuration",
+            "/bot new name [scope] | ls [scope] | info name [scope] | owner name user | rm name @global | token new name label | token ls name | token rm name id",
+            "Manage bot accounts and credentials",
             true,
         ),
         (
@@ -307,9 +307,7 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/ls" => "room discovery/read grants; r:account.list for accounts and group members",
         "/rm" => "x:room.delete, x:account.delete, or group-management authority on the target",
-        "/bot" => {
-            "Lifecycle/credentials: global admin or su; config: r:bot.config or w:bot.config on target account, plus /bot command gates"
-        }
+        "/bot" => "Lifecycle/credentials: global admin or su",
         "/configs" => "r:server.config at @global",
         "/rename" => {
             "x:room.rename on the target room; w:account.rename.own on your account or x:account.rename.any on the target account; only su can manage su accounts"

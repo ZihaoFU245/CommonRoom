@@ -86,7 +86,7 @@ forwarded requests must indicate HTTPS. A browser Origin is unnecessary.
 | `POST /api/bot/v1/messages`                                        | `MessageRequest` plus required `Idempotency-Key`; `SendResponse`                                                      |
 | `POST /api/bot/v1/read`                                            | `{conversation_id,through,acknowledge_shared_unread:true}`; `{ok:true}`                                               |
 | `PUT /api/bot/v1/reactions`                                        | `{conversation_id,message_id,reaction,active}`; `{ok:true}`                                                           |
-| `GET /api/bot/v1/ws`                                               | Authenticated notification/configuration socket                                                                       |
+| `GET /api/bot/v1/ws`                                               | Authenticated notification/command-discovery socket                                                                       |
 | `GET /api/bot/v1/schema`                                           | The published JSON Schema                                                                                             |
 
 The [schema](bot-v1.schema.json) is normative for shapes and types. Validate the
@@ -134,6 +134,9 @@ Each part gets a stable numbered output slot. A failed batch may leave a visible
 partial response; replay resumes its saved parts. There is no batch transaction.
 
 There is no automatic invocation: an agent chooses how to act on `mentions`.
+Each mention starts one worker turn; the agent may use tools, reply once, or
+finish silently. The message’s `from` field supplies the sender’s username alongside
+`author_id`; workers must include both when constructing the current model input.
 
 Reaction updates set this account's membership to `active:true` or `false`.
 Repeating the same request is a no-op, unlike a toggle command. Reactions support
@@ -194,7 +197,7 @@ Treat notifications as signals to fetch new history and compare content revision
 up on reconnect and while connected; deduplicate by sequence/message ID.
 Snapshots are baselines, not instructions to replay every old mention.
 
-Incoming text frames accept command discovery controls described below, `config_ready`, `config_response`, and
+Incoming text frames accept command discovery controls described below and
 `{kind:"activity",conversation_id,state:"working"|"idle"}`. Activity requires send
 access and the `activity` operation; readers of that conversation receive the
 state, stable `account_id`, and an `expires` timestamp 30 seconds ahead. It is
@@ -208,35 +211,23 @@ every 25 seconds and closes after 75 seconds without incoming traffic. Incoming 
 are at most 64 KiB; slow sends time out after five seconds. Revocation/disabling
 closes affected sockets. Reconnect with backoff and check credentials on 401.
 
-Optional runtime configuration is worker-owned. An authorized operator uses
-`/bot config set helper key value` or `/bot config fetch helper [key]`.
-Fetch/set need `/bot` context/target grants and account-scoped `r:bot.config` /
-`w:bot.config`; room administration and a bot's own token do not supply them.
-Account-scope delegation is su-only. The worker validates/persists values and
-omits secrets from fetch results.
+Configuration belongs to each worker. Use its advertised mention commands, such
+as `@helper /config get` or `@helper /config set key "value"`; the worker
+validates values and enforces its own owner/admin policy. `/bot config` and the
+`config_ready`, `config_request` and `config_response` socket RPC are removed.
+The `config` credential operation remains the gate for verified source context
+used by private worker commands. Legacy `r:bot.config` / `w:bot.config` grants
+remain readable in saved policies for compatibility but expose no remote RPC.
 
-Register `{kind:"config_ready"}`; repeating it on the same socket is safe. Only
-one handler may own an account across credentials. Reconnect must register again.
-The handler receives `{kind:"config_request",id,operation,key,value}` with an
-opaque server request ID. Operations are `set` or `fetch`; fetch has `value:null`
-and `key:null` means all settings. Respond on that socket with
-`{kind:"config_response",id,values:{...}}` or `{kind:"config_response",id,error}`,
-with exactly one non-null result. Single-key responses cannot include other keys.
-
-Accepted control frames receive `{kind:"config_ack",id}`; registration has
-`id:null`. Rejections use `{kind:"error",id,error:{code,message,retryable}}`.
-Keys use 1–64 ASCII letters, digits, dots, underscores or hyphens. Responses have
-at most 128 string values, 4,096 UTF-8 bytes each and 32 KiB serialized total.
-Error text is 1–1,024 UTF-8 bytes. Requests have a ten-second timeout, at most eight
-queued and eight in flight per handler. A set may apply before a timeout; fetch
-before retrying. Configuration and pending RPCs do not survive server restart.
+Accepted command/activity controls receive `{kind:"config_ack",id}` (the existing
+acknowledgement name is retained); errors use `{kind:"error",id,error}`.
 
 ## Command discovery
 
 Command discovery is part of Bot API v1. A worker registers its catalogue
 handler with `{kind:"commands_ready"}` after receiving its baseline snapshot,
 including when it has no commands. Observation-only sockets do not register.
-This is independent of configuration registration and needs `read`, with `send`
+This needs `read`, with `send`
 required on conversations whose commands are advertised; it needs no operator
 configuration grant or new credential operation. One command runtime owns an
 account at a time. Repeating registration on that socket is safe.
