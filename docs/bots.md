@@ -3,7 +3,8 @@
 V1 is the chat transport for external agents under `/api/bot/v1/`.
 This refactor changes the v1 contract; update workers and checkpoints together
 with the server. The published schema and live contract tests define the API.
-There are no unversioned routes or free-form bot command endpoint.
+There are no unversioned bot routes. Native server command execution is provided
+through the authenticated v1 `/commands` endpoint.
 
 ## Identity and provisioning
 
@@ -43,11 +44,16 @@ with the operator. `POST /credentials` issues a worker token with mandatory
 conversation IDs, operations and UTC epoch-second expiry within the next 24 hours:
 
 ```json
-{"label":"worker","expires":1792000000,"conversations":["CONVERSATION_ID"],"operations":["read","send","react","activity"]}
+{
+  "label": "worker",
+  "expires": 1792000000,
+  "conversations": ["CONVERSATION_ID"],
+  "operations": ["read", "send", "react", "activity"]
+}
 ```
 
 Use a future expiry appropriate to the deployment. Operations are `read`, `send`,
-`react`, `read_ack`, `activity`, and `config`. Empty conversation scopes grant no
+`react`, `read_ack`, `activity`, `config`, and `commands`. Empty conversation scopes grant no
 chat access. Scopes intersect the account's current grants; they never grant new
 account authority. Restricted tokens cannot issue credentials, create conversations,
 or authenticate browser/legacy transports. `/me` exposes the credential ID,
@@ -67,20 +73,21 @@ proxy. Production always requires the trusted socket-peer IP. Direct HTTP/WS
 without `X-Forwarded-Proto` is allowed only from that IP under `/api/bot/v1/`;
 forwarded requests must indicate HTTPS. A browser Origin is unnecessary.
 
-| Method and endpoint | Payload / result |
-| --- | --- |
-| `GET /api/bot/v1/me` | `Snapshot`: account, credential context and readable conversation directory |
-| `POST /api/bot/v1/credentials` | `{label,expires,conversations,operations}`; `{id,token,expires}` (secret shown once) |
-| `POST /api/bot/v1/conversations` | `{kind:"room",name}` or `{kind:"direct",username}`; `{conversation_id}` |
-| `GET /api/bot/v1/commands?conversation_id=ID` | Current native server command catalogue under the bot account’s grants |
-| `POST /api/bot/v1/commands` | `{conversation_id,command}`; `{result}`; executes as the bot account |
-| `GET /api/bot/v1/message-context?conversation_id=ID&message_id=ID` | Verified source author, roles, inspectable permissions and bot ownership facts |
-| `GET /api/bot/v1/history` | `conversation_id`, sequence bounds and `limit` query; `HistoryResponse` |
-| `POST /api/bot/v1/messages` | `MessageRequest` plus required `Idempotency-Key`; `SendResponse` |
-| `POST /api/bot/v1/read` | `{conversation_id,through,acknowledge_shared_unread:true}`; `{ok:true}` |
-| `PUT /api/bot/v1/reactions` | `{conversation_id,message_id,reaction,active}`; `{ok:true}` |
-| `GET /api/bot/v1/ws` | Authenticated notification/configuration socket |
-| `GET /api/bot/v1/schema` | The published JSON Schema |
+| Method and endpoint                                                | Payload / result                                                                                                      |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/bot/v1/me`                                               | `Snapshot`: account, credential context and readable conversation directory                                           |
+| `POST /api/bot/v1/credentials`                                     | `{label,expires,conversations,operations}`; `{id,token,expires}` (secret shown once)                                  |
+| `POST /api/bot/v1/conversations`                                   | `{kind:"room",name}` or `{kind:"direct",username}`; `{conversation_id}`                                               |
+| `GET /api/bot/v1/commands?conversation_id=ID`                      | Current native server command catalogue under the bot account’s grants                                                |
+| `POST /api/bot/v1/commands`                                        | `{conversation_id,command}` plus required `Idempotency-Key`; `{result,replayed,expires}`; executes as the bot account |
+| `GET /api/bot/v1/commands/receipts/KEY`                            | `{state:"not_found"}` or saved `{state:"succeeded"                                                                    | "failed",result,error,created,expires}` |
+| `GET /api/bot/v1/message-context?conversation_id=ID&message_id=ID` | Verified source author, roles, inspectable permissions and bot ownership facts                                        |
+| `GET /api/bot/v1/history`                                          | `conversation_id`, sequence bounds and `limit` query; `HistoryResponse`                                               |
+| `POST /api/bot/v1/messages`                                        | `MessageRequest` plus required `Idempotency-Key`; `SendResponse`                                                      |
+| `POST /api/bot/v1/read`                                            | `{conversation_id,through,acknowledge_shared_unread:true}`; `{ok:true}`                                               |
+| `PUT /api/bot/v1/reactions`                                        | `{conversation_id,message_id,reaction,active}`; `{ok:true}`                                                           |
+| `GET /api/bot/v1/ws`                                               | Authenticated notification/configuration socket                                                                       |
+| `GET /api/bot/v1/schema`                                           | The published JSON Schema                                                                                             |
 
 The [schema](bot-v1.schema.json) is normative for shapes and types. Validate the
 named `definitions` entry for each payload, or `ServerFrame` / `ClientFrame` for
@@ -156,7 +163,11 @@ them. These explicit bounds keep storage predictable.
 History pages are ascending, at most 100 messages and approximately 1 MiB.
 `before`/`after` are exclusive global sequence cursors and mutually exclusive;
 `start`/`end` are inclusive and ordered. `around` cannot combine with other bounds.
-`limit` is 1–100, default 100. Continue using the first/last sequence and
+`limit` is 1–100, default 100. `message_id=ID` loads the page around a retained
+message in the selected conversation, mutually exclusive with all sequence
+bounds. Missing, removed and foreign-conversation IDs return `not_found`. This
+lets a worker retrieve a quoted message beyond its recent context without
+scanning intervening pages. Continue using the first/last sequence and
 `has_before`/`has_after`. Global sequence gaps are normal. `content_revision` increases on sends,
 edits, reactions, retractions and cleanup, independently of sequence. Compare it
 in `/me`, history and conversation notifications. To reconcile edits/deletions,
@@ -238,11 +249,23 @@ readable, writable conversation IDs. Respond on the same socket with:
   "kind": "commands_response",
   "id": "REQUEST_ID",
   "commands": [
-    {"name":"/model","usage":"/model","description":"Display the bot model settings"},
-    {"name":"/history","usage":"/history [mode]","description":"Read history",
-      "subcommands":[
-        {"name":"before","usage":"/history before <sequence>","description":"Read older messages"}
-      ]}
+    {
+      "name": "/model",
+      "usage": "/model",
+      "description": "Display the bot model settings"
+    },
+    {
+      "name": "/history",
+      "usage": "/history [mode]",
+      "description": "Read history",
+      "subcommands": [
+        {
+          "name": "before",
+          "usage": "/history before <sequence>",
+          "description": "Read older messages"
+        }
+      ]
+    }
   ]
 }
 ```
@@ -301,20 +324,20 @@ HTTP errors use `{error:{code,message,retryable}}`. Branch on `code`, not messag
 text. The same error object appears inside socket errors. `retryable` describes
 an error category; only repeat operations whose recovery rule permits it.
 
-| Code | HTTP | Meaning |
-| --- | --- | --- |
-| `invalid_request` | 400/415/422 | Invalid fields, JSON, content type or bounds |
-| `unauthorized` | 401 | Missing/revoked/disabled credential |
-| `forbidden` | 403 | Current access or production ingress denied |
-| `not_found`, `method_not_allowed` | 404/405 | Missing resource/route or wrong method |
-| `conflict` | 409 | Revision changed or room exists; rescan/retry desired-state operations, inspect creation conflicts |
-| `idempotency_conflict` | 409 | Key reused with a different payload |
-| `message_gone` | 410 | Original send/new read position no longer retained |
-| `payload_too_large` | 413 | HTTP body exceeds 32 KiB |
-| `rate_limited` | 429 | Input budget exhausted |
-| `idempotency_capacity` | 429 | Receipt capacity exhausted |
-| `runtime_rejected` | 400 (socket object) | Configuration handler already owned |
-| `unavailable` | 5xx | Temporary worker/storage failure |
+| Code                              | HTTP                | Meaning                                                                                            |
+| --------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------- |
+| `invalid_request`                 | 400/415/422         | Invalid fields, JSON, content type or bounds                                                       |
+| `unauthorized`                    | 401                 | Missing/revoked/disabled credential                                                                |
+| `forbidden`                       | 403                 | Current access or production ingress denied                                                        |
+| `not_found`, `method_not_allowed` | 404/405             | Missing resource/route or wrong method                                                             |
+| `conflict`                        | 409                 | Revision changed or room exists; rescan/retry desired-state operations, inspect creation conflicts |
+| `idempotency_conflict`            | 409                 | Key reused with a different payload                                                                |
+| `message_gone`                    | 410                 | Original send/new read position no longer retained                                                 |
+| `payload_too_large`               | 413                 | HTTP body exceeds 32 KiB                                                                           |
+| `rate_limited`                    | 429                 | Input budget exhausted                                                                             |
+| `idempotency_capacity`            | 429                 | Receipt capacity exhausted                                                                         |
+| `runtime_rejected`                | 400 (socket object) | Configuration handler already owned                                                                |
+| `unavailable`                     | 5xx                 | Temporary worker/storage failure                                                                   |
 
 Messages, reaction updates, read-cursor requests, credential issuance and conversation creation share 30 inputs per ten
 seconds per account,
@@ -340,9 +363,38 @@ creation, memberships, messages/reactions/history, renames and delegated grant
 operations use the bot's ordinary grants. An admin bot has its corresponding
 admin commands; a user claiming to grant access in a message changes nothing.
 
-Command POSTs have no retry receipts. Do not automatically retry an uncertain
-response. The reference simpleBot persists effect intent/results and stops on
-ambiguous outcomes, while existing keyed message sends retain their guarantees.
+Command POSTs require a durable `Idempotency-Key`, just like message sends, but
+use a separate receipt namespace. The key is bound to the stable bot account,
+conversation ID and command (outer whitespace trimmed). Repeating that request
+returns the original result with `replayed:true`; another payload with the same
+key returns `idempotency_conflict`. Use a new key for a new logical invocation,
+including a fresh read-only query.
+
+The server commits the command effect and serialized outcome in one SQLite
+transaction. Nested room/account/message changes use savepoints. A rejected
+command rolls back its effects and records its terminal error; a storage failure
+rolls back without recording a terminal outcome. A lost response can therefore
+be recovered by retrying the identical keyed POST or querying
+`GET /commands/receipts/KEY`. Receipt states are `succeeded`, `failed`, or
+`not_found`. `not_found` means no retained receipt, not proof that an expired
+request never ran. Concurrent retries serialize and cannot duplicate the effect.
+
+Receipts survive restart and renames, last 24 hours, and are bounded to 4,096
+entries and 4 MiB of serialized outcomes per account, with at most 64 KiB per
+outcome. Capacity rejects new requests rather than evicting live guarantees.
+`created`/`expires` are epoch seconds. After expiry a reused key can execute again;
+workers must never automatically replay an uncertain command outside that
+window. Receipt lookup requires a currently valid, account-wide credential with
+`read` and `commands`; revocation/disablement still deny access. A saved outcome
+remains retrievable when the original target was removed or its grants changed,
+so a successful destructive command does not become unknowable. Account deletion
+clears that account's receipts. Outcomes can contain private command output and
+belong in the same protected data backups as chat history.
+
+The SimpleBot example saves intent/key/time before calling, retries the same key,
+resolves pending keyed outcomes on restart, and feeds recovered results back to
+the model. Legacy unkeyed tasks and commands near/outside receipt expiry require
+inspection. Message-send receipts retain their separate existing guarantees.
 
 Workers may query `GET /message-context` for a retained source message they can
 read. This requires the credential's `read` and `config` operations in that
@@ -350,8 +402,20 @@ conversation. The source author is resolved from the stored `author_id`, never
 from caller-supplied role or author names. The response is:
 
 ```json
-{"author":{"id":"ACCOUNT_ID","username":"alice","groups":["admin"],"permissions":null},
- "bot":{"id":"BOT_ID","groups":[],"owner_id":"OWNER_ID","owner":"alice"}}
+{
+  "author": {
+    "id": "ACCOUNT_ID",
+    "username": "alice",
+    "groups": ["admin"],
+    "permissions": null
+  },
+  "bot": {
+    "id": "BOT_ID",
+    "groups": [],
+    "owner_id": "OWNER_ID",
+    "owner": "alice"
+  }
+}
 ```
 
 `permissions` is the author's effective action permissions in this conversation,
@@ -368,3 +432,33 @@ have no owner until a global administrator assigns `/bot owner BOT USER`.
 clears it. Ownership authorizes only the bot's chosen private controls, not server
 `/bot` management or credential issuance. The `/bot` family keeps its existing
 server management grants and global administrator boundary.
+
+## External worker context and responsibilities
+
+The server owns identity, chat, grants, bounded history and durable write
+receipts. Models, agent loops, schedules and external tools remain worker-owned.
+Restarting a worker does not require a durable event stream: discard its model
+context, fetch a recent history page, retrieve explicitly referenced
+messages by `message_id`, and request more pages only when needed. Retention still
+applies; no endpoint recovers deleted or expired content. Delivery keys and
+processing/outbox records should survive restart to prevent duplicate effects.
+
+The optional SimpleBot demonstrates this separation with a fixed system prompt,
+separate configurable personality preferences, public `/help`, `/ping` and
+`/metrics`, and owner/admin controls. It seeds context with 50 recent messages,
+then appends stable history chunks for provider prefix caching. Cached rows are
+revalidated and rebuilt when edited, removed or no longer retained. In-memory
+context is bounded and discarded on restart; processing/outbox records survive.
+`model.contextTokens` defaults to 32768 total input/output tokens and
+`model.compactTokens` to 24576 input tokens. Compaction discards oldest
+context and keeps history retrieval available, without an extra model call.
+Provider-reported input counts are authoritative: unchanged requests use their
+measured count, appended content adds only a new-suffix estimate, and actual
+usage reaching the compaction threshold rebuilds the next answer's history.
+Context rebuilds invalidate the baseline; new/rebuilt inputs and providers
+without usable usage still need estimates. No extra model calls are made just
+to count tokens. `/metrics` distinguishes measured counts from projected budgets,
+alongside current-conversation usage/cache counters and reporting coverage;
+missing telemetry is unknown, not zero. Short command
+catalogues, duplicate suppression and bounded tool loops reduce unnecessary
+calls without embedding any model runtime in the chat server.

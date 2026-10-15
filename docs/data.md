@@ -2,16 +2,21 @@
 
 ## Database compatibility
 
-The current schema is v9. Empty databases initialize transactionally as v9.
-Existing v9 databases reopen without migrations. Older schemas are unsupported.
+The current schema is v10. Empty databases initialize transactionally as v10.
+Existing v9 databases upgrade transactionally after metadata validation: the
+migration adds the command receipt table and index, then advances `user_version`.
+History, message receipts, accounts, sessions and read cursors are preserved.
+Existing v10 databases reopen without migrations. Older schemas are unsupported.
+Back up v9 data before upgrading; a v9-only binary cannot reopen upgraded data.
+A failed migration rolls back its schema/version changes.
 
 The removed `x:group.su.assign` permission is accepted only in existing stored
 grants and supplies no authority. Those entries are preserved and can be removed
 with `/revoke user scope x:group.su.assign`; new grants of this name are rejected.
 Su group assignment still requires su authority, including authorized `/sudo`.
-This catalog change does not change the v9 schema or require a migration.
+That permission-catalog change itself requires no data rewrite.
 
-Schemas other than v9 and existing unversioned databases are rejected before
+Schemas other than v9/v10 and existing unversioned databases are rejected before
 changing journal settings, schema, state or version. Do not lower `user_version`
 manually on a working database.
 
@@ -46,7 +51,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads only v9. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v10 and upgrades v9. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -121,11 +126,22 @@ use the existing entities JSON and require no SQLite schema migration.
 
 Bot command catalogues are transient socket-owned metadata. They are not stored
 in SQLite or bot checkpoints, disappear on disconnect/restart, and are queried
-again from the worker. Command discovery does not change the v9 data schema.
+again from the worker. Command discovery itself requires no schema migration.
 
 Bot registrations may include `owner_id` in their existing JSON metadata. Missing
-values mean administrator control, so existing v9 data remains readable without a
+values mean administrator control, so the ownership metadata needs no separate
 SQLite migration. Stable IDs preserve ownership through renames; account deletion
 clears owned bot references transactionally. Worker task checkpoints may include
 private-command markers and native command intent/results; pending uncertain
-effects are retained and are not automatically replayed.
+effects are retained. Keyed pending commands are resolved/retried within the
+receipt window; legacy unkeyed or expired effects require inspection.
+
+## Command retry receipts (v10)
+
+`bot_command_receipts` stores account ID, request key/digest, creation time and
+serialized command outcome. The command's nested storage savepoints and this
+receipt share one outer transaction. Failed receipt writes roll back command
+metadata, messages, cursors and compiled in-memory authority. Receipts are not
+loaded as startup history; lookups use the account/key primary key. Per-account
+entry/byte limits and 24-hour expiry bound storage. See [Bots](bots.md) for retry
+and authenticated status semantics. These outcomes may include private text.

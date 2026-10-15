@@ -220,7 +220,7 @@ configuration/diagnostic controls use that policy and are hidden from other
 users' completion. The model instead receives native server commands allowed by
 the bot account's grants.
 
-When the optional SimpleBot demo is installed, its owners/admins can use `@SimpleBot /config get` to list all settings
+When the optional SimpleBot demo is installed, regular members can use `@SimpleBot /help` and `@SimpleBot /ping` without a model call. Its owners/admins can use `@SimpleBot /config get` to list all settings
 (secrets redacted), `/config set key "value"` to apply a quoted value immediately,
 and `@SimpleBot /reload` to validate and load file edits. `prompt` configures
 personality and user preferences as a separate user message; the system prompt

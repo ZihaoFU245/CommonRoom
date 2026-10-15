@@ -82,7 +82,7 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v9; older schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v10; validated v9 databases upgrade transactionally, and older schemas are rejected.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
@@ -105,3 +105,7 @@ filter a shared catalogue using one effective-rights calculation per scope.
 Browser cache entries retain byte counts and global running totals; ordered page
 merges and directional trimming are linear. Ledger ingestion reuses its ID set
 and skips sorting when no new message IDs arrive.
+
+`engine/storage/command_receipts.rs` owns atomic native command outcomes. An outer
+SQLite savepoint encloses ordinary command storage savepoints and its receipt;
+receipt failure restores both persistent and in-memory state before broadcasting.

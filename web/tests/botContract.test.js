@@ -235,7 +235,24 @@ test("native commands, source context and private bot catalogues have distinct v
     conversation_id: "room-id",
     command: "/new room study",
   });
-  validate("ServerCommandResponse", { result: "Created room study" });
+  validate("ServerCommandResponse", {
+    result: "Created room study",
+    replayed: false,
+    expires: 1792000000,
+  });
+  validate("CommandReceiptResponse", { state: "not_found" });
+  validate("CommandReceiptResponse", {
+    state: "succeeded",
+    result: "created",
+    error: null,
+    created: 1791900000,
+    expires: 1791986400,
+  });
+  validate("HistoryQuery", {
+    conversation_id: "room-id",
+    message_id: "older-message",
+    limit: 6,
+  });
   validate("MessageContextResponse", {
     author: {
       id: "actor-id",

@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
 };
 use serde::Deserialize;
@@ -202,60 +202,21 @@ pub(super) async fn command(
     headers: HeaderMap,
     Json(input): Json<CommandInput>,
 ) -> Result<Json<Value>, Error> {
+    let key = super::api::idempotency_key(&headers)?;
     work(app, headers, move |app, context| {
         let mut engine = app.engine().map_err(Error::storage)?;
-        let (user, view) = command_view(&engine, context, &input.conversation_id)?;
-        let parts: Vec<_> = input.command.split_whitespace().collect();
-        let elevated = crate::engine::sudo_command(&input.command)
-            .map_err(|e| Error::new(Code::InvalidRequest, e))?;
-        let inner: Vec<_> = elevated
-            .unwrap_or(&input.command)
-            .split_whitespace()
-            .collect();
-        if input.command.len() > 4100
-            || input
-                .command
-                .chars()
-                .any(|c| c.is_control() && !c.is_whitespace())
-            || !parts.first().is_some_and(|name| supported_command(name))
-            || !inner.first().is_some_and(|name| supported_command(name))
-            || inner.starts_with(&["/new", "user"])
-        {
-            return Err(Error::new(
-                Code::InvalidRequest,
-                "Unsupported server command.",
-            ));
-        }
-        engine
-            .require_command(Some(&user), Some(&view), parts[0])
-            .map_err(|e| Error::new(Code::Forbidden, e))?;
+        command_account(&engine, context)?;
         admit(&mut engine, context)?;
+        let digest = crate::bots::digest(
+            &serde_json::to_string(
+                &json!({"conversation_id":input.conversation_id,"command":input.command.trim()}),
+            )
+            .map_err(Error::storage)?,
+        );
         let before = engine.revision;
-        let result = if inner.as_slice() == ["/help"] {
-            engine
-                .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
-                    engine.require_command(Some(&user), Some(&view), "/help")?;
-                    Ok(crate::commands::help_for(&model_commands(
-                        engine, &user, &view,
-                    )))
-                })
-                .map_err(|e| Error::new(Code::Forbidden, e))?
-        } else if inner.as_slice() == ["/configs"] {
-            engine
-                .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
-                    use crate::engine::authorization::Scope;
-                    engine.require_command(Some(&user), Some(&view), "/configs")?;
-                    engine.require_target_command(Some(&user), &Scope::Server, "/configs")?;
-                    engine.require(Some(&user), &Scope::Server, Action::Config)?;
-                    app.config
-                        .display_with_history(engine.history_store.stats()?)
-                })
-                .map_err(|e| Error::new(Code::Forbidden, e))?
-        } else {
-            engine
-                .execute_formatted(Some(&user), Some(&view), &input.command, true)
-                .map_err(|e| Error::new(Code::Forbidden, e))?
-        };
+        let outcome = engine.bot_command_once(&context.account, &key, &digest, |engine| {
+            execute_command(engine, app, context, &input)
+        })?;
         if before != engine.revision {
             let _ = app.changes.send(
                 engine
@@ -264,7 +225,95 @@ pub(super) async fn command(
                     .map_or(Change::All, |id| Change::Conversation(id.clone())),
             );
         }
-        Ok(json!({"result":result}))
+        outcome.into_result()
     })
     .await
+}
+fn command_account(engine: &crate::engine::Engine, context: &Context) -> Result<(), Error> {
+    context.user(engine)?;
+    context.permits(engine, "commands", None)?;
+    context.permits(engine, "read", None)?;
+    if context.metadata(engine)?.conversations.is_some() {
+        return Err(Error::new(
+            Code::Forbidden,
+            "Command receipts require account-wide conversation scope.",
+        ));
+    }
+    Ok(())
+}
+pub(super) async fn command_receipt(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, Error> {
+    if !super::models::valid_id(&key) {
+        return Err(Error::new(Code::InvalidRequest, "Invalid receipt key."));
+    }
+    work(app,headers,move|app,context|{
+        let engine=app.engine_read().map_err(Error::storage)?;
+        command_account(&engine,context)?;
+        let receipt=engine.bot_command_receipt(&context.account,&key)?;
+        Ok(match receipt {
+            None=>json!({"state":"not_found"}),
+            Some((_,outcome))=>json!({"state":if outcome.error.is_some(){"failed"}else{"succeeded"},"result":outcome.result,"error":outcome.error,"created":outcome.created,"expires":outcome.expires}),
+        })
+    }).await
+}
+fn execute_command(
+    engine: &mut crate::engine::Engine,
+    app: &App,
+    context: &Context,
+    input: &CommandInput,
+) -> Result<String, Error> {
+    let (user, view) = command_view(engine, context, &input.conversation_id)?;
+    let parts: Vec<_> = input.command.split_whitespace().collect();
+    let elevated = crate::engine::sudo_command(&input.command)
+        .map_err(|e| Error::new(Code::InvalidRequest, e))?;
+    let inner: Vec<_> = elevated
+        .unwrap_or(&input.command)
+        .split_whitespace()
+        .collect();
+    if input.command.len() > 4100
+        || input
+            .command
+            .chars()
+            .any(|c| c.is_control() && !c.is_whitespace())
+        || !parts.first().is_some_and(|name| supported_command(name))
+        || !inner.first().is_some_and(|name| supported_command(name))
+        || inner.starts_with(&["/new", "user"])
+    {
+        return Err(Error::new(
+            Code::InvalidRequest,
+            "Unsupported server command.",
+        ));
+    }
+    engine
+        .require_command(Some(&user), Some(&view), parts[0])
+        .map_err(|e| Error::new(Code::Forbidden, e))?;
+    let result = if inner.as_slice() == ["/help"] {
+        engine
+            .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
+                engine.require_command(Some(&user), Some(&view), "/help")?;
+                Ok(crate::commands::help_for(&model_commands(
+                    engine, &user, &view,
+                )))
+            })
+            .map_err(|e| Error::new(Code::Forbidden, e))?
+    } else if inner.as_slice() == ["/configs"] {
+        engine
+            .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
+                use crate::engine::authorization::Scope;
+                engine.require_command(Some(&user), Some(&view), "/configs")?;
+                engine.require_target_command(Some(&user), &Scope::Server, "/configs")?;
+                engine.require(Some(&user), &Scope::Server, Action::Config)?;
+                app.config
+                    .display_with_history(engine.history_store.stats()?)
+            })
+            .map_err(|e| Error::new(Code::Forbidden, e))?
+    } else {
+        engine
+            .execute_formatted(Some(&user), Some(&view), &input.command, true)
+            .map_err(|e| Error::new(Code::Forbidden, e))?
+    };
+    Ok(result)
 }

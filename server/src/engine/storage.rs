@@ -1,4 +1,5 @@
 use super::*;
+mod command_receipts;
 
 impl Engine {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -31,8 +32,10 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 9 {
-            return Err("Unsupported database schema; only v9 is supported.".into());
+        if version != 0 && version != 9 && version != 10 {
+            return Err(
+                "Unsupported database schema; only v9 migration and v10 are supported.".into(),
+            );
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -61,12 +64,15 @@ impl Engine {
             transaction
                 .execute_batch(RECEIPT_SCHEMA)
                 .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(command_receipts::SCHEMA)
+                .map_err(|e| e.to_string())?;
             write_data(&transaction, &data)?;
             transaction
                 .execute_batch(INDEXES)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=9;")
+                .execute_batch("PRAGMA user_version=10;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -99,6 +105,17 @@ impl Engine {
                     .or_default()
                     .insert(view, sequence);
             }
+        }
+        // Validate all existing metadata before performing the additive v9 upgrade.
+        if version == 9 {
+            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(command_receipts::SCHEMA)
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch("PRAGMA user_version=10;")
+                .map_err(|e| e.to_string())?;
+            migration.commit().map_err(|e| e.to_string())?;
         }
         for room in data.rooms.values_mut() {
             room.messages.clear();
@@ -138,7 +155,7 @@ impl Engine {
         }
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
-        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
         let mut changed = Vec::new();
         for (kind, key, id, revision) in self
             .data
@@ -190,7 +207,7 @@ impl Engine {
         };
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
-        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
         write_data(&tx, &self.data).map_err(storage_error)?;
         for room in rooms {
             tx.execute(
@@ -253,7 +270,7 @@ impl Engine {
     pub(super) fn store_room_rename(&mut self, name: &str, new_name: &str) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
-        let transaction = db.transaction().map_err(|e| e.to_string())?;
+        let transaction = db.savepoint().map_err(|e| e.to_string())?;
         // A reused room name must not inherit another room's orphaned cursors.
         transaction
             .execute(
@@ -279,7 +296,7 @@ impl Engine {
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
-        let transaction = db.transaction().map_err(|e| e.to_string())?;
+        let transaction = db.savepoint().map_err(|e| e.to_string())?;
         // A reused name must never inherit orphaned cursors from an old account.
         transaction
             .execute(
@@ -319,7 +336,7 @@ impl Engine {
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
-        let transaction = db.transaction().map_err(|e| e.to_string())?;
+        let transaction = db.savepoint().map_err(|e| e.to_string())?;
         rewrite_account_messages(&transaction, name, None)?;
         write_data(&transaction, &self.data)?;
         transaction
@@ -528,6 +545,7 @@ fn write_data(db: &Connection, data: &Data) -> Result<(), String> {
     // preserve them because they use stable account IDs.
     db.execute("DELETE FROM bot_receipts WHERE account_id NOT IN (SELECT json_extract(json,'$.id') FROM entities WHERE kind='account')", [])
         .map_err(|e| e.to_string())?;
+    db.execute("DELETE FROM bot_command_receipts WHERE account_id NOT IN (SELECT json_extract(json,'$.id') FROM entities WHERE kind='account')", []).map_err(|e| e.to_string())?;
     write_state(db, data)
 }
 pub(super) fn load_entities(db: &Connection, data: &mut Data) -> Result<(), String> {
@@ -618,7 +636,7 @@ impl Engine {
         }
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
-        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
         if !change.reaction
             && let Some(index) = change.index
         {

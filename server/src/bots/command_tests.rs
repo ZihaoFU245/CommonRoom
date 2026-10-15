@@ -198,3 +198,216 @@ async fn source_context_supplies_verified_roles_and_owner_without_leaking_policy
                     .as_ref()
     }));
 }
+
+async fn keyed_command(app: &App, token: &str, key: &str, value: Value) -> (StatusCode, Value) {
+    let response = web::router(app.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/bot/v1/commands")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("idempotency-key", key)
+                .body(Body::from(value.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+#[tokio::test]
+async fn command_receipts_resolve_lost_responses_conflicts_failures_and_access_changes() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper admin")
+        .unwrap();
+    let input = json!({"conversation_id":id,"command":"/new room once"});
+    let (first, second) = tokio::join!(
+        keyed_command(&app, &token, "once", input.clone()),
+        keyed_command(&app, &token, "once", input.clone())
+    );
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(second.0, StatusCode::OK);
+    assert_ne!(first.1["replayed"], second.1["replayed"]);
+    assert_eq!(first.1["result"], second.1["result"]);
+    assert_eq!(
+        app.engine_read()
+            .unwrap()
+            .data
+            .rooms
+            .keys()
+            .filter(|name| name.as_str() == "once")
+            .count(),
+        1
+    );
+    let receipt = request(
+        &app,
+        Some(&token),
+        "GET",
+        "/api/bot/v1/commands/receipts/once",
+        json!({}),
+    )
+    .await;
+    assert_eq!(receipt.1["state"], "succeeded");
+    assert_eq!(
+        keyed_command(
+            &app,
+            &token,
+            "once",
+            json!({"conversation_id":id,"command":"/new room different"})
+        )
+        .await
+        .1["error"]["code"],
+        "idempotency_conflict"
+    );
+    // Removing the source conversation cannot turn a replay into a new effect.
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/rm room support")
+        .unwrap();
+    assert_eq!(
+        keyed_command(&app, &token, "once", input).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        keyed_command(
+            &app,
+            &token,
+            "failed",
+            json!({"conversation_id":id,"command":"/new room denied"})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            "/api/bot/v1/commands/receipts/failed",
+            json!({})
+        )
+        .await
+        .1["state"],
+        "failed"
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            "/api/bot/v1/commands/receipts/never",
+            json!({})
+        )
+        .await
+        .1["state"],
+        "not_found"
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/disable helper")
+        .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            "/api/bot/v1/commands/receipts/once",
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+#[tokio::test]
+async fn history_loads_a_referenced_message_page_without_cross_conversation_disclosure() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let source;
+    let foreign_source;
+    {
+        let mut engine = app.engine().unwrap();
+        for index in 0..12 {
+            engine
+                .execute(Some("admin"), Some("support"), &format!("retained {index}"))
+                .unwrap();
+        }
+        source = engine
+            .history_store
+            .page(
+                &id,
+                engine.data.rooms["support"].revision,
+                crate::engine::HistoryRange {
+                    limit: Some(100),
+                    ..Default::default()
+                },
+                "",
+            )
+            .unwrap()
+            .messages[0]
+            .id
+            .clone();
+        engine.execute(None, None, "/new room foreign").unwrap();
+        engine
+            .execute(None, Some("foreign"), "private to foreign")
+            .unwrap();
+        foreign_source = engine
+            .history_store
+            .page(
+                &engine.data.rooms["foreign"].id,
+                engine.data.rooms["foreign"].revision,
+                crate::engine::HistoryRange::default(),
+                "",
+            )
+            .unwrap()
+            .messages[0]
+            .id
+            .clone();
+    }
+    let (_, page) = request(
+        &app,
+        Some(&token),
+        "GET",
+        &format!("/api/bot/v1/history?conversation_id={id}&message_id={source}&limit=3"),
+        json!({}),
+    )
+    .await;
+    assert!(
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == source)
+    );
+    assert_eq!(page["has_after"], true);
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            &format!("/api/bot/v1/history?conversation_id={id}&message_id={foreign_source}"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            &format!("/api/bot/v1/history?conversation_id={id}&message_id={source}&after=1"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+}

@@ -60,6 +60,9 @@ async fn request(
         .method(method)
         .uri(path)
         .header(header::CONTENT_TYPE, "application/json");
+    if method == "POST" && path == "/api/bot/v1/commands" {
+        builder = builder.header("idempotency-key", uuid::Uuid::new_v4().to_string());
+    }
     if let Some(secret) = secret {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {secret}"));
     }

@@ -58,7 +58,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v9 restart, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v10 restart and v9 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -101,7 +101,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v9 restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v10 restart and v9 migration and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -304,3 +304,12 @@ writers and lock contention, atomic reload and environment seed replacement.
 The real worker integration verifies prompt reload and transport reconnection
 after acknowledgement. `web/tests/wsProxy.test.js` exercises browser/server TCP
 half-close cleanup through the actual Vite proxy.
+
+Command receipt regressions verify concurrent replay, payload conflicts,
+authenticated outcome lookup after target deletion, terminal rejection,
+revocation, restart, receipt-write failure rollback and transactional v9 upgrade.
+History tests load pages around message IDs and reject mixed cursor modes.
+SimpleBot regressions cover public help/ping without model calls, fresh context
+on restart, quoted-message retrieval, model-driven paging, bounded/deduplicated
+context, keyed pending-command recovery, scoped credential issuance/revocation,
+typed room/DM creation and desired-state reactions.

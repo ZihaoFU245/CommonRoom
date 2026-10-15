@@ -31,6 +31,10 @@ pub(super) fn routes() -> Router<App> {
                     "/commands",
                     get(super::control::commands).post(super::control::command),
                 )
+                .route(
+                    "/commands/receipts/{key}",
+                    get(super::control::command_receipt),
+                )
                 .route("/message-context", get(super::control::message_context))
                 .route("/history", get(history))
                 .route("/messages", post(message))
@@ -76,6 +80,7 @@ struct HistoryQuery {
     before: Option<u64>,
     after: Option<u64>,
     around: Option<u64>,
+    message_id: Option<String>,
     limit: Option<usize>,
     content_revision: Option<u64>,
 }
@@ -86,7 +91,7 @@ async fn history(
 ) -> Result<Json<Value>, Error> {
     work(app, headers, move |app, context| {
         if input.limit.is_some_and(|limit| limit > 100) { return Err(Error::new(Code::InvalidRequest,"History limit is at most 100.")); }
-        let range = HistoryRange { start: input.start, end: input.end, before: input.before, after: input.after, around: input.around, limit: input.limit };
+        let mut range = HistoryRange { start: input.start, end: input.end, before: input.before, after: input.after, around: input.around, limit: input.limit };
         range.validate().map_err(|e| Error::new(Code::InvalidRequest, e))?;
         let (revision, store) = {
             let engine = app.engine_read().map_err(Error::storage)?;
@@ -95,6 +100,14 @@ async fn history(
             (engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision, engine.history_store.clone())
         };
         if input.content_revision.is_some_and(|expected| expected != revision) { return Err(Error::new(Code::Conflict, "Content revision changed; rescan history.")); }
+        if let Some(message_id) = input.message_id {
+            if !models::valid_id(&message_id) { return Err(Error::new(Code::InvalidRequest,"Invalid message ID.")); }
+            if input.start.is_some() || input.end.is_some() || input.before.is_some() || input.after.is_some() || input.around.is_some() { return Err(Error::new(Code::InvalidRequest, "message_id cannot combine with sequence bounds.")); }
+            let message = store.locate(&message_id).map_err(Error::storage)?
+                .filter(|(id,_)| id == &input.conversation_id).map(|(_,message)|message)
+                .ok_or_else(||Error::new(Code::NotFound,"Message is not retained in this conversation."))?;
+            range.around = Some(message.sequence);
+        }
         let page = store.page_checked(&input.conversation_id, revision, range, "");
         let engine = app.engine_read().map_err(Error::storage)?;
         let user = context.user(&engine)?;
@@ -305,7 +318,7 @@ async fn upgrade(
     super::socket::upgrade(app, headers, ws).await
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Result<String, Error> {
+pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, Error> {
     let mut values = headers.get_all("idempotency-key").iter();
     let key = values.next().and_then(|v| v.to_str().ok()).filter(|key| {
         !key.is_empty()
