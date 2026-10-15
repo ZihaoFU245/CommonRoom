@@ -1,0 +1,15 @@
+{
+  "tasks": {
+    "start": "deno run -P src/main.ts",
+    "dev": "deno run -P --watch=src --no-clear-screen src/main.ts",
+    "config": "deno run -P src/config-cli.ts"
+  },
+  "permissions": {
+    "default": {
+      "read": ["./data"],
+      "write": ["./data"],
+      "net": true,
+      "env": true
+    }
+  }
+}

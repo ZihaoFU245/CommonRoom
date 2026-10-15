@@ -4,7 +4,22 @@ A single-file-per-concern TypeScript worker for CommonRoom's Bot API v1. It is a
 **zero-dependency** example: Node 22.18+ runs `src/main.ts` directly with native
 type stripping, and Node's built-in `WebSocket` sends the `Authorization` header
 the bot socket handshake needs. No `npm install`, no build step, no agent
-framework.
+framework. Deno 2.5+ can also run it using the included `deno.json` template.
+
+From `simpleBot/` (or its `data/` subdirectory):
+
+```sh
+deno task config model.name "ds-zf/deepseek-flash"
+deno task start
+# Restart when source files change, keeping logs visible:
+deno task dev
+```
+
+The default permission profile permits reads/writes only under `./data`, plus
+network and environment access. Add any external `CHAT_DATA`, `BOT_CONFIG` or
+`BOT_STATE` paths to its read/write permissions if overriding those locations.
+Permission profiles are experimental in Deno and may print a warning. Model and
+chat connection settings remain in `data/config.json`, not in `deno.json`.
 
 It is deliberately more than a "hello world" reply loop. One bot demonstrates
 the core chat features the v1 surface offers, so the code doubles as executable
@@ -392,6 +407,8 @@ The model can decide to request more pages. Repeated pages/text are suppressed;
 truncated messages can continue in later retrievals with a character offset.
 Removed/expired messages stay unavailable. Private maintenance transcripts are
 filtered from both initial context and tool retrieval.
+Removing an input aborts its in-flight model request so the next queued mention
+can proceed without waiting for the removed request's timeout.
 
 `chat.historyWindow`, `chat.contextChars`, `model.contextTokens`,
 `model.compactTokens` and `model.maxToolCalls` tune these
@@ -424,6 +441,17 @@ reset on worker/transport replacement, and capped at 64 conversations with LRU
 eviction. Missing provider fields remain **unknown**, while an explicit zero is
 reported as zero. Ratios use only requests with both input and cached counts.
 Debug logs include the same numeric counters per model attempt.
+
+Set `log.level` to `debug` to trace input selection (`not_addressed`,
+`send_not_permitted`, `existing_task` or `own_message`), queued/running/finished
+tasks, command catalogue and context preparation, model request starts, HTTP
+statuses, the first streamed text/reasoning/tool delta, tool execution and final
+usage. Message IDs and counts correlate stages without logging message bodies,
+personality prompts, provider response bodies, tool arguments/results or credentials.
+Upstream HTTP denials, structured refusals and content-filter blocks log at
+`error`, including non-retryable responses, even with `log.level=info`.
+If there is no `model request started` line, inspect the preceding task-selection
+and preparation logs; socket notifications alone do not imply a model call.
 
 Streaming requests ask for `stream_options.include_usage`; gateways explicitly
 rejecting that optional field fall back without it. Both DeepSeek

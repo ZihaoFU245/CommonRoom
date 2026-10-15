@@ -215,6 +215,10 @@ export class ModelClient implements ChatModel {
         request.reasoningEffort,
       );
       if (budget.tokens >= target && request.compact) {
+        this.options.log(
+          "debug",
+          `model compaction started round=${round + 1} input_budget=${budget.tokens} budget_source=${budget.source} target=${target}`,
+        );
         const beforeCompaction = JSON.stringify(messages);
         const toolTokens = estimateTokens(
           { tools: request.tools },
@@ -227,6 +231,10 @@ export class ModelClient implements ChatModel {
         );
         if (JSON.stringify(messages) !== beforeCompaction) meter.reset();
         budget = meter.count(messages, request.tools, request.reasoningEffort);
+        this.options.log(
+          "debug",
+          `model compaction finished round=${round + 1} input_budget=${budget.tokens} budget_source=${budget.source}`,
+        );
       }
       const outputLimit = Math.min(
         request.maxTokens ?? 4096,
@@ -267,9 +275,31 @@ export class ModelClient implements ChatModel {
       });
       for (const call of turn.calls) {
         executed++;
-        const content = await request.executeTool(
-          call.function.name,
-          call.function.arguments,
+        const tool =
+          request.tools.find(
+            (tool) => tool.function.name === call.function.name,
+          )?.function.name ?? "unknown";
+        this.options.log(
+          "debug",
+          `model tool started round=${round + 1} tool_index=${executed} tool=${tool}`,
+        );
+        const started = performance.now();
+        let content: string;
+        try {
+          content = await request.executeTool(
+            call.function.name,
+            call.function.arguments,
+          );
+        } catch (error) {
+          this.options.log(
+            "error",
+            `model tool failed round=${round + 1} tool_index=${executed} tool=${tool} duration_ms=${Math.round(performance.now() - started)}`,
+          );
+          throw error;
+        }
+        this.options.log(
+          "debug",
+          `model tool finished round=${round + 1} tool_index=${executed} tool=${tool} result_chars=${content.length} duration_ms=${Math.round(performance.now() - started)}`,
         );
         messages.push({ role: "tool", tool_call_id: call.id, content });
       }
@@ -283,6 +313,10 @@ export class ModelClient implements ChatModel {
     let lastError: Error = new ModelError(0, "model call failed");
     for (let attempt = 0; attempt < 3; attempt++) {
       const started = performance.now();
+      this.options.log(
+        "debug",
+        `model request started model=${JSON.stringify(this.options.model)} host=${new URL(this.options.endpoint).host} attempt=${attempt + 1} stream=${this.options.stream} messages=${request.messages.length} tools=${request.tools?.length ?? 0} input_budget=${inputBudget.tokens} budget_source=${inputBudget.source} max_tokens=${request.maxTokens ?? "provider_default"} timeout_ms=${this.options.timeoutMs}`,
+      );
       try {
         const turn = this.options.stream
           ? await this.stream(request)
@@ -298,6 +332,10 @@ export class ModelClient implements ChatModel {
           inputBudget,
           ...(turn.usage ? { usage: turn.usage } : {}),
         });
+        this.options.log(
+          "debug",
+          `model request finished attempt=${attempt + 1} duration_ms=${Math.round(performance.now() - started)} output_chars=${turn.text.length} tool_calls=${turn.calls.length} input_tokens=${turn.usage?.prompt ?? "unknown"} output_tokens=${turn.usage?.completion ?? "unknown"} cached_tokens=${turn.usage?.cached ?? "unknown"}`,
+        );
         return turn;
       } catch (error) {
         request.onCall?.({
@@ -308,6 +346,10 @@ export class ModelClient implements ChatModel {
         lastError =
           error instanceof Error ? error : new Error("model call failed");
         const status = error instanceof ModelError ? error.status : 0;
+        this.options.log(
+          "error",
+          `model request failed attempt=${attempt + 1} status=${status} duration_ms=${Math.round(performance.now() - started)} reason=${error instanceof ModelError ? error.message : "model transport failure"}`,
+        );
         if (
           !(
             status === 0 ||
@@ -372,21 +414,28 @@ export class ModelClient implements ChatModel {
         ])
       : AbortSignal.timeout(this.options.timeoutMs);
     try {
-      return await fetch(completionsUrl(this.options.endpoint), {
+      const response = await fetch(completionsUrl(this.options.endpoint), {
         method: "POST",
         headers: this.headers(),
         body: this.body(request, stream),
         signal,
       });
+      this.options.log(
+        "debug",
+        `model HTTP response status=${response.status} stream=${stream}`,
+      );
+      if (!response.ok)
+        this.options.log(
+          "error",
+          `model upstream rejected request status=${response.status}`,
+        );
+      return response;
     } catch (error) {
       const name = (error as Error).name;
       if (name === "AbortError") throw new ModelError(0, "model call aborted");
       if (name === "TimeoutError")
         throw new ModelError(408, "model call timed out");
-      throw new ModelError(
-        0,
-        `model gateway unreachable: ${(error as Error).message}`,
-      );
+      throw new ModelError(0, "model gateway unreachable");
     }
   }
 
@@ -415,10 +464,17 @@ export class ModelClient implements ChatModel {
     )
       throw new ModelError(200, "Invalid model response");
     const choice = value.choices[0];
+    if (choice.finish_reason === "content_filter")
+      throw new ModelError(
+        403,
+        "model provider blocked response (content_filter)",
+      );
     if (choice.finish_reason === "length") throw this.tokenLimit(request);
     const message = choice.message;
     if (!record(message))
       throw new ModelError(200, "model response had no text content");
+    if (typeof message.refusal === "string" && message.refusal.trim())
+      throw new ModelError(403, "model provider refused response");
     const calls = toolCalls(message.tool_calls);
     const content =
       typeof message.content === "string" ? message.content.trim() : "";
@@ -444,6 +500,7 @@ export class ModelClient implements ChatModel {
   }
 
   private async stream(request: CompletionRequest): Promise<Turn> {
+    const started = performance.now();
     const response = await this.call(request, true);
     // Some compatible gateways reject this optional standard field. Fall back
     // only on an explicit field rejection, never on a general provider failure.
@@ -472,6 +529,7 @@ export class ModelClient implements ChatModel {
     let done = false;
     let finishReason: unknown;
     let reasoning = "";
+    let receivedDelta = false;
     let usage: ModelUsage | undefined;
     const calls = new Map<
       number,
@@ -511,6 +569,31 @@ export class ModelClient implements ChatModel {
           : null;
       const rawDelta =
         record(rawChoice) && record(rawChoice.delta) ? rawChoice.delta : null;
+      if (record(rawChoice) && rawChoice.finish_reason === "content_filter")
+        throw new ModelError(
+          403,
+          "model provider blocked response (content_filter)",
+        );
+      if (typeof rawDelta?.refusal === "string" && rawDelta.refusal.trim())
+        throw new ModelError(403, "model provider refused response");
+      if (!receivedDelta && rawDelta) {
+        const kind =
+          typeof rawDelta.content === "string" && rawDelta.content.length
+            ? "text"
+            : typeof rawDelta.reasoning_content === "string" &&
+                rawDelta.reasoning_content.length
+              ? "reasoning"
+              : Array.isArray(rawDelta.tool_calls) && rawDelta.tool_calls.length
+                ? "tool_call"
+                : null;
+        if (kind) {
+          receivedDelta = true;
+          this.options.log(
+            "debug",
+            `model stream first delta kind=${kind} duration_ms=${Math.round(performance.now() - started)}`,
+          );
+        }
+      }
       if (rawDelta && typeof rawDelta.reasoning_content === "string")
         reasoning += rawDelta.reasoning_content;
       if (rawDelta?.tool_calls !== undefined) {

@@ -47,6 +47,7 @@ interface Harness {
   config: ConfigStore;
   model: StubModel;
   activities: string[];
+  logs: string[];
   dir: string;
   /** Feed a server frame to the worker's socket wiring. */
   deliver(frame: ServerFrame): void;
@@ -103,6 +104,7 @@ async function harness(
   store.taskLimit = config.get("chat.stateLimit");
   const model = new StubModel(options.reply ?? "stub answer");
   const activities: string[] = [];
+  const logs: string[] = [];
   const fake = new FakeSocket(server);
 
   let api = new BotApi({ baseUrl: url, token: server.token });
@@ -113,7 +115,7 @@ async function harness(
       store,
       config,
       model,
-      log: () => {},
+      log: (level, message) => logs.push(`${level} ${message}`),
       presence: () => [],
       socketReady: () => true,
       setActivity: (_conversationId, state) => {
@@ -170,6 +172,7 @@ async function harness(
     config,
     model,
     activities,
+    logs,
     dir,
     deliver(frame: ServerFrame) {
       switch (frame.kind) {
@@ -801,6 +804,52 @@ test("retracting an input during a real in-flight model call suppresses its outp
   }
 });
 
+test("retracting a stalled model request aborts it and releases the next queued mention", async () => {
+  const h = await harness();
+  try {
+    let started = false;
+    let aborted = false;
+    let calls = 0;
+    h.model.complete = (request) => {
+      calls++;
+      if (calls > 1) return Promise.resolve("next answer");
+      started = true;
+      return new Promise((_resolve, reject) => {
+        request.signal!.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(new Error("cancelled fixture request"));
+          },
+          { once: true },
+        );
+      });
+    };
+    const first = h.server.addMessage("@helper stalled request");
+    const running = h.agent.handleSnapshot(h.server.snapshot());
+    await h.waitFor("stalled model started", () => started);
+    h.server.retractMessage(first.id);
+    const next = h.server.addMessage("@helper next request");
+    await h.agent.sync();
+    await running;
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.equal(aborted, true);
+    assert.equal(calls, 2);
+    assert.equal(
+      h.store.task(h.server.conversationId, first.id)?.status,
+      "cancelled",
+    );
+    assert.equal(
+      h.store.task(h.server.conversationId, next.id)?.status,
+      "answered",
+    );
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(h.server.state.sends[0]!.text, "next answer");
+  } finally {
+    await h.stop();
+  }
+});
+
 test("pruning preserves pending parts with colon-containing conversation IDs", async () => {
   const h = await harness();
   try {
@@ -1292,6 +1341,50 @@ test("public metrics are numeric, scoped to this conversation and need no model 
       h.server.state.sends.at(-1)!.text,
       /Cached input tokens: unknown/,
     );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("debug explains task selection and model preparation without exposing conversation content", async () => {
+  const h = await harness();
+  try {
+    h.config.set("prompt", "private-personality-marker");
+    const ignored = h.server.addMessage("private-chatter-marker", {
+      mentions: [],
+    });
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.includes(`input=${ignored.id}`) &&
+          line.includes("reason=not_addressed"),
+      ),
+    );
+    assert.equal(h.model.requests.length, 0);
+    const question = h.server.addMessage("@helper private-question-marker");
+    await h.agent.handleSnapshot(h.server.snapshot());
+    const logs = h.logs.join("\n");
+    assert.match(logs, /task queued/);
+    assert.match(logs, /task started/);
+    assert.match(logs, /model preparation started/);
+    assert.match(logs, /model command catalogue ready/);
+    assert.match(logs, /model history ready/);
+    assert.match(logs, /model preparation finished/);
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.includes(`input=${question.id}`) &&
+          line.includes("status=answered"),
+      ),
+    );
+    for (const secret of [
+      "private-personality-marker",
+      "private-chatter-marker",
+      "private-question-marker",
+      h.server.token,
+    ])
+      assert.ok(!logs.includes(secret));
   } finally {
     await h.stop();
   }

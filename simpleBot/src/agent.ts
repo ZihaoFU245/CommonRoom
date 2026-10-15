@@ -175,6 +175,7 @@ export class Agent {
   private startedAt = Date.now();
   private stopped = false;
   private readonly abort = new AbortController();
+  private activeTask: { key: string; controller: AbortController } | undefined;
   private readonly contexts = new Map<string, AppendHistory>();
   private readonly modelMetrics = new Map<string, Metrics>();
 
@@ -379,6 +380,10 @@ export class Agent {
         after,
         limit: 100,
       });
+      this.options.log(
+        "debug",
+        `input history page conversation=${conversation.id} after=${after} messages=${page.messages.length} has_after=${page.has_after}`,
+      );
       if (page.messages.length === 0) return;
       for (const message of page.messages) {
         if (message.sequence <= (store.cursor(conversation.id) ?? 0)) continue;
@@ -392,6 +397,11 @@ export class Agent {
         // never become work and never block the cursor.
         if (message.author_id !== accountId)
           this.consider(conversation, message);
+        else
+          this.options.log(
+            "debug",
+            `input skipped conversation=${conversation.id} input=${message.id} sequence=${message.sequence} reason=own_message`,
+          );
         const parked = store.task(conversation.id, message.id) !== undefined;
         blocked ||= parked;
         if (!blocked) store.setCursor(conversation.id, message.sequence);
@@ -518,7 +528,13 @@ export class Agent {
     task.slots = task.slots.filter((slot) => !unsent.includes(slot));
     task.status = "cancelled";
     task.updated = Date.now();
-    void conversation;
+    if (this.activeTask?.key === key) {
+      this.options.log(
+        "debug",
+        `task model cancelled conversation=${conversation.id} input=${messageId} reason=input_removed`,
+      );
+      this.activeTask.controller.abort();
+    }
   }
 
   // ------------------------------------------------------------ work queue
@@ -531,12 +547,14 @@ export class Agent {
       message.mentions.includes(account.username) ||
       (conversation.view.startsWith("@direct:") &&
         this.options.config.get("chat.respondToAllDms"));
-    if (
-      !addressed ||
-      !conversation.permissions.send ||
-      this.options.store.task(conversation.id, message.id)
-    )
+    const existing = this.options.store.task(conversation.id, message.id);
+    if (!addressed || !conversation.permissions.send || existing) {
+      this.options.log(
+        "debug",
+        `input skipped conversation=${conversation.id} input=${message.id} sequence=${message.sequence} reason=${!addressed ? "not_addressed" : !conversation.permissions.send ? "send_not_permitted" : "existing_task"}${existing ? ` status=${existing.status}` : ""}`,
+      );
       return;
+    }
     this.options.store.putTask({
       conversation: conversation.id,
       input: message.id,
@@ -548,6 +566,10 @@ export class Agent {
       slots: [],
       updated: Date.now(),
     });
+    this.options.log(
+      "debug",
+      `task queued conversation=${conversation.id} input=${message.id} sequence=${message.sequence}`,
+    );
   }
   private async drain(): Promise<void> {
     if (this.draining || this.stopped) return;
@@ -568,9 +590,19 @@ export class Agent {
           continue;
         }
         const acceptedHash = task.promptHash;
+        const active = {
+          key: taskKey(task.conversation, task.input),
+          controller: new AbortController(),
+        };
+        this.activeTask = active;
         task.status = "running";
         task.attempts++;
         task.updated = Date.now();
+        const started = performance.now();
+        this.options.log(
+          "debug",
+          `task started conversation=${conversation.id} input=${task.input} attempt=${task.attempts}`,
+        );
         this.options.store.save();
         this.beginActivity(conversation.id);
         const cancelled = () => task.status === "cancelled";
@@ -605,6 +637,11 @@ export class Agent {
               );
           }
         } finally {
+          if (this.activeTask === active) this.activeTask = undefined;
+          this.options.log(
+            "debug",
+            `task finished conversation=${conversation.id} input=${task.input} status=${task.status} duration_ms=${Math.round(performance.now() - started)}`,
+          );
           task.updated = Date.now();
           if (
             !this.options.store
@@ -837,10 +874,18 @@ export class Agent {
     task: TaskRecord,
   ): Promise<string> {
     const { api, config, model } = this.options;
+    this.options.log(
+      "debug",
+      `model preparation started conversation=${conversation.id} input=${message.id}`,
+    );
     for (const action of task.actions ?? [])
       if (action.status === "pending")
         await this.recoverCommand(conversation.id, action);
     const commands = await this.serverCommands(conversation.id);
+    this.options.log(
+      "debug",
+      `model command catalogue ready conversation=${conversation.id} input=${message.id} commands=${commands.length}`,
+    );
     const historyEnabled = config.get("chat.contextChars") > 0;
     const readsEnabled =
       config.get("chat.acknowledgeReads") &&
@@ -878,6 +923,10 @@ export class Agent {
     metrics.contextChars = history.chars;
     metrics.contextMessages = history.rows.length;
     if (history.rebuilt) metrics.rebases++;
+    this.options.log(
+      "debug",
+      `model history ready conversation=${conversation.id} input=${message.id} messages=${history.rows.length} chars=${history.chars} rebuilt=${history.rebuilt}`,
+    );
     context.seed(history.rows, history.chars);
     for (const chunk of history.chunks)
       prelude.push({
@@ -979,6 +1028,10 @@ export class Agent {
         { role: "tool", tool_call_id: id, content: action.result ?? "" },
       );
     }
+    this.options.log(
+      "debug",
+      `model preparation finished conversation=${conversation.id} input=${message.id} messages=${messages.length} history_enabled=${historyEnabled} command_tool=${commands.length > 0} read_ack_tool=${readsEnabled}`,
+    );
     return model.complete({
       messages,
       maxTokens: config.get("model.maxTokens"),
@@ -1002,7 +1055,10 @@ export class Agent {
       },
       reasoningEffort: config.get("model.reasoningEffort"),
       temperature: 0.3,
-      signal: this.abort.signal,
+      signal: AbortSignal.any([
+        this.abort.signal,
+        ...(this.activeTask ? [this.activeTask.controller.signal] : []),
+      ]),
       onCall: (call) => {
         metrics.record(call);
         const usage = call.usage;
@@ -1017,7 +1073,7 @@ export class Agent {
           metrics.rebases++;
         this.options.log(
           "debug",
-          `model attempt success=${call.success} duration_ms=${Math.round(call.durationMs)} input_tokens=${usage?.prompt ?? "unknown"} output_tokens=${usage?.completion ?? "unknown"} cached_tokens=${usage?.cached ?? "unknown"} input_budget=${call.inputBudget?.tokens ?? "unknown"} budget_source=${call.inputBudget?.source ?? "unknown"}`,
+          `model attempt conversation=${conversation.id} input=${message.id} success=${call.success} duration_ms=${Math.round(call.durationMs)} input_tokens=${usage?.prompt ?? "unknown"} output_tokens=${usage?.completion ?? "unknown"} cached_tokens=${usage?.cached ?? "unknown"} input_budget=${call.inputBudget?.tokens ?? "unknown"} budget_source=${call.inputBudget?.source ?? "unknown"}`,
         );
       },
       ...(commands.length || historyEnabled || readsEnabled
