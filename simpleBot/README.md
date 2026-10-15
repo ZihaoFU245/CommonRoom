@@ -1,10 +1,9 @@
 # simpleBot — a Bot API v1 reference worker
 
-A single-file-per-concern TypeScript worker for CommonRoom's Bot API v1. It is a
-**zero-dependency** example: Node 22.18+ runs `src/main.ts` directly with native
-type stripping, and Node's built-in `WebSocket` sends the `Authorization` header
-the bot socket handshake needs. No `npm install`, no build step, no agent
-framework. Deno 2.5+ can also run it using the included `deno.json` template.
+A TypeScript worker for CommonRoom's Bot API v1, running on Deno 2.5+ with
+native Deno KV persistence. No application dependencies, build step, or agent
+framework are required. Deno KV currently needs `--unstable-kv`, enabled by the
+worker tasks. The repository's Node/TypeScript tools are used for source checks.
 
 From `simpleBot/` (or its `data/` subdirectory):
 
@@ -17,7 +16,7 @@ deno task dev
 
 The default permission profile permits reads/writes only under `./data`, plus
 network and environment access. Add any external `CHAT_DATA`, `BOT_CONFIG` or
-`BOT_STATE` paths to its read/write permissions if overriding those locations.
+`BOT_STORAGE` paths to its read/write permissions if overriding those locations.
 Permission profiles are experimental in Deno and may print a warning. Model and
 chat connection settings remain in `data/config.json`, not in `deno.json`.
 
@@ -40,7 +39,7 @@ documentation:
 | Shared-unread acknowledgement behind explicit opt-in       | `acknowledge_read` tool, `chat.acknowledgeReads`     |
 | Credential scopes and expiring tokens                      | `/status`, `snapshot.credential`                     |
 | Conversation creation (rooms and DMs)                      | native `/new room`, `/tell` and typed client methods |
-| Hardened checkpoint (atomic write, version refusal)        | `src/store.ts`                                       |
+| Durable KV state and model-owned conversation memory        | `src/store.ts`                                       |
 | Bounded retries, `Retry-After`, typed error codes          | `src/api.ts`                                         |
 
 ## Files
@@ -57,7 +56,14 @@ simpleBot/
 │   ├── socket.ts      WebSocket notifications, discovery/activity frames, reconnect
 │   ├── wiring.ts      socket event handlers (shared by the entrypoint and tests)
 │   ├── config.ts      runtime settings, validation, redaction
-│   ├── store.ts       checkpoint: cursors, revisions, task ledger, outbox
+│   ├── store.ts       asynchronous worker state and recovery
+│   ├── state.ts       persisted worker types and validation
+│   ├── records.ts     targeted KV transactions and large-record chunks
+│   ├── tracked.ts     nested mutation tracking for targeted writes
+│   ├── kv.ts          Deno KV runtime boundary
+│   ├── memory.ts      model-owned asynchronous document workspace
+│   ├── prompts.ts     conversation and memory instructions
+│   ├── tools.ts       model tool definitions
 │   ├── model.ts       OpenAI-compatible chat client
 │   ├── wire.ts        v1 wire types transcribed from the published schema
 │   ├── log.ts         shared logging contract
@@ -101,7 +107,7 @@ permissions you hold yourself, so grant from a suitably privileged account.
 ## 2. Start the worker
 
 ```sh
-BOT_TOKEN=bot_... node simpleBot/src/main.ts
+BOT_TOKEN=bot_... deno task --config simpleBot/deno.json start
 ```
 
 `BOT_TOKEN` is the credential; `CHAT_URL` (default `http://127.0.0.1:3000/`)
@@ -155,7 +161,7 @@ is rejected with a reason and leaves the previous setting untouched, for example
 | `chat.contextChars`     | `131072`                 | Additional history character ceiling; 0–524288, 0 disables history           |
 | `model.contextTokens`   | `32768`                  | Total input/output token budget; measurements plus estimates for new content |
 | `model.compactTokens`   | `24576`                  | Input threshold for context compaction; less than total                      |
-| `model.maxToolCalls`    | `16`                     | Maximum tool calls per turn; 1–16                                           |
+| `model.maxToolCalls`    | `32`                     | Maximum tool calls per turn; 1–128                                           |
 | `chat.stateLimit`       | `200`                    | 10–5000 retained task records                                                |
 | `log.level`             | `info`                   | `debug`, `info`, `warn`, `error`, `silent`                                   |
 
@@ -278,10 +284,10 @@ task is cancelled, and any unsent parts are dropped.
 ## Testing
 
 ```sh
-node --test simpleBot/test/*.test.ts
+deno test --unstable-kv -A --no-check simpleBot/test/*.test.ts
 # After building the Rust server: real HTTP/WS and entrypoint lifecycle
-BOT_INTEGRATION=1 node --test simpleBot/test/integration.test.ts
-node simpleBot/src/main.ts            # run it
+BOT_INTEGRATION=1 deno test --unstable-kv -A --no-check simpleBot/test/integration.test.ts
+deno task --config simpleBot/deno.json start  # run it
 pnpm --dir simpleBot check           # typecheck with the project dev tools
 ```
 
@@ -294,20 +300,24 @@ and version refusal, cross-account refusal, activity signals, and the
 
 ## Operational notes
 
-- **Checkpoint**: `simpleBot/data/checkpoint.json`, mode 0600, atomic rename. It
-  holds the per-conversation input cursors, the last reconciled
-  `content_revision`, the per-input task ledger, and the pending-output outbox.
-  This is what makes a restart safe: output is recorded before it is sent and
-  the cursor only advances after that output is acknowledged, so an interrupted
-  answer replays with the same idempotency key instead of posting a duplicate.
-  An empty file (`account: null`, no cursors) means the worker never saw a
-  readable conversation — check the credential and the log line above.
-  `BOT_STATE` overrides the path; `CHAT_DATA` moves both defaults. One worker owns
-  one checkpoint; the file records the account id and refuses to run against a
-  different one.
-- **Checkpoint version 3**: version 2 files upgrade automatically; version 1 files are refused, because
-  adopting the new revision watermarks without reconciling can duplicate output.
-  Reconcile the old file deliberately before replacing it; deleting it discards any pending delivery guarantees.
+- **Durable storage**: `simpleBot/data/agent.kv`, mode 0600, opened asynchronously.
+  `BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory.
+  Deno KV owns the SQLite database and its sidecar files. One worker owns one
+  database, bound to its bot account; stale concurrent writers fail instead of
+  overwriting another worker. Stop the worker before backing up the whole data directory.
+- **Fresh KV format**: old `checkpoint.json` and `BOT_STATE` are ignored, with no
+  import or migration. The first run baselines from the server's current state;
+  subsequent restarts recover cursors, message versions, tasks, group decisions,
+  command intents/results and output keys from KV. Output is durable before send;
+  cursors advance after acknowledged delivery.
+- **Targeted commits**: only changed records are encoded and written. Nested
+  task mutations are tracked; small records publish directly in an atomic KV
+  transaction. Large plans use immutable chunks and atomic record heads, so an
+  interrupted staging write never publishes a partial response plan. Startup
+  reclaims unreachable chunks older than a day. Storage failures stop later
+  checkpoint commits rather than skipping a durability boundary.
+- **Operator configuration** remains in `config.json`, with the existing CLI,
+  reload, validation, and secret redaction. It is outside the model's workspace.
 - **`/read` is not a processing acknowledgement.** It clears the human-facing
   unread badge for the whole account. It is off by default, needs
   `chat.acknowledgeReads`, and needs `read_ack` on the worker credential. Leave
@@ -355,8 +365,7 @@ Native commands use separate durable server receipts. The worker saves command
 intent/key/time before execution, suppresses repeated identical calls, and retries
 only the identical key within the receipt window. On restart it recovers pending
 keyed outcomes before asking the model to continue. Legacy unkeyed or expired
-uncertain actions require inspection. The v3 checkpoint accepts these optional
-fields without replaying old unkeyed effects. Run one worker per checkpoint/account.
+uncertain actions require inspection. The KV store retains these records across restarts. Run one worker per database/account.
 
 Model history uses a bounded `read_history` tool that filters worker control messages and their responses, matching the normal context filter. Raw `/history` model calls are redirected to that tool.
 
@@ -370,7 +379,7 @@ History context stays in memory, in chronological chunks that grow by appending.
 The initial baseline requests 50 recent messages; later answers append intervening
 messages instead of sliding the prefix on every answer. Before reuse, the worker
 revalidates cached messages against retained server history, rebuilding on edits,
-removal or retention. No model conversation is checkpointed. Restart discards
+removal or retention. Raw model turns are not persisted. Restart discards
 that context and the next answer fetches retained history again.
 Delivery keys, pending command intent/results and input checkpoints remain durable
 so restart cannot duplicate committed effects. The default total budget is 32768
@@ -484,8 +493,9 @@ an empty final response. A silent decision is checkpointed and is not retriggere
 by notifications or reconnects. Replies use the durable outbox; model command
 tools omit `/reply` and `/tell` to prevent a tool send plus a second final answer.
 
-The default system prompt favors brief, natural conversation in the user's
-language, with only the detail needed and no routine preamble or formal summary.
+The system prompt gives the model freedom to choose its response and manage its
+workspace. It distinguishes speaker claims, proposals, agreements and verified
+actions, while keeping server authorization in code.
 
 
 ## Autonomous group participation
@@ -494,11 +504,11 @@ As the bot owner or a global administrator, enable it through chat:
 
 ```text
 @helper /config set autonomous "true"
-@helper /config set model.maxToolCalls "16"
+@helper /config set model.maxToolCalls "32"
 ```
 
 `autonomous` defaults to false. Existing explicit tool limits are preserved;
-the second command raises an older saved limit of four. The flag applies to all
+the second command gives an older configuration more room for memory and tool use. The flag applies to all
 readable, writable rooms available to this worker, without changing server grants
 or DM behavior. Set it to `"false"` to return to mention-only room input.
 
@@ -524,6 +534,45 @@ Worker commands still use the owner/admin checks and do not enter model context.
 tool rounds. Upstream HTTP failures are handled before reading their response
 bodies. Timeout/error paths release the active queue; an abandoned model cannot
 execute late tools. Failed receipt lookups and inaccessible unresolved effects
-are retained for recovery without stopping healthy conversations. The worker
-checkpoint upgrades v2 to v3 atomically on its next save, preserving cursors,
-outputs and command receipts; older workers reject v3 rather than replaying batches.
+are retained for recovery without stopping healthy conversations. The worker persists group membership, response plans, timing and silent decisions
+in KV; obsolete JSON checkpoints are not loaded.
+
+
+## Model-owned persistent workspace
+
+Every model turn has the asynchronous `memory` tool, including when server tools
+or history are unavailable. Its `get`, `set`, `list` and `delete` actions accept
+arbitrary JSON documents. The model chooses its own organization: topic notes,
+member preferences, summaries, plans, or unfinished work. There is no separate
+extraction model, fixed fact schema, or forced public acknowledgement.
+
+The `index` document (up to 6,000 UTF-8 bytes of content) and a bounded
+list of document names are loaded each turn. Other documents (up to 30,000 bytes)
+are fetched on demand. `list` supports prefix filtering and continuation cursors.
+Large notes should be split into linked documents. For example:
+
+```json
+{"action":"set","key":"topics/runtime","value":{"proposal":"Deno","agreement":"unresolved"}}
+```
+
+`get` returns the document's version. Supply that version with `set` or `delete`
+for a conditional update; `version:null` creates only if absent. Omit the version
+for an intentional overwrite. Conflicts and invalid arguments return tool errors
+so the model can correct its request. Successful writes return a committed version.
+
+Workspaces are bound in code to the bot account and current stable conversation
+ID. A room shares one workspace among its speakers; DMs and other rooms have
+separate workspaces. The model cannot select another conversation or access
+worker records, outbox, configuration, or credentials through this tool. Stored
+documents include the current input IDs, stable author IDs and content hashes as
+provenance. History rows also include stable author IDs. Memory is contextual
+data rather than instructions or authority.
+
+A turn can update notes and end silently. Save pending notes before calling
+`finish_turn`, which ends tool execution immediately. Durable workspace documents
+survive task pruning and server history retention. They are not automatically
+removed when their source is edited or retracted; the model must revise or delete
+stale information, or an operator must remove it. Losing room access makes the
+workspace unavailable to model turns; it remains on disk if access is restored.
+`chat.stateLimit` bounds delivery records, not model documents. The model is
+responsible for organizing and deleting obsolete notes.

@@ -1,15 +1,6 @@
-// Entry point. Zero dependencies: Node 22.18+ runs this file directly via
-// native TypeScript type stripping, and Node's built-in WebSocket sends the
-// Authorization header that the bot socket handshake requires.
-//
-//   node simpleBot/src/main.ts
-//
-// Environment:
-//   BOT_TOKEN   bot credential (overrides the persisted `chat.token`)
-//   CHAT_URL    base URL (overrides the persisted `chat.url`)
-//   BOT_CONFIG  config file  (default simpleBot/data/config.json)
-//   BOT_STATE   checkpoint   (default simpleBot/data/checkpoint.json)
-//   CHAT_DATA   directory for both defaults, when set
+// Deno entrypoint. BOT_STORAGE selects the KV database; old JSON checkpoints
+// are ignored. CHAT_DATA relocates the default data directory. BOT_CONFIG still
+// selects the operator configuration file; BOT_TOKEN/CHAT_URL are process seeds.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigStore, redact, type ConfigKey } from "./config.ts";
@@ -23,11 +14,11 @@ import { LEVELS, type LogLevel } from "./log.ts";
 
 const SESSION = "simpleBot";
 
-function main(): void {
+async function main(): Promise<void> {
   const dataDir =
     process.env.CHAT_DATA ?? join(import.meta.dirname, "..", "data");
   const configPath = process.env.BOT_CONFIG ?? join(dataDir, "config.json");
-  const statePath = process.env.BOT_STATE ?? join(dataDir, "checkpoint.json");
+  const statePath = process.env.BOT_STORAGE ?? join(dataDir, "agent.kv");
 
   const config = ConfigStore.load(configPath);
   // The environment pins these for this process only: a deployment can inject a
@@ -45,7 +36,7 @@ function main(): void {
     else process.stdout.write(`${line}\n`);
   };
 
-  const store = Store.load(statePath);
+  const store = await Store.open(statePath);
   store.taskLimit = config.get("chat.stateLimit");
 
   // Mutable transport state: a config change rebuilds these in place.
@@ -180,22 +171,27 @@ function main(): void {
   // --------------------------------------------------------------- lifecycle
 
   let stopping = false;
-  function shutdown(reason: string): void {
+  async function shutdown(reason: string): Promise<void> {
     if (stopping) return;
     stopping = true;
-    log("info", `${reason} received; saving checkpoint`);
-    try {
-      store.metrics.reconnects = reconnects;
-      store.save();
-    } catch (error) {
-      log("error", `checkpoint save failed: ${(error as Error).message}`);
-    }
+    log("info", `${reason} received; closing durable storage`);
     socket?.close();
-    process.exitCode = 0;
-    setTimeout(() => process.exit(0), 50).unref();
+    try {
+      await agent.stop();
+      await transportChange;
+      await store.close();
+      process.exit(0);
+    } catch (error) {
+      log("error", `storage shutdown failed: ${(error as Error).message}`);
+      process.exit(1);
+    }
   }
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => {
+    shutdown("SIGINT").catch(() => process.exit(1));
+  });
+  process.on("SIGTERM", () => {
+    shutdown("SIGTERM").catch(() => process.exit(1));
+  });
   process.on("SIGHUP", () => {
     try {
       config.reload();
@@ -214,7 +210,7 @@ function main(): void {
   // ------------------------------------------------------------------ banner
 
   log("info", "CommonRoom simple bot starting");
-  log("info", `checkpoint ${statePath}`);
+  log("info", `storage    ${statePath}`);
   log("info", `config     ${configPath}`);
   log(
     "info",
@@ -273,7 +269,7 @@ function main(): void {
         log(
           "warn",
           "no readable conversations: add the bot to a room (/add <bot> <room>) or create a direct conversation " +
-            "(`/dm <bot>`); an empty checkpoint means nothing is visible to this credential",
+            "(`/dm <bot>`); an empty worker state means nothing is visible to this credential",
         );
       } else {
         log(
@@ -299,4 +295,9 @@ function main(): void {
   })();
 }
 
-main();
+main().catch((error: unknown) => {
+  console.error(
+    `startup failed: ${error instanceof Error ? error.message : "unknown error"}`,
+  );
+  process.exitCode = 1;
+});

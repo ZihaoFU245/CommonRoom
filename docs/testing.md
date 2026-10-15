@@ -258,7 +258,7 @@ integration suite.
 
 When the separately supplied `simpleBot/` directory is present,
 `auto/check.sh` also checks `simpleBot/tsconfig.json` and runs the worker's unit
-and transport tests. They use temporary checkpoints and local loopback HTTP
+and transport tests. They use temporary Deno KV databases and local loopback HTTP
 servers, with no model credentials. Regression coverage includes multipart
 restart recovery, repeated edits, in-flight retraction, multipage catch-up,
 receipt expiry, malformed responses, safe retry boundaries, streamed UTF-8 and
@@ -267,7 +267,7 @@ error events, and activity capability/credential checks.
 After `rtk cargo build --locked`, run the real entrypoint test:
 
 ```sh
-rtk proxy env BOT_INTEGRATION=1 node --test simpleBot/test/integration.test.ts
+rtk proxy env BOT_INTEGRATION=1 deno test --unstable-kv -A --no-check simpleBot/test/integration.test.ts
 ```
 
 It starts an isolated Rust server under `/commonroom/`, a worker process, browser
@@ -323,9 +323,14 @@ explicit empty completions without treating transport truncation as silence.
 Autonomous worker tests cover fixed three-second windows under concurrent
 speakers, minimum turn spacing, combined plain output, independent targeted
 replies, silence, own-output suppression, runtime enable/disable, foreign private
-chat isolation, source retraction, interrupted response plans and v2-to-v3 worker
-checkpoint upgrades. Failure tests cover stalled/erroring providers, ignored
+chat isolation, source retraction, and interrupted KV-backed response plans. Failure tests cover stalled/erroring providers, ignored
 cancellation, late tool rejection and failed command-receipt lookups while new
 input continues. Buffered and streamed models exercise 16 tool calls and terminal
 response-plan tools. The real worker integration checks multi-user autonomous
 bursts, reply targets, silence and restart against an isolated server/model stub.
+
+SimpleBot requires Deno 2.5+ for worker tests. Durable-storage regressions cover
+restart recall, silent group memory, conversation/account isolation, conditional
+updates, pagination, nested targeted writes, private database permissions,
+interrupted large-plan staging, and stale-writer rejection. Source checks use
+the repository's TypeScript tools; Deno executes the tests with `--unstable-kv`.

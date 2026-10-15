@@ -147,13 +147,25 @@ entry/byte limits and 24-hour expiry bound storage. See [Bots](bots.md) for retr
 and authenticated status semantics. These outcomes may include private text.
 
 
-## SimpleBot checkpoint v3
+## SimpleBot durable storage
 
-The optional SimpleBot worker uses its own checkpoint format, independently of
-SQLite schema v10 and the minimal reference worker. Existing v2 checkpoints are
-validated and upgraded to v3 in memory, then saved by atomic rename. V3 records
-autonomous batch membership, fixed-window timing and complete response plans;
-v1 and unknown versions remain rejected. Pending keyed sends/commands retain
-original payloads and keys. Inaccessible unresolved effects are preserved while
-other conversations continue. Use the updated worker with v3 checkpoints; older
-workers reject this version. No server database migration is required.
+The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
+(`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
+independently of server SQLite schema v10 and the minimal reference worker.
+Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
+ignored; no legacy checkpoint migration is performed.
+
+KV format v1 stores account binding, cursors, revisions, accepted message
+versions, tasks, group plans, command outcomes and the delivery outbox. Changed
+records commit asynchronously; large records stage immutable chunks before
+atomic publication. Interrupted chunks older than a day are reclaimed at startup.
+Pending keyed sends/commands retain their payloads and keys across restarts.
+One worker owns each database. Stop it before backing up the data directory,
+including SQLite sidecars. No server schema migration is required.
+
+The same database holds model-owned JSON documents, scoped by bot account and
+stable conversation ID. Rooms share a workspace across participants; DMs and
+other rooms remain isolated. Workspace documents survive task pruning and
+history retention and require explicit model/operator deletion. Source edits or
+retractions do not automatically remove derived documents. Operator configuration
+remains in `config.json`, outside model access. See [SimpleBot](../simpleBot/README.md#model-owned-persistent-workspace).

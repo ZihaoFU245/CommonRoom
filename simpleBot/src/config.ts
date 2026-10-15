@@ -91,8 +91,8 @@ export const DEFAULTS: Settings = {
   "chat.acknowledgeReads": false,
   "chat.historyWindow": 50,
   "chat.contextChars": 131072,
-  "model.maxToolCalls": 16,
-  // Upper bound on retained task/outbox records in the checkpoint.
+  "model.maxToolCalls": 32,
+  // Upper bound on retained task/outbox records in KV.
   "chat.stateLimit": 200,
   "log.level": "info",
 };
@@ -175,8 +175,8 @@ export function coerce(key: ConfigKey, raw: string): string | number | boolean {
     }
     case "model.maxToolCalls": {
       const value = Number(text);
-      if (!Number.isSafeInteger(value) || value < 1 || value > 16)
-        throw new Error("tool call limit must be an integer 1-16");
+      if (!Number.isSafeInteger(value) || value < 1 || value > 128)
+        throw new Error("tool call limit must be an integer 1-128");
       return value;
     }
     case "chat.historyWindow": {

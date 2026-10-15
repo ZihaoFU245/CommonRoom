@@ -122,7 +122,7 @@ test("actual provider usage triggers compaction even when the first estimate was
     log: () => {},
   });
   const history =
-    "Conversation data [sequence,id,sender,text]:\n" +
+    "Conversation data [sequence,id,sender,text,offset,author_id]:\n" +
     JSON.stringify({
       messages: Array.from({ length: 10 }, (_, i) => [
         i,
@@ -369,7 +369,7 @@ test("model compacts before a request and reserves output inside the total token
     log: () => {},
   });
   const history =
-    "Conversation data [sequence,id,sender,text]:\n" +
+    "Conversation data [sequence,id,sender,text,offset,author_id]:\n" +
     JSON.stringify({
       messages: Array.from({ length: 50 }, (_, i) => [
         i,

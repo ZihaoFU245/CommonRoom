@@ -2,7 +2,7 @@
 
 ## Setup
 
-Use Rust 1.89+ (edition 2024), Node 22.18+ with native TypeScript stripping, pnpm, and RTK. Install the web dependencies from the committed lockfile:
+Use Rust 1.89+ (edition 2024), Node 22.18+ with native TypeScript stripping, pnpm, and RTK. The optional SimpleBot worker and its tests also require Deno 2.5+ with native KV enabled. Install the web dependencies from the committed lockfile:
 
 ```sh
 rtk pnpm --dir web install --frozen-lockfile

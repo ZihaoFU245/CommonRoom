@@ -297,7 +297,7 @@ test(
         return value.bots;
       }
       const configPath = join(dir, "config.json"),
-        statePath = join(dir, "checkpoint.json");
+        statePath = join(dir, "agent.kv");
       writeFileSync(
         configPath,
         JSON.stringify({
@@ -311,16 +311,20 @@ test(
       let botLogs = "";
       async function startBot() {
         botLogs = "";
-        bot = spawn(process.execPath, [join(root, "simpleBot/src/main.ts")], {
-          cwd: root,
-          env: {
-            ...process.env,
-            BOT_TOKEN: token,
-            BOT_CONFIG: configPath,
-            BOT_STATE: statePath,
+        bot = spawn(
+          process.execPath,
+          ["run", "--unstable-kv", "-A", join(root, "simpleBot/src/main.ts")],
+          {
+            cwd: root,
+            env: {
+              ...process.env,
+              BOT_TOKEN: token,
+              BOT_CONFIG: configPath,
+              BOT_STORAGE: statePath,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
           },
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        );
         bot.stdout?.on("data", (chunk: Buffer) => {
           botLogs += chunk.toString();
         });
@@ -607,13 +611,11 @@ test(
       const repliesBeforeSilence = (await ownMessages()).length;
       await say(bob, "@helper finish silently");
       await until(
-        () =>
-          Store.load(statePath)
-            .tasks()
-            .some(
-              (task) =>
-                task.status === "answered" && task.silentHash !== undefined,
-            ),
+        async () =>
+          Object.values((await Store.inspect(statePath)).tasks).some(
+            (task) =>
+              task.status === "answered" && task.silentHash !== undefined,
+          ),
         "silent turn checkpointed",
       );
       assert.equal(
@@ -743,15 +745,13 @@ test(
       const completed = (await ownMessages()).length;
       await say(bob, "finish silently");
       await until(
-        () =>
-          Store.load(statePath)
-            .tasks()
-            .some(
-              (task) =>
-                task.autonomous &&
-                task.status === "answered" &&
-                task.decision?.length === 0,
-            ),
+        async () =>
+          Object.values((await Store.inspect(statePath)).tasks).some(
+            (task) =>
+              task.autonomous &&
+              task.status === "answered" &&
+              task.decision?.length === 0,
+          ),
         "autonomous silence checkpointed",
       );
       assert.equal((await ownMessages()).length, completed);

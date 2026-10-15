@@ -60,10 +60,14 @@ test("config JSON and CLI round-trip quotes, slashes, Unicode, newlines and empt
   try {
     const prompt = '  Use "Markdown" 🙂\\paths\nwith tabs\tand spaces  ';
     const cli = join(import.meta.dirname, "../src/config-cli.ts");
-    const result = spawnSync(process.execPath, [cli, "prompt", prompt], {
-      env: { ...process.env, BOT_CONFIG: f.path },
-      encoding: "utf8",
-    });
+    const result = spawnSync(
+      process.execPath,
+      ["run", "-A", cli, "prompt", prompt],
+      {
+        env: { ...process.env, BOT_CONFIG: f.path },
+        encoding: "utf8",
+      },
+    );
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).prompt, prompt);
     assert.equal(JSON.parse(readFileSync(f.path, "utf8")).prompt, prompt);
@@ -72,7 +76,7 @@ test("config JSON and CLI round-trip quotes, slashes, Unicode, newlines and empt
     assert.equal(quotedValue('""'), "");
     for (const raw of ["not quoted", "true", '"two" "values"', '"unterminated'])
       assert.throws(() => quotedValue(raw), /double-quoted/);
-    const show = spawnSync(process.execPath, [cli], {
+    const show = spawnSync(process.execPath, ["run", "-A", cli], {
       env: { ...process.env, BOT_CONFIG: f.path },
       encoding: "utf8",
     });
@@ -168,17 +172,17 @@ test("reload validates atomically, notifies once and explicit runtime set replac
   }
 });
 
-test("autonomous opt-in and the sixteen-tool ceiling persist while old configuration defaults remain safe", () => {
+test("autonomous opt-in and the configurable tool ceiling persist while old configuration defaults remain safe", () => {
   const f = fixture();
   try {
     writeFileSync(f.path, '{"model.name":"existing"}');
     const config = ConfigStore.load(f.path);
     assert.equal(config.get("autonomous"), false);
-    assert.equal(config.get("model.maxToolCalls"), 16);
+    assert.equal(config.get("model.maxToolCalls"), 32);
     config.apply("autonomous", "true");
     assert.equal(ConfigStore.load(f.path).get("autonomous"), true);
     assert.throws(() => config.apply("autonomous", "maybe"), /true or false/);
-    assert.throws(() => config.apply("model.maxToolCalls", "17"), /1-16/);
+    assert.throws(() => config.apply("model.maxToolCalls", "129"), /1-128/);
   } finally {
     f.cleanup();
   }

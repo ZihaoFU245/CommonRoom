@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { BotApi } from "./api.ts";
 import type { HistoryQuery, Message } from "./wire.ts";
 
-type Row = [number, string, string, string, number?];
+type Row = [number, string, string, string, number?, string?];
 
 /** Stable history chunks grow by appending; edits/retention and limits rebase. */
 export class AppendHistory {
@@ -72,6 +72,8 @@ export class AppendHistory {
         message.id,
         message.from,
         message.text.slice(0, 800),
+        0,
+        message.author_id,
       ]);
       const chunk = JSON.stringify({ messages: rows });
       if (this.used + (rows.length ? chunk.length : 0) > budget)
@@ -102,6 +104,8 @@ export class AppendHistory {
             message.id,
             message.from,
             message.text.slice(0, 800),
+            0,
+            message.author_id,
           ];
           const rows = [row, ...this.rows];
           const chunk = JSON.stringify({ messages: rows });
@@ -132,6 +136,7 @@ export class AppendHistory {
           message.sequence,
           message.id,
           message.from,
+          message.author_id,
           message.text,
         ]),
       )
@@ -187,7 +192,7 @@ export class ContextWindow {
       ...query,
       conversation_id: this.conversation,
     });
-    const messages: [number, string, string, string, number?][] = [];
+    const messages: Row[] = [];
     let truncated = false;
     let allowance = Math.min(pageBudget, this.remaining);
     const candidates = this.filter(page.messages);
@@ -210,7 +215,8 @@ export class ContextWindow {
     for (const message of candidates) {
       const offset = this.seen.get(message.id) ?? 0;
       if (offset >= message.text.length) continue;
-      const overhead = message.id.length + message.from.length + 24;
+      const overhead =
+        message.id.length + message.from.length + message.author_id.length + 32;
       if (Math.min(allowance, this.remaining) <= overhead) {
         truncated = true;
         break;
@@ -221,11 +227,14 @@ export class ContextWindow {
         allowance - overhead,
       );
       const text = message.text.slice(offset, offset + limit);
-      messages.push(
-        offset
-          ? [message.sequence, message.id, message.from, text, offset]
-          : [message.sequence, message.id, message.from, text],
-      );
+      messages.push([
+        message.sequence,
+        message.id,
+        message.from,
+        text,
+        offset,
+        message.author_id,
+      ]);
       const used = text.length + overhead;
       this.remaining -= used;
       allowance -= used;

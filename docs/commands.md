@@ -233,5 +233,5 @@ messages in fixed three-second batches. Related questions can share one plain
 message; independent questions can receive separate targeted replies in one
 turn, or the bot can stay silent. This changes worker behavior within existing
 server grants. Set `autonomous` to `"false"` to restore mention-only room input.
-`model.maxToolCalls` defaults to 16 (range 1–16); explicitly update older saved
-limits with `@SimpleBot /config set model.maxToolCalls "16"`.
+`model.maxToolCalls` defaults to 32 (range 1–128); explicitly update older saved
+limits with `@SimpleBot /config set model.maxToolCalls "32"`.

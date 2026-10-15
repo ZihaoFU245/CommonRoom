@@ -4,13 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Zero-dependency example agent for the CommonRoom Bot API v1",
-  "engines": {
-    "node": ">=22.18.0"
-  },
   "scripts": {
-    "start": "node src/main.ts",
-    "test": "node --test test/*.test.ts",
-    "test:integration": "BOT_INTEGRATION=1 node --test test/*.test.tsintegration.test.ts",
+    "start": "deno task start",
+    "test": "deno task test",
+    "test:integration": "BOT_INTEGRATION=1 deno test --unstable-kv -A --no-check test/integration.test.ts",
     "check": "node ../web/node_modules/@typescript/native/bin/tsc -p tsconfig.json",
     "config": "node src/config-cli.ts"
   }

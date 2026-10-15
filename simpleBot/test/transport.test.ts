@@ -653,3 +653,50 @@ test("a finishing tool ends the turn without an extra model request or later eff
   assert.equal(calls, 1);
   assert.equal(executed, 1);
 });
+
+test("the default agent loop supports more than sixteen sequential memory/tool steps", async (t) => {
+  let rounds = 0,
+    executed = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    rounds++;
+    return Response.json({
+      choices: [
+        {
+          message:
+            rounds <= 20
+              ? {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: `step-${rounds}`,
+                      type: "function",
+                      function: {
+                        name: "memory",
+                        arguments: '{"action":"list"}',
+                      },
+                    },
+                  ],
+                }
+              : { content: "done" },
+          finish_reason: rounds <= 20 ? "tool_calls" : "stop",
+        },
+      ],
+    });
+  });
+  const result = await model(false).complete({
+    ...completion,
+    tools: [
+      {
+        type: "function",
+        function: { name: "memory", description: "workspace", parameters: {} },
+      },
+    ],
+    executeTool: async () => {
+      executed++;
+      return '{"documents":[]}';
+    },
+  });
+  assert.equal(result, "done");
+  assert.equal(executed, 20);
+  assert.equal(rounds, 21);
+});

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { BotApi } from "../src/api.ts";
 import { Agent } from "../src/agent.ts";
 import { ConfigStore, DEFAULTS } from "../src/config.ts";
-import { Store } from "../src/store.ts";
+import { Store, STATE_VERSION } from "../src/store.ts";
 import { createSocketEvents } from "../src/wiring.ts";
 import type { ChatModel, CompletionRequest } from "../src/model.ts";
 import type { ServerFrame } from "../src/wire.ts";
@@ -93,7 +93,7 @@ async function harness(
   config.set("chat.url", url);
   config.set("chat.token", server.token);
   config.set("chat.historyWindow", 0);
-  let store = Store.load(join(dir, "checkpoint.json"));
+  let store = await Store.open(join(dir, "agent.kv"));
   store.taskLimit = config.get("chat.stateLimit");
   const model = new StubModel(options.reply ?? "stub answer");
   const activities: string[] = [];
@@ -179,11 +179,15 @@ async function harness(
     },
     waitFor,
     async restart() {
-      store = Store.load(join(dir, "checkpoint.json"));
+      await agent.stop();
+      await store.close();
+      store = await Store.open(join(dir, "agent.kv"));
       agent = build();
       await agent.handleSnapshot(server.snapshot());
     },
     async stop() {
+      await agent.stop();
+      await store.close();
       await server.close();
       rmSync(dir, { recursive: true, force: true });
     },
@@ -424,32 +428,26 @@ test("owner configuration uses chat commands, validates values and redacts secre
   }
 });
 
-test("the checkpoint round-trips through disk and refuses an unknown version", async () => {
+test("worker state round-trips through KV and refuses an unknown version", async () => {
   const h = await harness();
   try {
     h.server.addMessage("@helper persist me");
     await h.agent.handleSnapshot(h.server.snapshot());
-    const raw = JSON.parse(
-      readFileSync(join(h.dir, "checkpoint.json"), "utf8"),
-    ) as {
-      version: number;
-      cursors: Record<string, number>;
-    };
-    assert.equal(raw.version, 3);
+    const raw = await Store.inspect(h.store.path);
+    assert.equal(raw.version, STATE_VERSION);
     assert.equal(
       raw.cursors[h.server.conversationId],
       h.store.cursor(h.server.conversationId),
     );
-    const reloaded = Store.load(join(h.dir, "checkpoint.json"));
-    assert.equal(
-      reloaded.cursor(h.server.conversationId),
-      h.store.cursor(h.server.conversationId),
+    await h.restart();
+    assert.ok(
+      h.store.cursor(h.server.conversationId)! >=
+        raw.cursors[h.server.conversationId]!,
     );
-
-    // A version-1 checkpoint must be refused rather than silently upgraded.
-    const path = join(h.dir, "v1.json");
-    writeFileSync(path, JSON.stringify({ ...raw, version: 1 }));
-    assert.throws(() => Store.load(path), /not supported/);
+    h.store.state.version = 999;
+    await h.store.save();
+    await assert.rejects(() => Store.open(h.store.path), /not supported/);
+    h.store.state.version = STATE_VERSION;
   } finally {
     await h.stop();
   }
@@ -513,9 +511,7 @@ test("the checkpoint stays bounded as tasks accumulate", async () => {
     );
     const parts = Object.keys(h.store.state.parts).length;
     assert.ok(parts <= 20, `output records are bounded too, got ${parts}`);
-    const onDisk = JSON.parse(
-      readFileSync(join(h.dir, "checkpoint.json"), "utf8"),
-    ) as { tasks: Record<string, unknown> };
+    const onDisk = await Store.inspect(h.store.path);
     assert.ok(
       Object.keys(onDisk.tasks).length <= 20,
       "the file itself is bounded",
@@ -648,7 +644,7 @@ test("restart recovers running tasks without losing saved multipart output", asy
     assert.equal(h.server.state.sends.length, 1);
     const task = h.store.task(h.server.conversationId, m.id)!;
     task.status = "running";
-    h.store.save();
+    await h.store.save();
     h.api.send = original;
     h.model.complete = async () => {
       throw new Error("saved output must bypass the model");
@@ -679,7 +675,7 @@ test("expired pending output stops without issuing a fresh key", async () => {
     await h.agent.handleSnapshot(h.server.snapshot());
     const part = Object.values(h.store.state.parts)[0]!;
     part.created = Date.now() - 24 * 60 * 60 * 1000;
-    h.store.save();
+    await h.store.save();
     h.api.send = original;
     await h.restart();
     assert.equal(h.server.state.sends.length, 0);
@@ -843,46 +839,27 @@ test("unchanged directory snapshots avoid redundant history reads", async () => 
   }
 });
 
-test("corrupt checkpoint nested records fail closed", async () => {
+test("corrupt durable records fail closed", async () => {
   const h = await harness();
   try {
-    const checkpoint = JSON.parse(readFileSync(h.store.path, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    checkpoint.account = 42;
-    writeFileSync(h.store.path, JSON.stringify(checkpoint));
-    assert.throws(() => Store.load(h.store.path), /account is invalid/);
-    checkpoint.account = h.server.account.id;
-    checkpoint.parts = { corrupt: { request: null } };
-    writeFileSync(h.store.path, JSON.stringify(checkpoint));
-    assert.throws(
-      () => Store.load(h.store.path),
-      /checkpoint output is invalid/,
-    );
-  } finally {
-    await h.stop();
-  }
-});
-
-test("existing v2 checkpoints adopt legacy output slots before the next edit", async () => {
-  const h = await harness();
-  try {
-    const m = h.server.addMessage("@helper initial");
-    await h.agent.handleSnapshot(h.server.snapshot());
-    const task = h.store.task(h.server.conversationId, m.id)!;
-    h.store.state.version = 2;
-    delete task.outputSlot;
-    delete task.outputHash;
-    delete task.pass;
-    h.store.save();
-    await h.restart();
-    assert.equal(h.store.state.version, 3);
-    assert.equal(h.server.state.sends.length, 1);
-    h.server.editMessage(m.id, "@helper edited after upgrade");
-    await h.agent.handleSnapshot(h.server.snapshot());
-    assert.equal(h.server.state.sends.length, 2);
-    assert.match(h.model.prompts.at(-1) ?? "", /edited after upgrade/);
+    await h.store.records.commit([
+      { field: "meta", id: "account", json: "42" },
+    ]);
+    await assert.rejects(() => Store.open(h.store.path), /account is invalid/);
+    await h.store.records.commit([
+      {
+        field: "meta",
+        id: "account",
+        json: JSON.stringify(h.server.account.id),
+      },
+      {
+        field: "parts",
+        id: "corrupt",
+        json: JSON.stringify({ request: null }),
+      },
+    ]);
+    await assert.rejects(() => Store.open(h.store.path), /output is invalid/);
+    await h.store.records.commit([{ field: "parts", id: "corrupt" }]);
   } finally {
     await h.stop();
   }
@@ -985,7 +962,7 @@ test("restricted credentials have no server command tool or public maintenance c
     assert.match(request.messages[0]!.content, /command grants: none/);
     assert.deepEqual(
       request.tools?.map((tool) => tool.function.name),
-      ["read_history"],
+      ["memory", "read_history"],
     );
     assert.deepEqual(
       (await h.agent.commands(h.server.conversationId)).map(
@@ -1086,7 +1063,7 @@ test("legacy unkeyed server commands remain blocked across restart and pruning",
     assert.equal(task?.actions?.[0]?.status, "pending");
     delete task!.actions![0]!.key;
     delete task!.actions![0]!.created;
-    h.store.save();
+    await h.store.save();
     await h.restart();
     assert.equal(
       h.store.task(h.server.conversationId, message.id)?.status,
@@ -1448,10 +1425,10 @@ test("fresh bounded context loads a quoted older page and the model can fetch mo
       /one cursor/,
     );
     assert.ok(
-      request.messages[0]!.content.length < 1000,
-      "fixed instructions and compact command usages fit under 1000 characters in this fixture",
+      request.messages[0]!.content.length < 4000,
+      "fixed instructions and compact command usages fit under 4000 characters in this fixture",
     );
-    assert.equal(request.maxToolCalls, 16);
+    assert.equal(request.maxToolCalls, 32);
     const calls = h.model.requests.length;
     await h.restart();
     assert.equal(
@@ -1539,7 +1516,7 @@ test("expired pending command keys are never automatically submitted again", asy
     await h.agent.handleSnapshot(h.server.snapshot());
     const task = h.store.task(h.server.conversationId, source.id)!;
     task.actions![0]!.created = Date.now() - 24 * 60 * 60 * 1000;
-    h.store.save();
+    await h.store.save();
     await h.restart();
     assert.equal(h.server.state.commands.length, 0);
     assert.match(
@@ -1661,7 +1638,7 @@ test("an agent can finish silently and the decision survives signals and restart
     await h.agent.requestSync();
     // Crash after the silent decision was saved but before terminal status.
     h.store.task(h.server.conversationId, input.id)!.status = "running";
-    h.store.save();
+    await h.store.save();
     await h.restart();
     assert.equal(h.server.state.sends.length, 0);
     assert.equal(h.model.requests.length, 1);
@@ -1808,7 +1785,7 @@ test("autonomous groups collect a fixed window of speakers into one plain respon
       assert.ok(
         request.tools?.some((tool) => tool.function.name === "finish_turn"),
       );
-      assert.equal(request.maxToolCalls, 16);
+      assert.equal(request.maxToolCalls, 32);
       await request.executeTool!(
         "finish_turn",
         JSON.stringify({ messages: [{ text: "Ship on Friday." }] }),
@@ -1842,7 +1819,7 @@ test("autonomous groups collect a fixed window of speakers into one plain respon
       1,
       "own output and reconnect do not trigger a new decision",
     );
-    assert.equal(h.store.state.version, 3);
+    assert.equal(h.store.state.version, STATE_VERSION);
   } finally {
     await h.stop();
   }
@@ -2220,6 +2197,106 @@ test("a long plain group response retains multipart delivery across checkpoint r
     await h.restart();
     assert.equal(h.server.state.sends.length, count);
     assert.equal(h.model.requests.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("the agent can freely save memory silently and recall its index after restart", async () => {
+  const h = await harness();
+  try {
+    h.model.complete = async (request) => {
+      assert.ok(request.tools?.some((tool) => tool.function.name === "memory"));
+      const result = JSON.parse(
+        await request.executeTool!(
+          "memory",
+          JSON.stringify({
+            action: "set",
+            key: "index",
+            value: {
+              plan: "Compare Deno persistence options",
+              status: "ongoing",
+            },
+          }),
+        ),
+      );
+      assert.equal(result.ok, true);
+      return "";
+    };
+    h.server.addMessage("@helper keep track of our storage investigation");
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.equal(h.server.state.sends.length, 0);
+    await h.restart();
+    let recalled = false;
+    h.model.complete = async (request) => {
+      const bootstrap = request.messages.find((item) =>
+        item.content.startsWith("Your persistent workspace"),
+      );
+      assert.match(
+        bootstrap?.content ?? "",
+        /Compare Deno persistence options/,
+      );
+      assert.match(bootstrap?.content ?? "", /ongoing/);
+      recalled = true;
+      return "We were comparing persistence options.";
+    };
+    h.server.addMessage("@helper where did we leave off?");
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.equal(recalled, true);
+    assert.equal(h.server.state.sends.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a silent group can maintain shared memory with evidence from multiple speakers", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    h.model.complete = async (request) => {
+      assert.match(request.messages[0]!.content, /independent speakers/);
+      assert.equal(
+        JSON.parse(
+          await request.executeTool!(
+            "memory",
+            '{"action":"set","key":"index","value":{"proposal":"Deno","agreement":"unresolved"}}',
+          ),
+        ).ok,
+        true,
+      );
+      await request.executeTool!("finish_turn", '{"messages":[]}');
+      return "";
+    };
+    const first = h.server.addMessage("I propose Deno", {
+      mentions: [],
+      from: "alice",
+      authorId: "acct-alice",
+    });
+    const second = h.server.addMessage("Let's compare it first", {
+      mentions: [],
+      from: "bob",
+      authorId: "acct-bob",
+    });
+    await h.agent.handleSnapshot(h.server.snapshot());
+    await h.waitFor(
+      "shared memory saved",
+      () =>
+        h.store.task(h.server.conversationId, first.id)?.status === "answered",
+      5000,
+    );
+    const entry = await h.store.records.kv.get<{
+      sources: { id: string; authorId: string }[];
+    }>(["workspace", h.server.account.id, h.server.conversationId, "index"]);
+    assert.deepEqual(
+      entry.value?.sources.map((source) => [source.id, source.authorId]),
+      [
+        [first.id, "acct-alice"],
+        [second.id, "acct-bob"],
+      ],
+    );
+    assert.equal(h.server.state.sends.length, 0);
+    await h.restart();
+    assert.equal(h.server.state.sends.length, 0);
   } finally {
     await h.stop();
   }

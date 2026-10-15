@@ -10,7 +10,7 @@ node --check web/scripts/smoke.mjs
 # The separately maintained demo is optional in a server-only checkout.
 if [ -d simpleBot ]; then
     node web/node_modules/@typescript/native/bin/tsc -p simpleBot/tsconfig.json
-    node --test simpleBot/test/*.test.ts
+    deno test --unstable-kv -A --no-check simpleBot/test/*.test.ts
 fi
 pnpm --dir web check
 pnpm --dir web test

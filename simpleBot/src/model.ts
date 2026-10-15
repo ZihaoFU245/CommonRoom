@@ -210,7 +210,7 @@ export class ModelClient implements ChatModel {
         this.tokenMeters.delete(this.tokenMeters.keys().next().value!);
     }
     let executed = 0;
-    const limit = Math.max(1, Math.min(request.maxToolCalls ?? 16, 16));
+    const limit = Math.max(1, Math.min(request.maxToolCalls ?? 32, 128));
     for (let round = 0; round <= limit; round++) {
       request.signal?.throwIfAborted();
       const totalLimit = request.contextTokens ?? 32768;

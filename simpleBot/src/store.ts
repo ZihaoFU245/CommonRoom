@@ -1,289 +1,31 @@
-import { GROUP_INTERVAL_MS, MAX_GROUP_RESPONSE_CHARS } from "./group.ts";
-// Durable worker state: input cursors, conversation revisions, the task ledger
-// and the pending-output outbox.
-//
-// One worker owns one checkpoint file. Writes are atomic renames at mode 0600,
-// which covers process interruption; use an fsynced/transactional store if you
-// need power-loss durability or several workers on one account.
-//
-// Version 3 adds durable autonomous batches and response plans; v2 upgrades
-// preserve all existing cursors/effects. Version 2 added `revisions` (edit/retraction detection) and `tasks` (per-input
-// work ledger). Version 1 checkpoints are refused deliberately: revising the
-// dedup and revision watermarks without reconciling first can duplicate output.
+// Cached worker state, persisted asynchronously as individual KV records.
+// The model workspace is deliberately separate from delivery bookkeeping.
+import { GROUP_INTERVAL_MS } from "./group.ts";
+import { Records } from "./records.ts";
+import { trackState } from "./tracked.ts";
+import { emptyState, validate, type State } from "./state.ts";
+export { STATE_VERSION, taskKey, textHash } from "./state.ts";
+export type {
+  TaskRecord,
+  CommandAction,
+  OutboxPart,
+  ConversationMemory,
+} from "./state.ts";
 import {
-  closeSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
-
-export const STATE_VERSION = 3;
-
-export interface OutboxPart {
-  slot: string;
-  key: string;
-  request: {
-    conversation_id: string;
-    text: string;
-    reply_to?: string;
-    markdown?: boolean;
-  };
-  created: number;
-  response?: { message: { id: string; sequence: number }; replayed: boolean };
-}
-
-export interface CommandAction {
-  command: string;
-  status: "pending" | "done";
-  key?: string;
-  created?: number;
-  result?: string;
-}
-
-export interface TaskRecord {
-  conversation: string;
-  input: string;
-  /** Global sequence of the input message, when it was first observed. */
-  sequence: number;
-  promptHash: string;
-  replyTo: string | null;
-  status: "queued" | "running" | "answered" | "cancelled" | "failed";
-  attempts: number;
-  privateCommand?: boolean;
-  /** Fixed-window group inputs; only the leader runs the model. */
-  autonomous?: boolean;
-  readyAt?: number;
-  inputChars?: number;
-  batchOwner?: string;
-  batch?: { input: string; sequence: number; hash: string }[];
-  /** Fully persisted decision, including silence, before any batch output. */
-  decision?: { text: string; reply_to?: string }[];
-  batchStarted?: number;
-  actions?: CommandAction[];
-  slots: string[];
-  /** Durable output family for the version currently being answered. */
-  outputHash?: string;
-  /** Persist a completed decision to send no reply for this input version. */
-  silentHash?: string;
-  outputSlot?: string;
-  pass?: number;
-  error?: string;
-  updated: number;
-}
-
-export interface ConversationMemory {
-  /** Map of message ID to a text hash of the version we accepted. */
-  known: Record<string, string>;
-  /** Highest sequence observed, used for the "history gap" warning. */
-  sequence: number;
-  /** Highest sequence this worker has actually scanned, trimmed or not. */
-  latest: number;
-}
-
-export interface State {
-  version: number;
-  account: string | null;
-  cursors: Record<string, number>;
-  revisions: Record<string, number>;
-  memory: Record<string, ConversationMemory>;
-  tasks: Record<string, TaskRecord>;
-  parts: Record<string, OutboxPart>;
-}
-
-export interface Metrics {
-  syncs: number;
-  frames: number;
-  reconnects: number;
-  sent: number;
-  replayed: number;
-  revisions: number;
-  edits: number;
-  retractions: number;
-}
-
-export function taskKey(conversationId: string, messageId: string): string {
-  return `${conversationId}:${messageId}`;
-}
-
-export function textHash(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index++) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-
-function emptyState(): State {
-  return {
-    version: STATE_VERSION,
-    account: null,
-    cursors: Object.create(null) as Record<string, number>,
-    revisions: Object.create(null) as Record<string, number>,
-    memory: Object.create(null) as Record<string, ConversationMemory>,
-    tasks: Object.create(null) as Record<string, TaskRecord>,
-    parts: Object.create(null) as Record<string, OutboxPart>,
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Reject a checkpoint we do not understand instead of guessing. */
-function validate(value: unknown): State {
-  if (!isRecord(value)) throw new Error("checkpoint is not an object");
-  if (value.version !== STATE_VERSION && value.version !== 2) {
-    throw new Error(
-      `checkpoint version ${String(value.version)} is not supported (expected ${STATE_VERSION}); ` +
-        "reconcile the old file deliberately before replacing it",
-    );
-  }
-  for (const key of ["cursors", "revisions", "memory", "tasks", "parts"]) {
-    if (!isRecord(value[key]))
-      throw new Error(`checkpoint field ${key} is invalid`);
-  }
-  const cursors = value.cursors as Record<string, unknown>;
-  for (const [id, cursor] of Object.entries(cursors)) {
-    if (!Number.isSafeInteger(cursor) || (cursor as number) < 0) {
-      throw new Error(`checkpoint cursor for ${id} is invalid`);
-    }
-  }
-  const state = value as unknown as State;
-  state.version = STATE_VERSION;
-  if (value.account !== null && typeof value.account !== "string")
-    throw new Error("checkpoint account is invalid");
-  if (
-    !Object.values(state.revisions).every(
-      (revision) => Number.isSafeInteger(revision) && revision >= 0,
-    )
-  ) {
-    throw new Error("checkpoint revisions are invalid");
-  }
-  for (const memory of Object.values(state.memory)) {
-    if (
-      !isRecord(memory) ||
-      !isRecord(memory.known) ||
-      !Object.values(memory.known).every((hash) => typeof hash === "string") ||
-      !Number.isSafeInteger(memory.latest) ||
-      memory.latest < 0 ||
-      !Number.isSafeInteger(memory.sequence) ||
-      memory.sequence < 0
-    ) {
-      throw new Error("checkpoint memory is invalid");
-    }
-  }
-  for (const task of Object.values(state.tasks)) {
-    if (
-      !isRecord(task) ||
-      typeof task.conversation !== "string" ||
-      typeof task.input !== "string" ||
-      !Number.isSafeInteger(task.sequence) ||
-      task.sequence < 1 ||
-      typeof task.promptHash !== "string" ||
-      (task.silentHash !== undefined && typeof task.silentHash !== "string") ||
-      (task.autonomous !== undefined && typeof task.autonomous !== "boolean") ||
-      (task.inputChars !== undefined &&
-        (!Number.isSafeInteger(task.inputChars) ||
-          task.inputChars < 0 ||
-          task.inputChars > 8000)) ||
-      (task.readyAt !== undefined && !Number.isFinite(task.readyAt)) ||
-      (task.batchStarted !== undefined &&
-        !Number.isFinite(task.batchStarted)) ||
-      (task.batchOwner !== undefined && typeof task.batchOwner !== "string") ||
-      (task.batch !== undefined &&
-        (!Array.isArray(task.batch) ||
-          task.batch.length < 1 ||
-          task.batch.length > 100 ||
-          !task.batch.every(
-            (input: unknown) =>
-              isRecord(input) &&
-              typeof input.input === "string" &&
-              typeof input.hash === "string" &&
-              Number.isSafeInteger(input.sequence) &&
-              Number(input.sequence) > 0,
-          ))) ||
-      (task.decision !== undefined &&
-        (!Array.isArray(task.decision) ||
-          task.decision.length > 16 ||
-          !task.decision.every(
-            (response: unknown) =>
-              isRecord(response) &&
-              typeof response.text === "string" &&
-              response.text.length <= MAX_GROUP_RESPONSE_CHARS &&
-              (response.reply_to === undefined ||
-                typeof response.reply_to === "string"),
-          ))) ||
-      (task.privateCommand !== undefined &&
-        typeof task.privateCommand !== "boolean") ||
-      (task.actions !== undefined &&
-        (!Array.isArray(task.actions) ||
-          task.actions.length > 16 ||
-          !task.actions.every(
-            (action: unknown) =>
-              isRecord(action) &&
-              typeof action.command === "string" &&
-              action.command.length <= 4100 &&
-              ["pending", "done"].includes(String(action.status)) &&
-              (action.key === undefined ||
-                (typeof action.key === "string" &&
-                  /^[A-Za-z0-9._:-]{1,128}$/.test(action.key) &&
-                  Number.isFinite(action.created))) &&
-              (action.result === undefined ||
-                (typeof action.result === "string" &&
-                  action.result.length <= 8000)),
-          ))) ||
-      (task.replyTo !== null && typeof task.replyTo !== "string") ||
-      !["queued", "running", "answered", "failed", "cancelled"].includes(
-        task.status,
-      ) ||
-      !Array.isArray(task.slots) ||
-      !task.slots.every((slot: unknown) => typeof slot === "string") ||
-      !Number.isSafeInteger(task.attempts) ||
-      task.attempts < 0 ||
-      !Number.isFinite(task.updated)
-    ) {
-      throw new Error("checkpoint task is invalid");
-    }
-  }
-  for (const part of Object.values(state.parts)) {
-    if (
-      !isRecord(part) ||
-      typeof part.slot !== "string" ||
-      typeof part.key !== "string" ||
-      !/^[A-Za-z0-9._:-]{1,128}$/.test(part.key) ||
-      !Number.isFinite(part.created) ||
-      !isRecord(part.request) ||
-      typeof part.request.conversation_id !== "string" ||
-      typeof part.request.text !== "string" ||
-      (part.response !== undefined &&
-        (!isRecord(part.response) ||
-          !isRecord(part.response.message) ||
-          typeof part.response.message.id !== "string" ||
-          !Number.isSafeInteger(part.response.message.sequence)))
-    ) {
-      throw new Error("checkpoint output is invalid");
-    }
-  }
-  state.cursors = Object.assign(Object.create(null), state.cursors);
-  state.revisions = Object.assign(Object.create(null), state.revisions);
-  state.tasks = Object.assign(Object.create(null), state.tasks);
-  state.parts = Object.assign(Object.create(null), state.parts);
-  state.memory = Object.assign(Object.create(null), state.memory);
-  for (const memory of Object.values(state.memory))
-    memory.known = Object.assign(Object.create(null), memory.known);
-  return state;
-}
+  taskKey,
+  type TaskRecord,
+  type OutboxPart,
+  type ConversationMemory,
+  type Metrics,
+} from "./state.ts";
 
 export class Store {
   readonly path: string;
-  state: State;
+  readonly records: Records;
+  readonly state: State;
+  private readonly dirty = new Set<string>();
+  private pending: Promise<void> = Promise.resolve();
+  taskLimit = 200;
   metrics: Metrics = {
     syncs: 0,
     frames: 0,
@@ -295,28 +37,31 @@ export class Store {
     retractions: 0,
   };
 
-  private constructor(path: string, state: State) {
+  private constructor(path: string, records: Records, state: State) {
     this.path = path;
-    this.state = state;
+    this.records = records;
+    this.state = trackState(state, (key) => this.dirty.add(key));
   }
 
-  static load(path: string): Store {
+  static async open(path: string): Promise<Store> {
+    const records = await Records.open(path);
     try {
-      const store = new Store(
-        path,
-        validate(JSON.parse(readFileSync(path, "utf8"))),
-      );
+      const state = emptyState();
+      for await (const [field, id, value] of records.entries()) {
+        if (field === "meta") {
+          if (id === "version") state.version = value as number;
+          else if (id === "account") state.account = value as string | null;
+          else throw new Error("Unknown worker metadata");
+        } else if (
+          ["cursors", "revisions", "memory", "tasks", "parts"].includes(field)
+        ) {
+          (state[field as "tasks"] as Record<string, unknown>)[id] = value;
+        } else throw new Error("Unknown worker record");
+      }
+      const store = new Store(path, records, validate(state));
+      // Persist an explicit format version even for an empty database.
+      store.dirty.add(JSON.stringify(["meta", "version"]));
       for (const task of store.tasks()) {
-        // Existing v2 checkpoints used answer/edit slot families without
-        // recording a family explicitly. Adopt them before handling new edits.
-        if (task.outputSlot === undefined && task.slots.length > 0) {
-          const edited = task.slots.some(
-            (slot) => slot === "edit" || slot.startsWith("edit:"),
-          );
-          task.outputSlot = edited ? "edit" : "answer";
-          task.outputHash = task.promptHash;
-          task.pass = edited ? 1 : 0;
-        }
         const pending = task.slots.some((slot) => {
           const part = store.part(
             `${taskKey(task.conversation, task.input)}:${slot}`,
@@ -357,38 +102,60 @@ export class Store {
             (task.batchStarted ?? 0) + GROUP_INTERVAL_MS,
           );
       }
+      await store.save();
+      await records.maintain();
       return store;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return new Store(path, emptyState());
+      records.close();
       throw error;
     }
   }
 
-  /** Bound applied on every save; set from `chat.stateLimit` at startup. */
-  taskLimit = 200;
-
-  /** Atomic save. Call it after each accepted message or output change. */
-  save(): void {
-    this.prune(this.taskLimit);
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${randomUUID()}.tmp`;
-    const handle = openSync(temporary, "w", 0o600);
-    try {
-      writeFileSync(handle, `${JSON.stringify(this.state)}\n`);
-      fsyncSync(handle);
-    } finally {
-      closeSync(handle);
-    }
-    try {
-      renameSync(temporary, this.path);
-    } catch (error) {
+  /** Read-only inspection never changes worker ownership or recovery state. */
+  static async inspect(path: string): Promise<State> {
+    for (let attempt = 0; ; attempt++) {
+      const records = await Records.open(path);
       try {
-        unlinkSync(temporary);
-      } catch {
-        // Leaving a stale temporary file is harmless.
+        const state = emptyState();
+        for await (const [field, id, value] of records.entries()) {
+          if (field === "meta") Reflect.set(state, id, value);
+          else (state[field as "tasks"] as Record<string, unknown>)[id] = value;
+        }
+        return validate(state);
+      } catch (error) {
+        if (attempt >= 2) throw error;
+      } finally {
+        records.close();
       }
-      throw error;
+    }
+  }
+
+  /** Snapshot only changed records before yielding; serialize commits in order.
+   * A failed commit poisons the queue so no later effect can skip that failure. */
+  save(): Promise<void> {
+    this.prune(this.taskLimit);
+    const changes = [...this.dirty].map((encoded) => {
+      const [field, id] = JSON.parse(encoded) as [string, string];
+      const value =
+        field === "meta"
+          ? this.state[id as "version"]
+          : (this.state[field as "tasks"] as Record<string, unknown>)[id];
+      return {
+        field,
+        id,
+        json: value === undefined ? undefined : JSON.stringify(value),
+      };
+    });
+    this.dirty.clear();
+    this.pending = this.pending.then(() => this.records.commit(changes));
+    return this.pending;
+  }
+
+  async close(): Promise<void> {
+    try {
+      await this.save();
+    } finally {
+      this.records.close();
     }
   }
 
@@ -417,7 +184,7 @@ export class Store {
       latest: 0,
     };
     this.state.memory[conversationId] = created;
-    return created;
+    return this.state.memory[conversationId];
   }
 
   /** Remember an accepted message version, trimming to the newest entries. */
@@ -489,7 +256,7 @@ export class Store {
   }
 
   /**
-   * Bound the checkpoint. Terminal tasks and their recorded output are dropped
+   * Bound durable delivery state. Terminal tasks and their recorded output are dropped
    * once more than `limit` exist; queued/running work and any unresolved output
    * are always kept, because losing those would lose a delivery guarantee.
    */
@@ -508,7 +275,8 @@ export class Store {
       .sort((a, b) => a[1].updated - b[1].updated);
     const excess = terminal.length - limit;
     if (excess > 0) {
-      for (const [key, task] of terminal.slice(0, excess)) {
+      for (const [key, task] of terminal.slice(0, Math.min(excess, 100))) {
+        if (this.dirty.size + task.slots.length + 1 > 500) break;
         delete this.state.tasks[key];
         for (const slot of task.slots)
           delete this.state.parts[`${key}:${slot}`];
@@ -521,7 +289,8 @@ export class Store {
       ),
     );
     for (const key of Object.keys(this.state.parts))
-      if (!owned.has(key)) delete this.state.parts[key];
+      if (!owned.has(key) && this.dirty.size < 500)
+        delete this.state.parts[key];
   }
 
   /** Drop state for conversations the account can no longer read. */
@@ -542,6 +311,7 @@ export class Store {
     const dropped: string[] = [];
     for (const [conversationId] of Object.entries(this.state.cursors)) {
       if (conversationIds.has(conversationId)) continue;
+      if (this.dirty.size + 3 > 500) break;
       dropped.push(conversationId);
       delete this.state.cursors[conversationId];
       delete this.state.revisions[conversationId];
@@ -549,19 +319,26 @@ export class Store {
     }
     for (const [key, task] of Object.entries(this.state.tasks)) {
       if (conversationIds.has(task.conversation) || retained.has(key)) continue;
+      if (this.dirty.size + task.slots.length + 1 > 500) break;
       delete this.state.tasks[key];
+      for (const slot of task.slots) delete this.state.parts[`${key}:${slot}`];
+      if (!dropped.includes(task.conversation)) dropped.push(task.conversation);
     }
+    const owned = new Set(
+      Object.entries(this.state.tasks).flatMap(([key, task]) =>
+        task.slots.map((slot) => `${key}:${slot}`),
+      ),
+    );
     for (const [slotKey, part] of Object.entries(this.state.parts)) {
       if (
         conversationIds.has(part.request.conversation_id) ||
-        [...retained].some((task) =>
-          this.state.tasks[task]?.slots.some(
-            (slot) => `${task}:${slot}` === slotKey,
-          ),
-        )
+        owned.has(slotKey)
       )
         continue;
+      if (this.dirty.size >= 500) break;
       delete this.state.parts[slotKey];
+      if (!dropped.includes(part.request.conversation_id))
+        dropped.push(part.request.conversation_id);
     }
     return dropped;
   }

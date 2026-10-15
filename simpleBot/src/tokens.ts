@@ -133,12 +133,13 @@ export function compactConversation(
       (message) =>
         message.role === "user" &&
         message.content.startsWith(
-          "Conversation data [sequence,id,sender,text]:\n",
+          "Conversation data [sequence,id,sender,text,offset,author_id]:\n",
         ),
     );
     if (index < 0) break;
     const message = result[index]!;
-    const prefix = "Conversation data [sequence,id,sender,text]:\n";
+    const prefix =
+      "Conversation data [sequence,id,sender,text,offset,author_id]:\n";
     let rows: unknown[] = [];
     try {
       const page = JSON.parse(message.content.slice(prefix.length)) as {
