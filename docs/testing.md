@@ -334,3 +334,15 @@ restart recall, silent group memory, conversation/account isolation, conditional
 updates, pagination, nested targeted writes, private database permissions,
 interrupted large-plan staging, and stale-writer rejection. Source checks use
 the repository's TypeScript tools; Deno executes the tests with `--unstable-kv`.
+
+SimpleBot execution tests run real restricted Deno subprocesses in temporary
+workspaces. They cover JS/TS and top-level await, persisted scripts and relative
+imports, folder-bound reads/writes, outside-file/import denial, environment and
+nested-process denial, FFI/system permission denial, symlink handling, output
+bounds, cancellation, timeouts and the actual worker permission profile. Local
+HTTP fixtures check fetching and module imports. `BOT_EXEC_HTTPS=1` enables the
+optional public HTTPS check in `simpleBot/test/execution.test.ts`. The real worker
+integration saves and reruns a script across restart through native model tools.
+Prompt tests cover autonomous on/off, both DM trigger settings, natural group
+participation, storage/network guidance and internal-information instructions;
+they validate prompt construction, not a provider's compliance.

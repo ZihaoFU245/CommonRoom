@@ -1,3 +1,4 @@
+import { Execution } from "./execution.ts";
 import { systemPrompt } from "./prompts.ts";
 import { modelTools } from "./tools.ts";
 import { Memory } from "./memory.ts";
@@ -51,6 +52,8 @@ export interface AgentOptions {
   store: Store;
   config: ConfigStore;
   model: ChatModel;
+  /** Persistent shared filesystem workspace, separate from operator data. */
+  workspace: string;
   log: Logger;
   /** Presence is only delivered to account-wide credentials. */
   presence(): string[];
@@ -197,6 +200,7 @@ export class Agent {
   private stopped = false;
   private readonly abort = new AbortController();
   private activeTask: { key: string; controller: AbortController } | undefined;
+  private readonly execution: Execution;
   private readonly contexts = new Map<string, AppendHistory>();
   private readonly modelMetrics = new Map<string, Metrics>();
 
@@ -212,6 +216,7 @@ export class Agent {
 
   constructor(options: AgentOptions) {
     this.options = options;
+    this.execution = new Execution(options.workspace);
   }
 
   get directory(): Snapshot | null {
@@ -232,6 +237,7 @@ export class Agent {
     this.abort.abort();
     this.endActivity();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 10));
+    await this.execution.settle();
   }
 
   // ---------------------------------------------------------------- catch-up
@@ -1156,6 +1162,8 @@ export class Agent {
       "- Revision reconciliation: edits and retractions trigger a pinned rescan",
       "- Transient `working`/`idle` activity signals",
       "- Optional autonomous group turns with fixed 3-second batching and mixed reply plans",
+      "- Persistent KV memory and a shared read/write data/workspace filesystem",
+      "- Network-enabled JS/TS execution in restricted, bounded Deno subprocesses",
       "- Owner/admin configuration through @Bot /config, with redacted values",
       "- Presence directory (account-wide credentials only)",
       `- Operations on this credential: ${operations}`,
@@ -1379,6 +1387,7 @@ export class Agent {
           commands,
           historyEnabled,
           !!batch,
+          conversation.view,
         ),
       },
       ...(config.get("prompt").trim()
@@ -1496,6 +1505,19 @@ export class Agent {
         ): Promise<string> => {
           signal.throwIfAborted();
           if (name === "memory") return memory.execute(argumentsText);
+          if (name === "execute_code") {
+            if (
+              task.status !== "running" ||
+              this.stopped ||
+              !this.snapshot?.conversations.some(
+                (item) => item.id === conversation.id,
+              )
+            )
+              return JSON.stringify({
+                error: "Execution turn is no longer active",
+              });
+            return this.execution.execute(argumentsText, signal);
+          }
           if (name === "finish_turn" && batch) {
             try {
               task.decision = groupResponses(

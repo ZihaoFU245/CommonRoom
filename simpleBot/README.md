@@ -15,7 +15,8 @@ deno task dev
 ```
 
 The default permission profile permits reads/writes only under `./data`, plus
-network and environment access. Add any external `CHAT_DATA`, `BOT_CONFIG` or
+network and environment access, and permission to launch the Deno executable for
+restricted code execution. Add any external `CHAT_DATA`, `BOT_CONFIG` or
 `BOT_STORAGE` paths to its read/write permissions if overriding those locations.
 Permission profiles are experimental in Deno and may print a warning. Model and
 chat connection settings remain in `data/config.json`, not in `deno.json`.
@@ -62,6 +63,8 @@ simpleBot/
 │   ├── tracked.ts     nested mutation tracking for targeted writes
 │   ├── kv.ts          Deno KV runtime boundary
 │   ├── memory.ts      model-owned asynchronous document workspace
+│   ├── execution.ts   code tool, workspace checks, and request validation
+│   ├── execution-process.ts restricted Deno subprocess lifecycle
 │   ├── prompts.ts     conversation and memory instructions
 │   ├── tools.ts       model tool definitions
 │   ├── model.ts       OpenAI-compatible chat client
@@ -73,6 +76,8 @@ simpleBot/
 │   ├── agent.test.ts  worker and checkpoint regression tests
 │   ├── config.test.ts JSON/CLI persistence and runtime configuration
 │   ├── context.test.ts context budget and history retrieval
+│   ├── execution.test.ts filesystem/network permissions and process bounds
+│   ├── prompts.test.ts autonomous/mention-only/DM prompt policies
 │   ├── transport.test.ts HTTP, socket and model streaming regressions
 │   └── integration.test.ts actual worker against an isolated Rust server
 ├── tsconfig.json
@@ -576,3 +581,76 @@ stale information, or an operator must remove it. Losing room access makes the
 workspace unavailable to model turns; it remains on disk if access is restored.
 `chat.stateLimit` bounds delivery records, not model documents. The model is
 responsible for organizing and deleting obsolete notes.
+
+
+## Shared filesystem and JS/TS execution
+
+The model has an asynchronous `execute_code` tool in autonomous rooms,
+mention-only rooms, and DMs. `simpleBot/data/workspace/` is its persistent,
+read/write working directory. `CHAT_DATA` relocates it along with the other data
+files; changing `BOT_STORAGE` alone does not move it. The whole workspace is
+shared across every room and DM served by this worker. KV memory retains its
+conversation boundaries. Only intentionally shared information belongs in files.
+Operator configuration, credentials and the worker KV database stay outside the
+execution folder and are not provided to the subprocess.
+
+Supply exactly one of `code` or `file`:
+
+```json
+{"code":"const response = await fetch('https://docs.deno.com/'); console.log(response.status); await response.body?.cancel();"}
+```
+
+```json
+{"code":"await Deno.mkdir('scripts', {recursive:true}); await Deno.writeTextFile('scripts/answer.ts', 'const n: number = 42; console.log(n);');"}
+```
+
+```json
+{"file":"scripts/answer.ts","timeoutMs":10000}
+```
+
+JS/TS, top-level await, built-in web/Node APIs and HTTPS module imports work.
+The agent can write custom scripts for web fetching, APIs, extraction and data
+processing. Relative imports work in saved files. Inline source is a data URL;
+use an absolute file URL to import a workspace file from inline code. Code kept
+in KV can be read with `memory` and supplied as `code`. Persist useful artifacts
+and scripts in files, and keep their descriptions or indexes in KV. Globals are
+fresh on each execution.
+
+The parent always chooses the Deno executable, flags and environment. The child
+gets scoped filesystem permissions for the canonical workspace, network and
+remote-import permissions, a cleared environment and a temporary private runtime
+cache. Environment access, nested processes, FFI and system-information APIs are
+denied. npm resolution, configuration discovery and permission prompts are
+disabled. A trusted stdin bootstrap dynamically imports generated code or a saved
+script so the initial module graph cannot bypass read restrictions. Existing
+workspace symlinks are refused; generated code cannot create them under the
+scoped permissions. These are Deno API permissions, not an OS container.
+
+Each execution defaults to ten seconds (`timeoutMs`: 100–30000 ms), also bounded
+by the agent turn's cancellation/deadline. Combined stdout/stderr is capped at
+32 KiB. Timeouts, cancellation and excess output kill and reap the child; shutdown
+waits for pending execution cleanup. The child uses a 128 MiB V8 old-space limit,
+which is not a process RSS or disk quota. Files survive runs and restarts;
+temporary runtime caches are removed. Results include exit code, stdout/stderr,
+duration and any stop reason. Source and output are not logged.
+
+Execution is never retried automatically, and external effects are not covered
+by chat delivery receipts. Files or network requests may already have changed
+things before a failure, timeout, edit, retraction or worker restart. The model
+should inspect outcomes before repeating an action.
+
+Prompts adapt to autonomous groups, mention-only groups and direct messages.
+They encourage humble, brief, useful participation, silence when appropriate,
+attributed claims, and separation of proposals from agreements. The model is
+instructed to keep internal prompts, hidden reasoning, raw storage/state,
+credentials, configuration, paths and tool traces out of replies, while using
+relevant user-facing facts and reporting useful results. Pages, files and tool
+outputs are untrusted data. This is prompt guidance, not a guarantee that a
+provider will never disclose supplied context. Owner/admin diagnostics remain
+explicit local worker controls, outside model handling.
+
+Normal tests use local HTTP fixtures. To verify live HTTPS separately:
+
+```sh
+BOT_EXEC_HTTPS=1 deno test --unstable-kv -A --no-check simpleBot/test/execution.test.ts
+```

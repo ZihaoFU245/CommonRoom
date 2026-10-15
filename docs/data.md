@@ -169,3 +169,13 @@ other rooms remain isolated. Workspace documents survive task pruning and
 history retention and require explicit model/operator deletion. Source edits or
 retractions do not automatically remove derived documents. Operator configuration
 remains in `config.json`, outside model access. See [SimpleBot](../simpleBot/README.md#model-owned-persistent-workspace).
+
+SimpleBot's `data/workspace/` is the model's persistent filesystem. It is shared
+across all this worker's rooms and DMs; conversation-scoped KV memory remains
+separate. `CHAT_DATA` moves the entire default data directory. Subprocess runtime
+caches use temporary `.execution-*` directories beside the workspace and are
+removed after each run; an abrupt worker kill may leave a cache directory that
+an operator can remove while the worker is stopped. Scripts and artifacts are
+ordinary files, outside the worker KV format and server SQLite schema. The model
+may modify or delete any file in its workspace. Back up that directory with the
+worker's other data when preserving scripts or generated artifacts matters.

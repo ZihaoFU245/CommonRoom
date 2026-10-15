@@ -11,7 +11,8 @@
       "read": ["./data"],
       "write": ["./data"],
       "net": true,
-      "env": true
+      "env": true,
+      "run": ["deno"]
     }
   }
 }

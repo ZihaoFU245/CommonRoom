@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       store,
       config,
       model,
+      workspace: join(dataDir, "workspace"),
       log,
       presence: () => online,
       socketReady: () => socket?.connected ?? false,

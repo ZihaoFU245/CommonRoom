@@ -75,10 +75,11 @@ test(
           const result = JSON.parse(last.content) as {
             result?: string;
             error?: string;
+            stdout?: string;
             messages?: [number, string, string, string][];
           };
           message = {
-            content: `**${result.error ? "Denied" : "Done"}** ${result.result ?? result.error ?? result.messages?.map((row) => row[3]).join("; ")}`,
+            content: `**${result.error ? "Denied" : "Done"}** ${result.result ?? result.error ?? result.stdout ?? result.messages?.map((row) => row[3]).join("; ")}`,
           };
         } else {
           const text =
@@ -91,6 +92,8 @@ test(
           const historyBefore = /load history before sequence (\d+)/u.exec(
             text,
           )?.[1];
+          const saveScript = text.includes("save execution script");
+          const runScript = text.includes("rerun execution script");
           const command = room
             ? `/new room ${room}`
             : reaction
@@ -105,13 +108,22 @@ test(
                     id: `call-${modelRequests.length}`,
                     type: "function",
                     function: {
-                      name: historyBefore
-                        ? "read_history"
-                        : "run_server_command",
+                      name:
+                        saveScript || runScript
+                          ? "execute_code"
+                          : historyBefore
+                            ? "read_history"
+                            : "run_server_command",
                       arguments: JSON.stringify(
-                        historyBefore
-                          ? { before: Number(historyBefore), limit: 2 }
-                          : { command },
+                        saveScript
+                          ? {
+                              code: `await Deno.writeTextFile("reusable.ts", 'const value: number = 42; console.log("execution-result-" + value);'); console.log("execution-script-saved");`,
+                            }
+                          : runScript
+                            ? { file: "reusable.ts" }
+                            : historyBefore
+                              ? { before: Number(historyBefore), limit: 2 }
+                              : { command },
                       ),
                     },
                   },
@@ -321,6 +333,7 @@ test(
               BOT_TOKEN: token,
               BOT_CONFIG: configPath,
               BOT_STORAGE: statePath,
+              CHAT_DATA: dir,
             },
             stdio: ["ignore", "pipe", "pipe"],
           },
@@ -608,6 +621,14 @@ test(
           ),
         ),
       );
+      await say(bob, "@helper save execution script");
+      await until(
+        async () =>
+          (await ownMessages()).some((message) =>
+            message.text.includes("execution-script-saved"),
+          ),
+        "model saves a reusable workspace script",
+      );
       const repliesBeforeSilence = (await ownMessages()).length;
       await say(bob, "@helper finish silently");
       await until(
@@ -652,6 +673,14 @@ test(
         ).length,
         1,
         "one reply for one mention despite tool actions and reconnect",
+      );
+      await say(bob, "@helper rerun execution script");
+      await until(
+        async () =>
+          (await ownMessages()).some((message) =>
+            message.text.includes("execution-result-42"),
+          ),
+        "model reruns a saved workspace script after restart",
       );
       await say(alice, "/bot owner helper alice", null);
       await until(

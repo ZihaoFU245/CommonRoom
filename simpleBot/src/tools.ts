@@ -1,5 +1,6 @@
 import type { FunctionTool } from "./model.ts";
 import { FINISH_TURN_TOOL } from "./group.ts";
+import { EXECUTION_TOOL } from "./execution.ts";
 import { MEMORY_TOOL } from "./memory.ts";
 
 export function modelTools(options: {
@@ -16,6 +17,7 @@ export function modelTools(options: {
   } = options;
   return [
     MEMORY_TOOL,
+    EXECUTION_TOOL,
     ...(batch ? [FINISH_TURN_TOOL] : []),
     ...(commands
       ? [

@@ -8,7 +8,14 @@
 // covered too.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BotApi } from "../src/api.ts";
@@ -108,6 +115,7 @@ async function harness(
       store,
       config,
       model,
+      workspace: join(dir, "workspace"),
       log: (level, message) => logs.push(`${level} ${message}`),
       presence: () => [],
       socketReady: () => true,
@@ -962,7 +970,7 @@ test("restricted credentials have no server command tool or public maintenance c
     assert.match(request.messages[0]!.content, /command grants: none/);
     assert.deepEqual(
       request.tools?.map((tool) => tool.function.name),
-      ["memory", "read_history"],
+      ["memory", "execute_code", "read_history"],
     );
     assert.deepEqual(
       (await h.agent.commands(h.server.conversationId)).map(
@@ -2297,6 +2305,105 @@ test("a silent group can maintain shared memory with evidence from multiple spea
     assert.equal(h.server.state.sends.length, 0);
     await h.restart();
     assert.equal(h.server.state.sends.length, 0);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("the agent can execute KV source, save scripts and rerun shared workspace files after restart", async () => {
+  const h = await harness({ operations: ["read", "send"] });
+  try {
+    const source =
+      "const value: number = await Promise.resolve(42); console.log(value);";
+    let completedRequest: CompletionRequest | undefined;
+    h.model.complete = async (request) => {
+      completedRequest = request;
+      assert.ok(
+        request.tools?.some((tool) => tool.function.name === "execute_code"),
+      );
+      assert.match(
+        request.messages[0]!.content,
+        /shared across every room and DM/,
+      );
+      await request.executeTool!(
+        "memory",
+        JSON.stringify({ action: "set", key: "scripts/answer", value: source }),
+      );
+      const memory = JSON.parse(
+        await request.executeTool!(
+          "memory",
+          '{"action":"get","key":"scripts/answer"}',
+        ),
+      );
+      const result = JSON.parse(
+        await request.executeTool!(
+          "execute_code",
+          JSON.stringify({ code: memory.value }),
+        ),
+      );
+      assert.equal(result.ok, true, result.error ?? result.stderr);
+      assert.equal(result.stdout, "42\n");
+      const saved = JSON.parse(
+        await request.executeTool!(
+          "execute_code",
+          JSON.stringify({
+            code: `await Deno.writeTextFile("answer.ts", ${JSON.stringify(source)});`,
+          }),
+        ),
+      );
+      assert.equal(saved.ok, true, saved.error ?? saved.stderr);
+      return "Saved the calculation.";
+    };
+    h.server.addMessage("@helper calculate and save a reusable script");
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.ok(completedRequest);
+    assert.match(
+      await completedRequest.executeTool!(
+        "execute_code",
+        '{"code":"console.log(1)"}',
+      ),
+      /no longer active/,
+    );
+    await h.restart();
+    h.model.complete = async (request) => {
+      const result = JSON.parse(
+        await request.executeTool!("execute_code", '{"file":"answer.ts"}'),
+      );
+      assert.equal(result.ok, true, result.error ?? result.stderr);
+      return `Answer: ${String(result.stdout).trim()}`;
+    };
+    h.server.addMessage("@helper run that script again");
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.equal(h.server.state.sends.at(-1)?.text, "Answer: 42");
+    assert.ok(!h.logs.some((line) => line.includes(source)));
+  } finally {
+    await h.stop();
+  }
+});
+
+test("stopping the agent kills and reaps active code without a late reply", async () => {
+  const h = await harness();
+  try {
+    h.model.complete = async (request) => {
+      await request.executeTool!(
+        "execute_code",
+        JSON.stringify({
+          code: 'await Deno.writeTextFile("started", "yes"); while(true) {}',
+        }),
+      );
+      return "late reply must be suppressed";
+    };
+    h.server.addMessage("@helper run a long calculation");
+    const pending = h.agent.handleSnapshot(h.server.snapshot());
+    await h.waitFor("subprocess started", () =>
+      existsSync(join(h.dir, "workspace", "started")),
+    );
+    await h.agent.stop();
+    await pending;
+    assert.equal(h.server.state.sends.length, 0);
+    assert.ok(
+      !readdirSync(h.dir).some((name) => name.startsWith(".execution-")),
+    );
   } finally {
     await h.stop();
   }
