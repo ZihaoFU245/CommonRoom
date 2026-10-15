@@ -346,3 +346,15 @@ integration saves and reruns a script across restart through native model tools.
 Prompt tests cover autonomous on/off, both DM trigger settings, natural group
 participation, storage/network guidance and internal-information instructions;
 they validate prompt construction, not a provider's compliance.
+
+Background-tool regressions exercise buffered and streamed inference while a
+tool is pending, explicit result waits, automatic success/failure delivery,
+premature final drafts, finishing-plan barriers, tool budgets and cancellation.
+Resource tests check overlapping readers, writer exclusion, FIFO fairness,
+cancelled queued writes, lock release after failure and shared workspace locks
+across completions. A real restricted Deno subprocess holds a local HTTP request
+open while the model reads native KV, then finishes or is cancelled; tests verify
+the result, filesystem effects and runtime-cache cleanup. Context compaction
+preserves background job IDs/status and valid JSON while bounding result text.
+The real worker integration's model fixture understands job handles and waits
+before responding, including saved-script execution across restart.

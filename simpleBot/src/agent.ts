@@ -1,6 +1,6 @@
 import { Execution } from "./execution.ts";
 import { systemPrompt } from "./prompts.ts";
-import { modelTools } from "./tools.ts";
+import { modelTools, toolAccess } from "./tools.ts";
 import { Memory } from "./memory.ts";
 import {
   GROUP_INTERVAL_MS,
@@ -1454,6 +1454,9 @@ export class Agent {
     return abortable(
       model.complete({
         messages,
+        backgroundTools: true,
+        toolAccess: (name, args) =>
+          toolAccess(name, args, conversation.id, this.execution.workspace),
         maxTokens: config.get("model.maxTokens"),
         maxToolCalls: config.get("model.maxToolCalls"),
         contextTokens: config.get("model.contextTokens"),
@@ -1502,8 +1505,12 @@ export class Agent {
         executeTool: async (
           name: string,
           argumentsText: string,
+          toolSignal?: AbortSignal,
         ): Promise<string> => {
-          signal.throwIfAborted();
+          const activeSignal = toolSignal
+            ? AbortSignal.any([signal, toolSignal])
+            : signal;
+          activeSignal.throwIfAborted();
           if (name === "memory") return memory.execute(argumentsText);
           if (name === "execute_code") {
             if (
@@ -1516,7 +1523,7 @@ export class Agent {
               return JSON.stringify({
                 error: "Execution turn is no longer active",
               });
-            return this.execution.execute(argumentsText, signal);
+            return this.execution.execute(argumentsText, activeSignal);
           }
           if (name === "finish_turn" && batch) {
             try {
@@ -1584,10 +1591,14 @@ export class Agent {
                 error: "Choose one cursor or message_id",
               });
             try {
-              return await context.page({
-                ...query,
-                limit: query.limit ?? 6,
-              });
+              return await context.page(
+                {
+                  ...query,
+                  limit: query.limit ?? 6,
+                },
+                undefined,
+                activeSignal,
+              );
             } catch (error) {
               if (
                 error instanceof BotApiError &&
@@ -1616,7 +1627,11 @@ export class Agent {
             if (task.status === "cancelled" || this.abort.signal.aborted)
               throw new Error("Task cancelled before read acknowledgement");
             return JSON.stringify(
-              await api.acknowledgeRead(conversation.id, message.sequence),
+              await api.acknowledgeRead(
+                conversation.id,
+                message.sequence,
+                activeSignal,
+              ),
             );
           }
           if (name !== "run_server_command" || argumentsText.length > 8192)
@@ -1680,10 +1695,20 @@ export class Agent {
             (task.actions ??= []).push(action);
             action = task.actions.at(-1)!;
             await this.options.store.save();
-            return this.executeRecordedCommand(conversation.id, action);
+            activeSignal.throwIfAborted();
+            return this.executeRecordedCommand(
+              conversation.id,
+              action,
+              activeSignal,
+            );
           }
           if (action.status === "pending")
-            await this.recoverCommand(conversation.id, action);
+            await this.recoverCommand(
+              conversation.id,
+              action,
+              true,
+              activeSignal,
+            );
           return action.result ?? "";
         },
       }),
@@ -1694,6 +1719,7 @@ export class Agent {
   private async executeRecordedCommand(
     conversation: string,
     action: CommandAction,
+    signal?: AbortSignal,
   ): Promise<string> {
     if (
       !action.key ||
@@ -1708,6 +1734,7 @@ export class Agent {
         conversation,
         action.command,
         action.key,
+        signal,
       );
       action.result = JSON.stringify({ result: preview(value.result, 3000) });
     } catch (error) {
@@ -1727,13 +1754,14 @@ export class Agent {
     conversation: string,
     action: CommandAction,
     submitMissing = true,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!action.key)
       throw new Error("Legacy command is unkeyed; inspect before retrying");
-    const receipt = await this.options.api.commandReceipt(action.key);
+    const receipt = await this.options.api.commandReceipt(action.key, signal);
     if (receipt.state === "not_found") {
       if (submitMissing)
-        await this.executeRecordedCommand(conversation, action);
+        await this.executeRecordedCommand(conversation, action, signal);
       return;
     }
     action.result = JSON.stringify(

@@ -1,4 +1,6 @@
 import { abortable } from "./async.ts";
+import { ToolJobs, WAIT_JOBS_TOOL } from "./tool-jobs.ts";
+import { ToolLocks, type ToolAccess } from "./tool-locks.ts";
 import { setTimeout as wait } from "node:timers/promises";
 // Model client for an OpenAI-compatible chat-completions endpoint.
 //
@@ -121,7 +123,15 @@ export class ModelError extends Error {
 export interface CompletionRequest {
   messages: ChatMessage[];
   tools?: FunctionTool[];
-  executeTool?(name: string, argumentsText: string): Promise<string>;
+  executeTool?(
+    name: string,
+    argumentsText: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
+  /** Return job handles for slow tools and resume inference in the meantime. */
+  backgroundTools?: boolean;
+  /** Trusted resource policy; model arguments cannot grant read-only access. */
+  toolAccess?(name: string, argumentsText: string): ToolAccess;
   maxTokens?: number;
   maxToolCalls?: number;
   /** A finishing tool has persisted the complete response plan. */
@@ -129,7 +139,7 @@ export interface CompletionRequest {
   /** Omit to use the provider default; support depends on the endpoint. */
   reasoningEffort?: string;
   temperature?: number;
-  /** Called for each streamed delta when streaming is enabled. */
+  /** Streamed deltas are provisional until complete() accepts a final answer. */
   onDelta?(text: string): void;
   signal?: AbortSignal;
   /** Numeric diagnostics only, once per model attempt (including tool rounds). */
@@ -167,6 +177,7 @@ export class ModelClient implements ChatModel {
   private readonly options: ModelOptions;
   private streamUsage = true;
   private readonly tokenMeters = new Map<string, ProviderTokens>();
+  private readonly toolLocks = new ToolLocks();
 
   constructor(options: ModelOptions) {
     this.options = options;
@@ -184,14 +195,46 @@ export class ModelClient implements ChatModel {
 
   /** One completion, streamed or buffered. Retries transient gateway failures. */
   async complete(request: CompletionRequest): Promise<string> {
+    const controller = new AbortController();
     const signal = AbortSignal.any([
+      controller.signal,
       ...(request.signal ? [request.signal] : []),
       AbortSignal.timeout(this.options.timeoutMs),
     ]);
-    return abortable(this.run({ ...request, signal }), signal);
+    const jobs =
+      request.backgroundTools && request.executeTool && request.tools?.length
+        ? new ToolJobs(
+            request.executeTool,
+            request.toolAccess ??
+              (() => ({ resource: "tools", mode: "write" })),
+            this.toolLocks,
+            signal,
+          )
+        : undefined;
+    try {
+      return await abortable(
+        this.run(
+          {
+            ...request,
+            signal,
+            ...(jobs
+              ? { tools: [...(request.tools ?? []), WAIT_JOBS_TOOL] }
+              : {}),
+          },
+          jobs,
+        ),
+        signal,
+      );
+    } finally {
+      controller.abort();
+      await jobs?.close();
+    }
   }
 
-  private async run(request: CompletionRequest): Promise<string> {
+  private async run(
+    request: CompletionRequest,
+    jobs?: ToolJobs,
+  ): Promise<string> {
     if (this.options.endpoint.length === 0) {
       throw new ModelError(0, "no model.endpoint is configured");
     }
@@ -211,8 +254,18 @@ export class ModelClient implements ChatModel {
     }
     let executed = 0;
     const limit = Math.max(1, Math.min(request.maxToolCalls ?? 32, 128));
-    for (let round = 0; round <= limit; round++) {
+    // A premature final answer may require one extra step per background call.
+    for (let round = 0; round <= (jobs ? limit * 2 + 1 : limit); round++) {
       request.signal?.throwIfAborted();
+      const completed = jobs?.collect() ?? [];
+      if (completed.length)
+        messages.push({
+          role: "user",
+          content: JSON.stringify({
+            type: "tool_job_results",
+            jobs: completed,
+          }),
+        });
       const totalLimit = request.contextTokens ?? 32768;
       const reserve = Math.min(
         request.maxTokens ?? 4096,
@@ -273,7 +326,21 @@ export class ModelClient implements ChatModel {
           request.reasoningEffort,
           turn.usage.prompt,
         );
-      if (!turn.calls.length) return turn.text;
+      if (!turn.calls.length) {
+        if (jobs?.outstanding) {
+          // This draft did not see the results. Wait without polling, then let
+          // the model produce the actual final answer using those results.
+          messages.push({
+            role: "user",
+            content: JSON.stringify({
+              type: "tool_job_results",
+              jobs: await jobs.waitResults(),
+            }),
+          });
+          continue;
+        }
+        return turn.text;
+      }
       if (
         !request.tools?.length ||
         !request.executeTool ||
@@ -286,6 +353,7 @@ export class ModelClient implements ChatModel {
         tool_calls: turn.calls,
         ...(turn.reasoning ? { reasoning_content: turn.reasoning } : {}),
       });
+      let resultsAdded = false;
       for (const call of turn.calls) {
         request.signal?.throwIfAborted();
         executed++;
@@ -300,10 +368,40 @@ export class ModelClient implements ChatModel {
         const started = performance.now();
         let content: string;
         try {
-          content = await request.executeTool(
-            call.function.name,
-            call.function.arguments,
-          );
+          if (jobs && call.function.name === "wait_jobs") {
+            try {
+              content = await jobs.wait(call.function.arguments);
+            } catch (error) {
+              request.signal?.throwIfAborted();
+              content = JSON.stringify({
+                error:
+                  error instanceof Error ? error.message : "Invalid job IDs",
+              });
+            }
+          } else if (jobs && call.function.name === "finish_turn") {
+            content =
+              jobs.outstanding || resultsAdded
+                ? JSON.stringify({
+                    error:
+                      "Finish in a later model step after reviewing all tool results; use wait_jobs for outstanding jobs",
+                  })
+                : await request.executeTool(
+                    call.function.name,
+                    call.function.arguments,
+                    request.signal,
+                  );
+          } else if (jobs) {
+            content = await jobs.dispatch(
+              call.function.name,
+              call.function.arguments,
+            );
+          } else {
+            content = await request.executeTool(
+              call.function.name,
+              call.function.arguments,
+              request.signal,
+            );
+          }
         } catch (error) {
           this.options.log(
             "error",
@@ -316,6 +414,7 @@ export class ModelClient implements ChatModel {
           `model tool finished round=${round + 1} tool_index=${executed} tool=${tool} result_chars=${content.length} duration_ms=${Math.round(performance.now() - started)}`,
         );
         messages.push({ role: "tool", tool_call_id: call.id, content });
+        resultsAdded = true;
         if (request.stopAfterTool?.()) return "";
       }
     }

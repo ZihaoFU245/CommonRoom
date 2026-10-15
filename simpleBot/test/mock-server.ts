@@ -89,7 +89,16 @@ export class MockServer {
   }
 
   async close(): Promise<void> {
-    await new Promise<void>((resolve) => this.server?.close(() => resolve()));
+    const server = this.server;
+    if (!server) return;
+    const closed = new Promise<void>((resolve) =>
+      server.close(() => resolve()),
+    );
+    // Deno's HTTP compatibility layer can leave fetch keep-alive sockets open
+    // after the listener closes. Tests own these connections; reap them too.
+    server.closeAllConnections();
+    await closed;
+    this.server = null;
   }
 
   /** Add a message as another account would, bumping the revision. */

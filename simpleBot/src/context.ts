@@ -176,6 +176,7 @@ export class ContextWindow {
   async page(
     query: Omit<HistoryQuery, "conversation_id">,
     pageBudget = this.remaining,
+    signal?: AbortSignal,
   ): Promise<string> {
     const key = JSON.stringify(query);
     if (this.pages.has(key))
@@ -188,10 +189,13 @@ export class ContextWindow {
         error: "History context budget reached; narrow the request",
         remaining_chars: 0,
       });
-    const page = await this.api.history({
-      ...query,
-      conversation_id: this.conversation,
-    });
+    const page = await this.api.history(
+      {
+        ...query,
+        conversation_id: this.conversation,
+      },
+      signal,
+    );
     const messages: Row[] = [];
     let truncated = false;
     let allowance = Math.min(pageBudget, this.remaining);

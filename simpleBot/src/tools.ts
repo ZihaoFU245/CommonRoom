@@ -2,6 +2,40 @@ import type { FunctionTool } from "./model.ts";
 import { FINISH_TURN_TOOL } from "./group.ts";
 import { EXECUTION_TOOL } from "./execution.ts";
 import { MEMORY_TOOL } from "./memory.ts";
+import type { ToolAccess } from "./tool-locks.ts";
+
+/** All classifications are host-owned, including unknown/malformed calls. */
+export function toolAccess(
+  name: string,
+  args: string,
+  conversation: string,
+  workspace: string,
+): ToolAccess {
+  if (name === "memory") {
+    let read = false;
+    try {
+      const input: unknown = JSON.parse(args);
+      read =
+        typeof input === "object" &&
+        input !== null &&
+        "action" in input &&
+        (input.action === "get" || input.action === "list");
+    } catch {
+      // Malformed requests take the exclusive path before tool validation.
+    }
+    return {
+      resource: `memory:${conversation}`,
+      mode: read ? "read" : "write",
+    };
+  }
+  if (name === "execute_code")
+    return { resource: `workspace:${workspace}`, mode: "write" };
+  // History reads also mutate the turn's context budget and deduplication cache.
+  if (name === "read_history")
+    return { resource: `history:${conversation}`, mode: "write" };
+  // Commands may affect other rooms or account-wide state; keep one writer.
+  return { resource: "server-actions", mode: "write" };
+}
 
 export function modelTools(options: {
   group: boolean;

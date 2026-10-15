@@ -543,6 +543,46 @@ are retained for recovery without stopping healthy conversations. The worker per
 in KV; obsolete JSON checkpoints are not loaded.
 
 
+## Background tool jobs
+
+Tools run asynchronously during a model turn. Calls that finish within a short
+10 ms grace period return their normal result. Slower calls return a turn-local
+`job_id` and `queued` or `running` status, allowing another model request to run
+while the tool waits for I/O. Multiple independent jobs may be active together.
+Completed results arrive once as `tool_job_results` JSON data before a later
+model step. The model can call `wait_jobs` with `{"job_ids":["job-1"]}` or `{}`
+for all outstanding results; this yields until completion without polling.
+Quick results keep their existing shape. `wait_jobs` counts toward the configured
+tool-call limit, and the overall turn deadline still applies.
+
+Resource locks are asynchronous and FIFO: concurrent memory reads are allowed,
+while a memory writer excludes readers and other writers in that conversation.
+Readers arriving after a queued writer wait their turn. History retrieval takes
+an exclusive conversation lock because it updates context budgets and caches.
+Server actions share an exclusive lock since commands can affect account-wide
+state. Every script takes the shared filesystem's exclusive lock; arbitrary
+code and network requests cannot be assumed read-only. Other resources remain
+available while a job holds its lock. Scripts can use `Promise.all` internally
+for independent network requests. Native KV atomic commits and version checks
+remain the durable consistency mechanism.
+
+A plain final draft produced before outstanding results are observed is withheld.
+The runtime waits for those results and asks the model for its final response.
+Group response plans reject finishing until results are collected, and a
+successful finishing tool prevents later effects in that response. Cancellation,
+provider failure, timeout and shutdown abort jobs and remove queued writes;
+active subprocesses are killed and reaped. Already issued writes/network effects
+may have happened and are not rolled back. HTTP cancellation suppresses retries;
+existing durable command receipts still recover uncertain server effects.
+
+Job handles and results are in-memory and scoped to one model turn. They do not
+survive restart; KV memory, filesystem artifacts and the worker's command/outbox
+records retain their existing durability. Never reissue an effect just to check
+its job. Jobs and tool traces stay out of public replies. Buffered and streaming
+providers use the same protocol; streaming deltas are provisional. Conversations
+still use the worker's existing single turn queue: background tools enable
+inference and tools to overlap within a turn, not concurrent conversation turns.
+
 ## Model-owned persistent workspace
 
 Every model turn has the asynchronous `memory` tool, including when server tools

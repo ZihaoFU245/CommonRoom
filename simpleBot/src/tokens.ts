@@ -167,6 +167,39 @@ export function compactConversation(
       message.content =
         message.content.slice(0, 512) +
         "\n[Result truncated to fit context budget.]";
+    // Background results use a user-data envelope: preserve job IDs/status and
+    // valid JSON while applying the same output bound as direct tool results.
+    if (
+      message.role === "user" &&
+      message.content.startsWith('{"type":"tool_job_results",')
+    ) {
+      try {
+        const notice: unknown = JSON.parse(message.content);
+        if (
+          typeof notice !== "object" ||
+          notice === null ||
+          !("jobs" in notice) ||
+          !Array.isArray(notice.jobs)
+        )
+          continue;
+        const jobs: unknown[] = notice.jobs;
+        for (const job of jobs) {
+          if (
+            typeof job === "object" &&
+            job !== null &&
+            "result" in job &&
+            typeof job.result === "string" &&
+            job.result.length > 512
+          )
+            job.result =
+              job.result.slice(0, 512) +
+              "\n[Result truncated to fit context budget.]";
+        }
+        message.content = JSON.stringify(notice);
+      } catch {
+        // An ordinary untrusted message may resemble a runtime notice.
+      }
+    }
   }
   return result;
 }

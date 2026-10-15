@@ -20,6 +20,7 @@ import type {
   Snapshot,
 } from "./wire.ts";
 import { createHash } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 import {
   isApiError,
   isServerCommands,
@@ -89,7 +90,7 @@ export class BotApi {
     return this.request<Snapshot>("GET", "me");
   }
 
-  history(query: HistoryQuery): Promise<HistoryResponse> {
+  history(query: HistoryQuery, signal?: AbortSignal): Promise<HistoryResponse> {
     const params = new URLSearchParams({
       conversation_id: query.conversation_id,
     });
@@ -106,7 +107,12 @@ export class BotApi {
       const value = query[key];
       if (value !== undefined) params.set(key, String(value));
     }
-    return this.request<HistoryResponse>("GET", `history?${params}`);
+    return this.request<HistoryResponse>(
+      "GET",
+      `history?${params}`,
+      undefined,
+      { signal },
+    );
   }
 
   /** Send text. `key` must be stable across retries of the same logical output. */
@@ -122,12 +128,18 @@ export class BotApi {
   acknowledgeRead(
     conversationId: string,
     through: number,
+    signal?: AbortSignal,
   ): Promise<{ ok: true }> {
-    return this.request<{ ok: true }>("POST", "read", {
-      conversation_id: conversationId,
-      through,
-      acknowledge_shared_unread: true,
-    });
+    return this.request<{ ok: true }>(
+      "POST",
+      "read",
+      {
+        conversation_id: conversationId,
+        through,
+        acknowledge_shared_unread: true,
+      },
+      { signal },
+    );
   }
 
   /** Desired-state reaction: repeating the same call is a no-op. */
@@ -200,18 +212,24 @@ export class BotApi {
     conversationId: string,
     command: string,
     key: string,
+    signal?: AbortSignal,
   ): Promise<{ result: string; replayed: boolean; expires: number }> {
     // The persisted key binds retries to the same atomic server outcome.
     return this.request(
       "POST",
       "commands",
       { conversation_id: conversationId, command },
-      { key, attempts: 2 },
+      { key, attempts: 2, signal },
     );
   }
 
-  commandReceipt(key: string): Promise<CommandReceipt> {
-    return this.request("GET", `commands/receipts/${encodeURIComponent(key)}`);
+  commandReceipt(key: string, signal?: AbortSignal): Promise<CommandReceipt> {
+    return this.request(
+      "GET",
+      `commands/receipts/${encodeURIComponent(key)}`,
+      undefined,
+      { signal },
+    );
   }
 
   async supportsActivity(): Promise<boolean> {
@@ -241,7 +259,7 @@ export class BotApi {
     method: string,
     path: string,
     body?: unknown,
-    options: { key?: string; attempts?: number } = {},
+    options: { key?: string; attempts?: number; signal?: AbortSignal } = {},
   ): Promise<T> {
     const attempts = options.attempts ?? 4;
     const idempotent =
@@ -250,9 +268,17 @@ export class BotApi {
       path === "read" ||
       options.key !== undefined;
     for (let attempt = 0; ; attempt++) {
+      options.signal?.throwIfAborted();
       try {
-        return await this.once<T>(method, path, body, options.key);
+        return await this.once<T>(
+          method,
+          path,
+          body,
+          options.key,
+          options.signal,
+        );
       } catch (error) {
+        options.signal?.throwIfAborted();
         const retryable = error instanceof BotApiError && error.retryable;
         const network =
           error instanceof BotApiError && error.code === "network";
@@ -283,7 +309,7 @@ export class BotApi {
           "debug",
           `${method} ${path} attempt ${attempt + 1} failed (${(error as BotApiError).code}); retrying in ${Math.round(waitMs / 1000)}s`,
         );
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        await wait(waitMs, undefined, { signal: options.signal });
       }
     }
   }
@@ -293,6 +319,7 @@ export class BotApi {
     path: string,
     body?: unknown,
     key?: string,
+    signal?: AbortSignal,
   ): Promise<T> {
     const headers = this.headers(
       body === undefined ? {} : { "Content-Type": "application/json" },
@@ -304,7 +331,10 @@ export class BotApi {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.any([
+          ...(signal ? [signal] : []),
+          AbortSignal.timeout(this.timeoutMs),
+        ]),
       });
     } catch (error) {
       const name = (error as Error)?.name;

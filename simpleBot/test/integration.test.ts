@@ -71,16 +71,45 @@ test(
         modelRequests.push(input);
         const last = input.messages.at(-1);
         let message: Record<string, unknown>;
-        if (last?.role === "tool") {
-          const result = JSON.parse(last.content) as {
+        if (
+          last?.role === "tool" ||
+          last?.content.startsWith('{"type":"tool_job_results",')
+        ) {
+          const envelope = JSON.parse(last.content) as {
+            job_id?: string;
+            status?: string;
+            jobs?: { result: string }[];
             result?: string;
             error?: string;
             stdout?: string;
             messages?: [number, string, string, string][];
           };
-          message = {
-            content: `**${result.error ? "Denied" : "Done"}** ${result.result ?? result.error ?? result.stdout ?? result.messages?.map((row) => row[3]).join("; ")}`,
-          };
+          const result = envelope.jobs
+            ? (JSON.parse(
+                envelope.jobs.at(-1)?.result ?? "{}",
+              ) as typeof envelope)
+            : envelope;
+          message =
+            envelope.job_id &&
+            ["queued", "running"].includes(envelope.status ?? "")
+              ? {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: `wait-${modelRequests.length}`,
+                      type: "function",
+                      function: {
+                        name: "wait_jobs",
+                        arguments: JSON.stringify({
+                          job_ids: [envelope.job_id],
+                        }),
+                      },
+                    },
+                  ],
+                }
+              : {
+                  content: `**${result.error ? "Denied" : "Done"}** ${result.result ?? result.error ?? result.stdout ?? result.messages?.map((row) => row[3]).join("; ")}`,
+                };
         } else {
           const text =
             input.messages.filter((message) => message.role === "user").at(-1)
