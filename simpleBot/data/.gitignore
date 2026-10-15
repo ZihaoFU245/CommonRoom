@@ -1,0 +1,3 @@
+# Runtime state: checkpoints and local configuration are never committed.
+*
+!.gitignore

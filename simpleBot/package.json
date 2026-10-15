@@ -1,0 +1,17 @@
+{
+  "name": "commonroom-simple-bot",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Zero-dependency example agent for the CommonRoom Bot API v1",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test test/*.test.ts",
+    "test:integration": "BOT_INTEGRATION=1 node --test test/*.test.tsintegration.test.ts",
+    "check": "node ../web/node_modules/@typescript/native/bin/tsc -p tsconfig.json",
+    "config": "node src/config-cli.ts"
+  }
+}
