@@ -435,7 +435,7 @@ test("the checkpoint round-trips through disk and refuses an unknown version", a
       version: number;
       cursors: Record<string, number>;
     };
-    assert.equal(raw.version, 2);
+    assert.equal(raw.version, 3);
     assert.equal(
       raw.cursors[h.server.conversationId],
       h.store.cursor(h.server.conversationId),
@@ -791,9 +791,11 @@ test("pruning preserves pending parts with colon-containing conversation IDs", a
     });
     h.store.prune(1);
     assert.equal(h.store.part(slot)?.key, "pending-key");
-    assert.throws(
-      () => h.store.forget(new Set([h.server.conversationId])),
-      /pending output target/,
+    h.store.forget(new Set([h.server.conversationId]));
+    assert.equal(h.store.part(slot)?.key, "pending-key");
+    assert.ok(
+      h.store.task(task.conversation, task.input),
+      "inaccessible unresolved output remains recoverable",
     );
   } finally {
     await h.stop();
@@ -869,11 +871,13 @@ test("existing v2 checkpoints adopt legacy output slots before the next edit", a
     const m = h.server.addMessage("@helper initial");
     await h.agent.handleSnapshot(h.server.snapshot());
     const task = h.store.task(h.server.conversationId, m.id)!;
+    h.store.state.version = 2;
     delete task.outputSlot;
     delete task.outputHash;
     delete task.pass;
     h.store.save();
     await h.restart();
+    assert.equal(h.store.state.version, 3);
     assert.equal(h.server.state.sends.length, 1);
     h.server.editMessage(m.id, "@helper edited after upgrade");
     await h.agent.handleSnapshot(h.server.snapshot());
@@ -1089,7 +1093,11 @@ test("legacy unkeyed server commands remain blocked across restart and pruning",
       "failed",
     );
     assert.equal(h.server.state.commands.length, 0);
-    assert.throws(() => h.store.forget(new Set()), /pending server command/);
+    h.store.forget(new Set());
+    assert.equal(
+      h.store.task(h.server.conversationId, message.id)?.actions?.[0]?.status,
+      "pending",
+    );
   } finally {
     await h.stop();
   }
@@ -1443,7 +1451,7 @@ test("fresh bounded context loads a quoted older page and the model can fetch mo
       request.messages[0]!.content.length < 1000,
       "fixed instructions and compact command usages fit under 1000 characters in this fixture",
     );
-    assert.equal(request.maxToolCalls, 4);
+    assert.equal(request.maxToolCalls, 16);
     const calls = h.model.requests.length;
     await h.restart();
     assert.equal(
@@ -1774,6 +1782,444 @@ test("a silent decision during an edit does not consume the newer input", async 
     );
     await h.restart();
     assert.equal(h.server.state.sends.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("autonomous groups collect a fixed window of speakers into one plain response", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    const first = h.server.addMessage("What is the plan?", {
+      mentions: [],
+      from: "alice",
+    });
+    let calls = 0;
+    h.model.complete = async (request) => {
+      calls++;
+      const input = request.messages.at(-1)!.content;
+      assert.ok(
+        input.includes(first.id) &&
+          input.includes("And when?") &&
+          input.includes("bob"),
+      );
+      assert.match(request.messages[0]!.content, /Combine related questions/);
+      assert.ok(
+        request.tools?.some((tool) => tool.function.name === "finish_turn"),
+      );
+      assert.equal(request.maxToolCalls, 16);
+      await request.executeTool!(
+        "finish_turn",
+        JSON.stringify({ messages: [{ text: "Ship on Friday." }] }),
+      );
+      return "This extra summary must not be sent";
+    };
+    const started = Date.now();
+    const running = h.agent.requestSync();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    h.server.addMessage("And when?", {
+      mentions: [],
+      from: "bob",
+      authorId: "acct-bob",
+    });
+    await h.agent.sync();
+    await running;
+    assert.ok(Date.now() - started >= 2900);
+    assert.ok(
+      Date.now() - started < 5000,
+      "late messages do not reset the fixed window",
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => [send.text, send.replyTo]),
+      [["Ship on Friday.", null]],
+    );
+    await h.agent.requestSync();
+    await h.restart();
+    assert.equal(
+      calls,
+      1,
+      "own output and reconnect do not trigger a new decision",
+    );
+    assert.equal(h.store.state.version, 3);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("autonomous independent questions get separate replies in a single decision", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    const a = h.server.addMessage("What is 2+2?", { mentions: [] });
+    const b = h.server.addMessage("Which day is launch?", {
+      mentions: [],
+      from: "bob",
+      authorId: "acct-bob",
+    });
+    let calls = 0;
+    h.model.complete = async (request) => {
+      calls++;
+      const bad = await request.executeTool!(
+        "finish_turn",
+        JSON.stringify({
+          messages: [{ text: "bad", reply_to: "foreign-message" }],
+        }),
+      );
+      assert.match(bad, /error/);
+      await request.executeTool!(
+        "finish_turn",
+        JSON.stringify({
+          messages: [
+            { text: "4", reply_to: a.id },
+            { text: "Friday", reply_to: b.id },
+          ],
+        }),
+      );
+      return "";
+    };
+    await h.agent.requestSync();
+    assert.equal(calls, 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => [send.text, send.replyTo]),
+      [
+        ["4", a.id],
+        ["Friday", b.id],
+      ],
+    );
+    assert.ok(h.store.tasks().every((task) => task.status === "answered"));
+  } finally {
+    await h.stop();
+  }
+});
+
+test("group turns start at least three seconds apart while new input joins the next batch", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    h.server.addMessage("first", { mentions: [] });
+    const starts: number[] = [];
+    h.model.complete = async (request) => {
+      starts.push(Date.now());
+      if (starts.length === 1) {
+        h.server.addMessage("follow up", { mentions: [] });
+        await h.agent.sync();
+      }
+      await request.executeTool!("finish_turn", '{"messages":[]}');
+      return "";
+    };
+    await h.agent.requestSync();
+    assert.equal(starts.length, 2);
+    assert.ok(starts[1]! - starts[0]! >= 2900);
+    assert.equal(h.server.state.sends.length, 0);
+    await h.restart();
+    assert.equal(
+      starts.length,
+      2,
+      "silent batches remain completed after restart",
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("autonomous mode uses owner chat controls and does not activate foreign private chats", async () => {
+  const h = await harness();
+  try {
+    h.server.addMessage('@helper /config set autonomous "true"');
+    await h.agent.requestSync();
+    assert.equal(h.config.get("autonomous"), true);
+    assert.equal(h.model.requests.length, 0);
+    const me = h.api.me.bind(h.api);
+    let privateChat = true;
+    h.api.me = async () => {
+      const snapshot = await me();
+      snapshot.conversations[0]!.view = privateChat
+        ? "@private:alice:bob"
+        : "support";
+      return snapshot;
+    };
+    h.server.addMessage("private discussion", { mentions: [] });
+    await h.agent.requestSync();
+    assert.equal(h.model.requests.length, 0);
+    privateChat = false;
+    h.server.addMessage('@helper /config set autonomous "false"');
+    await h.agent.requestSync();
+    h.server.addMessage("unmentioned chatter", { mentions: [] });
+    await h.agent.requestSync();
+    assert.equal(h.model.requests.length, 0);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("an upstream error releases the worker for follow-up questions", async () => {
+  const h = await harness();
+  try {
+    const complete = h.model.complete.bind(h.model);
+    let first = true;
+    h.model.complete = async (request) => {
+      if (first) {
+        first = false;
+        throw new Error("upstream failed");
+      }
+      return complete(request);
+    };
+    const failed = h.server.addMessage("@helper first question");
+    h.server.addMessage("@helper follow-up question");
+    await h.agent.requestSync();
+    assert.equal(h.agent.busy, false);
+    assert.equal(
+      h.store.task(h.server.conversationId, failed.id)?.status,
+      "failed",
+    );
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(h.model.prompts[0], "@helper follow-up question");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a model ignoring abort cannot hold the queue or run tools after its deadline", async () => {
+  const h = await harness();
+  try {
+    h.config.set("model.timeoutMs", 1000);
+    const complete = h.model.complete.bind(h.model);
+    let abandoned: CompletionRequest | undefined;
+    h.model.complete = async (request) => {
+      if (!abandoned) {
+        abandoned = request;
+        return new Promise<string>(() => {});
+      }
+      return complete(request);
+    };
+    h.server.addMessage("@helper stalled request");
+    h.server.addMessage("@helper next request");
+    await h.agent.requestSync();
+    assert.equal(h.agent.busy, false);
+    assert.equal(h.server.state.sends.length, 1);
+    await assert.rejects(
+      abandoned!.executeTool!(
+        "run_server_command",
+        '{"command":"/new room late"}',
+      ),
+    );
+    assert.equal(h.server.state.commands.length, 0);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("failed command receipt recovery cannot block new input", async () => {
+  const h = await harness();
+  try {
+    const complete = h.model.complete.bind(h.model);
+    h.api.executeCommand = async () => {
+      throw new Error("uncertain upstream outcome");
+    };
+    h.api.commandReceipt = async () => {
+      throw new Error("receipt service unavailable");
+    };
+    let first = true;
+    h.model.complete = async (request) => {
+      if (first) {
+        first = false;
+        await request.executeTool!(
+          "run_server_command",
+          '{"command":"/new room pending"}',
+        );
+      }
+      return complete(request);
+    };
+    const failed = h.server.addMessage("@helper create room");
+    await h.agent.requestSync();
+    h.server.addMessage("@helper a new question");
+    await h.agent.requestSync();
+    assert.equal(h.agent.busy, false);
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(
+      h.store.task(h.server.conversationId, failed.id)?.actions?.[0]?.status,
+      "pending",
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a saved multi-response group decision resumes without rerunning the model", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    h.server.addMessage("a", { mentions: [] });
+    h.server.addMessage("b", { mentions: [] });
+    let calls = 0;
+    h.model.complete = async (request) => {
+      calls++;
+      await request.executeTool!(
+        "finish_turn",
+        '{"messages":[{"text":"first"},{"text":"second"}]}',
+      );
+      return "";
+    };
+    const send = h.api.send.bind(h.api);
+    h.api.send = async (input, key) => {
+      if (input.text === "second") throw new Error("send interrupted");
+      return send(input, key);
+    };
+    await h.agent.requestSync();
+    assert.equal(h.server.state.sends.length, 1);
+    h.api.send = send;
+    await h.restart();
+    assert.equal(calls, 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["first", "second"],
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("retracted group input cancels its unsent decision and preserves the remaining question", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    const first = h.server.addMessage("remove this", { mentions: [] });
+    const second = h.server.addMessage("keep this", { mentions: [] });
+    let calls = 0;
+    h.model.complete = async (request) => {
+      calls++;
+      if (calls === 1) {
+        h.server.retractMessage(first.id);
+        await h.agent.sync();
+        await request.executeTool!(
+          "finish_turn",
+          '{"messages":[{"text":"stale"}]}',
+        );
+      }
+      assert.ok(request.messages.at(-1)!.content.includes(second.id));
+      return "current answer";
+    };
+    await h.agent.requestSync();
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["current answer"],
+    );
+    assert.equal(
+      h.store.task(h.server.conversationId, first.id)?.status,
+      "cancelled",
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("sixteen distinct command effects survive checkpoint reload", async () => {
+  const h = await harness();
+  try {
+    h.model.complete = async (request) => {
+      for (let index = 0; index < 16; index++)
+        await request.executeTool!(
+          "run_server_command",
+          JSON.stringify({ command: `/new room demo${index}` }),
+        );
+      return "";
+    };
+    h.server.addMessage("@helper do sixteen steps");
+    await h.agent.requestSync();
+    assert.equal(h.server.state.commands.length, 16);
+    await h.restart();
+    assert.equal(h.server.state.commands.length, 16);
+    assert.equal(h.store.tasks()[0]?.actions?.length, 16);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("disabling autonomous mode cancels a waiting burst without a model call", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    const waiting = h.server.addMessage("ordinary discussion", {
+      mentions: [],
+    });
+    const work = h.agent.requestSync();
+    await h.waitFor(
+      "waiting group task",
+      () => !!h.store.task(h.server.conversationId, waiting.id),
+    );
+    h.server.addMessage('@helper /config set autonomous "false"');
+    await h.agent.sync();
+    await work;
+    assert.equal(h.config.get("autonomous"), false);
+    assert.equal(h.model.requests.length, 0);
+    assert.equal(h.activities.at(-1), "idle");
+    assert.equal(
+      h.store.task(h.server.conversationId, waiting.id)?.status,
+      "cancelled",
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a failed group turn cannot pin later completed input or replay it after pruning", async () => {
+  const h = await harness();
+  try {
+    h.config.set("autonomous", true);
+    const failed = h.server.addMessage("first batch", { mentions: [] });
+    let calls = 0;
+    let nextSequence = 0;
+    h.model.complete = async () => {
+      calls++;
+      if (calls === 1) {
+        nextSequence = h.server.addMessage("follow-up batch", {
+          mentions: [],
+        }).sequence;
+        await h.agent.sync();
+        throw new Error("upstream temporarily failed");
+      }
+      return "recovered";
+    };
+    await h.agent.requestSync();
+    assert.equal(calls, 2);
+    assert.equal(
+      h.store.task(h.server.conversationId, failed.id)?.status,
+      "failed",
+    );
+    assert.ok((h.store.cursor(h.server.conversationId) ?? 0) >= nextSequence);
+    h.store.prune(1);
+    await h.agent.requestSync();
+    assert.equal(calls, 2);
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(h.agent.busy, false);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a long plain group response retains multipart delivery across checkpoint reload", async () => {
+  const text = "x".repeat(20000);
+  const h = await harness({ reply: text });
+  try {
+    h.config.set("autonomous", true);
+    h.config.set("model.maxTokens", 8192);
+    h.server.addMessage("please explain", { mentions: [] });
+    await h.agent.requestSync();
+    const count = h.server.state.sends.length;
+    assert.ok(count > 1);
+    assert.equal(
+      h.server.state.sends
+        .map((send) => send.text.replace(/^\[\d+\/\d+\] /u, ""))
+        .join(""),
+      text,
+    );
+    assert.ok(h.server.state.sends.every((send) => send.replyTo === null));
+    await h.restart();
+    assert.equal(h.server.state.sends.length, count);
+    assert.equal(h.model.requests.length, 1);
   } finally {
     await h.stop();
   }

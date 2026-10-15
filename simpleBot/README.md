@@ -148,13 +148,14 @@ is rejected with a reason and leaves the previous setting untouched, for example
 | `model.stream`          | `true`                   | streamed completions                                                         |
 | `model.maxTokens`       | `4096`                   | output budget including reasoning; 128–32768                                 |
 | `model.reasoningEffort` | _(empty)_                | provider default when empty; none, low, medium or high if supported          |
+| `autonomous`          | `false`                  | Participate in writable rooms without mentions, using fixed 3-second batches |
 | `chat.respondToAllDms`  | `true`                   | answer every direct message, not only mentions                               |
 | `chat.acknowledgeReads` | `false`                  | enables the read acknowledgement tool                                        |
 | `chat.historyWindow`    | `50`                     | prior messages requested for model context, within the character budget      |
 | `chat.contextChars`     | `131072`                 | Additional history character ceiling; 0–524288, 0 disables history           |
 | `model.contextTokens`   | `32768`                  | Total input/output token budget; measurements plus estimates for new content |
 | `model.compactTokens`   | `24576`                  | Input threshold for context compaction; less than total                      |
-| `model.maxToolCalls`    | `4`                      | Maximum tool calls per answer; 1–8                                           |
+| `model.maxToolCalls`    | `16`                     | Maximum tool calls per turn; 1–16                                           |
 | `chat.stateLimit`       | `200`                    | 10–5000 retained task records                                                |
 | `log.level`             | `info`                   | `debug`, `info`, `warn`, `error`, `silent`                                   |
 
@@ -304,7 +305,7 @@ and version refusal, cross-account refusal, activity signals, and the
   `BOT_STATE` overrides the path; `CHAT_DATA` moves both defaults. One worker owns
   one checkpoint; the file records the account id and refuses to run against a
   different one.
-- **Checkpoint version 2**: version 1 files are refused on purpose, because
+- **Checkpoint version 3**: version 2 files upgrade automatically; version 1 files are refused, because
   adopting the new revision watermarks without reconciling can duplicate output.
   Reconcile the old file deliberately before replacing it; deleting it discards any pending delivery guarantees.
 - **`/read` is not a processing acknowledgement.** It clears the human-facing
@@ -354,7 +355,7 @@ Native commands use separate durable server receipts. The worker saves command
 intent/key/time before execution, suppresses repeated identical calls, and retries
 only the identical key within the receipt window. On restart it recovers pending
 keyed outcomes before asking the model to continue. Legacy unkeyed or expired
-uncertain actions require inspection. The v2 checkpoint accepts these optional
+uncertain actions require inspection. The v3 checkpoint accepts these optional
 fields without replaying old unkeyed effects. Run one worker per checkpoint/account.
 
 Model history uses a bounded `read_history` tool that filters worker control messages and their responses, matching the normal context filter. Raw `/history` model calls are redirected to that tool.
@@ -485,3 +486,44 @@ tools omit `/reply` and `/tell` to prevent a tool send plus a second final answe
 
 The default system prompt favors brief, natural conversation in the user's
 language, with only the detail needed and no routine preamble or formal summary.
+
+
+## Autonomous group participation
+
+As the bot owner or a global administrator, enable it through chat:
+
+```text
+@helper /config set autonomous "true"
+@helper /config set model.maxToolCalls "16"
+```
+
+`autonomous` defaults to false. Existing explicit tool limits are preserved;
+the second command raises an older saved limit of four. The flag applies to all
+readable, writable rooms available to this worker, without changing server grants
+or DM behavior. Set it to `"false"` to return to mention-only room input.
+
+The first new room message starts a fixed three-second collection window.
+New arrivals join that window without postponing its deadline. Pending room
+messages are considered together, at most once every three seconds per room;
+tool calls within a turn run immediately. Each batch is bounded to 100 inputs
+and approximately 16,000 UTF-16 code units. The agent sees sender names/IDs,
+message IDs, mentions, replies and recent context. It is prompted to join only
+when useful, combine related questions in one plain group message, and answer
+independent questions with separate replies in the same decision turn. It should
+write minimally and naturally, without routine headings or narrating tools.
+
+The model can return plain final text or use `finish_turn` with a `messages`
+array. Omit `reply_to` for a plain group message, supply an input ID for a targeted
+reply, or return an empty array for silence. The complete plan is saved before
+publishing, so interrupted multi-message delivery resumes without another model
+call. A finishing tool ends the model round immediately, preventing an extra
+summary. Own output is ignored; quiet decisions do not display typing activity.
+Worker commands still use the owner/admin checks and do not enter model context.
+
+`model.timeoutMs` bounds the whole model turn, including preparation, retries and
+tool rounds. Upstream HTTP failures are handled before reading their response
+bodies. Timeout/error paths release the active queue; an abandoned model cannot
+execute late tools. Failed receipt lookups and inaccessible unresolved effects
+are retained for recovery without stopping healthy conversations. The worker
+checkpoint upgrades v2 to v3 atomically on its next save, preserving cursors,
+outputs and command receipts; older workers reject v3 rather than replaying batches.

@@ -14,7 +14,7 @@ const model = (stream = true) =>
     token: "",
     model: "test",
     stream,
-    timeoutMs: 1000,
+    timeoutMs: 3000,
     log: () => {},
   });
 const completion = {
@@ -512,3 +512,144 @@ for (const stream of [false, true]) {
     assert.equal(await client.complete(completion), "");
   });
 }
+
+for (const stream of [false, true]) {
+  test(`sixteen tool calls execute in one model round (stream=${stream})`, async (t) => {
+    let rounds = 0,
+      executed = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      rounds++;
+      const calls = Array.from({ length: 16 }, (_, index) => ({
+        id: `call-${index}`,
+        type: "function",
+        function: { name: "step", arguments: "{}" },
+      }));
+      return stream
+        ? new Response(
+            `data: ${JSON.stringify({ choices: [{ delta: rounds === 1 ? { tool_calls: calls.map((call, index) => ({ index, ...call })) } : { content: "done" }, finish_reason: rounds === 1 ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+          )
+        : Response.json({
+            choices: [
+              {
+                message:
+                  rounds === 1
+                    ? { content: null, tool_calls: calls }
+                    : { content: "done" },
+                finish_reason: rounds === 1 ? "tool_calls" : "stop",
+              },
+            ],
+          });
+    });
+    assert.equal(
+      await model(stream).complete({
+        ...completion,
+        maxToolCalls: 16,
+        tools: [
+          {
+            type: "function",
+            function: { name: "step", description: "step", parameters: {} },
+          },
+        ],
+        executeTool: async () => {
+          executed++;
+          return "ok";
+        },
+      }),
+      "done",
+    );
+    assert.equal(executed, 16);
+  });
+}
+
+test("HTTP failure is handled before reading an upstream body that never ends", async (t) => {
+  let calls = 0,
+    cancelled = false;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return calls === 1
+      ? new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 503 },
+        )
+      : Response.json({
+          choices: [
+            { message: { content: "recovered" }, finish_reason: "stop" },
+          ],
+        });
+  });
+  assert.equal(await model(false).complete(completion), "recovered");
+  assert.equal(calls, 2);
+  assert.equal(cancelled, true);
+});
+
+test("overall model deadline releases a fetch implementation that ignores abort", async (t) => {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () => new Promise<Response>(() => {}),
+  );
+  const client = new ModelClient({
+    endpoint: "http://localhost/",
+    model: "test",
+    token: "",
+    stream: false,
+    timeoutMs: 50,
+    log: () => {},
+  });
+  const alive = setTimeout(() => {}, 100);
+  try {
+    await assert.rejects(
+      client.complete(completion),
+      (error: unknown) =>
+        error instanceof Error && error.name === "TimeoutError",
+    );
+  } finally {
+    clearTimeout(alive);
+  }
+});
+
+test("a finishing tool ends the turn without an extra model request or later effects", async (t) => {
+  let calls = 0,
+    finished = false,
+    executed = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return Response.json({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: ["finish", "late"].map((name) => ({
+              id: name,
+              type: "function",
+              function: { name, arguments: "{}" },
+            })),
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    });
+  });
+  const text = await model(false).complete({
+    ...completion,
+    tools: [
+      {
+        type: "function",
+        function: { name: "finish", description: "finish", parameters: {} },
+      },
+    ],
+    stopAfterTool: () => finished,
+    executeTool: async () => {
+      executed++;
+      finished = true;
+      return "finished";
+    },
+  });
+  assert.equal(text, "");
+  assert.equal(calls, 1);
+  assert.equal(executed, 1);
+});

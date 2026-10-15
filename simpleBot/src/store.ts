@@ -1,3 +1,4 @@
+import { GROUP_INTERVAL_MS, MAX_GROUP_RESPONSE_CHARS } from "./group.ts";
 // Durable worker state: input cursors, conversation revisions, the task ledger
 // and the pending-output outbox.
 //
@@ -5,7 +6,8 @@
 // which covers process interruption; use an fsynced/transactional store if you
 // need power-loss durability or several workers on one account.
 //
-// Version 2 adds `revisions` (edit/retraction detection) and `tasks` (per-input
+// Version 3 adds durable autonomous batches and response plans; v2 upgrades
+// preserve all existing cursors/effects. Version 2 added `revisions` (edit/retraction detection) and `tasks` (per-input
 // work ledger). Version 1 checkpoints are refused deliberately: revising the
 // dedup and revision watermarks without reconciling first can duplicate output.
 import {
@@ -21,7 +23,7 @@ import {
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 export interface OutboxPart {
   slot: string;
@@ -54,6 +56,15 @@ export interface TaskRecord {
   status: "queued" | "running" | "answered" | "cancelled" | "failed";
   attempts: number;
   privateCommand?: boolean;
+  /** Fixed-window group inputs; only the leader runs the model. */
+  autonomous?: boolean;
+  readyAt?: number;
+  inputChars?: number;
+  batchOwner?: string;
+  batch?: { input: string; sequence: number; hash: string }[];
+  /** Fully persisted decision, including silence, before any batch output. */
+  decision?: { text: string; reply_to?: string }[];
+  batchStarted?: number;
   actions?: CommandAction[];
   slots: string[];
   /** Durable output family for the version currently being answered. */
@@ -128,7 +139,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Reject a checkpoint we do not understand instead of guessing. */
 function validate(value: unknown): State {
   if (!isRecord(value)) throw new Error("checkpoint is not an object");
-  if (value.version !== STATE_VERSION) {
+  if (value.version !== STATE_VERSION && value.version !== 2) {
     throw new Error(
       `checkpoint version ${String(value.version)} is not supported (expected ${STATE_VERSION}); ` +
         "reconcile the old file deliberately before replacing it",
@@ -145,6 +156,7 @@ function validate(value: unknown): State {
     }
   }
   const state = value as unknown as State;
+  state.version = STATE_VERSION;
   if (value.account !== null && typeof value.account !== "string")
     throw new Error("checkpoint account is invalid");
   if (
@@ -176,11 +188,43 @@ function validate(value: unknown): State {
       task.sequence < 1 ||
       typeof task.promptHash !== "string" ||
       (task.silentHash !== undefined && typeof task.silentHash !== "string") ||
+      (task.autonomous !== undefined && typeof task.autonomous !== "boolean") ||
+      (task.inputChars !== undefined &&
+        (!Number.isSafeInteger(task.inputChars) ||
+          task.inputChars < 0 ||
+          task.inputChars > 8000)) ||
+      (task.readyAt !== undefined && !Number.isFinite(task.readyAt)) ||
+      (task.batchStarted !== undefined &&
+        !Number.isFinite(task.batchStarted)) ||
+      (task.batchOwner !== undefined && typeof task.batchOwner !== "string") ||
+      (task.batch !== undefined &&
+        (!Array.isArray(task.batch) ||
+          task.batch.length < 1 ||
+          task.batch.length > 100 ||
+          !task.batch.every(
+            (input: unknown) =>
+              isRecord(input) &&
+              typeof input.input === "string" &&
+              typeof input.hash === "string" &&
+              Number.isSafeInteger(input.sequence) &&
+              Number(input.sequence) > 0,
+          ))) ||
+      (task.decision !== undefined &&
+        (!Array.isArray(task.decision) ||
+          task.decision.length > 16 ||
+          !task.decision.every(
+            (response: unknown) =>
+              isRecord(response) &&
+              typeof response.text === "string" &&
+              response.text.length <= MAX_GROUP_RESPONSE_CHARS &&
+              (response.reply_to === undefined ||
+                typeof response.reply_to === "string"),
+          ))) ||
       (task.privateCommand !== undefined &&
         typeof task.privateCommand !== "boolean") ||
       (task.actions !== undefined &&
         (!Array.isArray(task.actions) ||
-          task.actions.length > 8 ||
+          task.actions.length > 16 ||
           !task.actions.every(
             (action: unknown) =>
               isRecord(action) &&
@@ -305,6 +349,13 @@ export class Store {
                 task.slots.length === 0)))
         )
           task.status = "queued";
+      }
+      for (const task of store.tasks()) {
+        if (task.autonomous && task.batch && task.status === "queued")
+          task.readyAt = Math.max(
+            task.readyAt ?? 0,
+            (task.batchStarted ?? 0) + GROUP_INTERVAL_MS,
+          );
       }
       return store;
     } catch (error) {
@@ -475,26 +526,19 @@ export class Store {
 
   /** Drop state for conversations the account can no longer read. */
   forget(conversationIds: Set<string>): string[] {
-    if (
-      this.tasks().some(
-        (task) =>
-          !conversationIds.has(task.conversation) &&
-          task.actions?.some((action) => action.status === "pending"),
-      )
-    )
-      throw new Error(
-        "pending server command target is inaccessible; inspect checkpoint before resolving it",
-      );
-    for (const part of Object.values(this.state.parts)) {
-      if (
-        part.response === undefined &&
-        !conversationIds.has(part.request.conversation_id)
-      ) {
-        throw new Error(
-          "pending output target is inaccessible; inspect checkpoint before resolving it",
-        );
-      }
-    }
+    const retained = new Set(
+      this.tasks()
+        .filter(
+          (task) =>
+            task.actions?.some((action) => action.status === "pending") ||
+            task.slots.some(
+              (slot) =>
+                this.part(`${taskKey(task.conversation, task.input)}:${slot}`)
+                  ?.response === undefined,
+            ),
+        )
+        .map((task) => taskKey(task.conversation, task.input)),
+    );
     const dropped: string[] = [];
     for (const [conversationId] of Object.entries(this.state.cursors)) {
       if (conversationIds.has(conversationId)) continue;
@@ -504,12 +548,20 @@ export class Store {
       delete this.state.memory[conversationId];
     }
     for (const [key, task] of Object.entries(this.state.tasks)) {
-      if (conversationIds.has(task.conversation)) continue;
+      if (conversationIds.has(task.conversation) || retained.has(key)) continue;
       delete this.state.tasks[key];
     }
-    for (const [slot, part] of Object.entries(this.state.parts)) {
-      if (conversationIds.has(part.request.conversation_id)) continue;
-      delete this.state.parts[slot];
+    for (const [slotKey, part] of Object.entries(this.state.parts)) {
+      if (
+        conversationIds.has(part.request.conversation_id) ||
+        [...retained].some((task) =>
+          this.state.tasks[task]?.slots.some(
+            (slot) => `${task}:${slot}` === slotKey,
+          ),
+        )
+      )
+        continue;
+      delete this.state.parts[slotKey];
     }
     return dropped;
   }

@@ -319,3 +319,13 @@ reply despite overlapping signals/reconnect, outbox-only reply publication,
 silent decisions (with and without tool effects) across restart, and edit races
 between queuing and locating input. Both buffered and streamed models accept
 explicit empty completions without treating transport truncation as silence.
+
+Autonomous worker tests cover fixed three-second windows under concurrent
+speakers, minimum turn spacing, combined plain output, independent targeted
+replies, silence, own-output suppression, runtime enable/disable, foreign private
+chat isolation, source retraction, interrupted response plans and v2-to-v3 worker
+checkpoint upgrades. Failure tests cover stalled/erroring providers, ignored
+cancellation, late tool rejection and failed command-receipt lookups while new
+input continues. Buffered and streamed models exercise 16 tool calls and terminal
+response-plan tools. The real worker integration checks multi-user autonomous
+bursts, reply targets, silence and restart against an isolated server/model stub.

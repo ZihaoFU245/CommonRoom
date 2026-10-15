@@ -145,3 +145,15 @@ metadata, messages, cursors and compiled in-memory authority. Receipts are not
 loaded as startup history; lookups use the account/key primary key. Per-account
 entry/byte limits and 24-hour expiry bound storage. See [Bots](bots.md) for retry
 and authenticated status semantics. These outcomes may include private text.
+
+
+## SimpleBot checkpoint v3
+
+The optional SimpleBot worker uses its own checkpoint format, independently of
+SQLite schema v10 and the minimal reference worker. Existing v2 checkpoints are
+validated and upgraded to v3 in memory, then saved by atomic rename. V3 records
+autonomous batch membership, fixed-window timing and complete response plans;
+v1 and unknown versions remain rejected. Pending keyed sends/commands retain
+original payloads and keys. Inaccessible unresolved effects are preserved while
+other conversations continue. Use the updated worker with v3 checkpoints; older
+workers reject this version. No server database migration is required.

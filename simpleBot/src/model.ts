@@ -1,3 +1,5 @@
+import { abortable } from "./async.ts";
+import { setTimeout as wait } from "node:timers/promises";
 // Model client for an OpenAI-compatible chat-completions endpoint.
 //
 // Nothing is preset: an operator supplies `model.endpoint` and `model.name` at
@@ -71,7 +73,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 function toolCalls(value: unknown): ToolCall[] {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length > 8)
+  if (!Array.isArray(value) || value.length > 16)
     throw new ModelError(200, "Invalid model tool calls");
   return value.map((call: unknown) => {
     if (
@@ -83,7 +85,7 @@ function toolCalls(value: unknown): ToolCall[] {
       !record(call.function) ||
       typeof call.function.name !== "string" ||
       typeof call.function.arguments !== "string" ||
-      call.function.arguments.length > 8192
+      call.function.arguments.length > 65536
     )
       throw new ModelError(200, "Invalid model tool call");
     return {
@@ -122,6 +124,8 @@ export interface CompletionRequest {
   executeTool?(name: string, argumentsText: string): Promise<string>;
   maxTokens?: number;
   maxToolCalls?: number;
+  /** A finishing tool has persisted the complete response plan. */
+  stopAfterTool?(): boolean;
   /** Omit to use the provider default; support depends on the endpoint. */
   reasoningEffort?: string;
   temperature?: number;
@@ -180,6 +184,14 @@ export class ModelClient implements ChatModel {
 
   /** One completion, streamed or buffered. Retries transient gateway failures. */
   async complete(request: CompletionRequest): Promise<string> {
+    const signal = AbortSignal.any([
+      ...(request.signal ? [request.signal] : []),
+      AbortSignal.timeout(this.options.timeoutMs),
+    ]);
+    return abortable(this.run({ ...request, signal }), signal);
+  }
+
+  private async run(request: CompletionRequest): Promise<string> {
     if (this.options.endpoint.length === 0) {
       throw new ModelError(0, "no model.endpoint is configured");
     }
@@ -198,8 +210,9 @@ export class ModelClient implements ChatModel {
         this.tokenMeters.delete(this.tokenMeters.keys().next().value!);
     }
     let executed = 0;
-    const limit = Math.max(1, Math.min(request.maxToolCalls ?? 8, 8));
+    const limit = Math.max(1, Math.min(request.maxToolCalls ?? 16, 16));
     for (let round = 0; round <= limit; round++) {
+      request.signal?.throwIfAborted();
       const totalLimit = request.contextTokens ?? 32768;
       const reserve = Math.min(
         request.maxTokens ?? 4096,
@@ -274,6 +287,7 @@ export class ModelClient implements ChatModel {
         ...(turn.reasoning ? { reasoning_content: turn.reasoning } : {}),
       });
       for (const call of turn.calls) {
+        request.signal?.throwIfAborted();
         executed++;
         const tool =
           request.tools.find(
@@ -302,6 +316,7 @@ export class ModelClient implements ChatModel {
           `model tool finished round=${round + 1} tool_index=${executed} tool=${tool} result_chars=${content.length} duration_ms=${Math.round(performance.now() - started)}`,
         );
         messages.push({ role: "tool", tool_call_id: call.id, content });
+        if (request.stopAfterTool?.()) return "";
       }
     }
     throw new ModelError(200, "Model tool call limit reached");
@@ -366,7 +381,7 @@ export class ModelClient implements ChatModel {
           "warn",
           `model call failed (${lastError.message}); retrying in ${waitMs}ms`,
         );
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        await wait(waitMs, undefined, { signal: request.signal });
       }
     }
     throw lastError;
@@ -441,13 +456,14 @@ export class ModelClient implements ChatModel {
 
   private async buffered(request: CompletionRequest): Promise<Turn> {
     const response = await this.call(request, false);
-    const text = await response.text();
     if (!response.ok) {
+      await response.body?.cancel();
       throw new ModelError(
         response.status,
         `model gateway returned HTTP ${response.status}`,
       );
     }
+    const text = await response.text();
     let value: unknown;
     try {
       value = JSON.parse(text);
@@ -606,7 +622,7 @@ export class ModelClient implements ChatModel {
       if (rawDelta?.tool_calls !== undefined) {
         if (
           !Array.isArray(rawDelta.tool_calls) ||
-          rawDelta.tool_calls.length > 8
+          rawDelta.tool_calls.length > 16
         )
           throw new ModelError(200, "Invalid streamed tool calls");
         for (const update of rawDelta.tool_calls as unknown[]) {
@@ -615,7 +631,7 @@ export class ModelClient implements ChatModel {
             !Number.isInteger(update.index) ||
             typeof update.index !== "number" ||
             update.index < 0 ||
-            update.index >= 8
+            update.index >= 16
           )
             throw new ModelError(200, "Invalid streamed tool index");
           const call = calls.get(update.index) ?? {
@@ -634,7 +650,7 @@ export class ModelClient implements ChatModel {
           if (
             call.id.length > 128 ||
             call.function.name.length > 64 ||
-            call.function.arguments.length > 8192
+            call.function.arguments.length > 65536
           )
             throw new ModelError(200, "Streamed tool call too large");
           calls.set(update.index, call);

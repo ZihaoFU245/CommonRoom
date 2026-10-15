@@ -167,3 +167,19 @@ test("reload validates atomically, notifies once and explicit runtime set replac
     f.cleanup();
   }
 });
+
+test("autonomous opt-in and the sixteen-tool ceiling persist while old configuration defaults remain safe", () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.path, '{"model.name":"existing"}');
+    const config = ConfigStore.load(f.path);
+    assert.equal(config.get("autonomous"), false);
+    assert.equal(config.get("model.maxToolCalls"), 16);
+    config.apply("autonomous", "true");
+    assert.equal(ConfigStore.load(f.path).get("autonomous"), true);
+    assert.throws(() => config.apply("autonomous", "maybe"), /true or false/);
+    assert.throws(() => config.apply("model.maxToolCalls", "17"), /1-16/);
+  } finally {
+    f.cleanup();
+  }
+});

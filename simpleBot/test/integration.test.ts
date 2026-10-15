@@ -118,6 +118,40 @@ test(
                 ],
               };
         }
+        if (
+          last?.role === "user" &&
+          last.content.startsWith("New group messages")
+        ) {
+          const rows = JSON.parse(
+            last.content.slice(last.content.indexOf("\n") + 1),
+          ) as { id: string; text: string; username: string }[];
+          const silent = rows.every((row) =>
+            row.text.includes("finish silently"),
+          );
+          const separate = rows.some((row) => row.text.includes("independent"));
+          message = {
+            content: null,
+            tool_calls: [
+              {
+                id: `finish-${modelRequests.length}`,
+                type: "function",
+                function: {
+                  name: "finish_turn",
+                  arguments: JSON.stringify({
+                    messages: silent
+                      ? []
+                      : separate
+                        ? rows.map((row) => ({
+                            text: `Answer for ${row.username}`,
+                            reply_to: row.id,
+                          }))
+                        : [{ text: "Let's ship Friday." }],
+                  }),
+                },
+              },
+            ],
+          };
+        }
         if (input.stream) {
           response.writeHead(200, { "Content-Type": "text/event-stream" });
           const calls = message.tool_calls as
@@ -657,6 +691,85 @@ test(
       );
       assert.equal(plain.message.markdown, false);
       assert.ok(alice.invalidations > 0 && bob.invalidations > 0);
+      await say(alice, '@helper /config set autonomous "true"');
+      await until(
+        () => JSON.parse(readFileSync(configPath, "utf8")).autonomous === true,
+        "autonomous enabled through owner control",
+      );
+      const beforeGroup = modelRequests.length;
+      const startedGroup = Date.now();
+      await Promise.all([
+        say(alice, "When should we ship?"),
+        say(bob, "Friday works for the same launch."),
+      ]);
+      await until(
+        async () =>
+          (await ownMessages()).some(
+            (message) => message.text === "Let's ship Friday.",
+          ),
+        "combined plain autonomous answer",
+      );
+      assert.ok(Date.now() - startedGroup >= 2900);
+      const combined = (await ownMessages()).find(
+        (message) => message.text === "Let's ship Friday.",
+      );
+      assert.equal(combined?.reply, null);
+      assert.equal(
+        modelRequests.length,
+        beforeGroup + 1,
+        "the burst needs one decision and no extra completion after finish_turn",
+      );
+      const nextStarted = Date.now();
+      await Promise.all([
+        say(alice, "independent question one"),
+        say(bob, "independent question two"),
+      ]);
+      await until(
+        async () =>
+          (await ownMessages()).filter((message) =>
+            message.text.startsWith("Answer for"),
+          ).length === 2,
+        "independent replies in one turn",
+      );
+      assert.ok(Date.now() - nextStarted >= 2800);
+      const separate = (await ownMessages()).filter((message) =>
+        message.text.startsWith("Answer for"),
+      );
+      assert.ok(
+        separate.every((message) =>
+          message.reply?.text.includes("independent question"),
+        ),
+      );
+      const completed = (await ownMessages()).length;
+      await say(bob, "finish silently");
+      await until(
+        () =>
+          Store.load(statePath)
+            .tasks()
+            .some(
+              (task) =>
+                task.autonomous &&
+                task.status === "answered" &&
+                task.decision?.length === 0,
+            ),
+        "autonomous silence checkpointed",
+      );
+      assert.equal((await ownMessages()).length, completed);
+      const groupCalls = modelRequests.length;
+      await stop(bot);
+      await startBot();
+      await pause(150);
+      assert.equal(
+        modelRequests.length,
+        groupCalls,
+        "restart preserves completed group turns",
+      );
+      assert.equal((await ownMessages()).length, completed);
+      await say(alice, '@helper /config set autonomous "false"');
+      await until(
+        () => JSON.parse(readFileSync(configPath, "utf8")).autonomous === false,
+        "autonomous disabled through owner control",
+      );
       assert.ok(!botLogs.includes("ERROR"), "no worker errors after restart");
     } finally {
       for (const client of clients) client.socket.close();

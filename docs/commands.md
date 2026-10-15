@@ -225,3 +225,13 @@ When the optional SimpleBot demo is installed, regular members can use `@SimpleB
 and `@SimpleBot /reload` to validate and load file edits. `prompt` configures
 personality and user preferences as a separate user message; the system prompt
 remains fixed in code. These are worker controls; `/bot` remains server management.
+
+
+SimpleBot optionally supports autonomous group participation. An owner/admin can
+use `@SimpleBot /config set autonomous "true"` to consider unmentioned room
+messages in fixed three-second batches. Related questions can share one plain
+message; independent questions can receive separate targeted replies in one
+turn, or the bot can stay silent. This changes worker behavior within existing
+server grants. Set `autonomous` to `"false"` to restore mention-only room input.
+`model.maxToolCalls` defaults to 16 (range 1–16); explicitly update older saved
+limits with `@SimpleBot /config set model.maxToolCalls "16"`.

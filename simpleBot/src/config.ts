@@ -19,6 +19,7 @@ import { dirname } from "node:path";
 /** Keys an operator may set or fetch. Unknown keys are rejected. */
 export const CONFIG_KEYS = [
   "prompt",
+  "autonomous",
   "chat.url",
   "chat.token",
   "model.endpoint",
@@ -42,6 +43,7 @@ export const CONFIG_KEYS = [
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 
 export interface Settings {
+  autonomous: boolean;
   prompt: string;
   "chat.url": string;
   "chat.token": string;
@@ -64,6 +66,7 @@ export interface Settings {
 }
 
 export const DEFAULTS: Settings = {
+  autonomous: false,
   // Optional personality and user preferences; the system instructions stay in code.
   prompt: "",
   // CommonRoom base URL. Include the hosting base path when the server is not
@@ -88,7 +91,7 @@ export const DEFAULTS: Settings = {
   "chat.acknowledgeReads": false,
   "chat.historyWindow": 50,
   "chat.contextChars": 131072,
-  "model.maxToolCalls": 4,
+  "model.maxToolCalls": 16,
   // Upper bound on retained task/outbox records in the checkpoint.
   "chat.stateLimit": 200,
   "log.level": "info",
@@ -153,6 +156,7 @@ export function coerce(key: ConfigKey, raw: string): string | number | boolean {
       }
       return value;
     }
+    case "autonomous":
     case "model.stream":
     case "chat.respondToAllDms":
     case "chat.acknowledgeReads": {
@@ -171,8 +175,8 @@ export function coerce(key: ConfigKey, raw: string): string | number | boolean {
     }
     case "model.maxToolCalls": {
       const value = Number(text);
-      if (!Number.isSafeInteger(value) || value < 1 || value > 8)
-        throw new Error("tool call limit must be an integer 1-8");
+      if (!Number.isSafeInteger(value) || value < 1 || value > 16)
+        throw new Error("tool call limit must be an integer 1-16");
       return value;
     }
     case "chat.historyWindow": {
