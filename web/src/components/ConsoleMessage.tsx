@@ -1,7 +1,10 @@
 import { Markdown } from "./Markdown.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
-import { mentionedText } from "../features/conversation/interactions.ts";
+import {
+  mentionedText,
+  mentionedCommand,
+} from "../features/conversation/interactions.ts";
 import type { MessageDate } from "../features/conversation/messages.ts";
 import { useMessageEditorLayout } from "../hooks/useMessageEditorLayout.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
@@ -88,6 +91,7 @@ export function ConsoleMessage({
     editing && !!editValue && Array.from(editValue).length <= 4000;
   const reply = message.reply;
   const text = mentionedText(message.text, message.mentions);
+  const invocation = mentionedCommand(message.text, message.mentions);
   return (
     <article
       id={`message-${message.id}`}
@@ -185,6 +189,12 @@ export function ConsoleMessage({
                 </button>
               </div>
             </>
+          ) : invocation ? (
+            <p dir="auto">
+              <mark class="mention">{invocation.mention}</mark>
+              {invocation.separator}
+              <code>{invocation.command}</code>
+            </p>
           ) : message.markdown ? (
             <Markdown text={message.text} mentions={message.mentions} />
           ) : (

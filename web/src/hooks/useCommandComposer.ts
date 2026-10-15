@@ -6,17 +6,20 @@ import type {
   ReplyTarget,
   Hint,
   Command,
+  BotCommands,
 } from "../api/protocol.ts";
 import type { Aliases } from "../features/conversation/aliases.ts";
 import { expandAlias } from "../features/conversation/aliases.ts";
 import { suggestions } from "../features/conversation/console.ts";
 import { mentionSuggestions } from "../features/conversation/interactions.ts";
+import { botCommandSuggestions } from "../features/conversation/botCommands.ts";
 import {
   cursorSuggestions,
   nextHint,
 } from "../features/conversation/completion.ts";
 
 interface Context {
+  botCommands: BotCommands[];
   selected: string;
   direct: boolean;
   peer: string | null;
@@ -31,6 +34,7 @@ interface Context {
 }
 /** Composer editing, completion, keyboard controls and reply selection. */
 export function useCommandComposer({
+  botCommands,
   selected,
   direct,
   peer,
@@ -78,6 +82,10 @@ export function useCommandComposer({
     setCycle(null);
     setHintIndex(0);
   }, [selected]);
+  useEffect(() => {
+    setCycle(null);
+    setHintIndex(0);
+  }, [botCommands]);
   const completion = cursorSuggestions(draft, caret, (prefix) =>
     prefix.startsWith("/")
       ? suggestions(
@@ -105,12 +113,15 @@ export function useCommandComposer({
             ),
           },
         )
-      : mentionSuggestions(
-          prefix,
-          direct
-            ? [state.username, ...(peer ? [peer] : [])]
-            : [...(room?.members || [])],
-        ),
+      : [
+          ...botCommandSuggestions(prefix, botCommands),
+          ...mentionSuggestions(
+            prefix,
+            direct
+              ? [state.username, ...(peer ? [peer] : [])]
+              : [...(room?.members || [])],
+          ),
+        ],
   );
   const currentCompletion = cycle || completion;
   const hints = hintDismissed || pending ? [] : currentCompletion.hints;
@@ -171,9 +182,15 @@ export function useCommandComposer({
           : activeHint;
       const candidate = hints[index];
       if (candidate) {
-        if (hints.length > 1) setCycle(currentCompletion);
-        setHintIndex(index);
-        lastCompletedIndex.current = index;
+        if (candidate.advance) {
+          setCycle(null);
+          setHintIndex(0);
+          lastCompletedIndex.current = null;
+        } else {
+          if (hints.length > 1) setCycle(currentCompletion);
+          setHintIndex(index);
+          lastCompletedIndex.current = index;
+        }
         applyHint(candidate);
       }
       return;

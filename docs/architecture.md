@@ -23,7 +23,11 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `tests.rs` | Engine regression tests using isolated storage |
 
 `server/src/bots/` owns the machine profile, credential management and
-runtime configuration. Bot-only account/credential/conversation indexes rebuild
+runtime configuration and transient command discovery. `bots/control.rs` owns the native command and verified source-context HTTP adapters.
+`bots/discovery.rs` owns
+the bounded socket-lifetime catalogue registry and correlated requests; browser
+metadata reads recheck current engine permissions and publisher credentials.
+Bot-only account/credential/conversation indexes rebuild
 after metadata commits; new private chats add their index entry on commit.
 `bots/socket.rs` caches credential context and rechecks live expiry/revocation without
 rehashing credentials. Read/reaction preflight reads release the engine lock and

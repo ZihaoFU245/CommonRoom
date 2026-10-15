@@ -115,8 +115,16 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
     let mut budget = (Instant::now(), 0u32);
     let (sender, mut requests) = tokio::sync::mpsc::channel::<super::runtime::Request>(8);
     let mut runtime = Runtime::default();
+    let mut commands = super::discovery::Runtime::default();
+    let mut command_tick = tokio::time::interval(Duration::from_secs(1));
     loop {
+        while let Some(frame) = commands.next() {
+            if !send(&mut socket, Message::Text(frame.to_string().into())).await {
+                return;
+            }
+        }
         tokio::select! {
+            _ = command_tick.tick() => {},
             _ = heartbeat.tick() => {
                 if last_seen.elapsed() > Duration::from_secs(75) { break; }
                 let check_app = app.clone(); let check_context = context.clone();
@@ -134,6 +142,8 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
             }
             change = changes.recv() => {
                 let change = match change { Ok(c) => Some(c), Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None, Err(_) => break };
+                if matches!(change, Some(Change::BotCommands(_))) { continue; }
+                if (change.is_none() || matches!(change, Some(Change::All))) && commands.active() && commands.apply(&app, &context, None).await.is_err() { break; }
                 if !emit(&mut socket, value(&app, &context, change).await).await { break; }
             }
             activity = activities.recv() => {
@@ -167,8 +177,15 @@ async fn connection(app: App, headers: HeaderMap, context: Context, mut socket: 
                 match message {
                     Message::Text(raw) => {
                         if budget.0.elapsed() >= Duration::from_secs(10) { budget = (Instant::now(), 0); }
-                        budget.1 += 1;
-                        let result = if let Ok(activity) = serde_json::from_str::<Activity>(&raw) {
+                        let discovery = serde_json::from_str::<super::discovery::Control>(&raw).ok();
+                        let expected = discovery.as_ref().is_some_and(|control| commands.expected(control));
+                        if !expected { budget.1 += 1; }
+                        let result = if let Some(control) = discovery {
+                            let id = match &control { super::discovery::Control::Response { id, .. } => Some(id.clone()), _ => None };
+                            let result = if budget.1 > 30 && !expected { Err(Error::new(Code::RateLimited, "Control budget exhausted.")) }
+                                else { commands.apply(&app, &context, Some(control)).await.map(|_| ()) };
+                            (id, result)
+                        } else if let Ok(activity) = serde_json::from_str::<Activity>(&raw) {
                             let activity_app = app.clone(); let activity_context = context.clone(); let count = budget.1;
                             let result = tokio::task::spawn_blocking(move || {
                                 if count > 30 { return Err(Error::new(Code::RateLimited, "Control budget exhausted.")); }

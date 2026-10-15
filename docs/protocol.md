@@ -9,6 +9,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
+| `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
 
@@ -30,6 +31,7 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
 - `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"conversation",view,id,messages,unread}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
+- `{kind:"bot_commands",conversation_id}`: invalidate cached bot command metadata for this readable conversation; refetch only the active conversation.
 - `{kind:"presence",online}`: authorized online account names; preserves existing message data.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 

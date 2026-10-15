@@ -9,7 +9,8 @@ rtk proxy ./auto/check.sh
 ```
 
 This runs Rust formatting, Clippy with warnings as errors, Rust tests, integration-harness syntax, TypeScript
-checks, type-aware ESLint, web formatting, and web tests. Dependencies must be
+checks, type-aware ESLint, web formatting, and web tests. When the optional
+`simpleBot/` demo is present, its type checks and unit tests run too. Dependencies must be
 installed first. To run individual checks:
 
 ```sh
@@ -252,3 +253,54 @@ account mismatch and expired/corrupt checkpoints. These run with the normal web
 suite. V1 is the sole bot API namespace. Its refactored credential, revision and shared
 unread rules are tested with the worker; update the schema and consumers together. Rebuild both binaries before running the real
 integration suite.
+
+## Optional simpleBot checks
+
+When the separately supplied `simpleBot/` directory is present,
+`auto/check.sh` also checks `simpleBot/tsconfig.json` and runs the worker's unit
+and transport tests. They use temporary checkpoints and local loopback HTTP
+servers, with no model credentials. Regression coverage includes multipart
+restart recovery, repeated edits, in-flight retraction, multipage catch-up,
+receipt expiry, malformed responses, safe retry boundaries, streamed UTF-8 and
+error events, and activity capability/credential checks.
+
+After `rtk cargo build --locked`, run the real entrypoint test:
+
+```sh
+rtk proxy env BOT_INTEGRATION=1 node --test simpleBot/test/integration.test.ts
+```
+
+It starts an isolated Rust server under `/commonroom/`, a worker process, browser
+and bot sockets, and a keyless model stub. It verifies authentication, activity,
+Markdown defaults and opt-out, live model configuration, edit replies, reactions,
+and restart without duplicate output. Working `data/` and `simpleBot/data/` are
+never used by tests.
+
+Command discovery regressions cover typed v1 frames, catalogue bounds, duplicate
+publication ownership, unsolicited/stale responses, request expiry/capacity,
+scoped credentials without configuration authority, member-list privacy,
+revocation, and browser session authorization. Browser tests check mention-prefix
+completion, Unicode bot names, argument preservation and malformed metadata.
+Subcommand tests cover three-level descent, full usage paths, sibling uniqueness,
+depth/total-node limits, malformed children and caret suffix preservation.
+The simpleBot integration test verifies registration/query/response, browser
+invalidations, configuration-driven catalogue refresh, and disconnect/reconnect
+cleanup against a real isolated server without model calls for discovery.
+It also executes native model tools as the bot account, checks owner/admin controls independently, and verifies that private configuration never enters model context.
+Bot-invocation regressions preserve the full command and arguments in literal
+transcript rendering, and the real integration test checks that a second room
+member receives the full invocation and retained history keeps it intact.
+
+Native tool regressions cover buffered and streamed function calls, fragmented
+arguments, tool results, non-retryable command POSTs, saved mutation results,
+duplicate suppression and uncertain-effect restart/pruning behavior. Server tests
+cover current command/target grants, scoped-token isolation, bot admin access,
+verified sender roles, policy-inspection privacy, owner transfer/rename/deletion,
+and private-catalogue filtering against current ownership.
+
+SimpleBot configuration regressions cover quoted/empty values, Unicode and
+newline JSON round trips, CLI JSON output, invalid-file preservation, stale
+writers and lock contention, atomic reload and environment seed replacement.
+The real worker integration verifies prompt reload and transport reconnection
+after acknowledgement. `web/tests/wsProxy.test.js` exercises browser/server TCP
+half-close cleanup through the actual Vite proxy.

@@ -27,6 +27,11 @@ pub(super) fn routes() -> Router<App> {
                 .route("/me", get(me))
                 .route("/credentials", post(credential))
                 .route("/conversations", post(conversation))
+                .route(
+                    "/commands",
+                    get(super::control::commands).post(super::control::command),
+                )
+                .route("/message-context", get(super::control::message_context))
                 .route("/history", get(history))
                 .route("/messages", post(message))
                 .route("/read", post(read))
@@ -40,7 +45,7 @@ pub(super) fn routes() -> Router<App> {
 fn authenticate(app: &App, headers: &HeaderMap) -> Result<Context, Error> {
     Context::authenticate(app, headers)
 }
-async fn work<T: Serialize + Send + 'static>(
+pub(super) async fn work<T: Serialize + Send + 'static>(
     app: App,
     headers: HeaderMap,
     job: impl FnOnce(&App, &Context) -> Result<T, Error> + Send + 'static,
@@ -106,7 +111,7 @@ async fn history(
     }).await
 }
 // Capture authorization and revision, release the engine lock for SQLite reads.
-fn inspect<T>(
+pub(super) fn inspect<T>(
     app: &App,
     context: &Context,
     id: &str,
@@ -125,7 +130,10 @@ fn inspect<T>(
         .map(|value| (revision, value))
         .map_err(Error::storage)
 }
-fn admit(engine: &mut crate::engine::Engine, context: &Context) -> Result<String, Error> {
+pub(super) fn admit(
+    engine: &mut crate::engine::Engine,
+    context: &Context,
+) -> Result<String, Error> {
     let user = context.user(engine)?;
     engine
         .admit_bot_account(&context.account)

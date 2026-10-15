@@ -7,8 +7,12 @@ pub struct MessageInput {
     pub conversation_id: String,
     pub text: String,
     pub reply_to: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_markdown")]
     pub markdown: bool,
+}
+
+fn default_markdown() -> bool {
+    true
 }
 
 pub struct SendResult {
@@ -73,6 +77,8 @@ pub(crate) const RECEIPT_LIMIT: usize = 4096;
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Registration {
     pub tokens: BTreeMap<String, Credential>,
+    #[serde(default)]
+    pub owner_id: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Credential {
@@ -90,6 +96,13 @@ pub struct Credential {
 pub(crate) fn validate(data: &crate::engine::Data) -> Result<(), String> {
     let mut digests = std::collections::BTreeSet::new();
     for (id, registration) in &data.bots {
+        if registration
+            .owner_id
+            .as_ref()
+            .is_some_and(|owner| !data.users.values().any(|account| &account.id == owner))
+        {
+            return Err("Invalid bot owner.".into());
+        }
         if !data.users.values().any(|account| account.id == *id) || registration.tokens.len() > 8 {
             return Err("Invalid bot registration.".into());
         }
@@ -163,7 +176,9 @@ pub(crate) struct CredentialInput {
     pub conversations: std::collections::BTreeSet<String>,
     pub operations: std::collections::BTreeSet<String>,
 }
-pub(crate) const OPERATIONS: &[&str] = &["read", "send", "react", "read_ack", "activity", "config"];
+pub(crate) const OPERATIONS: &[&str] = &[
+    "read", "send", "react", "read_ack", "activity", "config", "commands",
+];
 #[derive(Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum ConversationInput {

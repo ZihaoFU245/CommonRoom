@@ -113,3 +113,14 @@ sparingly and omit message bodies, prompts and credentials.
 
 V1 is the sole bot API namespace. Keep the published schema, worker and live
 contract tests aligned when changing it; browser endpoints remain separate.
+
+## Advertise bot commands
+
+V1 workers register `commands_ready` on the bot socket and answer each
+`commands_request` with `commands_response` using its opaque request ID. Return
+an empty `commands` array when no message commands are implemented (the reference
+worker does this). The optional, separately supplied simpleBot demo returns its
+owner/admin control catalogue, separately from the server
+commands given to the model, and sends `commands_changed` after configuration
+changes. Discovery is independent of privileged runtime configuration. See
+[Bots](bots.md#command-discovery) for limits, lifecycle and browser visibility.

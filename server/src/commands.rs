@@ -34,7 +34,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Server",
             "/bot",
-            "/bot new name [scope] | ls [scope] | info name [scope] | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]",
+            "/bot new name [scope] | ls [scope] | info name [scope] | owner name user | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]",
             "Manage bot accounts, credentials and remote configuration",
             true,
         ),

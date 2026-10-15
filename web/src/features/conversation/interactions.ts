@@ -69,3 +69,14 @@ export function mentionedText(text: string, mentions: string[] = []) {
             .some((value) => nameCharacter(value) || value === "@")),
     }));
 }
+
+/** Keep addressed slash commands and their arguments literal in the transcript. */
+export function mentionedCommand(text: string, mentions: string[] = []) {
+  const match = /^(@\S+)(\s+)(\/\S+[\s\S]*)$/u.exec(text);
+  const mention = match?.[1];
+  const separator = match?.[2];
+  const command = match?.[3];
+  return mention && separator && command && mentions.includes(mention.slice(1))
+    ? { mention, separator, command }
+    : null;
+}

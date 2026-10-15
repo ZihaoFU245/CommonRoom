@@ -15,6 +15,9 @@ interface Callbacks {
 }
 export function useConnection(initial: Snapshot, handlers: Callbacks) {
   const [state, setState] = useState(initial);
+  const [botCommandVersions, setBotCommandVersions] = useState(
+    new Map<string, number>(),
+  );
   const currentState = useRef(initial);
   const [status, setStatus] = useState<"connecting" | "online" | "offline">(
     "connecting",
@@ -68,7 +71,23 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         if (stopped || socket.current !== ws) return;
         const data = parseFrame(String(event.data));
         if (!data) return;
+        if (data.kind === "bot_commands") {
+          setBotCommandVersions((previous) =>
+            new Map(previous).set(
+              data.conversation_id,
+              (previous.get(data.conversation_id) ?? 0) + 1,
+            ),
+          );
+          return;
+        }
         if (data.kind === "snapshot") {
+          const ids = new Set([
+            ...data.rooms.map((room) => room.id),
+            ...Object.values(data.private_access).map((access) => access.id),
+          ]);
+          setBotCommandVersions(
+            (previous) => new Map([...previous].filter(([id]) => ids.has(id))),
+          );
           sync.receive(boundSnapshot(data), baseline);
           baseline = false;
         } else if (data.kind === "conversation") {
@@ -116,5 +135,5 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
     };
   }, []);
 
-  return { state, currentState, status, socket };
+  return { state, currentState, status, socket, botCommandVersions };
 }

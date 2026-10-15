@@ -118,3 +118,14 @@ Bot credential JSON may include `expires`, `conversations` and `operations`.
 Operator-issued provisioning credentials leave these null; v1-issued worker
 credentials persist restricted scopes and an expiry. These metadata additions
 use the existing entities JSON and require no SQLite schema migration.
+
+Bot command catalogues are transient socket-owned metadata. They are not stored
+in SQLite or bot checkpoints, disappear on disconnect/restart, and are queried
+again from the worker. Command discovery does not change the v9 data schema.
+
+Bot registrations may include `owner_id` in their existing JSON metadata. Missing
+values mean administrator control, so existing v9 data remains readable without a
+SQLite migration. Stable IDs preserve ownership through renames; account deletion
+clears owned bot references transactionally. Worker task checkpoints may include
+private-command markers and native command intent/results; pending uncertain
+effects are retained and are not automatically replayed.

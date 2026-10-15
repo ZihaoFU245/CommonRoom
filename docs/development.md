@@ -92,3 +92,7 @@ Start with [Agent development](agent-development.md). The reference worker is
 development dependencies. It is independent of the browser UI. Extend its handler
 with model/tool calls while preserving its outbox and cursor ordering. Keep the published v1 schema, worker and contract tests aligned.
 Keep `/api/bot/v1/` as the sole bot API namespace; no alternative version is planned.
+
+The debug WebSocket proxy disconnects paired streams when either peer ends its
+TCP stream, avoiding late writes during navigation/logout. Transport failures
+still use the normal Vite error reporting.

@@ -428,6 +428,16 @@ export class AgentClient {
                 );
                 if (frame.kind === "snapshot" || frame.kind === "conversation")
                   schedule();
+                if (frame.kind === "commands_request")
+                  socket.send(
+                    JSON.stringify(
+                      validate("ClientFrame", {
+                        kind: "commands_response",
+                        id: frame.id,
+                        commands: [],
+                      }),
+                    ),
+                  );
               } catch (error) {
                 failure = error;
                 socket.close();
@@ -435,6 +445,11 @@ export class AgentClient {
             });
             socket.on("open", () => {
               backoff = 1000;
+              socket.send(
+                JSON.stringify(
+                  validate("ClientFrame", { kind: "commands_ready" }),
+                ),
+              );
               if (signal?.aborted) abort();
             });
             socket.on("error", () => socket.close());

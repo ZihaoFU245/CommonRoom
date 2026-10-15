@@ -126,10 +126,15 @@ struct Connection {
 pub(crate) struct Hub(
     Arc<Mutex<BTreeMap<String, Connection>>>,
     pub tokio::sync::broadcast::Sender<serde_json::Value>,
+    pub super::discovery::Hub,
 );
 impl Default for Hub {
     fn default() -> Self {
-        Self(Arc::default(), tokio::sync::broadcast::channel(64).0)
+        Self(
+            Arc::default(),
+            tokio::sync::broadcast::channel(64).0,
+            Default::default(),
+        )
     }
 }
 pub(crate) struct Lease {

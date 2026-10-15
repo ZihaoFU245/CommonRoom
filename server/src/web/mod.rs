@@ -1,4 +1,5 @@
 pub(crate) mod auth;
+mod bot_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
 pub(crate) mod security;
@@ -30,6 +31,7 @@ pub enum Change {
     Presence,
     Read(String),
     Conversation(String),
+    BotCommands(String),
 }
 
 #[derive(Clone)]
@@ -114,6 +116,7 @@ pub fn router(app: App) -> Router {
         .route("/api/me", get(auth::me))
         .route("/api/history", get(history::history))
         .route("/api/read", post(history::read))
+        .route("/api/bot-commands", get(bot_commands::get))
         .route("/api/health", get(|| async { Json(json!({ "ok": true })) }))
         .route("/ws", get(socket::upgrade));
     let routes = if app.config.base_url == "/" {

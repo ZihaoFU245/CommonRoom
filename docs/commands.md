@@ -141,6 +141,15 @@ following text. Command arguments suggest known users, rooms, scopes, permission
 retained message IDs/reactions, and bot subcommands. New names, passwords, bot
 token IDs, and remote configuration keys/values remain free-form.
 
+Connected bots advertise their own message commands through Bot API v1. Type
+`@BOT /` to see that bot's commands in the current conversation. Structured
+subcommands complete one level at a time: `@SimpleBot /config ` offers `get` and `set`; choosing a mode shows its arguments.
+These messages are delivered to the bot's handler. The browser uses cached
+metadata and makes no request while you type. See [Bots](bots.md#command-discovery).
+The transcript displays the mention followed by the complete command and
+arguments as literal code, including when Markdown is enabled. The invocation
+is an ordinary room message visible to all authorized readers.
+
 Settings opens Account with `/rename` and `/passwd` forms. Appearance controls
 light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 (12–18px); preferences stay in this browser. Reset restores defaults. Theme
@@ -203,3 +212,16 @@ create a new message or advance read cursors.
 Saving unchanged text behaves like Cancel: it does not send an edit or add an
 edited marker. Existing edited markers from earlier changes remain. Direct
 `/edit` commands with unchanged text also leave storage and revisions unchanged.
+
+`/bot owner BOT USER` assigns bot ownership by stable account identity; `/bot info`
+shows it. These remain server management commands. A bot may define its own
+`@BOT /command` controls and restrict them to its owner/administrators. simpleBot's
+configuration/diagnostic controls use that policy and are hidden from other
+users' completion. The model instead receives native server commands allowed by
+the bot account's grants.
+
+When the optional SimpleBot demo is installed, its owners/admins can use `@SimpleBot /config get` to list all settings
+(secrets redacted), `/config set key "value"` to apply a quoted value immediately,
+and `@SimpleBot /reload` to validate and load file edits. `prompt` configures
+personality and user preferences as a separate user message; the system prompt
+remains fixed in code. These are worker controls; `/bot` remains server management.

@@ -158,6 +158,19 @@ pub(crate) async fn connection(
                 user = match presence.authenticate(&headers).await { Ok(user) => user, Err(_) => break };
                 if matches!(&change, Ok(Change::Read(name)) if name != &user) { continue; }
                 if matches!(change, Err(broadcast::error::RecvError::Closed)) { break; }
+                if let Ok(Change::BotCommands(id)) = &change {
+                    if bot { continue; }
+                    let read_app = app.clone(); let read_user = user.clone(); let id = id.clone();
+                    let visible = tokio::task::spawn_blocking(move || {
+                        let engine = read_app.engine_read()?;
+                        Ok::<_, String>(engine.bot_target(&read_user, &id, crate::engine::authorization::Action::Read).is_ok().then_some(id))
+                    }).await;
+                    match visible {
+                        Ok(Ok(Some(id))) => { if !send(&mut socket, Message::Text(json!({"kind":"bot_commands","conversation_id":id}).to_string().into())).await { break; } },
+                        Ok(Ok(None)) => {}, _ => break,
+                    }
+                    continue;
+                }
                 if matches!(change, Ok(Change::Presence)) {
                     if bot { continue; }
                     let read_app = app.clone(); let read_user = user.clone();

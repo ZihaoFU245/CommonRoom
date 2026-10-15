@@ -51,7 +51,7 @@ test("command and argument matches are unlimited and navigation wraps in both di
 test("bot subcommands complete operations, account names and valid scopes", () => {
   assert.deepEqual(
     values("/bot "),
-    ["new", "ls", "info", "rm", "token", "config"].map(
+    ["new", "ls", "info", "owner", "rm", "token", "config"].map(
       (value) => `/bot ${value} `,
     ),
   );
@@ -65,6 +65,7 @@ test("bot subcommands complete operations, account names and valid scopes", () =
   );
   for (const prefix of [
     "/bot info ",
+    "/bot owner ",
     "/bot rm ",
     "/bot token new ",
     "/bot token ls ",
@@ -77,6 +78,7 @@ test("bot subcommands complete operations, account names and valid scopes", () =
   for (const prefix of ["/bot new worker ", "/bot ls ", "/bot info bob "]) {
     assert.deepEqual(values(prefix), [prefix + "team ", prefix + "@global "]);
   }
+  assert.deepEqual(values("/bot owner alice b"), ["/bot owner alice bob "]);
   assert.deepEqual(values("/bot rm bob "), ["/bot rm bob @global "]);
   for (const draft of [
     "/bot new w",

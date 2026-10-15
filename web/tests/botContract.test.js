@@ -151,3 +151,140 @@ test("the contract rejects browser payloads, ambiguous control responses and inv
   ])
     assert.throws(() => validate(name, value), /Invalid/);
 });
+
+test("v1 command discovery has bounded typed request and response contracts", () => {
+  validate("ServerFrame", {
+    kind: "commands_request",
+    id: "request-id",
+    conversation_id: "room-id",
+  });
+  for (const frame of [
+    { kind: "commands_ready" },
+    { kind: "commands_changed" },
+    {
+      kind: "commands_response",
+      id: "request-id",
+      commands: [
+        { name: "/model", usage: "/model", description: "Display settings" },
+      ],
+    },
+  ])
+    validate("ClientFrame", frame);
+  for (const frame of [
+    {
+      kind: "commands_response",
+      id: "request-id",
+      commands: new Array(65).fill({
+        name: "/a",
+        usage: "/a",
+        description: "a",
+      }),
+    },
+    {
+      kind: "commands_response",
+      id: "request-id",
+      commands: [{ name: "no-slash", usage: "no-slash", description: "a" }],
+    },
+    { kind: "commands_ready", account_id: "someone-else" },
+    { kind: "commands_response", commands: [] },
+  ])
+    assert.throws(() => validate("ClientFrame", frame), /Invalid/);
+});
+test("v1 subcommands use bare names with at most three command levels", () => {
+  const command = {
+    name: "/history",
+    usage: "/history",
+    description: "History",
+    subcommands: [
+      {
+        name: "before",
+        usage: "/history before",
+        description: "Before",
+        subcommands: [
+          {
+            name: "page",
+            usage: "/history before page",
+            description: "Page",
+          },
+        ],
+      },
+    ],
+  };
+  const frame = {
+    kind: "commands_response",
+    id: "request-id",
+    commands: [command],
+  };
+  validate("ClientFrame", frame);
+  command.subcommands[0].name = "/before";
+  assert.throws(() => validate("ClientFrame", frame), /Invalid/);
+  command.subcommands[0].name = "before";
+  command.subcommands[0].subcommands[0].subcommands = [
+    {
+      name: "extra",
+      usage: "/history before page extra",
+      description: "Too deep",
+    },
+  ];
+  assert.throws(() => validate("ClientFrame", frame), /Invalid/);
+});
+
+test("native commands, source context and private bot catalogues have distinct v1 contracts", () => {
+  validate("ServerCommandsQuery", { conversation_id: "room-id" });
+  validate("ServerCommandRequest", {
+    conversation_id: "room-id",
+    command: "/new room study",
+  });
+  validate("ServerCommandResponse", { result: "Created room study" });
+  validate("MessageContextResponse", {
+    author: {
+      id: "actor-id",
+      username: "alice",
+      groups: ["user"],
+      permissions: null,
+    },
+    bot: {
+      id: "bot-id",
+      groups: ["admin"],
+      owner_id: "actor-id",
+      owner: "alice",
+    },
+  });
+  validate("ClientFrame", {
+    kind: "commands_response",
+    id: "query-id",
+    commands: [
+      {
+        name: "/config",
+        usage: "/config get [key]",
+        description: "Private settings",
+        operator_only: true,
+        subcommands: [
+          {
+            name: "get",
+            usage: "/config get [key]",
+            description: "Read settings",
+          },
+        ],
+      },
+    ],
+  });
+  assert.throws(
+    () =>
+      validate("ServerCommandRequest", {
+        conversation_id: "room-id",
+        command: "/whoami",
+        actor_id: "forged",
+      }),
+    /Invalid/,
+  );
+  assert.throws(
+    () =>
+      validate("MessageContextQuery", {
+        conversation_id: "room-id",
+        message_id: "message-id",
+        groups: ["admin"],
+      }),
+    /Invalid/,
+  );
+});

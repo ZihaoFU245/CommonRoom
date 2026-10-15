@@ -16,6 +16,30 @@ const DEFAULT_COMMANDS: &[&str] = &[
 ];
 
 impl Engine {
+    pub(crate) fn bot_operator(&self, actor: &str, account: &str) -> bool {
+        let Some(bot) = self.bot_index.accounts.get(account) else {
+            return false;
+        };
+        self.active(actor)
+            && self.active(bot)
+            && (!self.has_group(Some(bot), Group::Su) || self.is_su(Some(actor)))
+            && (self.is_su(Some(actor))
+                || self.has_group(Some(actor), Group::Admin)
+                || self
+                    .data
+                    .bots
+                    .get(account)
+                    .and_then(|bot| bot.owner_id.as_deref())
+                    == self.principal_id(Some(actor)))
+    }
+    pub(crate) fn bot_owner(&self, account: &str) -> Option<String> {
+        let owner = self.data.bots.get(account)?.owner_id.as_ref()?;
+        self.data
+            .users
+            .iter()
+            .find(|(_, user)| &user.id == owner)
+            .map(|(name, _)| name.clone())
+    }
     pub fn authorize_bot_config(
         &self,
         actor: Option<&str>,
@@ -172,7 +196,7 @@ impl Engine {
                 let id = uuid::Uuid::new_v4().to_string();
                 // No password is issued. This is an ordinary account; /reset can later set one.
                 self.data.users.insert((*name).into(), Account { id: id.clone(), hash: "!no-password".into(), disabled: false });
-                self.data.bots.insert(id.clone(), Registration::default());
+                self.data.bots.insert(id.clone(), Registration {owner_id:self.principal_id(actor).filter(|id| *id != "console").map(str::to_owned), ..Default::default()});
                 self.data.policy.grants.push(Grant {
                     owner: false, subject: Subject::Account(id), scope: scope.clone(), minimum_age: 0,
                     permissions: DEFAULT_ACTIONS.iter().map(|a| a.name().to_owned())
@@ -184,6 +208,15 @@ impl Engine {
                 }
                 self.audit(actor, "/bot new", name);
                 Ok(format!("Created bot connection for {name} at {}. Read/send/reply/react and manuals granted; settings and deletion excluded. Issue an account-wide credential with /bot token new {name} LABEL.", self.scope_label(&scope)))
+            }
+            [_, "owner", name, owner] => {
+                let id = self.registered_id(name)?;
+                self.account_target(actor, name, Action::BotCredentials)?;
+                self.require_target_command(actor, &Scope::Server, "/bot")?;
+                let owner_id = self.data.users.get(*owner).filter(|user| !user.disabled).ok_or("Owner account unavailable.")?.id.clone();
+                self.data.bots.get_mut(&id).ok_or("Bot not found.")?.owner_id = Some(owner_id);
+                self.audit(actor, "/bot owner", name);
+                Ok(format!("Bot {name} is now owned by {owner}."))
             }
             [_, "ls"] | [_, "ls", _] => {
                 let scope = self.bot_scope(view, parts.get(2).copied())?;
@@ -212,7 +245,7 @@ impl Engine {
                     Scope::Room(id) => self.data.rooms.iter().find(|(_, r)| r.id == *id).map(|(n, _)| n.as_str()),
                     _ => None,
                 }).iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
-                Ok(format!("{name} ({id}) at {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}", self.scope_label(&scope), !self.active(name), self.online_connections.get(*name).copied().unwrap_or(0), self.effective(Some(name), &scope).names().join(", ")))
+                Ok(format!("{name} ({id}) at {}\nOwner: {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}", self.scope_label(&scope), self.bot_owner(&id).unwrap_or_else(|| "administrators".into()), !self.active(name), self.online_connections.get(*name).copied().unwrap_or(0), self.effective(Some(name), &scope).names().join(", ")))
             }
             [_, "token", "new", name, label] => {
                 let id = self.registered_id(name)?;
@@ -243,7 +276,7 @@ impl Engine {
                 self.audit(actor, "/bot token rm", name);
                 Ok(format!("Revoked account-wide credential {token_id} for {name}."))
             }
-            _ => Err("Usage: /bot new name [room|@global] | ls [room|@global] | info name [room|@global] | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]".into()),
+            _ => Err("Usage: /bot new name [room|@global] | ls [room|@global] | info name [room|@global] | owner name user | rm name @global | token new name label | token ls name | token rm name id | config set name key value | config fetch name [key]".into()),
         }
     }
 }

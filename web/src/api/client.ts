@@ -1,4 +1,10 @@
-import { isSnapshot, isHistory, isOk, responseError } from "./protocol.ts";
+import {
+  isSnapshot,
+  isHistory,
+  isOk,
+  responseError,
+  isBotCommandDirectory,
+} from "./protocol.ts";
 import type { ClientFrame, HistoryRange } from "./protocol.ts";
 
 export function sendFrame(socket: WebSocket, frame: ClientFrame) {
@@ -33,6 +39,13 @@ async function request<T>(
 }
 
 export const api = {
+  botCommands: (conversationId: string, signal: AbortSignal) =>
+    request(
+      `bot-commands?${new URLSearchParams({ conversation_id: conversationId })}`,
+      isBotCommandDirectory,
+      undefined,
+      signal,
+    ),
   me: () => request("me", isSnapshot),
   login: (username: string, password: string) =>
     request("login", isOk, { username, password }),

@@ -36,6 +36,22 @@ export interface Command {
   admin: boolean;
   console: boolean;
 }
+export interface BotCommand {
+  name: string;
+  usage: string;
+  description: string;
+  subcommands?: BotCommand[];
+  operator_only?: boolean;
+}
+export interface BotCommands {
+  account_id: string;
+  username: string;
+  commands: BotCommand[];
+}
+export interface BotCommandDirectory {
+  conversation_id: string;
+  bots: BotCommands[];
+}
 export interface Unread {
   count: number;
   first: number | null;
@@ -96,6 +112,7 @@ export interface Acknowledgement {
   text: string;
 }
 export type ServerFrame =
+  | { kind: "bot_commands"; conversation_id: string }
   | Snapshot
   | ConversationUpdate
   | Acknowledgement
@@ -119,6 +136,7 @@ export interface Hint {
   label: string;
   description: string;
   value: string | null;
+  advance?: boolean;
 }
 export interface LocalOutput {
   kind: "command";
@@ -254,6 +272,11 @@ export function parseFrame(raw: string): ServerFrame | null {
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
   if (
+    value.kind === "bot_commands" &&
+    typeof value.conversation_id === "string"
+  )
+    return { kind: "bot_commands", conversation_id: value.conversation_id };
+  if (
     value.kind === "conversation" &&
     typeof value.view === "string" &&
     typeof value.id === "string" &&
@@ -290,3 +313,58 @@ export function responseError(value: unknown): string {
     ? value.error
     : "Something went wrong. Please try again.";
 }
+
+function botCommandCatalogue(value: unknown): value is BotCommand[] {
+  let count = 0;
+  const encoder = new TextEncoder();
+  function level(items: unknown, parent: string, depth: number): boolean {
+    if (!Array.isArray(items) || items.length > 64) return false;
+    const names = new Set<string>();
+    return items.every((command: unknown) => {
+      if (!record(command) || typeof command.name !== "string") return false;
+      const path = parent ? `${parent} ${command.name}` : command.name;
+      if (
+        depth >= 3 ||
+        ++count > 64 ||
+        names.has(command.name) ||
+        !(depth === 0 ? /^\/[a-z0-9_-]{1,32}$/ : /^[a-z0-9_-]{1,32}$/).test(
+          command.name,
+        ) ||
+        (command.operator_only !== undefined &&
+          typeof command.operator_only !== "boolean") ||
+        typeof command.usage !== "string" ||
+        encoder.encode(command.usage).length > 256 ||
+        !(command.usage === path || command.usage.startsWith(`${path} `)) ||
+        typeof command.description !== "string" ||
+        !command.description.length ||
+        encoder.encode(command.description).length > 512 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(
+          command.usage + command.description,
+        )
+      )
+        return false;
+      names.add(command.name);
+      return (
+        command.subcommands === undefined ||
+        level(command.subcommands, path, depth + 1)
+      );
+    });
+  }
+  return (
+    level(value, "", 0) && encoder.encode(JSON.stringify(value)).length <= 32768
+  );
+}
+export const isBotCommandDirectory = (
+  value: unknown,
+): value is BotCommandDirectory =>
+  record(value) &&
+  typeof value.conversation_id === "string" &&
+  Array.isArray(value.bots) &&
+  value.bots.length <= 128 &&
+  value.bots.every(
+    (bot: unknown) =>
+      record(bot) &&
+      typeof bot.account_id === "string" &&
+      typeof bot.username === "string" &&
+      botCommandCatalogue(bot.commands),
+  );

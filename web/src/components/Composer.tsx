@@ -101,6 +101,7 @@ export function Composer({
                 type="button"
                 tabIndex={-1}
                 class={index === activeHint ? "active" : ""}
+                title={hint.description || undefined}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => acceptHint(hint)}
                 disabled={!hint.value}

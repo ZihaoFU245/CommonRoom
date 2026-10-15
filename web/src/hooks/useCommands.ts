@@ -11,6 +11,7 @@ import type {
   Room,
   PendingCommand,
   Acknowledgement,
+  BotCommands,
 } from "../api/protocol.ts";
 import { privatePeers, commandText } from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
@@ -37,6 +38,7 @@ import type { ComposerSubmission } from "../features/conversation/submission.ts"
 import { useCommandComposer } from "./useCommandComposer.ts";
 
 interface Context {
+  botCommands: BotCommands[];
   selected: string;
   direct: boolean;
   consoleView: boolean;
@@ -59,6 +61,7 @@ interface Context {
   logout: () => void;
 }
 export function useCommands({
+  botCommands,
   selected,
   direct,
   consoleView,
@@ -123,6 +126,7 @@ export function useCommands({
     selectCaret,
     dismissHints,
   } = useCommandComposer({
+    botCommands,
     selected,
     direct,
     peer,

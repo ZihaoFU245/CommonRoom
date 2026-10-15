@@ -256,11 +256,12 @@ export function suggestions(
   ];
   if (name === "/bot") {
     const operation = parts[1];
-    if (position === 1) values = ["new", "ls", "info", "rm", "token", "config"];
+    if (position === 1)
+      values = ["new", "ls", "info", "owner", "rm", "token", "config"];
     if (position === 2 && operation === "token") values = ["new", "ls", "rm"];
     if (position === 2 && operation === "config") values = ["set", "fetch"];
     if (
-      (position === 2 && ["info", "rm"].includes(operation || "")) ||
+      (position === 2 && ["info", "owner", "rm"].includes(operation || "")) ||
       (position === 3 && ["token", "config"].includes(operation || ""))
     )
       values = users;
@@ -269,6 +270,7 @@ export function suggestions(
       (position === 3 && ["new", "info"].includes(operation || ""))
     )
       values = [...rooms, "@global"];
+    if (position === 3 && operation === "owner") values = users;
     if (position === 3 && operation === "rm") values = ["@global"];
   }
   if (["/debug", "/markdown"].includes(name) && position === 1)

@@ -72,6 +72,9 @@ forwarded requests must indicate HTTPS. A browser Origin is unnecessary.
 | `GET /api/bot/v1/me` | `Snapshot`: account, credential context and readable conversation directory |
 | `POST /api/bot/v1/credentials` | `{label,expires,conversations,operations}`; `{id,token,expires}` (secret shown once) |
 | `POST /api/bot/v1/conversations` | `{kind:"room",name}` or `{kind:"direct",username}`; `{conversation_id}` |
+| `GET /api/bot/v1/commands?conversation_id=ID` | Current native server command catalogue under the bot account’s grants |
+| `POST /api/bot/v1/commands` | `{conversation_id,command}`; `{result}`; executes as the bot account |
+| `GET /api/bot/v1/message-context?conversation_id=ID&message_id=ID` | Verified source author, roles, inspectable permissions and bot ownership facts |
 | `GET /api/bot/v1/history` | `conversation_id`, sequence bounds and `limit` query; `HistoryResponse` |
 | `POST /api/bot/v1/messages` | `MessageRequest` plus required `Idempotency-Key`; `SendResponse` |
 | `POST /api/bot/v1/read` | `{conversation_id,through,acknowledge_shared_unread:true}`; `{ok:true}` |
@@ -110,7 +113,7 @@ before initiating either kind. Creation is not automatically retried by the clie
 
 Send `{conversation_id,text,reply_to?,markdown?}` with a fresh idempotency key.
 Text is trimmed, supports 1–4,000 Unicode characters, and remains literal even
-when it starts with `/`. Markdown defaults to false. A reply needs current read,
+when it starts with `/`. Markdown defaults to true; send `markdown:false` for plain text. A reply needs current read,
 send and `/reply` grants; all v1 sends need read/send access to return the result.
 A reply target must be retained in the selected conversation.
 
@@ -180,7 +183,7 @@ Treat notifications as signals to fetch new history and compare content revision
 up on reconnect and while connected; deduplicate by sequence/message ID.
 Snapshots are baselines, not instructions to replay every old mention.
 
-Incoming text frames accept `config_ready`, `config_response`, and
+Incoming text frames accept command discovery controls described below, `config_ready`, `config_response`, and
 `{kind:"activity",conversation_id,state:"working"|"idle"}`. Activity requires send
 access and the `activity` operation; readers of that conversation receive the
 state, stable `account_id`, and an `expires` timestamp 30 seconds ahead. It is
@@ -217,6 +220,81 @@ Error text is 1–1,024 UTF-8 bytes. Requests have a ten-second timeout, at most
 queued and eight in flight per handler. A set may apply before a timeout; fetch
 before retrying. Configuration and pending RPCs do not survive server restart.
 
+## Command discovery
+
+Command discovery is part of Bot API v1. A worker registers its catalogue
+handler with `{kind:"commands_ready"}` after receiving its baseline snapshot,
+including when it has no commands. Observation-only sockets do not register.
+This is independent of configuration registration and needs `read`, with `send`
+required on conversations whose commands are advertised; it needs no operator
+configuration grant or new credential operation. One command runtime owns an
+account at a time. Repeating registration on that socket is safe.
+
+The server sends `{kind:"commands_request",id,conversation_id}` for the worker's
+readable, writable conversation IDs. Respond on the same socket with:
+
+```json
+{
+  "kind": "commands_response",
+  "id": "REQUEST_ID",
+  "commands": [
+    {"name":"/model","usage":"/model","description":"Display the bot model settings"},
+    {"name":"/history","usage":"/history [mode]","description":"Read history",
+      "subcommands":[
+        {"name":"before","usage":"/history before <sequence>","description":"Read older messages"}
+      ]}
+  ]
+}
+```
+
+Return an empty array for no commands. Responses contain command metadata only,
+never secrets or requester-specific private information. Set `operator_only:true`
+on commands intended for the bot owner or global administrators; child commands
+inherit a protected parent’s visibility. The browser endpoint filters these
+commands using the viewer’s current authority. This is suggestion privacy, not
+execution authorization: each worker defines and enforces its own command ACL. The
+worker derives this list from its actual handlers, configuration and credential
+capabilities without a model call. Command metadata does not authorize execution.
+Send `{kind:"commands_changed"}` when settings change the catalogue; the server
+invalidates old requests/cache and queries the current conversations again.
+Directory and permission changes also trigger discovery. Chat sends and history
+revisions do not. Registration/responses/changes receive the existing control
+`config_ack` frame; errors retain the request ID when available.
+
+Each request has a ten-second deadline, at most eight in flight, and at most 256
+conversations per runtime. Each catalogue admits at most 64 command nodes total
+and 32 KiB serialized JSON. Commands may contain `subcommands` arrays, up to three
+levels including the root. Root names match `/[a-z0-9_-]{1,32}`; child names match
+`[a-z0-9_-]{1,32}` without a slash. Names must be unique among siblings. Usage
+starts with the full command path (for example `/history before`) followed by a
+space or ends there. Usage/description are at most 256/512
+UTF-8 bytes with no control characters. Description must be nonempty. A runtime
+caches at most 256 KiB of catalogue JSON. Malformed, unsolicited, expired,
+cancelled and wrong-socket responses are rejected. Responses to issued requests
+do not consume the unsolicited control-frame budget.
+
+Caches live only with the authenticated socket. Reads recheck credential
+expiry/revocation, current bot grants, and conversation visibility. Disconnect
+removes the catalogue; reconnect registers and discovers again.
+
+Completion descends through these subcommands locally; typing never queries the
+worker. Selecting `/history` opens its modes, and selecting `before` inserts
+`@BOT /history before ` while showing the sequence argument hint. A leaf's
+arguments are free text. Metadata describes syntax; the worker still parses and
+validates the ordinary message. Bot accounts need explicit private-conversation
+grants for DM discovery and execution, just as for all other Bot API operations.
+
+The browser reads cached metadata through session-authenticated
+`GET /api/bot-commands?conversation_id=ID`, returning
+`{conversation_id,bots:[{account_id,username,commands}]}`. It needs conversation
+read/send/member-list access and includes only active participating bots with
+current read/send credentials and grants. The browser socket emits
+`{kind:"bot_commands",conversation_id}` when that cache changes. Selecting a
+conversation, resuming focus, or receiving an invalidation refreshes this cache;
+typing never queries the bot. `@Bot /mo` completes to `@Bot /model ` in rooms
+and DMs, retaining the explicit mention prefix. Bare slash commands remain
+CommonRoom commands. Metadata contains no browser-executable code or action.
+
 ## Errors and limits
 
 HTTP errors use `{error:{code,message,retryable}}`. Branch on `code`, not message
@@ -248,3 +326,45 @@ including retries and credentials. Control frames have a separate per-socket
 For the runnable reference worker and checkpoint guidance, see
 [Agent development](agent-development.md). Persistence/upgrade rules are in
 [Data](data.md); checks are in [Testing](testing.md).
+
+## Server commands, source context and ownership
+
+Native server commands and a worker's own message commands are separate.
+`GET /commands` returns server syntax allowed by the bot account's current command
+grants. `POST /commands` executes that syntax as the bot, with current command and
+action/target checks through the ordinary engine. It needs `read` and `commands`
+credential operations and an account-wide conversation scope, because text
+commands can explicitly name other targets. Bot-management, password/provisioning
+and browser-only controls are excluded from this model-facing route. Room
+creation, memberships, messages/reactions/history, renames and delegated grant
+operations use the bot's ordinary grants. An admin bot has its corresponding
+admin commands; a user claiming to grant access in a message changes nothing.
+
+Command POSTs have no retry receipts. Do not automatically retry an uncertain
+response. The reference simpleBot persists effect intent/results and stops on
+ambiguous outcomes, while existing keyed message sends retain their guarantees.
+
+Workers may query `GET /message-context` for a retained source message they can
+read. This requires the credential's `read` and `config` operations in that
+conversation. The source author is resolved from the stored `author_id`, never
+from caller-supplied role or author names. The response is:
+
+```json
+{"author":{"id":"ACCOUNT_ID","username":"alice","groups":["admin"],"permissions":null},
+ "bot":{"id":"BOT_ID","groups":[],"owner_id":"OWNER_ID","owner":"alice"}}
+```
+
+`permissions` is the author's effective action permissions in this conversation,
+returned only when the bot itself has `r:policy.read` there; otherwise it is null.
+The worker applies its own access policy using these trusted facts. The server
+neither interprets nor implements the worker's private commands. simpleBot uses
+owner/admin access and retains the protected-su boundary. Source/context lookups
+recheck current credentials, identity, read access and content revision.
+
+A registration persists an optional stable `owner_id` in its existing metadata.
+New bots are owned by their human creator; stdin-created and legacy registrations
+have no owner until a global administrator assigns `/bot owner BOT USER`.
+`/bot info` reports the owner. Renames preserve ownership; deleting its account
+clears it. Ownership authorizes only the bot's chosen private controls, not server
+`/bot` management or credential issuance. The `/bot` family keeps its existing
+server management grants and global administrator boundary.

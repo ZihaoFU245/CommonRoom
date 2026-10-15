@@ -257,6 +257,10 @@ fn failed_writes_roll_back_creation_credentials_and_messages() {
             .is_err()
     );
     assert!(
+        e.execute(Some("admin"), None, "/bot owner helper human")
+            .is_err()
+    );
+    assert!(
         e.send_literal("helper", "support", "not committed")
             .is_err()
     );
@@ -292,6 +296,8 @@ fn registrations_and_credentials_survive_current_schema_restart() {
         let mut e = Engine::open(&path).unwrap();
         e.execute(None, None, "/new room support").unwrap();
         e.execute(None, Some("support"), "/bot new helper").unwrap();
+        e.provision("owner", "hash".into(), false, false).unwrap();
+        e.execute(None, None, "/bot owner helper owner").unwrap();
         secret = e
             .execute(None, None, "/bot token new helper runner")
             .unwrap()
@@ -303,6 +309,10 @@ fn registrations_and_credentials_survive_current_schema_restart() {
     }
     let e = Engine::open(&path).unwrap();
     assert_eq!(e.bot_identity(&secret).as_deref(), Some("helper"));
+    assert_eq!(
+        e.bot_owner(&e.data.users["helper"].id).as_deref(),
+        Some("owner")
+    );
     assert_eq!(
         e.history("helper", "support").unwrap().messages[0].text,
         "preserved"

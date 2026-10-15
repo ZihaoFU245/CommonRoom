@@ -639,7 +639,8 @@ Manage bot accounts, tokens and external runtime settings. `[scope]` and `[key]`
 
 - `/bot new name [scope]` — create a bot with read/send/reply/react and manual access.
 - `/bot ls [scope]` — list bots; a room scope filters by membership.
-- `/bot info name [scope]` — show status, connections and permissions.
+- `/bot info name [scope]` — show owner, status, connections and permissions.
+- `/bot owner name user` — assign the bot owner by stable account identity.
 - `/bot rm name @global` — delete the account and its tokens.
 
 Scope defaults to the current room. Console/private views need an explicit room. Always write `@global` explicitly.

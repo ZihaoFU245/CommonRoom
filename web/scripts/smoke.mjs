@@ -1464,7 +1464,7 @@ try {
   }
   assert.equal(
     (await botFetch("commands", { command: "/whoami" })).status,
-    404,
+    422,
   );
   const scoped = await botFetch("credentials", {
     label: "reader",

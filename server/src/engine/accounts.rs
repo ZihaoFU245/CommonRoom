@@ -305,6 +305,11 @@ impl Engine {
         self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         self.data.users.remove(name);
         self.data.bots.remove(&deleted_id);
+        for bot in self.data.bots.values_mut() {
+            if bot.owner_id.as_ref() == Some(&deleted_id) {
+                bot.owner_id = None;
+            }
+        }
         for room in self.data.rooms.values_mut() {
             if room.owner_id == deleted_id {
                 room.owner_id = "console".into();

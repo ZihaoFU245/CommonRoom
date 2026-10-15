@@ -22,6 +22,7 @@ import { Settings } from "./Settings.tsx";
 import { Composer } from "./Composer.tsx";
 import { MessageList } from "./MessageList.tsx";
 import { useConnection } from "../hooks/useConnection.ts";
+import { useBotCommands } from "../hooks/useBotCommands.ts";
 import { useHistory } from "../hooks/useHistory.ts";
 import { useComposerResize } from "../hooks/useComposerResize.ts";
 import { useFonts } from "../hooks/useFonts.ts";
@@ -148,52 +149,53 @@ export function Chat({
   const input = useRef<HTMLTextAreaElement>(null);
   const { output, cleared, setCleared, ledger, append, complete, clearView } =
     useLocalConsole(initial, selected, selectedRef, atBottom);
-  const { state, currentState, status, socket } = useConnection(initial, {
-    onLogout,
-    onSnapshot(previous, data, baseline) {
-      const view = selectedRef.current;
-      const oldId =
-        previous.private_access[view]?.id ??
-        previous.rooms.find((room) => room.name === view)?.id;
-      if (
-        oldId &&
-        !data.private_access[view] &&
-        !data.rooms.some((room) => room.name === view)
-      ) {
-        const renamedView =
-          Object.keys(data.private_access).find(
-            (key) => data.private_access[key]?.id === oldId,
-          ) ?? data.rooms.find((room) => room.id === oldId)?.name;
-        if (renamedView) setSelected(renamedView);
-      }
-      const contentChanged =
-        previous.rooms !== data.rooms || previous.direct !== data.direct;
-      if (contentChanged)
-        notifyMentions(previous, data, {
-          baseline,
-          enabled: notificationsRef.current,
-          NotificationClass: window.Notification,
-          background: document.hidden || !document.hasFocus(),
-          selected: selectedRef.current,
-          open: (view) => {
-            window.focus();
-            setSelected(view);
-          },
-        });
+  const { state, currentState, status, socket, botCommandVersions } =
+    useConnection(initial, {
+      onLogout,
+      onSnapshot(previous, data, baseline) {
+        const view = selectedRef.current;
+        const oldId =
+          previous.private_access[view]?.id ??
+          previous.rooms.find((room) => room.name === view)?.id;
+        if (
+          oldId &&
+          !data.private_access[view] &&
+          !data.rooms.some((room) => room.name === view)
+        ) {
+          const renamedView =
+            Object.keys(data.private_access).find(
+              (key) => data.private_access[key]?.id === oldId,
+            ) ?? data.rooms.find((room) => room.id === oldId)?.name;
+          if (renamedView) setSelected(renamedView);
+        }
+        const contentChanged =
+          previous.rooms !== data.rooms || previous.direct !== data.direct;
+        if (contentChanged)
+          notifyMentions(previous, data, {
+            baseline,
+            enabled: notificationsRef.current,
+            NotificationClass: window.Notification,
+            background: document.hidden || !document.hasFocus(),
+            selected: selectedRef.current,
+            open: (view) => {
+              window.focus();
+              setSelected(view);
+            },
+          });
 
-      if (
-        desiredRoom.current &&
-        (data.rooms.some((r) => r.name === desiredRoom.current) ||
-          (desiredRoom.current.startsWith("@direct:") &&
-            privatePeers(data).includes(desiredRoom.current.slice(8))))
-      ) {
-        setSelected(desiredRoom.current);
-        desiredRoom.current = null;
-      }
-    },
-    onResult: (data) => commands.receive(data),
-    onDisconnect: () => commands.disconnect(),
-  });
+        if (
+          desiredRoom.current &&
+          (data.rooms.some((r) => r.name === desiredRoom.current) ||
+            (desiredRoom.current.startsWith("@direct:") &&
+              privatePeers(data).includes(desiredRoom.current.slice(8))))
+        ) {
+          setSelected(desiredRoom.current);
+          desiredRoom.current = null;
+        }
+      },
+      onResult: (data) => commands.receive(data),
+      onDisconnect: () => commands.disconnect(),
+    });
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
     () => privatePeers(state),
@@ -223,6 +225,15 @@ export function Chat({
     ],
   );
   const commands = useCommands({
+    botCommands: useBotCommands(
+      room?.id ?? state.private_access[selected]?.id,
+      botCommandVersions.get(
+        room?.id ?? state.private_access[selected]?.id ?? "",
+      ) ?? 0,
+      state.policy_revision,
+      room?.members.join("\0") ?? peer ?? "",
+      status === "online",
+    ),
     selected,
     direct,
     consoleView,

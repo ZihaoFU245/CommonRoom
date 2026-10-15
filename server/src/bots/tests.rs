@@ -10,6 +10,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tower::ServiceExt;
+#[path = "command_tests.rs"]
+mod command_tests;
 
 fn fixture() -> (App, String) {
     let mut engine = Engine::open(Path::new(":memory:")).unwrap();
@@ -162,7 +164,7 @@ async fn runtime_config_roundtrip_is_private_delegated_and_rechecked() {
         )
         .await
         .0,
-        StatusCode::NOT_FOUND
+        StatusCode::UNPROCESSABLE_ENTITY
     );
     assert!(ConfigCommand::parse("/bot config fetch helper prompt extra").is_err());
     assert!(ConfigCommand::parse("/bot config set helper bad/key x").is_err());
@@ -372,7 +374,7 @@ async fn send(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 #[tokio::test]
-async fn profile_is_bearer_only_scoped_and_has_no_command_transport() {
+async fn profile_is_bearer_only_scoped_and_has_no_legacy_command_transport() {
     let (app, token) = fixture();
     assert_eq!(
         request(&app, None, "GET", "/api/bot/v1/me", json!({}))
@@ -387,7 +389,7 @@ async fn profile_is_bearer_only_scoped_and_has_no_command_transport() {
     assert_eq!(snapshot["conversations"][0]["id"], conversation(&app));
     assert_eq!(snapshot["conversations"][0]["permissions"]["reply"], true);
     assert!(snapshot.get("rooms").is_none());
-    for path in ["/api/bot/me", "/api/bot/ws", "/api/bot/v1/commands"] {
+    for path in ["/api/bot/me", "/api/bot/ws"] {
         assert_eq!(
             request(&app, Some(&token), "GET", path, json!({})).await.0,
             StatusCode::NOT_FOUND
@@ -409,6 +411,36 @@ async fn profile_is_bearer_only_scoped_and_has_no_command_transport() {
     assert_eq!(schema["$id"], "urn:commonroom:bot-api:v1");
     assert!(schema["definitions"]["ServerFrame"].is_object());
 }
+#[tokio::test]
+async fn bot_markdown_defaults_on_and_plain_text_remains_explicit() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let input = json!({"conversation_id":id,"text":"**default**"});
+    let (status, sent) = send(&app, &token, "markdown-default", input.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(sent["message"]["markdown"], true);
+    let mut explicit = input;
+    explicit["markdown"] = json!(true);
+    let (status, replay) = send(&app, &token, "markdown-default", explicit.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["replayed"], true);
+    explicit["markdown"] = json!(false);
+    assert_eq!(
+        send(&app, &token, "markdown-default", explicit.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    explicit["reply_to"] = sent["message"]["id"].clone();
+    let (status, plain) = send(&app, &token, "plain", explicit.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(plain["message"]["markdown"], false);
+    explicit.as_object_mut().unwrap().remove("markdown");
+    let (status, reply) = send(&app, &token, "markdown-reply", explicit).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["message"]["markdown"], true);
+}
+
 #[tokio::test]
 async fn keyed_plain_sends_and_replies_are_atomic_literal_and_uniform() {
     let (app, token) = fixture();
@@ -1115,3 +1147,6 @@ async fn unhealthy_unread_metadata_does_not_hide_healthy_bot_conversations() {
         .unwrap();
     assert!(broken["unread"].is_null());
 }
+
+#[path = "discovery_tests.rs"]
+mod discovery_tests;

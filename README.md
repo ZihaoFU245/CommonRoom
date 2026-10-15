@@ -108,4 +108,19 @@ to return. `/ls room` lists rooms and their owners plus your own readable privat
 conversations; it excludes other people's private pairs, even for su.
 Use `/ls user` or `/ls @admin` to list accounts, `/new user NAME PASSWORD` to create one, and `/rm user NAME` or `/rm room NAME` for removal. Browser removals ask for confirmation; `/alias A B` saves a local command-prefix mapping. See [Commands](docs/commands.md) for syntax and [Security](docs/security.md) for permissions.
 
+## External agents
+
+Bots are ordinary accounts with machine credentials. Create one with `/bot new`
+and issue a credential with `/bot token new`, then point an external worker at
+`/api/bot/v1/`. The server owns identity, grants and history; the worker owns
+models, tools and scheduling, so the API stays independent of any agent framework.
+
+The included reference worker lives in `web/scripts/bot/`; see
+[Agent development](docs/agent-development.md) for running it. An optional,
+separately supplied `simpleBot/` demo adds model integration and runtime controls.
+
+See [Bots](docs/bots.md) for the HTTP/WebSocket contract,
+[Agent development](docs/agent-development.md) for worker responsibilities, and
+[Commands](docs/commands.md) for `/bot` syntax and grants.
+
 See [docs/README.md](docs/README.md) for development, architecture, commands, testing, and deployment guides.

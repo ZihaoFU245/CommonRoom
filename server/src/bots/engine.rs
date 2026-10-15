@@ -12,6 +12,41 @@ pub(crate) struct Target {
     pub revision: u64,
 }
 impl Engine {
+    pub(crate) fn bot_command_peers(
+        &self,
+        user: &str,
+        id: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        let target = self
+            .bot_target(user, id, Action::Read)
+            .map_err(|e| e.to_string())?;
+        if !self.allows(Some(user), &target.scope, Action::Send)
+            || !self.allows(Some(user), &target.scope, Action::Members)
+        {
+            return Ok(Vec::new());
+        }
+        let members: Vec<_> = target.view.strip_prefix("@private:").map_or_else(
+            || {
+                self.data
+                    .rooms
+                    .get(&target.view)
+                    .map(|room| room.members.iter().cloned().collect())
+                    .unwrap_or_default()
+            },
+            |pair| pair.split(':').map(str::to_owned).collect(),
+        );
+        Ok(members
+            .into_iter()
+            .filter_map(|name| {
+                let account = self.data.users.get(&name)?;
+                (self.data.bots.contains_key(&account.id)
+                    && !account.disabled
+                    && self.bot_target(&name, id, Action::Read).is_ok()
+                    && self.bot_target(&name, id, Action::Send).is_ok())
+                .then(|| (account.id.clone(), name))
+            })
+            .collect())
+    }
     pub(crate) fn bot_target(&self, user: &str, id: &str, action: Action) -> Result<Target, Error> {
         if !models::valid_id(id) {
             return Err(Error::new(Code::InvalidRequest, "Invalid conversation ID."));

@@ -4,11 +4,43 @@ import {
   mentionSuggestions,
   mentionEvents,
   mentionedText,
+  mentionedCommand,
 } from "../src/features/conversation/interactions.ts";
 const snapshot = (messages = [], direct = []) => ({
   username: "alice",
   rooms: [{ name: "room", messages }],
   direct,
+});
+
+test("addressed bot commands retain the full literal command and arguments", () => {
+  for (const text of [
+    "@SimpleBot /whoami",
+    "@SimpleBot /history range 10 20",
+    "@SimpleBot /long **title** <sample>",
+    "@用户🙂\n/schema",
+  ]) {
+    const name = text.split(/\s/u)[0].slice(1);
+    const invocation = mentionedCommand(text, [name]);
+    assert.ok(invocation);
+    assert.equal(
+      invocation.mention + invocation.separator + invocation.command,
+      text,
+    );
+    assert.ok(invocation.command.startsWith("/"));
+  }
+  assert.deepEqual(mentionedCommand("@SimpleBot /whoami", ["SimpleBot"]), {
+    mention: "@SimpleBot",
+    separator: " ",
+    command: "/whoami",
+  });
+  for (const text of [
+    "@SimpleBot hello",
+    "/whoami",
+    "hello @SimpleBot /whoami",
+    "mail@SimpleBot /whoami",
+  ])
+    assert.equal(mentionedCommand(text, ["SimpleBot"]), null);
+  assert.equal(mentionedCommand("@SimpleBot /whoami", []), null);
 });
 test("mentions complete room members and preserve Unicode drafts without matching emails", () => {
   assert.equal(
