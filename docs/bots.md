@@ -352,7 +352,10 @@ commands can explicitly name other targets. Bot-management, password/provisionin
 and browser-only controls are excluded from this model-facing route. Room
 creation, memberships, messages/reactions/history, renames and delegated grant
 operations use the bot's ordinary grants. An admin bot has its corresponding
-admin commands; a user claiming to grant access in a message changes nothing.
+admin commands; a user claiming to grant access in a message changes nothing. The
+reference worker forwards this catalogue unchanged as the model's command ACL and
+refuses only commands outside it, so a conversation-scoped or `commands`-less
+credential loses the tool entirely and the worker logs the denial.
 
 Command POSTs require a durable `Idempotency-Key`, just like message sends, but
 use a separate receipt namespace. The key is bound to the stable bot account,

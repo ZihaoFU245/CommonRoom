@@ -157,6 +157,13 @@ message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
 keys; unsupported versions are rejected. This does not change server schema v10.
+Saved v1 group decisions (including silence), batch membership and pending
+outbox keys recover without fresh inference. KV v2 adds an optional per-task
+`replyHash` marking the input version with a committed final response plan;
+the marker is saved with the outbox and survives restart. Existing v2 data stays
+readable, and existing matching output records seed that marker on open. Migration
+is forward-only: the old v1 worker cannot open a v2 database. Back up while the
+worker is stopped before upgrading if a downgrade may be needed.
 Scan cursors advance on durable input admission; tick consumption and delivery
 acknowledgements are separate. Interrupted model attempts become runnable again;
 committed decisions are not regenerated. Interrupted jobs retain uncertain

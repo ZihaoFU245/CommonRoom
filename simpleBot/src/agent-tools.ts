@@ -194,21 +194,15 @@ export class NativeTools {
           error: "Expected only a command string",
         });
       const command = input.command.trim();
+      // The catalogue is the server's authorization surface: it advertises what
+      // this bot account may run, and the server rechecks every grant, scope and
+      // target when the command executes. The worker filters nothing else.
       if (
         command.length > 4100 ||
         !commands.some((c) => c.name === command.split(/\s/u)[0])
       )
         return JSON.stringify({
           error: "Command is not in the available server catalogue",
-        });
-      if (/^(?:\/sudo\s+)?\/(?:reply|tell)(?:\s|$)/u.test(command))
-        return JSON.stringify({
-          error:
-            "Return your answer as the final response; replies are sent once through the worker outbox",
-        });
-      if (/^(?:\/sudo\s+)?\/history(?:\s|$)/u.test(command))
-        return JSON.stringify({
-          error: "Use read_history for conversation history",
         });
       if (task.status === "cancelled" || this.host.abort.signal.aborted)
         throw new Error("Task was cancelled before command execution");

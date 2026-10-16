@@ -7,6 +7,7 @@ import { AgentLoop } from "./agent-loop.ts";
 import { Controls } from "./agent-controls.ts";
 import { ModelContext } from "./agent-model.ts";
 import { Outbox } from "./outbox.ts";
+import { recoverLegacyGroups } from "./legacy-recovery.ts";
 import type { BotApi } from "./api.ts";
 import type { ChatModel } from "./model.ts";
 import type { Snapshot, HistoryResponse, BotCommand } from "./wire.ts";
@@ -115,6 +116,7 @@ export class Agent extends AgentState {
     } finally {
       this.syncing = false;
     }
+    await recoverLegacyGroups(this, this.outbox);
     await this.admitControls();
     if (this.drainRequested && !this.stopped) {
       this.drainRequested = false;
@@ -166,9 +168,17 @@ export class Agent extends AgentState {
             response,
           );
         task.status = "answered";
+        this.options.log(
+          "debug",
+          `control command answered conversation=${conversation.id} input=${task.input} replied=${response !== undefined}`,
+        );
       } catch (error) {
         task.status = "failed";
         task.error = error instanceof Error ? error.message : "Control failed";
+        this.options.log(
+          "error",
+          `control command failed conversation=${conversation.id} input=${task.input}: ${task.error}`,
+        );
       }
       this.endActivity(conversation.id);
       task.updated = Date.now();

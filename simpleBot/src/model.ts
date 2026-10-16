@@ -1,4 +1,6 @@
-import { finishTickTool, tickDecision, type TickDecision } from "./tick.ts";
+import { finishTickTool, type TickDecision } from "./tick.ts";
+import { tickResponse } from "./tick-response.ts";
+import { tickResponseShape } from "./model-diagnostics.ts";
 import { abortable } from "./async.ts";
 import { ToolJobs, WAIT_JOBS_TOOL } from "./tool-jobs.ts";
 import { ToolLocks, type ToolAccess } from "./tool-locks.ts";
@@ -124,6 +126,13 @@ export class ModelError extends Error {
 export interface CompletionRequest {
   messages: ChatMessage[];
   tools?: FunctionTool[];
+  /** Host-approved message IDs for targeted replies in this tick. */
+  replyTargets?: string[];
+  maxReplyMessages?: number;
+  /** One bounded recovery tick with no tools or continuation after repeated invalid plans. */
+  answerOnly?: boolean;
+  /** Diagnostics only; never serialized into the provider payload. */
+  tickId?: number;
   executeTool?(
     name: string,
     argumentsText: string,
@@ -201,10 +210,15 @@ export class ModelClient implements ChatModel {
 
   /** Exactly one provider request. Retries and tools belong to the event loop. */
   async tick(request: CompletionRequest): Promise<TickDecision> {
-    const tools = (request.tools ?? []).filter(
+    const tools = (request.answerOnly ? [] : (request.tools ?? [])).filter(
       (tool) => !["finish_turn", "wait_jobs"].includes(tool.function.name),
     );
-    const envelope = finishTickTool(tools);
+    const envelope = finishTickTool(
+      tools,
+      request.replyTargets,
+      request.maxReplyMessages,
+    );
+    const advertised = request.answerOnly ? [] : [envelope, ...tools];
     const meter = request.contextKey
       ? (this.tokenMeters.get(request.contextKey) ?? new ProviderTokens())
       : new ProviderTokens();
@@ -224,18 +238,18 @@ export class ModelClient implements ChatModel {
       request.compactTokens ?? 24576,
       total - Math.min(request.maxTokens ?? 4096, Math.floor(total / 4)),
     );
-    let budget = meter.count(messages, [envelope], request.reasoningEffort);
+    let budget = meter.count(messages, advertised, request.reasoningEffort);
     if (budget.tokens >= target && request.compact) {
       messages = request.compact(
         messages,
         Math.max(
           128,
-          target - estimateTokens({ tools: [envelope] }, meter.tokensPerByte),
+          target - estimateTokens({ tools: advertised }, meter.tokensPerByte),
         ),
         meter.tokensPerByte,
       );
       meter.reset();
-      budget = meter.count(messages, [envelope], request.reasoningEffort);
+      budget = meter.count(messages, advertised, request.reasoningEffort);
     }
     const maxTokens = Math.min(
       request.maxTokens ?? 4096,
@@ -250,11 +264,16 @@ export class ModelClient implements ChatModel {
         ])
       : AbortSignal.timeout(this.options.timeoutMs);
     const started = performance.now();
+    const trace = `conversation=${request.contextKey ?? "standalone"} tick=${request.tickId ?? "standalone"}`;
+    this.options.log(
+      "debug",
+      `model tick request ${trace} model=${JSON.stringify(this.options.model)} stream=${this.options.stream} messages=${messages.length} advertised_tools=${advertised.length} native_tools=${tools.length} input_budget=${budget.tokens} budget_source=${budget.source} max_tokens=${maxTokens} reasoning_effort=${request.reasoningEffort || "provider_default"} reply_targets=${request.replyTargets?.length ?? "unspecified"} max_reply_messages=${request.maxReplyMessages ?? "unspecified"}`,
+    );
     try {
       const input = {
         ...request,
         messages,
-        tools: [envelope],
+        tools: advertised,
         maxTokens,
         signal,
       };
@@ -262,11 +281,19 @@ export class ModelClient implements ChatModel {
         this.options.stream ? this.stream(input) : this.buffered(input),
         signal,
       );
+      this.options.log(
+        "debug",
+        `model tick response ${trace} ${tickResponseShape(
+          turn.text,
+          turn.calls,
+          (request.tools ?? []).map((tool) => tool.function.name),
+        )}`,
+      );
       request.onCall?.({
         success: true,
         durationMs: performance.now() - started,
         inputBytes: Buffer.byteLength(
-          JSON.stringify({ messages, tools: [envelope] }),
+          JSON.stringify({ messages, tools: advertised }),
         ),
         inputBudget: budget,
         ...(turn.usage ? { usage: turn.usage } : {}),
@@ -274,22 +301,72 @@ export class ModelClient implements ChatModel {
       if (turn.usage?.prompt !== undefined)
         meter.observe(
           messages,
-          [envelope],
+          advertised,
           request.reasoningEffort,
           turn.usage.prompt,
         );
-      if (
-        turn.calls.length !== 1 ||
-        turn.calls[0].function.name !== "finish_tick"
-      )
-        throw new ModelError(422, "Expected exactly one finish_tick decision");
-      try {
-        return tickDecision(
-          JSON.parse(turn.calls[0].function.arguments),
-          tools,
+      // Auto tool selection permits an ordinary assistant answer. Preserve the
+      // pre-tick behavior instead of asking the model to answer a second time.
+      if (turn.calls.length === 0) {
+        this.options.log(
+          "debug",
+          `model tick accepted ${trace} format=final_text messages=${turn.text ? 1 : 0} actions=0 next=wait`,
         );
-      } catch {
-        throw new ModelError(422, "Invalid finish_tick decision");
+        return {
+          messages: turn.text ? [{ text: turn.text }] : [],
+          actions: [],
+          next: { kind: "wait" },
+        };
+      }
+      if (
+        turn.calls.filter((call) => call.function.name === "finish_tick")
+          .length > 1 ||
+        turn.calls.some(
+          (call) =>
+            !advertised.some(
+              (tool) => tool.function.name === call.function.name,
+            ),
+        )
+      ) {
+        const known = new Set([
+          "finish_tick",
+          ...(request.tools ?? []).map((tool) => tool.function.name),
+        ]);
+        const names = turn.calls
+          .map((call) =>
+            known.has(call.function.name) ? call.function.name : "unavailable",
+          )
+          .join(",");
+        this.options.log(
+          "warn",
+          `model tick rejected ${trace} reason=unexpected_tool_calls count=${turn.calls.length} tools=${names}`,
+        );
+        throw new ModelError(
+          422,
+          `Expected at most one finish_tick decision and available native tools (received ${turn.calls.length}: ${names})`,
+        );
+      }
+      try {
+        const { decision, coalesced } = tickResponse(turn.calls, tools);
+        const format = turn.calls.every(
+          (call) => call.function.name === "finish_tick",
+        )
+          ? "finish_tick"
+          : "native_tools";
+        this.options.log(
+          "debug",
+          `model tick accepted ${trace} format=${format} messages=${decision.messages.length} actions=${decision.actions.length} next=${decision.next.kind} coalesced_actions=${coalesced}`,
+        );
+        return decision;
+      } catch (error) {
+        this.options.log(
+          "warn",
+          `model tick rejected ${trace} reason=invalid_decision validation=${error instanceof Error ? error.message : "invalid_arguments"}`,
+        );
+        throw new ModelError(
+          422,
+          `Invalid finish_tick decision: ${error instanceof Error ? error.message : "invalid arguments"}`,
+        );
       }
     } catch (error) {
       // Validation failures follow a successful inference; do not double-count it.
@@ -604,17 +681,9 @@ export class ModelClient implements ChatModel {
         ? { stream_options: { include_usage: true } }
         : {}),
       messages: request.messages,
+      // Leave tool selection at the compatible default. Some thinking models
+      // reject a forced named tool; tick() enforces one finish_tick locally.
       ...(request.tools?.length ? { tools: request.tools } : {}),
-      ...(request.tools?.length === 1 &&
-      request.tools[0].function.name === "finish_tick"
-        ? {
-            tool_choice: {
-              type: "function",
-              function: { name: "finish_tick" },
-            },
-            parallel_tool_calls: false,
-          }
-        : {}),
       ...(request.maxTokens === undefined
         ? {}
         : { max_tokens: request.maxTokens }),
@@ -744,20 +813,23 @@ export class ModelClient implements ChatModel {
   private async stream(request: CompletionRequest): Promise<Turn> {
     const started = performance.now();
     const response = await this.call(request, true);
-    // Some compatible gateways reject this optional standard field. Fall back
-    // only on an explicit field rejection, never on a general provider failure.
-    if (this.streamUsage && [400, 422].includes(response.status)) {
-      const error = await response.text();
-      if (/stream_options|include_usage/u.test(error)) {
-        this.streamUsage = false;
-        throw new ModelError(
-          0,
-          "gateway rejected optional stream usage; retrying without it",
-        );
-      }
-    }
     if (!response.ok) {
-      await response.body?.cancel();
+      // Some compatible gateways reject this optional standard field. Fall back
+      // only on an explicit field rejection, never on a general provider failure.
+      if (this.streamUsage && [400, 422].includes(response.status)) {
+        const error = await response.text();
+        if (/stream_options|include_usage/u.test(error)) {
+          this.streamUsage = false;
+          throw new ModelError(
+            0,
+            "gateway rejected optional stream usage; retrying without it",
+          );
+        }
+      } else {
+        // text() already consumes and may retain the stream lock in Deno.
+        // Cancel only bodies that were not read above.
+        await response.body?.cancel();
+      }
       throw new ModelError(
         response.status,
         `model gateway returned HTTP ${response.status}`,
@@ -845,24 +917,42 @@ export class ModelClient implements ChatModel {
         )
           throw new ModelError(200, "Invalid streamed tool calls");
         for (const update of rawDelta.tool_calls as unknown[]) {
+          if (!record(update))
+            throw new ModelError(200, "Invalid streamed tool call");
+          // Some compatible gateways omit the index after the first chunk of a
+          // call. Attribute such a delta to the one call in progress instead of
+          // discarding an otherwise valid response.
+          let index: number;
           if (
-            !record(update) ||
-            !Number.isInteger(update.index) ||
-            typeof update.index !== "number" ||
-            update.index < 0 ||
-            update.index >= 16
+            Number.isInteger(update.index) &&
+            typeof update.index === "number"
           )
+            index = update.index;
+          else if (calls.size === 0) index = 0;
+          else if (calls.size === 1)
+            index = calls.keys().next().value as number;
+          else throw new ModelError(200, "Invalid streamed tool index");
+          if (index < 0 || index >= 16)
             throw new ModelError(200, "Invalid streamed tool index");
-          const call = calls.get(update.index) ?? {
+          const call = calls.get(index) ?? {
             id: "",
             type: "function",
             function: { name: "", arguments: "" },
           };
-          if (typeof update.id === "string") call.id += update.id;
+          // Repeat-tolerant accumulation: a gateway that resends the same id or
+          // name in every chunk must not corrupt the call into an unavailable
+          // tool. Genuinely split fragments still concatenate.
+          if (typeof update.id === "string" && update.id.length) {
+            if (!call.id) call.id = update.id;
+            else if (call.id !== update.id) call.id += update.id;
+          }
           if (typeof update.type === "string") call.type = update.type;
           if (record(update.function)) {
-            if (typeof update.function.name === "string")
-              call.function.name += update.function.name;
+            const name = update.function.name;
+            if (typeof name === "string" && name.length) {
+              if (!call.function.name) call.function.name = name;
+              else if (call.function.name !== name) call.function.name += name;
+            }
             if (typeof update.function.arguments === "string")
               call.function.arguments += update.function.arguments;
           }
@@ -872,7 +962,7 @@ export class ModelClient implements ChatModel {
             call.function.arguments.length > 65536
           )
             throw new ModelError(200, "Streamed tool call too large");
-          calls.set(update.index, call);
+          calls.set(index, call);
         }
       }
       const delta = event.choices?.[0]?.delta?.content;

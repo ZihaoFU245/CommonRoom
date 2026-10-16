@@ -62,10 +62,15 @@ export class AgentJobs {
     ]);
     this.controllers.set(job.id, { conversation, controller });
     this.work.set(job.id, async () => {
+      const started = performance.now();
       try {
         activeSignal.throwIfAborted();
         job.status = "running";
         await this.host.options.store.save();
+        this.host.options.log(
+          "debug",
+          `job started conversation=${conversation} job=${job.id} tool=${job.tool} queued_ms=${Math.max(0, Date.now() - job.created)}`,
+        );
         const result = await this.locks.run(
           toolAccess(
             job.tool,
@@ -112,6 +117,10 @@ export class AgentJobs {
       } finally {
         this.controllers.delete(job.id);
         await this.host.options.store.save();
+        this.host.options.log(
+          "debug",
+          `job finished conversation=${conversation} job=${job.id} tool=${job.tool} status=${job.status} duration_ms=${Math.round(performance.now() - started)} result_chars=${job.result?.length ?? 0}`,
+        );
         this.completed(conversation);
       }
     });

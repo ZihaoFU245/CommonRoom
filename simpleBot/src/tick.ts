@@ -52,53 +52,74 @@ export function object(value: unknown): value is Record<string, unknown> {
 export function validateArguments(
   value: unknown,
   schema: Record<string, unknown>,
+  path = "arguments",
 ): void {
+  const invalid = (reason: string): never => {
+    throw new Error(`${path}: ${reason}`);
+  };
   if (Array.isArray(schema.enum) && !schema.enum.includes(value))
-    throw new Error("Invalid enum value");
+    invalid("Invalid enum value; use an advertised enum value");
   if (schema.type === "object") {
-    if (!object(value)) throw new Error("Expected argument object");
+    if (!object(value)) return invalid("Expected argument object");
     const properties = object(schema.properties) ? schema.properties : {};
-    if (
-      Array.isArray(schema.required) &&
-      schema.required.some((key) => typeof key === "string" && !(key in value))
-    )
-      throw new Error("Missing required argument");
+    const missing = Array.isArray(schema.required)
+      ? schema.required.filter(
+          (key): key is string =>
+            typeof key === "string" && !Object.hasOwn(value, key),
+        )
+      : [];
+    if (missing.length)
+      invalid(
+        `Missing required argument; required fields: ${JSON.stringify(missing)}`,
+      );
     for (const [key, item] of Object.entries(value)) {
-      const child = properties[key];
-      if (object(child)) validateArguments(item, child);
+      const child = Object.hasOwn(properties, key)
+        ? properties[key]
+        : undefined;
+      if (object(child)) validateArguments(item, child, `${path}.${key}`);
       else if (schema.additionalProperties === false)
-        throw new Error("Unknown argument");
+        // Report the host-owned contract, never arbitrary model field names/values.
+        invalid(
+          `Unknown argument; allowed fields: ${JSON.stringify(Object.keys(properties))}`,
+        );
     }
   } else if (schema.type === "array") {
-    if (!Array.isArray(value)) throw new Error("Expected array");
+    if (!Array.isArray(value)) return invalid("Expected array");
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems)
-      throw new Error("Too many items");
+      invalid(`Too many items; maximum ${schema.maxItems}`);
     if (typeof schema.minItems === "number" && value.length < schema.minItems)
-      throw new Error("Too few items");
+      invalid(`Too few items; minimum ${schema.minItems}`);
     if (object(schema.items))
-      for (const item of value) validateArguments(item, schema.items);
+      for (const [index, item] of value.entries())
+        validateArguments(item, schema.items, `${path}[${index}]`);
   } else if (schema.type === "string") {
-    if (typeof value !== "string") throw new Error("Expected string");
+    if (typeof value !== "string") return invalid("Expected string");
     const length = Array.from(value).length;
     if (
       (typeof schema.minLength === "number" && length < schema.minLength) ||
       (typeof schema.maxLength === "number" && length > schema.maxLength)
     )
-      throw new Error("Invalid string length");
+      invalid(
+        `Invalid string length; minimum ${schema.minLength ?? 0}, maximum ${schema.maxLength ?? "unbounded"}`,
+      );
   } else if (schema.type === "number" || schema.type === "integer") {
     if (
       typeof value !== "number" ||
       !Number.isFinite(value) ||
       (schema.type === "integer" && !Number.isSafeInteger(value))
     )
-      throw new Error("Expected bounded number");
+      return invalid(
+        `Expected ${schema.type === "integer" ? "integer" : "finite number"}`,
+      );
     if (
       (typeof schema.minimum === "number" && value < schema.minimum) ||
       (typeof schema.maximum === "number" && value > schema.maximum)
     )
-      throw new Error("Argument outside bounds");
+      invalid(
+        `Argument outside bounds; minimum ${schema.minimum ?? "unbounded"}, maximum ${schema.maximum ?? "unbounded"}`,
+      );
   } else if (schema.type === "boolean" && typeof value !== "boolean")
-    throw new Error("Expected boolean");
+    invalid("Expected boolean");
 }
 
 const nextSchema = {
@@ -118,7 +139,11 @@ const nextSchema = {
   additionalProperties: false,
 };
 
-export function finishTickTool(tools: FunctionTool[]): FunctionTool {
+export function finishTickTool(
+  tools: FunctionTool[],
+  replyTargets?: string[],
+  maxReplyMessages = 16,
+): FunctionTool {
   return {
     type: "function",
     function: {
@@ -130,12 +155,19 @@ export function finishTickTool(tools: FunctionTool[]): FunctionTool {
         properties: {
           messages: {
             type: "array",
-            maxItems: 16,
+            maxItems: Math.min(16, Math.max(0, maxReplyMessages)),
             items: {
               type: "object",
               properties: {
                 text: { type: "string", minLength: 1, maxLength: 262144 },
-                replyTo: { type: "string" },
+                ...(replyTargets?.length === 0
+                  ? {}
+                  : {
+                      replyTo: {
+                        type: "string",
+                        ...(replyTargets ? { enum: replyTargets } : {}),
+                      },
+                    }),
               },
               required: ["text"],
               additionalProperties: false,
@@ -149,7 +181,13 @@ export function finishTickTool(tools: FunctionTool[]): FunctionTool {
                   anyOf: tools.map((tool) => ({
                     type: "object",
                     properties: {
-                      id: { type: "string", minLength: 1, maxLength: 64 },
+                      id: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 64,
+                        description:
+                          "A unique action ID within this tick. Use this ID in next.jobs.",
+                      },
                       tool: { type: "string", enum: [tool.function.name] },
                       arguments: tool.function.parameters,
                     },
@@ -161,7 +199,7 @@ export function finishTickTool(tools: FunctionTool[]): FunctionTool {
           },
           next: nextSchema,
         },
-        required: ["messages", "actions", "next"],
+        required: ["next"],
         additionalProperties: false,
       },
     },
@@ -199,6 +237,9 @@ export function tickDecision(
   value: unknown,
   tools: FunctionTool[],
 ): TickDecision {
+  // Omitted output/job lists unambiguously mean no messages/jobs. Invalid
+  // explicit values still fail; continuation always remains mandatory.
+  if (object(value)) value = { messages: [], actions: [], ...value };
   if (
     !object(value) ||
     Object.keys(value).some(
@@ -226,21 +267,32 @@ export function tickDecision(
     };
   });
   const ids = new Set<string>();
-  const actions = value.actions.map((item: unknown) => {
+  const actions = value.actions.map((item: unknown, index: number) => {
     if (
       !object(item) ||
       typeof item.id !== "string" ||
-      !/^[A-Za-z0-9._-]{1,64}$/.test(item.id) ||
-      ids.has(item.id) ||
-      typeof item.tool !== "string" ||
       Object.keys(item).some(
         (key) => !["id", "tool", "arguments"].includes(key),
       )
     )
-      throw new Error("Invalid action identity");
+      throw new Error(
+        `actions[${index}]: expected id, tool and arguments only`,
+      );
+    if (Array.from(item.id).length < 1 || Array.from(item.id).length > 64)
+      throw new Error(`actions[${index}].id: expected 1 to 64 characters`);
+    if (ids.has(item.id))
+      throw new Error(
+        `actions[${index}].id: duplicate action ID; use a unique ID within this tick`,
+      );
+    if (typeof item.tool !== "string")
+      throw new Error(`actions[${index}].tool: expected a tool name`);
     const tool = tools.find((tool) => tool.function.name === item.tool);
-    if (!tool) throw new Error("Unavailable tool");
-    validateArguments(item.arguments, tool.function.parameters);
+    if (!tool) throw new Error(`actions[${index}].tool: unavailable tool`);
+    validateArguments(
+      item.arguments,
+      tool.function.parameters,
+      `actions[${index}].arguments (${tool.function.name})`,
+    );
     if (JSON.stringify(item.arguments)?.length > 65536)
       throw new Error("Oversized action arguments");
     if (item.tool === "memory" && object(item.arguments)) {
@@ -284,10 +336,17 @@ export function sessionReady(session: TickSession, now = Date.now()): boolean {
   if (next.kind === "continue") return true;
   if (next.kind === "after") return (session.dueAt ?? Infinity) <= now;
   if (next.kind === "on_jobs") {
-    const states = next.jobs
-      .map((id) => session.jobs[id])
-      .map((job) => job !== undefined && jobTerminal(job));
-    return next.mode === "all" ? states.every(Boolean) : states.some(Boolean);
+    const jobs = next.jobs.map((id) =>
+      Object.hasOwn(session.jobs, id) ? session.jobs[id] : undefined,
+    );
+    const fresh = jobs.some(
+      (job) => job !== undefined && jobTerminal(job) && !job.observed,
+    );
+    return (
+      fresh &&
+      (next.mode === "any" ||
+        jobs.every((job) => job !== undefined && jobTerminal(job)))
+    );
   }
   return false;
 }

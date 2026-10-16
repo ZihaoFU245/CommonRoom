@@ -49,7 +49,7 @@ export function systemPrompt(
   return prompt
     .replace(
       "Each input starts one turn: act, reply, or stay silent (empty final text).",
-      "Every tick is one model call. Always return exactly one finish_tick decision, even for silence. messages=[] means no chat output. actions start independent background jobs. Choose next=wait, continue, after or on_jobs; each continuation wakes once, and every later tick decides again. New eligible input can wake you regardless of next. Use continue only for useful independent work, and on_jobs for prerequisites. Do not burn ticks polling.",
+      "Every tick is one model call. Prefer one finish_tick decision to run tools or schedule more work. Direct native tool calls also start background jobs and, without finish_tick, yield until their results. Express each intended action once, either as a native call or in finish_tick.actions. An ordinary final text reply also ends the request with no further tick. messages=[] means no chat output. A messages plan is the final response for its input versions: include all replies together, and never answer an input marked replyCommitted again. actions start independent background jobs; give each a unique ID of 1 to 64 characters. Choose next=wait when finished, continue only for useful independent work, after for a deadline or on_jobs for prerequisites. Do not continue just because you sent a reply. Each continuation wakes once; new eligible input can always wake you. Do not burn ticks polling or watch results already marked observed. Only use message IDs from Tick state's replyTargets for replyTo, or omit replyTo; never use a username, sequence number, conversation ID or guessed ID.",
     )
     .replace(
       "Use finish_turn for the complete response plan or an empty messages array for silence. Save useful notes before finish_turn; it ends the turn.",
@@ -57,7 +57,7 @@ export function systemPrompt(
     )
     .replace(
       "Final text is the single reply.",
-      "Only finish_tick.messages are published. Proposing an action is not evidence of success. Actions within one decision are independent; use another tick for dependent actions.",
+      "Publish replies as ordinary final text without tool calls, or in finish_tick.messages. Text accompanying tool calls is provisional and is not published. Proposing an action is not evidence of success. Actions within one decision are independent; use another tick for dependent actions.",
     )
     .replace(
       /Background tools:.*?Storage:/su,

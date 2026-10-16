@@ -1,5 +1,5 @@
 import { abortable } from "./async.ts";
-import type { ChatModel, CompletionRequest } from "./model.ts";
+import { ModelError, type ChatModel, type CompletionRequest } from "./model.ts";
 import type { ConfigStore } from "./config.ts";
 import type { TaskRecord } from "./store.ts";
 import type { TickSession, TickDecision } from "./tick.ts";
@@ -9,13 +9,30 @@ export function appendTickState(
   session: TickSession,
   config: ConfigStore,
   wake: string,
+  inputs: { id: string; sequence: number; replyCommitted: boolean }[] = [],
 ): void {
   const tick = session.tick;
+  request.tickId = tick;
+  request.answerOnly = (session.retries ?? 0) >= 3;
+  if (request.answerOnly) {
+    request.tools = [];
+    delete request.executeTool;
+  }
+  if (session.error && session.retryInputs?.length) {
+    request.messages.splice(1, 0, {
+      role: "system",
+      content: request.answerOnly
+        ? "Tool planning repeatedly failed. This is the final recovery tick: tools are unavailable. Return ordinary final text, or silence if appropriate, with no tool calls or scheduling. Use only known facts and completed results. If the requested work could not be completed, say so briefly; do not invent success or expose internal errors."
+        : `The previous decision was rejected before any of its proposed effects were committed. Correct it using the advertised tool schemas. Validation feedback: ${session.error}. Previously committed jobs may still have effects; never rerun those effects just to check status.`,
+    });
+  }
   let resultBudget = Math.min(16000, config.get("model.contextTokens"));
   let traceBudget = 4000;
   const decisionContext = {
     tick,
     wake,
+    inputs,
+    replyTargets: request.replyTargets,
     remainingTicks: config.get("agent.maxTicks") - session.calls,
     remainingTokens: Math.max(
       0,
@@ -50,6 +67,16 @@ export function appendTickState(
     })),
     previousError: session.error,
   };
+  if (wake !== "messages" && !session.retryInputs?.length) {
+    const input = request.messages.at(-1);
+    if (input)
+      input.content = `Earlier input (context only, not a new request):\n${input.content}`;
+    request.messages.push({
+      role: "user",
+      content:
+        "Continuation event only: complete remaining work from Tick state. Do not answer inputs marked replyCommitted again. If nothing remains, wait.",
+    });
+  }
   // Keep the actual current input last for simple custom model adapters.
   request.messages.splice(Math.max(1, request.messages.length - 1), 0, {
     role: "user",
@@ -79,8 +106,18 @@ export async function requestTick(
   tickSignal: AbortSignal,
   committed: () => boolean,
 ): Promise<TickDecision> {
-  if (model.tick) return abortable(model.tick(request), signal);
-  else {
+  if (model.tick) {
+    const decision = await abortable(model.tick(request), signal);
+    if (
+      request.answerOnly &&
+      (decision.actions.length || decision.next.kind !== "wait")
+    )
+      throw new ModelError(
+        422,
+        "Recovery tick must return final text or silence without tools or continuation",
+      );
+    return decision;
+  } else {
     // Custom/test adapters keep their existing interface. Production uses tick().
     const legacyRequest = {
       ...request,

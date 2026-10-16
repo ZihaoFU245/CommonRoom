@@ -93,6 +93,10 @@ export class Outbox {
       if (response.replayed) store.metrics.replayed++;
       else store.metrics.sent++;
       await store.save();
+      this.host.options.log(
+        "debug",
+        `reply delivered conversation=${conversation.id} input=${task.input} slot=${part.slot} reply_to=${part.request.reply_to ?? "none"} message=${response.message.id} replayed=${response.replayed}`,
+      );
     }
     return true;
   }

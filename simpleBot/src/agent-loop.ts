@@ -12,6 +12,14 @@ import { taskKey, textHash, type TaskRecord } from "./store.ts";
 import type { Message } from "./wire.ts";
 import { groupInputs, GROUP_INTERVAL_MS } from "./group.ts";
 
+function repairing(session: TickSession | undefined): boolean {
+  return (
+    !!session?.error &&
+    !!session.retryInputs?.length &&
+    session.phase !== "failed"
+  );
+}
+
 /** Conversation scheduling, one-call ticks and durable continuation decisions. */
 export class AgentLoop {
   private readonly host: AgentState;
@@ -85,7 +93,7 @@ export class AgentLoop {
     const session = store.state.sessions[id];
     const queued = this.queued(id);
     const now = Date.now();
-    const deadlines = queued.map((task) =>
+    const deadlines = (repairing(session) ? [] : queued).map((task) =>
       task.autonomous ? (task.readyAt ?? now) : now,
     );
     if (session && session.next.kind !== "wait" && session.phase !== "failed") {
@@ -192,7 +200,12 @@ export class AgentLoop {
         .tasks()
         .filter(
           (task) =>
-            task.status === "queued" && task.autonomous && !task.batchOwner,
+            task.status === "queued" &&
+            task.autonomous &&
+            !task.batchOwner &&
+            !repairing(
+              this.host.options.store.state.sessions[task.conversation],
+            ),
         );
       const deadline = Math.min(...waiting.map((task) => task.readyAt ?? 0));
       if (
@@ -243,6 +256,9 @@ export class AgentLoop {
       (task) => !task.autonomous || (task.readyAt ?? 0) <= Date.now(),
     );
     let session = store.state.sessions[id];
+    // A repair owns its admitted inputs until commit/failure. New messages stay
+    // queued instead of inheriting the old input's retry counter and error.
+    if (repairing(session)) pending = [];
     if (!pending.length && (!session || !sessionReady(session))) {
       if (
         session &&
@@ -345,6 +361,22 @@ export class AgentLoop {
     const observed = Object.values(session.jobs)
       .filter((job) => jobTerminal(job) && !job.observed)
       .map((job) => job.id);
+    const previousNext = session.next;
+    const wakeReason = pending.length
+      ? "messages"
+      : session.retryInputs?.length
+        ? "retry"
+        : observed.length
+          ? "job_results"
+          : previousNext.kind;
+    const watched =
+      previousNext.kind === "on_jobs"
+        ? previousNext.jobs.map((jobId) => ({
+            id: jobId,
+            status: session.jobs[jobId]?.status ?? "missing",
+            observed: session.jobs[jobId]?.observed ?? false,
+          }))
+        : [];
     session.phase = "calling";
     session.next = { kind: "wait" }; // Claim the previous one-shot wake.
     delete session.dueAt;
@@ -354,6 +386,10 @@ export class AgentLoop {
     root.status = "running";
     for (const task of pending) task.status = "running";
     const tick = session.tick;
+    log(
+      "debug",
+      `tick wake conversation=${id} tick=${tick} reason=${wakeReason} observed_jobs=${JSON.stringify(observed)} watched=${JSON.stringify(watched)}`,
+    );
     const tickController = new AbortController();
     let tickSucceeded = false;
     let accepted: { task: TaskRecord; message: Message }[] = [];
@@ -374,7 +410,15 @@ export class AgentLoop {
           ? session.retryInputs
               .map((input) => store.task(id, input))
               .filter((task): task is TaskRecord => task !== undefined)
-          : [root];
+          : session.sources.length
+            ? session.sources
+                .map((source) => store.task(id, source.input))
+                .filter(
+                  (task): task is TaskRecord =>
+                    task !== undefined && task.status !== "cancelled",
+                )
+                .sort((a, b) => a.sequence - b.sequence)
+            : [root];
       this.activeInputs.set(
         id,
         inputs.map((task) => task.input),
@@ -382,6 +426,12 @@ export class AgentLoop {
       for (const task of inputs) {
         const message = await abortable(this.locate(id, task), signal);
         if (!message) {
+          // Never drop an admitted input without a trace: the message is gone
+          // from retained history (retracted, expired or never scanned).
+          log(
+            "warn",
+            `input unavailable conversation=${id} input=${task.input} sequence=${task.sequence}; cancelling task`,
+          );
           task.status = "cancelled";
           continue;
         }
@@ -395,11 +445,16 @@ export class AgentLoop {
         accepted.push({ task, message });
       }
       if (!accepted.length) {
+        log(
+          "warn",
+          `no admitted input could be located conversation=${id} tick=${tick}; releasing the episode`,
+        );
         this.invalidate(id);
         await store.save();
         return;
       }
-      const source = accepted[0];
+      const continuation = !pending.length && !session.retryInputs?.length;
+      const source = continuation ? accepted[accepted.length - 1] : accepted[0];
       const group = source.task.autonomous
         ? accepted.map((item) => item.message)
         : undefined;
@@ -411,9 +466,34 @@ export class AgentLoop {
           root,
           episodeSignal,
           group,
+          continuation ? accepted.map((item) => item.message) : undefined,
         ),
         signal,
       );
+      const inputVersions = new Map(
+        session.sources.map((source) => [
+          source.input,
+          { hash: source.hash, sequence: source.sequence },
+        ]),
+      );
+      for (const { task } of accepted)
+        inputVersions.set(task.input, {
+          hash: task.promptHash,
+          sequence: task.sequence,
+        });
+      const tickInputs = [...inputVersions].map(([input, version]) => ({
+        id: input,
+        sequence: version.sequence,
+        replyCommitted: store.task(id, input)?.replyHash === version.hash,
+      }));
+      request.replyTargets = conversation.permissions.reply
+        ? tickInputs
+            .filter((input) => !input.replyCommitted)
+            .map((input) => input.id)
+        : [];
+      request.maxReplyMessages = tickInputs.filter(
+        (input) => !input.replyCommitted,
+      ).length;
       appendTickState(
         request,
         session,
@@ -423,6 +503,7 @@ export class AgentLoop {
           : observed.length
             ? "job_results"
             : "continuation",
+        tickInputs,
       );
       request.signal = signal;
       if (!source.task.autonomous) this.host.beginActivity(id);
@@ -431,7 +512,7 @@ export class AgentLoop {
         `task started conversation=${id} input=${root.input} attempt=${root.attempts}`,
       );
       log(
-        "debug",
+        "info",
         `tick started conversation=${id} tick=${tick} sources=${accepted.length}`,
       );
       let decision = await requestTick(
@@ -484,8 +565,8 @@ export class AgentLoop {
       }
       tickSucceeded = true;
       log(
-        "debug",
-        `tick committed conversation=${id} tick=${tick} next=${session.next.kind} messages=${decision.messages.length} jobs=${jobIds.size}`,
+        "info",
+        `tick committed conversation=${id} tick=${tick} next=${session.next.kind} inputs=${accepted.map((item) => item.task.input).join(",")} messages=${decision.messages.length} jobs=${jobIds.size}`,
       );
     } catch (error) {
       if (
@@ -513,6 +594,8 @@ export class AgentLoop {
           (this.host.options.model.tick !== undefined &&
             error instanceof Error &&
             error.name === "TimeoutError");
+        // Terminal failures are handled by fail(), which spends one bounded
+        // tool-less recovery tick when an admitted input still has no reply.
         if (
           retry &&
           (session.retries ?? 0) < 2 &&
@@ -528,6 +611,10 @@ export class AgentLoop {
           };
           session.dueAt = Date.now() + session.next.delayMs;
           session.phase = "idle";
+          log(
+            "warn",
+            `tick retry scheduled conversation=${id} tick=${tick} retry=${session.retries}/2 delay_ms=${session.next.delayMs} reason=${error instanceof ModelError ? message : "tick transport failure"}`,
+          );
           // Inference failed: leave input owned by this episode, not consumed.
           for (const task of pending)
             if (!session.sources.some((source) => source.input === task.input))
@@ -555,16 +642,44 @@ export class AgentLoop {
     }
   }
 
+  /**
+   * End an episode. Before that, spend one bounded tool-less recovery tick when
+   * an admitted input still has no reply: a rejected plan or a host budget stop
+   * must not leave a question unanswered in silence. The recovery tick proposes
+   * no actions and no continuation, so it can never repeat an effect.
+   */
   private async fail(
     id: string,
     session: TickSession,
     error: string,
   ): Promise<void> {
+    const { store, config, log } = this.host.options;
+    const unanswered = this.unanswered(id, session);
+    if (
+      this.host.options.model.tick !== undefined &&
+      (session.retries ?? 0) < 3 &&
+      session.calls < config.get("agent.maxTicks") &&
+      (session.tokens ?? 0) < config.get("agent.maxEpisodeTokens") &&
+      Date.now() < session.started + config.get("agent.episodeTimeoutMs") &&
+      unanswered.length
+    ) {
+      session.error = error;
+      session.retries = 3;
+      session.phase = "idle";
+      session.next = { kind: "after", delayMs: 1 };
+      session.dueAt = Date.now() + 1;
+      session.retryInputs = unanswered.map((task) => task.input);
+      await store.save();
+      log(
+        "warn",
+        `tick recovery scheduled conversation=${id} tick=${session.tick} mode=answer_only reason=${error}`,
+      );
+      return;
+    }
     session.phase = "failed";
     session.next = { kind: "wait" };
     session.error = error;
     this.jobs.cancel(id);
-    const { store, log } = this.host.options;
     for (const task of store.tasks())
       if (task.conversation === id && task.status === "running") {
         task.status = "failed";
@@ -578,8 +693,31 @@ export class AgentLoop {
     await store.save();
     log(
       "error",
-      `tick failed conversation=${id} tick=${session.tick} reason=${error}`,
+      `tick failed conversation=${id} tick=${session.tick} reason=${error} unanswered=${JSON.stringify(unanswered.map((task) => task.input))}`,
     );
+  }
+
+  /** Admitted inputs this episode owns that still have no committed reply. */
+  private unanswered(id: string, session: TickSession): TaskRecord[] {
+    const { store } = this.host.options;
+    const inputs = new Set<string>([
+      session.root,
+      ...session.sources.map((source) => source.input),
+      ...(session.retryInputs ?? []),
+    ]);
+    for (const task of store.tasks())
+      if (task.conversation === id && task.status === "running")
+        inputs.add(task.input);
+    const result: TaskRecord[] = [];
+    for (const input of inputs) {
+      const task = store.task(id, input);
+      if (!task || task.status === "cancelled" || task.status === "answered")
+        continue;
+      if (task.replyHash !== undefined && task.replyHash === task.promptHash)
+        continue;
+      result.push(task);
+    }
+    return result.sort((a, b) => a.sequence - b.sequence);
   }
 
   private async flush(id: string): Promise<void> {

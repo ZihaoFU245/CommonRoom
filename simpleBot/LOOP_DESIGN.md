@@ -99,8 +99,11 @@ lookup runs. Avoid repeated inference merely to inspect a pending job.
 
 The runtime never posts arbitrary provider text alongside `messages`. A missing
 or malformed decision commits no actions or messages. A bounded repair request
-is a new tick with the validation error in its context; exhausting that budget
-ends the attempt with an observable failure.
+is a new tick with the validation error and the tool's allowed fields in its
+context. When the repair budget is exhausted, one final tool-less recovery tick
+is spent on the same admitted inputs: it may publish prose or stay silent, but it
+proposes no actions and no continuation, so it cannot repeat an effect. Only
+after that does the attempt end with an observable failure.
 
 Actions in one decision are independently dispatchable, subject to resource
 locks. Array order does not establish a data dependency. Use a later tick for
@@ -261,7 +264,12 @@ admission of additional work is separately rate-limited. These limits also stop
 bot-to-bot exchanges from creating unbounded automatic inference.
 
 On budget exhaustion, stop self continuation, retain useful results, and record
-a structured stop reason. Apply explicit job deadlines and cancellation policy;
+a structured stop reason. The tool budget is a host limit, not a model mistake:
+actions that no longer fit are dropped, the messages in that decision are still
+published, and the continuation becomes `wait`. If the stop would leave an
+admitted input with no reply at all, the tool-less recovery tick above is spent
+so the question is answered or explicitly refused instead of disappearing.
+Apply explicit job deadlines and cancellation policy;
 do not leave an unattended job running indefinitely. Retry transient provider
 failures with backoff and jitter; permanent errors and exhausted repair/retry
 budgets remain visible to operators. Provider retries and repairs consume tick

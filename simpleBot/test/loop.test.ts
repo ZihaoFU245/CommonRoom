@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { Agent } from "../src/agent.ts";
 import { BotApi } from "../src/api.ts";
 import { ConfigStore } from "../src/config.ts";
-import { Store } from "../src/store.ts";
+import { Store, textHash } from "../src/store.ts";
 import type { CompletionRequest, ChatModel } from "../src/model.ts";
-import { ModelClient } from "../src/model.ts";
+import { ModelClient, ModelError } from "../src/model.ts";
 import { tickDecision, type TickDecision } from "../src/tick.ts";
 import { MEMORY_TOOL } from "../src/memory.ts";
 import { readJob } from "../src/job-results.ts";
@@ -96,6 +96,458 @@ async function fixture(
   };
 }
 
+for (const stream of [false, true])
+  test(`mixed provider response executes one durable job and sends one reply (stream=${stream})`, async (t) => {
+    const fetch = globalThis.fetch;
+    let providerCalls = 0;
+    let executions = 0;
+    const action = {
+      id: "保存:index",
+      tool: "memory",
+      arguments: { action: "set", key: "index", value: "remembered" },
+    };
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (!url.startsWith("https://model.invalid/"))
+          return fetch(input, init);
+        providerCalls++;
+        const calls =
+          providerCalls === 1
+            ? [
+                {
+                  id: "native-call",
+                  type: "function",
+                  function: {
+                    name: "memory",
+                    arguments: JSON.stringify(action.arguments),
+                  },
+                },
+                {
+                  id: "envelope-call",
+                  type: "function",
+                  function: {
+                    name: "finish_tick",
+                    arguments: JSON.stringify({
+                      messages: [],
+                      actions: [action],
+                      next: { kind: "on_jobs", jobs: [action.id], mode: "all" },
+                    }),
+                  },
+                },
+              ]
+            : [];
+        const content = providerCalls === 1 ? "provisional" : "saved once";
+        return stream
+          ? new Response(
+              `data: ${JSON.stringify({ choices: [{ delta: { content, tool_calls: calls.map((call, index) => ({ index, ...call })) }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+            )
+          : Response.json({
+              choices: [
+                {
+                  message: { content, tool_calls: calls },
+                  finish_reason: "stop",
+                },
+              ],
+            });
+      },
+    );
+    const model = new ModelClient({
+      endpoint: "https://model.invalid/v1",
+      model: "test",
+      token: "",
+      stream,
+      timeoutMs: 1000,
+      log: () => {},
+    });
+    const h = await fixture(async (request) => {
+      const execute = request.executeTool;
+      request.executeTool = async (...args) => {
+        executions++;
+        assert.equal(
+          Object.values(h.store.state.sessions["conv-1"].jobs).filter(
+            (job) => job.status === "running",
+          ).length,
+          1,
+        );
+        assert.ok(execute);
+        return execute(...args);
+      };
+      return await model.tick(request);
+    });
+    try {
+      h.server.addMessage("@helper remember this");
+      await h.agent.requestSync();
+      await until(() => h.server.state.sends.length === 1);
+      assert.equal(providerCalls, 2);
+      assert.equal(executions, 1);
+      assert.equal(
+        Object.keys(h.store.state.sessions["conv-1"].jobs).length,
+        1,
+      );
+      assert.deepEqual(
+        h.server.state.sends.map((send) => send.text),
+        ["saved once"],
+      );
+      await h.restart();
+      assert.equal(providerCalls, 2);
+      assert.equal(executions, 1);
+      assert.equal(h.server.state.sends.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+
+for (const stream of [false, true])
+  test(`repeated invalid execute_code calls recover with one reply and later input still works (stream=${stream})`, async (t) => {
+    const fetch = globalThis.fetch;
+    let calls = 0;
+    let executions = 0;
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (!url.startsWith("https://model.invalid/"))
+          return fetch(input, init);
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        if (calls === 2 || calls === 3)
+          assert.ok(
+            body.messages.some(
+              (message: { role: string; content: string }) =>
+                message.role === "system" &&
+                message.content.includes(
+                  'allowed fields: ["code","file","timeoutMs"]',
+                ),
+            ),
+          );
+        if (calls === 4) {
+          assert.equal(body.tools, undefined);
+          assert.equal(body.tool_choice, undefined);
+          assert.equal(body.answerOnly, undefined);
+          assert.ok(
+            body.messages.some(
+              (message: { role: string; content: string }) =>
+                message.role === "system" &&
+                message.content.includes("final recovery tick"),
+            ),
+          );
+        }
+        if (calls === 5) assert.ok(body.tools.length > 0);
+        const tools =
+          calls <= 3
+            ? [
+                {
+                  id: `call-${calls}`,
+                  type: "function",
+                  function: {
+                    name: "execute_code",
+                    arguments: JSON.stringify({
+                      code: "console.log(1)",
+                      language: "typescript",
+                    }),
+                  },
+                },
+              ]
+            : [];
+        const content =
+          calls <= 3
+            ? "provisional"
+            : calls === 4
+              ? "I couldn't complete that request."
+              : "I can answer your next message.";
+        return stream
+          ? new Response(
+              `data: ${JSON.stringify({ choices: [{ delta: { content, tool_calls: tools.map((call, index) => ({ index, ...call })) }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+            )
+          : Response.json({
+              choices: [
+                {
+                  message: { content, tool_calls: tools },
+                  finish_reason: "stop",
+                },
+              ],
+            });
+      },
+    );
+    const model = new ModelClient({
+      endpoint: "https://model.invalid/v1",
+      model: "test",
+      token: "",
+      stream,
+      timeoutMs: 1000,
+      log: () => {},
+    });
+    const h = await fixture(async (request) => {
+      const execute = request.executeTool;
+      if (execute)
+        request.executeTool = async (...args) => {
+          executions++;
+          return execute(...args);
+        };
+      return await model.tick(request);
+    });
+    try {
+      h.server.addMessage("@helper original request");
+      await h.agent.requestSync();
+      await until(() => h.server.state.sends.length === 1);
+      assert.equal(calls, 4);
+      assert.equal(executions, 0);
+      assert.equal(h.store.state.sessions["conv-1"].phase, "idle");
+      assert.ok(
+        h.logs.some((line) => line.includes("tick recovery scheduled")),
+      );
+      h.server.addMessage("@helper next message");
+      await h.agent.requestSync();
+      assert.equal(calls, 5);
+      assert.equal(h.requests[4].answerOnly, false);
+      assert.deepEqual(
+        h.server.state.sends.map((send) => send.text),
+        [
+          "I couldn't complete that request.",
+          "I can answer your next message.",
+        ],
+      );
+      await h.restart();
+      assert.equal(calls, 5);
+      assert.equal(h.server.state.sends.length, 2);
+    } finally {
+      await h.close();
+    }
+  });
+
+for (const autonomous of [false, true])
+  test(`new input cannot steal a repairing input or inherit its exhausted retries (autonomous=${autonomous})`, async () => {
+    const h = await fixture(async (request, call) => {
+      if (call <= 3) {
+        assert.ok(
+          request.messages.at(-1)?.content.includes("original request"),
+        );
+        throw new ModelError(422, "Invalid tool arguments");
+      }
+      if (call === 4) {
+        assert.equal(request.answerOnly, true);
+        assert.deepEqual(request.tools, []);
+        assert.equal(request.executeTool, undefined);
+        return { ...wait, messages: [{ text: "original recovered" }] };
+      }
+      assert.equal(call, 5);
+      assert.equal(request.answerOnly, false);
+      assert.ok(request.messages.at(-1)?.content.includes("new request"));
+      return { ...wait, messages: [{ text: "new answered" }] };
+    });
+    try {
+      h.config.set("autonomous", autonomous);
+      const first = h.server.addMessage("@helper original request");
+      await h.agent.requestSync();
+      const second = h.server.addMessage("@helper new request");
+      await h.agent.requestSync();
+      assert.equal(h.requests.length, 1);
+      assert.equal(h.store.task("conv-1", second.id)?.status, "queued");
+      await until(() => h.server.state.sends.length === 2);
+      assert.equal(
+        h.store.task("conv-1", first.id)?.replyHash,
+        textHash(first.text),
+      );
+      assert.equal(
+        h.store.task("conv-1", second.id)?.replyHash,
+        textHash(second.text),
+      );
+      assert.equal(h.requests.length, 5);
+      await h.restart();
+      assert.equal(h.requests.length, 5);
+    } finally {
+      await h.close();
+    }
+  });
+
+test("failed recovery cannot execute jobs or block later messages", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call <= 3) throw new ModelError(422, "Invalid tool arguments");
+    if (call === 4) {
+      assert.equal(request.answerOnly, true);
+      return {
+        ...wait,
+        actions: [
+          {
+            id: "must-not-run",
+            tool: "memory",
+            arguments: { action: "set", key: "index", value: "bad" },
+          },
+        ],
+      };
+    }
+    assert.equal(call, 5);
+    assert.equal(request.answerOnly, false);
+    return { ...wait, messages: [{ text: "still responding" }] };
+  });
+  try {
+    const first = h.server.addMessage("@helper failing request");
+    await h.agent.requestSync();
+    await until(() => h.store.task("conv-1", first.id)?.status === "failed");
+    assert.equal(h.requests.length, 4);
+    assert.equal(Object.keys(h.store.state.sessions["conv-1"].jobs).length, 0);
+    h.server.addMessage("@helper fresh request");
+    await h.agent.requestSync();
+    assert.equal(h.requests.length, 5);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["still responding"],
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("a terminal model failure still spends one bounded tool-less recovery tick", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call === 1)
+      throw new ModelError(403, "model provider refused response");
+    assert.equal(call, 2);
+    assert.equal(request.answerOnly, true);
+    assert.deepEqual(request.tools, []);
+    assert.equal(request.executeTool, undefined);
+    return {
+      ...wait,
+      messages: [{ text: "I couldn't complete that request." }],
+    };
+  });
+  try {
+    const input = h.server.addMessage("@helper refused request");
+    await h.agent.requestSync();
+    await until(() => h.server.state.sends.length === 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["I couldn't complete that request."],
+    );
+    assert.equal(h.store.task("conv-1", input.id)?.status, "answered");
+    assert.equal(
+      h.store.task("conv-1", input.id)?.replyHash,
+      textHash(input.text),
+    );
+    assert.equal(h.requests.length, 2);
+    assert.ok(
+      h.logs.some((line) => line.includes("tick recovery scheduled")),
+    );
+    assert.ok(!h.logs.some((line) => line.includes("tick failed")));
+    await h.restart();
+    assert.equal(h.requests.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("recovery is spent once: a second refusal fails visibly without another call", async () => {
+  const h = await fixture(async (request, call) => {
+    assert.ok(call <= 2);
+    if (call === 2) assert.equal(request.answerOnly, true);
+    throw new ModelError(403, "model provider refused response");
+  });
+  try {
+    const input = h.server.addMessage("@helper refused request");
+    await h.agent.requestSync();
+    await until(() => h.store.task("conv-1", input.id)?.status === "failed");
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.server.state.sends.length, 0);
+    assert.ok(h.logs.some((line) => line.includes("tick failed")));
+    await h.restart();
+    await h.agent.requestSync();
+    assert.equal(h.requests.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("an exhausted tool budget still spends one tool-less tick to answer", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call <= 2)
+      return {
+        ...wait,
+        actions: [
+          {
+            id: `note-${call}`,
+            tool: "memory",
+            arguments: { action: "set", key: "index", value: call },
+          },
+        ],
+        next: { kind: "on_jobs", jobs: [`note-${call}`], mode: "all" },
+      };
+    assert.equal(call, 3);
+    assert.equal(request.answerOnly, true);
+    assert.deepEqual(request.tools, []);
+    return { ...wait, messages: [{ text: "Here is the answer." }] };
+  });
+  try {
+    h.config.set("model.maxToolCalls", 1);
+    const input = h.server.addMessage("@helper do the work");
+    await h.agent.requestSync();
+    await until(() => h.server.state.sends.length === 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["Here is the answer."],
+    );
+    assert.equal(h.store.task("conv-1", input.id)?.status, "answered");
+    assert.equal(h.requests.length, 3);
+    assert.ok(
+      h.logs.some((line) => line.includes("tick recovery scheduled")),
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("an exhausted episode tool budget publishes the answer instead of failing the input", async () => {
+  const h = await fixture(async (request, call) => {
+    assert.equal(call, 1);
+    assert.ok(request.tools?.some((tool) => tool.function.name === "memory"));
+    return {
+      ...wait,
+      messages: [{ text: "answered before the budget stopped the episode" }],
+      actions: [
+        {
+          id: "kept",
+          tool: "memory",
+          arguments: { action: "set", key: "kept", value: 1 },
+        },
+        {
+          id: "dropped",
+          tool: "memory",
+          arguments: { action: "set", key: "dropped", value: 2 },
+        },
+      ],
+      next: { kind: "on_jobs", jobs: ["kept", "dropped"], mode: "all" },
+    };
+  });
+  try {
+    h.config.set("model.maxToolCalls", 1);
+    const input = h.server.addMessage("@helper answer now");
+    await h.agent.requestSync();
+    await until(() => h.server.state.sends.length === 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["answered before the budget stopped the episode"],
+    );
+    assert.equal(h.store.task("conv-1", input.id)?.status, "answered");
+    const session = h.store.state.sessions["conv-1"];
+    assert.equal(session.phase, "idle");
+    assert.deepEqual(session.next, { kind: "wait" });
+    // Only the action that fitted the budget became a durable job.
+    assert.equal(Object.keys(session.jobs).length, 1);
+    assert.ok(
+      h.logs.some((line) =>
+        line.includes("episode tool budget reached"),
+      ),
+    );
+    assert.ok(!h.logs.some((line) => line.includes("tick failed")));
+    assert.equal(h.requests.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
 test("each continue is another single-call tick; silence and duplicate events do not restart it", async () => {
   const h = await fixture(async (_request, call) =>
     call < 3
@@ -121,6 +573,235 @@ test("each continue is another single-call tick; silence and duplicate events do
     await h.close();
   }
 });
+
+test("a final answer without outstanding work does not schedule a second answer", async () => {
+  const h = await fixture(async (_request, call) => ({
+    ...wait,
+    messages: [
+      { text: call === 1 ? "first answer" : "different second answer" },
+    ],
+    next: call === 1 ? { kind: "continue" } : { kind: "wait" },
+  }));
+  try {
+    h.server.addMessage("@helper one question");
+    await h.agent.requestSync();
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["first answer"],
+    );
+    assert.equal(h.requests.length, 1);
+    await h.restart();
+    assert.equal(h.requests.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("two messages for one input in a single tick form one response, matching the reported screenshot", async () => {
+  let input = "";
+  const h = await fixture(async () => ({
+    ...wait,
+    messages: [
+      { text: "收到，我在。", replyTo: input },
+      { text: "在呢，你测吧。" },
+    ],
+  }));
+  try {
+    input = h.server.addMessage("@helper A test").id;
+    await h.agent.requestSync();
+    assert.equal(h.requests.length, 1);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => [send.text, send.replyTo]),
+      [["收到，我在。\n\n在呢，你测吧。", input]],
+    );
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.includes("tick=1 next=wait") &&
+          line.includes(`inputs=${input} messages=1 jobs=0`),
+      ),
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+for (const targeted of [false, true])
+  test(`a plain group response and its other parts form one message for a multi-input batch (targeted=${targeted})`, async () => {
+    let first = "";
+    const h = await fixture(async () => ({
+      ...wait,
+      messages: [
+        { text: "first part", ...(targeted ? { replyTo: first } : {}) },
+        { text: "second part" },
+      ],
+    }));
+    try {
+      h.config.set("autonomous", true);
+      const a = h.server.addMessage("first input");
+      first = a.id;
+      const b = h.server.addMessage("second input", {
+        authorId: "acct-bob",
+        from: "bob",
+      });
+      await h.agent.requestSync();
+      assert.equal(h.requests.length, 1);
+      assert.deepEqual(
+        h.server.state.sends.map((send) => [send.text, send.replyTo]),
+        [["first part\n\nsecond part", null]],
+      );
+      assert.equal(h.store.task("conv-1", a.id)?.replyHash, textHash(a.text));
+      assert.equal(h.store.task("conv-1", b.id)?.replyHash, textHash(b.text));
+      assert.ok(
+        h.logs.some(
+          (line) =>
+            line.includes("reply delivered") && line.includes("reply_to=none"),
+        ),
+      );
+      assert.ok(
+        h.logs.some(
+          (line) =>
+            line.includes("tick replies committed") &&
+            line.includes(a.id) &&
+            line.includes(b.id),
+        ),
+      );
+      assert.ok(!h.logs.join("\n").includes("first part"));
+      await h.restart();
+      assert.equal(h.server.state.sends.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+
+test("a watched job cannot produce another final answer for an already answered input", async () => {
+  const h = await fixture(async (_request, call) =>
+    call === 1
+      ? {
+          messages: [{ text: "first answer" }],
+          actions: [
+            {
+              id: "save",
+              tool: "memory",
+              arguments: { action: "set", key: "index", value: "note" },
+            },
+          ],
+          next: { kind: "on_jobs", jobs: ["save"], mode: "all" },
+        }
+      : { ...wait, messages: [{ text: "different second answer" }] },
+  );
+  try {
+    h.server.addMessage("@helper one question");
+    await h.agent.requestSync();
+    await until(() => h.requests.length === 2);
+    await h.agent.requestSync();
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["first answer"],
+    );
+    await h.restart();
+    assert.equal(h.server.state.sends.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+for (const scenario of ["reply", "silent", "inflight", "v2"])
+  test(`old group recovery retains committed output and unfinished batch members (${scenario})`, async () => {
+    const silent = scenario === "silent";
+    const inflight = scenario === "inflight";
+    const modern = scenario === "v2";
+    const h = await fixture(async () => {
+      if (inflight)
+        return { ...wait, messages: [{ text: "fresh group answer" }] };
+      throw new Error("Committed legacy decision must not call the model");
+    });
+    try {
+      h.config.set("autonomous", true);
+      const first = h.server.addMessage("first question");
+      const second = h.server.addMessage("second question");
+      const batch = [first, second].map((message) => ({
+        input: message.id,
+        sequence: message.sequence,
+        hash: textHash(message.text),
+      }));
+      for (const message of [first, second])
+        h.store.putTask({
+          conversation: "conv-1",
+          input: message.id,
+          sequence: message.sequence,
+          promptHash: textHash(message.text),
+          replyTo: message.id,
+          status: modern ? "answered" : "running",
+          attempts: 1,
+          autonomous: true,
+          readyAt: Date.now(),
+          slots: [],
+          updated: Date.now(),
+          ...(message === first
+            ? {
+                batch,
+                outputSlot: modern ? "answer" : "group:0",
+                ...(modern ? { outputHash: textHash(message.text) } : {}),
+                ...(inflight
+                  ? {}
+                  : { decision: silent ? [] : [{ text: "legacy answer" }] }),
+              }
+            : { batchOwner: first.id }),
+        });
+      const family = modern ? "answer" : "group:0:0";
+      const slot = `conv-1:${first.id}:${family}`;
+      if (!silent && !inflight) {
+        const request = {
+          conversation_id: "conv-1",
+          text: "legacy answer",
+          markdown: true,
+        };
+        await h.api.send(request, "original-legacy-send-key");
+        h.store.task("conv-1", first.id)!.slots = [family];
+        h.store.putPart({
+          slot,
+          key: "original-legacy-send-key",
+          request,
+          created: Date.now(),
+        });
+      }
+      if (modern)
+        h.store.state.sessions["conv-1"] = {
+          root: first.id,
+          generation: 0,
+          tick: 1,
+          calls: 1,
+          started: Date.now(),
+          phase: "idle",
+          next: { kind: "wait" },
+          jobs: {},
+          sources: batch,
+          trace: [{ tick: 1, messages: ["legacy answer"], actions: [] }],
+        };
+      h.store.state.version = modern ? 2 : 1;
+      await h.store.save();
+      await h.restart();
+      assert.equal(h.requests.length, inflight ? 1 : 0);
+      assert.deepEqual(
+        h.server.state.sends.map((send) => send.text),
+        silent ? [] : inflight ? ["fresh group answer"] : ["legacy answer"],
+      );
+      assert.equal(h.store.task("conv-1", second.id)?.status, "answered");
+      if (!silent && !inflight)
+        assert.equal(h.store.part(slot)?.response?.replayed, true);
+      if (inflight)
+        assert.ok(
+          h.requests[0].messages.some((message) =>
+            message.content.includes(second.id),
+          ),
+        );
+      await h.restart();
+      assert.equal(h.requests.length, inflight ? 1 : 0);
+    } finally {
+      await h.close();
+    }
+  });
 
 test("fast tool completion wakes on_jobs once and survives a tick boundary", async () => {
   const h = await fixture(async (request, call) => {
@@ -154,6 +835,300 @@ test("fast tool completion wakes on_jobs once and survives a tick boundary", asy
     );
     await h.restart();
     assert.equal(h.requests.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("rewatching a result delivered in this tick does not tick again, including after restart", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call === 1)
+      return {
+        ...wait,
+        actions: [
+          {
+            id: "查找:index",
+            tool: "memory",
+            arguments: { action: "get", key: "index" },
+          },
+        ],
+        next: { kind: "on_jobs", jobs: ["查找:index"], mode: "all" },
+      };
+    const state = JSON.parse(
+      request.messages
+        .find((message) => message.content.startsWith("Tick state"))!
+        .content.split("\n")
+        .slice(1)
+        .join("\n"),
+    );
+    assert.equal(call, 2);
+    return {
+      ...wait,
+      messages: [{ text: "done" }],
+      next: { kind: "on_jobs", jobs: [state.jobs[0].id], mode: "any" },
+    };
+  });
+  try {
+    h.server.addMessage("@helper lookup");
+    await h.agent.requestSync();
+    await until(() =>
+      h.logs.some((line) => line.includes("tick watch consumed")),
+    );
+    await h.agent.requestSync();
+    assert.equal(h.store.state.sessions["conv-1"].next.kind, "wait");
+    assert.equal(h.requests.length, 2);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["done"],
+    );
+    assert.ok(
+      h.logs.some(
+        (line) => line.includes("job started") && line.includes("tool=memory"),
+      ),
+    );
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.includes("job finished") && line.includes("status=completed"),
+      ),
+    );
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.includes("tick wake") && line.includes("reason=job_results"),
+      ),
+    );
+    await h.restart();
+    assert.equal(h.requests.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a consumed watch cannot silently abandon an unanswered input and repair receives the reason", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call === 1)
+      return {
+        ...wait,
+        actions: [
+          {
+            id: "lookup",
+            tool: "memory",
+            arguments: { action: "get", key: "index" },
+          },
+        ],
+        next: { kind: "on_jobs", jobs: ["lookup"], mode: "all" },
+      };
+    const state = JSON.parse(
+      request.messages
+        .find((message) => message.content.startsWith("Tick state"))!
+        .content.split("\n")
+        .slice(1)
+        .join("\n"),
+    );
+    if (call === 2)
+      return {
+        ...wait,
+        next: { kind: "on_jobs", jobs: [state.jobs[0].id], mode: "all" },
+      };
+    assert.equal(call, 3);
+    assert.match(
+      state.previousError,
+      /next.jobs: all watched results were already delivered/,
+    );
+    assert.ok(
+      request.messages.some((message) =>
+        message.content.includes("original request"),
+      ),
+    );
+    return { ...wait, messages: [{ text: "repaired answer" }] };
+  });
+  try {
+    h.server.addMessage("@helper original request");
+    await h.agent.requestSync();
+    await until(() => h.server.state.sends.length === 1);
+    assert.equal(h.requests.length, 3);
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["repaired answer"],
+    );
+    assert.equal(Object.keys(h.store.state.sessions["conv-1"].jobs).length, 1);
+    await h.restart();
+    assert.equal(h.requests.length, 3);
+  } finally {
+    await h.close();
+  }
+});
+
+test("job continuation retains every admitted input and the configured prompt", async () => {
+  let release: ((value: string) => void) | undefined;
+  const h = await fixture(async (request, call) => {
+    assert.ok(
+      request.messages.some((message) =>
+        message.content.includes("Always speak concisely."),
+      ),
+    );
+    if (call === 1) {
+      request.executeTool = async () =>
+        await new Promise<string>((resolve) => {
+          release = resolve;
+        });
+      return {
+        ...wait,
+        actions: [
+          { id: "work", tool: "execute_code", arguments: { code: "1" } },
+        ],
+        next: { kind: "on_jobs", jobs: ["work"], mode: "all" },
+      };
+    }
+    const state = JSON.parse(
+      request.messages
+        .find((message) => message.content.startsWith("Tick state"))!
+        .content.split("\n")
+        .slice(1)
+        .join("\n"),
+    );
+    if (call === 2)
+      return {
+        ...wait,
+        next: { kind: "on_jobs", jobs: [state.jobs[0].id], mode: "all" },
+      };
+    assert.equal(call, 3);
+    const context = request.messages
+      .map((message) => message.content)
+      .join("\n");
+    assert.ok(context.includes("original work request"));
+    assert.ok(context.includes("new requirement while working"));
+    return { ...wait, messages: [{ text: "done" }] };
+  });
+  try {
+    h.config.set("prompt", "Always speak concisely.");
+    h.server.addMessage("@helper original work request");
+    await h.agent.requestSync();
+    await until(() => release !== undefined);
+    h.server.addMessage("@helper new requirement while working");
+    await h.agent.requestSync();
+    release!("done");
+    await until(() => h.server.state.sends.length === 1);
+    assert.equal(h.requests.length, 3);
+  } finally {
+    release?.("cleanup");
+    await h.close();
+  }
+});
+
+test("reply ownership survives a delayed continuation and restart", async () => {
+  const h = await fixture(async (_request, call) =>
+    call === 1
+      ? {
+          ...wait,
+          messages: [{ text: "first answer" }],
+          next: { kind: "after", delayMs: 100 },
+        }
+      : { ...wait, messages: [{ text: "another answer to the old question" }] },
+  );
+  try {
+    h.server.addMessage("@helper one question");
+    await h.agent.requestSync();
+    await h.restart();
+    await until(() => h.requests.length === 2);
+    await h.agent.requestSync();
+    assert.deepEqual(
+      h.server.state.sends.map((send) => send.text),
+      ["first answer"],
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("new input during a watched job gets its own answer and the old job cannot answer either input again", async () => {
+  let release: ((value: string) => void) | undefined;
+  const h = await fixture(async (request, call) => {
+    if (call === 1) {
+      request.executeTool = async () =>
+        await new Promise<string>((resolve) => {
+          release = resolve;
+        });
+      return {
+        messages: [{ text: "first answer" }],
+        actions: [
+          { id: "work", tool: "execute_code", arguments: { code: "1" } },
+        ],
+        next: { kind: "on_jobs", jobs: ["work"], mode: "all" },
+      };
+    }
+    if (call === 2) {
+      const state = JSON.parse(
+        request.messages
+          .find((message) => message.content.startsWith("Tick state"))!
+          .content.split("\n")
+          .slice(1)
+          .join("\n"),
+      );
+      return {
+        ...wait,
+        messages: [{ text: "second answer" }],
+        next: { kind: "on_jobs", jobs: [state.jobs[0].id], mode: "all" },
+      };
+    }
+    return { ...wait, messages: [{ text: "unwanted third answer" }] };
+  });
+  try {
+    const first = h.server.addMessage("@helper first question");
+    await h.agent.requestSync();
+    await until(() => release !== undefined);
+    const second = h.server.addMessage("@helper second question");
+    await h.agent.requestSync();
+    release!("done");
+    await until(() => h.requests.length === 3);
+    await h.agent.requestSync();
+    assert.deepEqual(
+      h.server.state.sends.map((send) => [send.text, send.replyTo]),
+      [
+        ["first answer", first.id],
+        ["second answer", second.id],
+      ],
+    );
+    await h.restart();
+    assert.equal(h.server.state.sends.length, 2);
+  } finally {
+    release?.("cleanup");
+    await h.close();
+  }
+});
+
+test("a group continuation may answer a different input but cannot answer the first input twice", async () => {
+  let first = "";
+  let second = "";
+  const h = await fixture(async (_request, call) =>
+    call === 1
+      ? {
+          ...wait,
+          messages: [{ text: "answer one", replyTo: first }],
+          next: { kind: "continue" },
+        }
+      : {
+          ...wait,
+          messages: [
+            { text: "duplicate one", replyTo: first },
+            { text: "answer two", replyTo: second },
+          ],
+        },
+  );
+  try {
+    h.config.set("autonomous", true);
+    first = h.server.addMessage("first group question").id;
+    second = h.server.addMessage("@helper second group question").id;
+    await h.agent.requestSync();
+    assert.deepEqual(
+      h.server.state.sends.map((send) => [send.text, send.replyTo]),
+      [
+        ["answer one", first],
+        ["answer two", second],
+      ],
+    );
+    assert.deepEqual(h.requests[1].replyTargets, [second]);
   } finally {
     await h.close();
   }
@@ -508,6 +1483,14 @@ test("invalid reply plans commit no jobs and repair on a separate tick", async (
     assert.ok(
       h.requests[1].messages.some((message) =>
         message.content.includes("Reply target must be an admitted input"),
+      ),
+    );
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.includes("tick retry scheduled") &&
+          line.includes("retry=1/2") &&
+          line.includes("Reply target must be an admitted input"),
       ),
     );
   } finally {
@@ -897,54 +1880,216 @@ test("restart without --with-shell interrupts a shell job without replaying its 
 });
 
 for (const stream of [false, true])
-  test(`production adapter makes one provider call per tick (stream=${stream})`, async (t) => {
-    let calls = 0;
-    const decision = JSON.stringify(wait);
-    t.mock.method(
-      globalThis,
-      "fetch",
-      async (_url: unknown, init: RequestInit) => {
-        calls++;
-        const body = JSON.parse(String(init.body));
-        assert.equal(body.tools.length, 1);
-        assert.equal(body.tool_choice.function.name, "finish_tick");
-        const tool = {
-          id: "tick-1",
-          type: "function",
-          function: { name: "finish_tick", arguments: decision },
-        };
-        if (!stream)
+  for (const reasoningEffort of [undefined, "none"])
+    test(`production adapter makes one compatible provider call per tick (stream=${stream}, reasoning=${reasoningEffort ?? "default"})`, async (t) => {
+      let calls = 0;
+      const decision = JSON.stringify(wait);
+      t.mock.method(
+        globalThis,
+        "fetch",
+        async (_url: unknown, init: RequestInit) => {
+          calls++;
+          const body = JSON.parse(String(init.body));
+          assert.equal(body.tools.length, 2);
+          // Thinking models can reject a forced named tool even with one tool.
+          // Leave selection to the provider; tick() validates the decision.
+          assert.equal(body.tool_choice, undefined);
+          assert.equal(body.parallel_tool_calls, undefined);
+          assert.equal(body.tools[0].function.name, "finish_tick");
+          assert.equal(body.tools[1].function.name, "memory");
+          assert.equal(body.reasoning_effort, reasoningEffort);
+          const tool = {
+            id: "tick-1",
+            type: "function",
+            function: { name: "finish_tick", arguments: decision },
+          };
+          if (!stream)
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: { content: null, tool_calls: [tool] },
+                    finish_reason: "tool_calls",
+                  },
+                ],
+              }),
+            );
           return new Response(
-            JSON.stringify({
+            `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...tool }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`,
+            { headers: { "Content-Type": "text/event-stream" } },
+          );
+        },
+      );
+      const model = new ModelClient({
+        endpoint: "https://model.invalid",
+        token: "",
+        model: "model",
+        timeoutMs: 1000,
+        stream,
+        log: () => {},
+      });
+      assert.deepEqual(
+        await model.tick({
+          messages: [{ role: "user", content: "hello" }],
+          tools: [MEMORY_TOOL],
+          reasoningEffort,
+        }),
+        wait,
+      );
+      assert.equal(calls, 1);
+      t.mock.restoreAll();
+    });
+
+test("streamed tool deltas tolerate repeated ids/names and an omitted index", async (t) => {
+  let attempts = 0;
+  const fragments = [
+    '{"messages":',
+    '[],"actions":[],"next":{"kind":"wait"}',
+    "}",
+  ];
+  t.mock.method(globalThis, "fetch", async () => {
+    attempts++;
+    // A compatible gateway that repeats id/name on every chunk and only sends
+    // the index on the first one must not corrupt the call.
+    const events = fragments.map((arguments_, index) => ({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                ...(index === 0 ? { index: 0 } : {}),
+                id: "tick-1",
+                type: "function",
+                function: { name: "finish_tick", arguments: arguments_ },
+              },
+            ],
+          },
+          finish_reason: index === fragments.length - 1 ? "tool_calls" : null,
+        },
+      ],
+    }));
+    return new Response(
+      `${events.map((event) => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\ndata: [DONE]\n\n`,
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+  });
+  const model = new ModelClient({
+    endpoint: "https://model.invalid",
+    token: "",
+    model: "model",
+    timeoutMs: 1000,
+    stream: true,
+    log: () => {},
+  });
+  assert.deepEqual(
+    await model.tick({
+      messages: [{ role: "user", content: "hello" }],
+      tools: [MEMORY_TOOL],
+    }),
+    wait,
+  );
+  assert.equal(attempts, 1);
+  t.mock.restoreAll();
+});
+
+for (const stream of [false, true])
+  test(`automatic tool selection rejects ambiguous or unexpected function calls (stream=${stream})`, async (t) => {
+    const validCall = {
+      id: "tick-1",
+      type: "function",
+      function: { name: "finish_tick", arguments: JSON.stringify(wait) },
+    };
+    for (const calls of [
+      [validCall, { ...validCall, id: "tick-2" }],
+      [
+        {
+          ...validCall,
+          function: { ...validCall.function, name: "unavailable" },
+        },
+      ],
+    ]) {
+      let attempts = 0;
+      t.mock.method(globalThis, "fetch", async () => {
+        attempts++;
+        return stream
+          ? new Response(
+              `data: ${JSON.stringify({ choices: [{ delta: { content: "uncommitted text", tool_calls: calls.map((call, index) => ({ index, ...call })) }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+            )
+          : Response.json({
               choices: [
                 {
-                  message: { content: null, tool_calls: [tool] },
-                  finish_reason: "tool_calls",
+                  message: { content: "uncommitted text", tool_calls: calls },
+                  finish_reason: "stop",
                 },
               ],
-            }),
+            });
+      });
+      const model = new ModelClient({
+        endpoint: "https://model.invalid",
+        token: "",
+        model: "model",
+        timeoutMs: 1000,
+        stream,
+        log: () => {},
+      });
+      await assert.rejects(
+        model.tick({
+          messages: [{ role: "user", content: "hello" }],
+          tools: [MEMORY_TOOL],
+          executeTool: async () => {
+            throw new Error("Effects must not run");
+          },
+        }),
+        /Expected at most one finish_tick decision/,
+      );
+      assert.equal(attempts, 1);
+      t.mock.restoreAll();
+    }
+  });
+
+for (const stream of [false, true])
+  test(`ordinary final text and silence end a tick without requesting a second answer (stream=${stream})`, async (t) => {
+    let calls = 0;
+    for (const text of ["ordinary final answer", ""]) {
+      t.mock.method(
+        globalThis,
+        "fetch",
+        async (_url: unknown, init: RequestInit) => {
+          calls++;
+          const body = JSON.parse(String(init.body));
+          assert.deepEqual(
+            body.tools[0].function.parameters.properties.messages.items
+              .properties.replyTo.enum,
+            ["input-id"],
           );
-        return new Response(
-          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...tool }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`,
-          { headers: { "Content-Type": "text/event-stream" } },
-        );
-      },
-    );
-    const model = new ModelClient({
-      endpoint: "https://model.invalid",
-      token: "",
-      model: "model",
-      timeoutMs: 1000,
-      stream,
-      log: () => {},
-    });
-    assert.deepEqual(
-      await model.tick({
-        messages: [{ role: "user", content: "hello" }],
-        tools: [MEMORY_TOOL],
-      }),
-      wait,
-    );
-    assert.equal(calls, 1);
-    t.mock.restoreAll();
+          return stream
+            ? new Response(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+              )
+            : Response.json({
+                choices: [
+                  { message: { content: text }, finish_reason: "stop" },
+                ],
+              });
+        },
+      );
+      const model = new ModelClient({
+        endpoint: "https://model.invalid",
+        token: "",
+        model: "model",
+        timeoutMs: 1000,
+        stream,
+        log: () => {},
+      });
+      const before = calls;
+      assert.deepEqual(
+        await model.tick({
+          messages: [{ role: "user", content: "question" }],
+          replyTargets: ["input-id"],
+        }),
+        { ...wait, messages: text ? [{ text }] : [] },
+      );
+      assert.equal(calls - before, 1);
+      t.mock.restoreAll();
+    }
   });

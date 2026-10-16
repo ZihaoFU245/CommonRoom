@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ModelClient } from "../src/model.ts";
+import { ModelClient, ModelError } from "../src/model.ts";
 
 const secret = "private-provider-body-or-credential";
 const request = {
@@ -19,7 +19,7 @@ function client(stream: boolean, logs: string[]): ModelClient {
 }
 
 for (const stream of [true, false]) {
-  for (const status of [401, 403, 404]) {
+  for (const status of [400, 401, 403, 404, 422]) {
     test(`upstream denial logs an error immediately without retry or body leakage (stream=${stream}, status=${status})`, async (t) => {
       const logs: string[] = [];
       let attempts = 0;
@@ -94,6 +94,26 @@ for (const stream of [true, false]) {
       assert.ok(!logs.join("\n").includes(secret));
     });
   }
+}
+
+for (const status of [400, 422]) {
+  test(`streamed ticks preserve HTTP ${status} after inspecting the error body`, async (t) => {
+    const logs: string[] = [];
+    let attempts = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      attempts++;
+      return Response.json({ error: { message: secret } }, { status });
+    });
+    await assert.rejects(
+      client(true, logs).tick(request),
+      (error: unknown) =>
+        error instanceof ModelError &&
+        error.status === status &&
+        error.message === `model gateway returned HTTP ${status}`,
+    );
+    assert.equal(attempts, 1);
+    assert.ok(!logs.join("\n").includes(secret));
+  });
 }
 
 test("debug traces request, first delta, tool loop and usage without logging payloads", async (t) => {

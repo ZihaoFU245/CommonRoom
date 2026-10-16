@@ -69,6 +69,18 @@ export class Store {
       // Persist an explicit format version even for an empty database.
       store.dirty.add(JSON.stringify(["meta", "version"]));
       for (const task of store.tasks()) {
+        if (
+          task.replyHash === undefined &&
+          task.outputHash === task.promptHash &&
+          task.outputSlot &&
+          task.slots.some(
+            (slot) =>
+              (slot === task.outputSlot ||
+                slot.startsWith(`${task.outputSlot}:`)) &&
+              store.part(`${taskKey(task.conversation, task.input)}:${slot}`),
+          )
+        )
+          task.replyHash = task.promptHash;
         const pending = task.slots.some((slot) => {
           const part = store.part(
             `${taskKey(task.conversation, task.input)}:${slot}`,
@@ -291,6 +303,7 @@ export class Store {
             ([conversation, session]) =>
               conversation === task.conversation &&
               (session.root === task.input ||
+                session.sources.some((source) => source.input === task.input) ||
                 Object.values(session.jobs).some(
                   (job) => job.root === task.input && !job.observed,
                 )) &&

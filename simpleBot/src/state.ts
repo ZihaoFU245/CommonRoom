@@ -48,6 +48,8 @@ export interface TaskRecord {
   slots: string[];
   /** Durable output family for the version currently being answered. */
   outputHash?: string;
+  /** Input version that already owns a committed final response plan. */
+  replyHash?: string;
   /** Persist a completed decision to send no reply for this input version. */
   silentHash?: string;
   outputSlot?: string;
@@ -176,6 +178,7 @@ export function validate(value: unknown): State {
       !Number.isSafeInteger(task.sequence) ||
       task.sequence < 1 ||
       typeof task.promptHash !== "string" ||
+      (task.replyHash !== undefined && typeof task.replyHash !== "string") ||
       (task.silentHash !== undefined && typeof task.silentHash !== "string") ||
       (task.autonomous !== undefined && typeof task.autonomous !== "boolean") ||
       (task.inputChars !== undefined &&

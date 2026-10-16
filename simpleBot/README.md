@@ -65,6 +65,7 @@ simpleBot/
 │   ├── agent-state.ts shared worker services and per-conversation activity
 │   ├── scheduler.ts   fair bounded scheduling and interruptible deadlines
 │   ├── tick.ts        decision schema, validation and durable session types
+│   ├── tick-response.ts normalize native calls and tick envelopes without effects
 │   ├── tick-commit.ts atomic decision/outbox/job publication
 │   ├── tick-request.ts tick context and custom model adapter compatibility
 │   ├── outbox.ts      durable multipart output and acknowledgement
@@ -399,7 +400,7 @@ have distinct keys, even if their arguments match. On restart it recovers pendin
 keyed outcomes before asking the model to continue. Legacy unkeyed or expired
 uncertain actions require inspection. The KV store retains these records across restarts. Run one worker per database/account.
 
-Model history uses a bounded `read_history` tool that filters worker control messages and their responses, matching the normal context filter. Raw `/history` model calls are redirected to that tool.
+Model history uses a bounded `read_history` tool that filters worker control messages and their responses, matching the normal context filter. The bounded tool remains the budgeted path for history; the server's `/history` command is offered like any other grant.
 
 ## Bounded history and low-token operation
 
@@ -492,8 +493,21 @@ usage. Message IDs and counts correlate stages without logging message bodies,
 personality prompts, provider response bodies, tool arguments/results or credentials.
 Upstream HTTP denials, structured refusals and content-filter blocks log at
 `error`, including non-retryable responses, even with `log.level=info`.
-If there is no `model request started` line, inspect the preceding task-selection
-and preparation logs; socket notifications alone do not imply a model call.
+Tick diagnostics include `model tick request`, `model tick response` and an
+explicit `model tick accepted` or `model tick rejected`, correlated by
+conversation and tick ID. Response summaries contain tool names from the host's
+catalogue (unknown names are labelled `unavailable`), call counts, argument
+lengths/JSON types and decision shape without the values. Rejections distinguish
+unexpected calls, invalid JSON and invalid decisions. `tick retry scheduled`
+records the reason, retry count and delay; `tick recovery scheduled` records the
+single tool-less recovery tick, and `input unavailable` records an admitted input
+whose message is gone from retained history. `episode tool budget reached`
+records dropped actions and the published messages. A model-attempt
+`success=true` means
+inference returned successfully; only an accepted and committed decision starts
+effects. If there is no `model tick request` (or legacy `model request started`)
+line, inspect task-selection and preparation logs; socket notifications alone
+do not imply a model call.
 
 Streaming requests ask for `stream_options.include_usage`; gateways explicitly
 rejecting that optional field fall back without it. Both DeepSeek
@@ -523,8 +537,12 @@ an ambiguous transport failure.
 Each eligible message can start a model tick; the model can request further ticks without another message. The model receives the current sender's
 username and stable account ID and may use tools, reply, or finish silently with
 an empty `finish_tick.messages` array. A silent decision is checkpointed and is not retriggered
-by notifications or reconnects. Replies use the durable outbox; model command
-tools omit `/reply` and `/tell` to prevent a tool send plus a second final answer.
+by notifications or reconnects. Replies use the durable outbox. The fetched server
+catalogue is the worker's whole command ACL: every advertised command, including
+`/reply` and `/tell` when granted, is offered to the model, and an unadvertised or
+unauthorized command is refused by the server on execution. The prompt still asks
+for one path per answer, because a granted send command and a final answer are two
+separate messages.
 
 The system prompt gives the model freedom to choose its response and manage its
 workspace. It distinguishes speaker claims, proposals, agreements and verified
@@ -581,7 +599,19 @@ multiple conversations concurrently, bounded by `agent.maxConcurrentTicks`.
 Local worker commands bypass inference. Slow tools, future deadlines and network
 delivery do not occupy model slots.
 
-The model returns exactly one `finish_tick` function call:
+The request uses the OpenAI-compatible chat-completions `tools` field and leaves
+tool selection at its default. It does not force a named `tool_choice`, which
+some thinking models reject. The operator's reasoning setting remains unchanged.
+An ordinary assistant final-text response ends the tick with that answer and
+`next=wait`; empty final text means silence. Native tools are advertised alongside
+`finish_tick`. A native-only response starts durable jobs and yields until their
+results. Mixed responses may contain native calls and one `finish_tick`; an
+action represented both ways is coalesced so it executes once. Multiple
+`finish_tick` calls, unavailable tools or invalid arguments reject the entire
+plan before any effects are accepted. Text accompanying tool calls is not a
+final reply; use `finish_tick.messages` to commit a response alongside jobs.
+
+The preferred response is one `finish_tick` function call:
 
 ```json
 {
@@ -604,6 +634,49 @@ tool schemas. The host validates the whole decision and saves messages, job
 intents and continuation together before dispatch. Provisional stream deltas
 never publish effects. An action's success is available in a later tick; do not
 claim success merely because a job was proposed.
+Omitted `messages` or `actions` lists default to `[]`; explicit invalid values
+still fail, and `next` is always required.
+Action IDs are unique strings of 1–64 Unicode characters within a tick. Validation
+repairs receive the failing field and constraint without exposing argument values
+in logs. Every request includes the current non-empty configured `prompt`,
+including repair and job-continuation ticks.
+Unknown-argument feedback identifies the tool and its allowed fields. After two
+unsuccessful repair attempts, one final recovery tick omits all tools and asks
+for ordinary final text using known results, or a brief acknowledgement that the
+requested work could not be completed. It cannot start jobs or schedule another
+tick, so it cannot repeat an effect. The same single recovery tick is spent when
+the host would otherwise end an episode with an admitted input still unanswered,
+including a terminal provider failure and a tool-budget stop. All attempts still
+share the episode budgets. New input remains queued while a repair owns its
+original inputs; it starts with a fresh retry allowance after that episode
+commits or fails.
+
+Each input version owns at most one final response plan, including all combined
+or targeted messages in that plan. A durable `replyHash` prevents a continuation,
+job completion, rescan or restart from answering that version again, even with
+different text. Send final messages after prerequisite jobs finish. New inputs
+and edited versions may receive their own replies; a group continuation may
+answer another input that has not received a response. A final response with no
+remaining jobs does not schedule an immediate continuation. Tick state lists
+valid `replyTargets` message IDs and whether each input already has a reply;
+the generated reply schema uses those IDs and bounds the number of replies.
+Messages assigned to one input within a decision are combined into one response.
+Multiple plain group messages in a batch are also combined. If a plan mixes a
+plain batch response with targeted replies, their text forms one plain response
+to prevent overlapping replies; targeted-only plans can still reply separately
+to independent inputs.
+Continuations retain all admitted inputs, including new requirements received
+while a job was running, and label them as context rather than fresh requests.
+An already-observed terminal result cannot wake `on_jobs` again. A watch containing
+only consumed results becomes `wait` once all inputs have replies; otherwise it
+returns a repair error so an unanswered request is not silently abandoned.
+DEBUG logs include job start/completion,
+duration, result size, wake reasons and watched job states, without message or
+tool-argument content. Reply commit/delivery logs associate source inputs, reply
+targets, outbox slots and server message IDs, distinguishing repeated delivery
+from replies to different inputs. INFO
+logs include tick start/commit, input IDs, output count and next wake, so one tick
+with multiple proposed messages can be distinguished from multiple model calls.
 
 `next` chooses a one-shot wake:
 
@@ -643,7 +716,13 @@ outcomes. Cancellation/retraction aborts dependent work and drops unsent output;
 already issued effects may have occurred and are not rolled back.
 
 Self continuations, repairs and retries share the work episode's tick, token,
-tool and wall-clock budgets. Exceeding a budget stops automatic continuation and
+tool and wall-clock budgets. The tool budget is a host limit, not a model
+mistake: actions that no longer fit are dropped together with any continuation
+that referenced them, the decision's own messages are still published, and the
+episode stops with a warning. An episode never ends on a host stop or a terminal
+failure while one of its admitted inputs still has no reply: the tool-less
+recovery tick above answers it in prose, or acknowledges that it could not.
+Exceeding a budget stops automatic continuation and
 records a diagnostic visible through `/status`. Provider usage is charged when
 available; otherwise input estimates and the configured output allowance are
 charged conservatively. A new externally admitted episode starts a fresh budget;

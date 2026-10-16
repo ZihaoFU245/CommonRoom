@@ -942,11 +942,11 @@ test("model knows server grants and never receives worker administration or lega
           JSON.stringify({ command }),
         ),
         command === "/history"
-          ? /read_history/
+          ? /Server command completed/
           : /not in the available server catalogue/,
       );
     }
-    assert.equal(h.server.state.commands.length, 0);
+    assert.deepEqual(h.server.state.commands, ["/history"]);
     assert.match(
       await request.executeTool!("read_history", '{"limit":21}'),
       /bounded/,
@@ -981,6 +981,15 @@ test("restricted credentials have no server command tool or public maintenance c
         (command) => command.name,
       ),
       ["/metrics", "/help", "/ping"],
+    );
+    assert.ok(
+      h.logs.some(
+        (line) =>
+          line.startsWith("warn ") &&
+          line.includes("server command catalogue unavailable") &&
+          line.includes("status=403"),
+      ),
+      "a denied catalogue is reported instead of silently emptying the tool list",
     );
   } finally {
     await h.stop();
@@ -1686,7 +1695,7 @@ test("a tool action can complete without publishing a reply", async () => {
   }
 });
 
-test("model send commands cannot publish a second reply alongside the final answer", async () => {
+test("every granted server command is offered and executed, including sends", async () => {
   const h = await harness();
   try {
     const catalogue = h.api.serverCommands.bind(h.api);
@@ -1701,25 +1710,53 @@ test("model send commands cannot publish a second reply alongside the final answ
     const complete = h.model.complete.bind(h.model);
     h.model.complete = async (request) => {
       const system = request.messages[0]!.content;
-      assert.ok(!system.includes("/reply id text"));
+      for (const usage of ["/reply id text", "/tell user text"])
+        assert.ok(system.includes(usage), usage);
       for (const command of [
         "/reply m1 duplicate",
         "/tell alice duplicate",
         "/sudo /reply m1 duplicate",
         "/sudo /tell alice duplicate",
-      ]) {
-        const result = await request.executeTool!(
-          "run_server_command",
-          JSON.stringify({ command }),
+      ])
+        assert.match(
+          await request.executeTool!(
+            "run_server_command",
+            JSON.stringify({ command }),
+          ),
+          /Server command completed/,
         );
-        assert.match(result, /error/);
-      }
       return complete(request);
     };
     h.server.addMessage("@helper hello");
     await h.agent.requestSync();
-    assert.equal(h.server.state.commands.length, 0);
+    assert.deepEqual(h.server.state.commands, [
+      "/reply m1 duplicate",
+      "/tell alice duplicate",
+      "/sudo /reply m1 duplicate",
+      "/sudo /tell alice duplicate",
+    ]);
     assert.equal(h.server.state.sends.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a command outside the fetched catalogue is refused before any server effect", async () => {
+  const h = await harness();
+  try {
+    let result = "";
+    const complete = h.model.complete.bind(h.model);
+    h.model.complete = async (request) => {
+      result = await request.executeTool!(
+        "run_server_command",
+        JSON.stringify({ command: "/tell alice not granted" }),
+      );
+      return complete(request);
+    };
+    h.server.addMessage("@helper hello");
+    await h.agent.requestSync();
+    assert.match(result, /not in the available server catalogue/);
+    assert.equal(h.server.state.commands.length, 0);
   } finally {
     await h.stop();
   }
@@ -2040,14 +2077,19 @@ test("a saved multi-response group decision resumes without rerunning the model"
   const h = await harness();
   try {
     h.config.set("autonomous", true);
-    h.server.addMessage("a", { mentions: [] });
-    h.server.addMessage("b", { mentions: [] });
+    const first = h.server.addMessage("a", { mentions: [] });
+    const second = h.server.addMessage("b", { mentions: [] });
     let calls = 0;
     h.model.complete = async (request) => {
       calls++;
       await request.executeTool!(
         "finish_turn",
-        '{"messages":[{"text":"first"},{"text":"second"}]}',
+        JSON.stringify({
+          messages: [
+            { text: "first", reply_to: first.id },
+            { text: "second", reply_to: second.id },
+          ],
+        }),
       );
       return "";
     };

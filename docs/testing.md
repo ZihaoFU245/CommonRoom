@@ -317,6 +317,34 @@ reply despite overlapping signals/reconnect, outbox-only reply publication,
 silent decisions (with and without tool effects) across restart, and edit races
 between queuing and locating input. Both buffered and streamed models accept
 explicit empty completions without treating transport truncation as silence.
+Model error regressions preserve HTTP 400/422 through streamed error-body
+inspection, including single-call ticks, without cancelling a consumed stream,
+retrying ordinary denials or logging private provider response bodies. Optional
+stream-usage rejection still exercises the compatibility fallback.
+Tick diagnostic regressions distinguish multiple/unexpected calls, invalid JSON,
+invalid decisions and accepted final/structured responses in streaming and
+buffered modes. They verify conversation/tick correlation, exclusion of diagnostic
+IDs from the provider payload, and absence of prompts, reply/argument content,
+reasoning, credentials and arbitrary unknown names/fields from logs. Loop tests
+also check that validation repair logs its scheduled retry and reason.
+Tick request regressions omit forced tool selection for thinking-model
+compatibility while preserving the configured reasoning mode. Ordinary final
+text/silence ends a single tick. Native-only and mixed native/finish_tick responses
+become durable job plans; duplicate representations execute once, and malformed
+plans start no effects. Streamed and buffered regressions cover Unicode action
+IDs, precise validation-repair feedback without payload leakage, native reference
+mapping and distinct native intents. Loop regressions check consumed job watches
+across restart, job/wake diagnostics, preservation of all admitted inputs on job
+continuations and inclusion of the configured prompt on each request.
+Failure-recovery regressions reproduce repeated unknown `execute_code` arguments
+in buffered and streamed responses, check schema-specific repair feedback,
+verify one final tool-free recovery tick, and then process a fresh message.
+Queued input cannot take over an ongoing repair or inherit exhausted retries,
+including in autonomous groups. Failed recovery starts no effects and leaves
+later input eligible. Omitted empty tick lists are accepted while invalid
+explicit lists remain rejected. Multi-input plain/mixed group plans merge into
+one output and retain reply ownership across restart; delivery diagnostics
+contain IDs rather than message bodies.
 
 Autonomous worker tests cover fixed three-second windows under concurrent
 speakers, minimum turn spacing, combined plain output, independent targeted
@@ -324,8 +352,12 @@ replies, silence, own-output suppression, runtime enable/disable, foreign privat
 chat isolation, source retraction, and interrupted KV-backed response plans. Failure tests cover stalled/erroring providers, ignored
 cancellation, late tool rejection and failed command-receipt lookups while new
 input continues. Buffered and streamed models exercise 16 tool calls and terminal
-response-plan tools. The real worker integration checks multi-user autonomous
-bursts, reply targets, silence and restart against an isolated server/model stub.
+response-plan tools. The model's server-command tool mirrors the fetched catalogue:
+granted commands, including `/reply` and `/tell`, are offered and executed, a
+command outside the catalogue is refused before any effect, and a credential that
+cannot read the catalogue loses the tool with a logged warning. The real worker
+integration checks multi-user autonomous bursts, reply targets, silence and restart
+against an isolated server/model stub.
 
 SimpleBot requires Deno 2.5+ for worker tests. Durable-storage regressions cover
 restart recall, silent group memory, conversation/account isolation, conditional
@@ -364,6 +396,19 @@ responsive local controls, serialized inference within a conversation, stale
 watches/timers, retraction cancellation, bounded self ticks, atomic rejection of
 invalid plans, distinct effect keys across ticks, bounded result paging, admission backpressure,
 token budgets, checkpoint/deadline races and lossless KV v1→v2 migration.
+Terminal failures spend one bounded tool-less recovery tick, and a second failure
+gives up without another call; a tool-budget stop publishes the decision's own
+messages instead of failing the input, and spends that recovery tick when nothing
+could be published. Streamed tool deltas tolerate a gateway repeating ids/names
+and omitting the index after the first chunk.
+Reply-ownership regressions reject different second answers to one input,
+including job completion, delayed continuation and restart; multiple messages
+for one input within one tick are combined. Distinct new inputs
+and unanswered group inputs remain eligible. Old v1 group-decision fixtures
+cover saved silence and a lost send acknowledgement, verifying recovery without
+inference and reuse of the original outbox receipt key. Recovery also releases
+unfinished old batch members and avoids staging v2 output again when obsolete
+v1 batch metadata remains.
 The actual worker integration gateway emits finish_tick decisions for buffered
 and streaming requests and verifies native tools, output and restart recovery.
 
