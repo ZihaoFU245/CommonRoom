@@ -264,6 +264,7 @@ export class ModelClient implements ChatModel {
       : AbortSignal.timeout(this.options.timeoutMs);
     const started = performance.now();
     const trace = `conversation=${request.contextKey ?? "standalone"} tick=${request.tickId ?? "standalone"}`;
+    let reported = false;
     this.options.log(
       "debug",
       `model tick request ${trace} model=${JSON.stringify(this.options.model)} stream=${this.options.stream} messages=${messages.length} advertised_tools=${advertised.length} native_tools=${tools.length} input_budget=${budget.tokens} budget_source=${budget.source} max_tokens=${maxTokens} reasoning_effort=${request.reasoningEffort || "provider_default"} reply_targets=${request.replyTargets?.length ?? "unspecified"} max_reply_messages=${request.maxReplyMessages ?? "unspecified"}`,
@@ -288,6 +289,7 @@ export class ModelClient implements ChatModel {
           (request.tools ?? []).map((tool) => tool.function.name),
         )}`,
       );
+      reported = true;
       request.onCall?.({
         success: true,
         durationMs: performance.now() - started,
@@ -379,8 +381,9 @@ export class ModelClient implements ChatModel {
         );
       }
     } catch (error) {
-      // Validation failures follow a successful inference; do not double-count it.
-      if (!(error instanceof ModelError && error.status === 422))
+      // A provider HTTP 422 is a failed attempt; local plan validation follows
+      // an already reported inference. Distinguish them without guessing by status.
+      if (!reported)
         request.onCall?.({
           success: false,
           durationMs: performance.now() - started,

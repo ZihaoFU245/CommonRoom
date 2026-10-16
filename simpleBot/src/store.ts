@@ -1,6 +1,6 @@
 // Cached worker state, persisted asynchronously as individual KV records.
 // The model workspace is deliberately separate from delivery bookkeeping.
-import { GROUP_INTERVAL_MS } from "./group.ts";
+import { LEGACY_GROUP_INTERVAL_MS } from "./group.ts";
 import { Records } from "./records.ts";
 import { trackState } from "./tracked.ts";
 import { emptyState, validate, type State } from "./state.ts";
@@ -118,7 +118,7 @@ export class Store {
         if (task.autonomous && task.batch && task.status === "queued")
           task.readyAt = Math.max(
             task.readyAt ?? 0,
-            (task.batchStarted ?? 0) + GROUP_INTERVAL_MS,
+            (task.batchStarted ?? 0) + LEGACY_GROUP_INTERVAL_MS,
           );
       }
       for (const session of Object.values(store.state.sessions)) {

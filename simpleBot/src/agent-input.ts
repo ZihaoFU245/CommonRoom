@@ -4,7 +4,6 @@ import type { Controls } from "./agent-controls.ts";
 import type { ModelContext } from "./agent-model.ts";
 import { BotApiError, type BotApi } from "./api.ts";
 import { abortable } from "./async.ts";
-import { GROUP_INTERVAL_MS } from "./group.ts";
 import { taskKey, textHash } from "./store.ts";
 import type { Conversation, Message, HistoryResponse } from "./wire.ts";
 
@@ -308,7 +307,8 @@ export class InputSync {
     if (task.autonomous && task.status === "answered") {
       delete task.batch;
       delete task.decision;
-      task.readyAt = Date.now() + GROUP_INTERVAL_MS;
+      task.readyAt =
+        Date.now() + this.host.options.config.get("chat.batchWindowMs");
     }
     if (task.outputHash !== hash) {
       task.pass = (task.pass ?? 0) + 1;
@@ -320,6 +320,7 @@ export class InputSync {
     task.status = "queued";
     task.updated = Date.now();
     store.putTask(task);
+    this.host.metrics(conversation.id).admit(messageId);
   }
 
   /** A pending input vanished: stop its unsent output, keep what was delivered. */
@@ -336,6 +337,7 @@ export class InputSync {
     task.slots = task.slots.filter((slot) => !unsent.includes(slot));
     task.status = "cancelled";
     task.updated = Date.now();
+    this.host.metrics(conversation.id).forgetInput(messageId);
   }
 
   /** Decide whether an input deserves an answer, then record that decision. */
@@ -381,7 +383,8 @@ export class InputSync {
             task.conversation === conversation.id &&
             task.autonomous &&
             task.status === "queued",
-        )?.readyAt ?? Date.now() + GROUP_INTERVAL_MS;
+        )?.readyAt ??
+      Date.now() + this.host.options.config.get("chat.batchWindowMs");
     this.host.options.store.putTask({
       ...(grouped
         ? {
@@ -400,6 +403,7 @@ export class InputSync {
       slots: [],
       updated: Date.now(),
     });
+    this.host.metrics(conversation.id).admit(message.id);
     this.host.options.log(
       "debug",
       `task queued conversation=${conversation.id} input=${message.id} sequence=${message.sequence}`,

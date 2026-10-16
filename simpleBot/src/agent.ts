@@ -8,9 +8,10 @@ import { Controls } from "./agent-controls.ts";
 import { ModelContext } from "./agent-model.ts";
 import { Outbox } from "./outbox.ts";
 import { recoverLegacyGroups } from "./legacy-recovery.ts";
+import { locateInputs } from "./input-validation.ts";
 import type { BotApi } from "./api.ts";
 import type { ChatModel } from "./model.ts";
-import type { Snapshot, HistoryResponse, BotCommand } from "./wire.ts";
+import type { Snapshot, HistoryResponse, BotCommand, Message } from "./wire.ts";
 
 export class Agent extends AgentState {
   private syncing = false;
@@ -128,6 +129,34 @@ export class Agent extends AgentState {
 
   private async admitControls(): Promise<void> {
     const { store, config } = this.options;
+    const located = new Map<string, Map<string, Message>>();
+    for (const conversation of this.snapshot?.conversations ?? []) {
+      const queued = store
+        .tasks()
+        .filter(
+          (task) =>
+            task.conversation === conversation.id &&
+            task.status === "queued" &&
+            !(
+              !config.get("autonomous") &&
+              task.autonomous &&
+              !task.slots.length &&
+              !task.actions?.length
+            ),
+        );
+      if (!queued.length) continue;
+      located.set(
+        conversation.id,
+        (
+          await locateInputs(
+            this.options.api,
+            conversation.id,
+            queued,
+            this.abort.signal,
+          )
+        ).messages,
+      );
+    }
     for (const task of store.tasks()) {
       if (task.status !== "queued") continue;
       const conversation = this.snapshot?.conversations.find(
@@ -141,8 +170,14 @@ export class Agent extends AgentState {
         !task.actions?.length
       ) {
         task.status = "cancelled";
+        this.metrics(conversation.id).forgetInput(task.input);
         continue;
       }
+      const candidate = located.get(conversation.id)?.get(task.input);
+      if (!candidate || !this.controls.recognizes(conversation, candidate))
+        continue;
+      // Earlier controls may change state while a batch is being handled. Read
+      // the actual command again immediately before executing it.
       const page = await this.history({
         conversation_id: conversation.id,
         around: task.sequence,
@@ -151,6 +186,7 @@ export class Agent extends AgentState {
       const message = page.messages.find((item) => item.id === task.input);
       if (!message || !this.controls.recognizes(conversation, message))
         continue;
+      this.metrics(conversation.id).forgetInput(task.input);
       task.status = "running";
       this.beginActivity(conversation.id);
       await store.save();

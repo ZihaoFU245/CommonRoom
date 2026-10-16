@@ -8,7 +8,7 @@ import {
   type TickDecision,
   type TickSession,
 } from "./tick.ts";
-import type { TaskRecord } from "./store.ts";
+import { taskKey, type TaskRecord } from "./store.ts";
 import type { Conversation, Message } from "./wire.ts";
 import { acceptReplies } from "./tick-replies.ts";
 
@@ -207,6 +207,19 @@ export async function commitTick(
   session.retries = 0;
   delete session.retryInputs;
   await store.save();
+  if (decision.messages.length) {
+    const parts = root.slots
+      .filter((name) => name === slot || name.startsWith(`${slot}:`))
+      .map((name) => `${taskKey(id, root.input)}:${name}`)
+      .filter((key) => store.part(key)?.response === undefined);
+    host.metrics(id).planReply(
+      parts,
+      replies.replied.map(([task]) => task.input),
+    );
+  } else if (decision.next.kind === "wait" && !decision.actions.length) {
+    for (const source of session.sources)
+      host.metrics(id).forgetInput(source.input);
+  }
   if (droppedActions)
     host.options.log(
       "warn",

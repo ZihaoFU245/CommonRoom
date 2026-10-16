@@ -8,17 +8,65 @@ import {
   ProviderTokens,
 } from "../src/tokens.ts";
 
+for (const providerFailure of [false, true])
+  test(`tick telemetry counts HTTP 422 and plan rejection exactly once (upstream=${providerFailure})`, async (t) => {
+    const calls: ModelCall[] = [];
+    t.mock.method(globalThis, "fetch", async () =>
+      providerFailure
+        ? Response.json(
+            { error: { message: "synthetic rejection" } },
+            { status: 422 },
+          )
+        : Response.json({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "bad",
+                      type: "function",
+                      function: {
+                        name: "finish_tick",
+                        arguments: "invalid JSON",
+                      },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+          }),
+    );
+    const client = new ModelClient({
+      endpoint: "https://model.invalid",
+      model: "test",
+      token: "",
+      stream: false,
+      timeoutMs: 1000,
+      log: () => {},
+    });
+    await assert.rejects(
+      client.tick({
+        messages: [{ role: "user", content: "synthetic" }],
+        onCall: (call) => calls.push(call),
+      }),
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].success, !providerFailure);
+  });
+
 test("metrics separate preparation, inference and reported first streamed deltas", () => {
   const metrics = new Metrics();
   metrics.prepared(10);
   metrics.prepared(30);
   metrics.record({ success: true, durationMs: 100, firstDeltaMs: 40 });
   metrics.record({ success: true, durationMs: 200 });
-  assert.match(metrics.report(), /Mean context preparation latency: 20 ms/);
-  assert.match(metrics.report(), /Mean model attempt latency: 150 ms/);
+  assert.match(metrics.report(), /\| Context preparation \| 30 ms \| 20 ms/);
+  assert.match(metrics.report(), /\| Model attempt \| 200 ms \| 150 ms/);
   assert.match(
     metrics.report(),
-    /Mean first streamed delta latency: 40 ms \(1\/2 attempts reported\)/,
+    /\| First streamed delta \| 40 ms \| 40 ms \| 40 ms \| 1 \|/,
   );
 });
 
@@ -106,11 +154,11 @@ test("provider measurements are scoped by conversation and do not make extra cal
   metrics.record(calls[1]!);
   assert.match(
     metrics.report(),
-    /Latest request input\/output \(provider\): 100 \/ 1 tokens/,
+    /Latest request input\/output \| 100 \/ 1 tokens/,
   );
   assert.match(
     metrics.report(),
-    /Pre-request input budget: 100 tokens \(provider\)/,
+    /Pre-request input budget \| 100 tokens \(provider\)/,
   );
 });
 
@@ -315,7 +363,7 @@ for (const stream of [true, false])
     assert.equal(calls[3]!.usage?.prompt, undefined);
     assert.match(
       metrics.report(),
-      /Cached input tokens: 60 \(2\/4 attempts reported\)/,
+      /Cached input tokens \| 60 \(2\/4 attempts reported\)/,
     );
     assert.match(metrics.report(), /30\.0%/);
   });

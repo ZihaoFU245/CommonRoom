@@ -516,6 +516,10 @@ test(
           (await ownMessages()).some(
             (message) =>
               message.text.includes("Metrics for this conversation") &&
+              message.markdown &&
+              message.text.includes(
+                "| Stage | Latest | Mean | P95 | Samples |",
+              ) &&
               message.text.includes(
                 "compact at 24576 tokens; total 32768 tokens",
               ),
@@ -878,7 +882,7 @@ test(
           ),
         "combined plain autonomous answer",
       );
-      assert.ok(Date.now() - startedGroup >= 2900);
+      assert.ok(Date.now() - startedGroup >= 900);
       const combined = (await ownMessages()).find(
         (message) => message.text === "Let's ship Friday.",
       );
@@ -900,7 +904,7 @@ test(
           ).length === 2,
         "independent replies in one turn",
       );
-      assert.ok(Date.now() - nextStarted >= 2800);
+      assert.ok(Date.now() - nextStarted >= 800);
       const separate = (await ownMessages()).filter((message) =>
         message.text.startsWith("Answer for"),
       );

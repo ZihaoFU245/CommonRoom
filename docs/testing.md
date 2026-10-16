@@ -346,7 +346,8 @@ explicit lists remain rejected. Multi-input plain/mixed group plans merge into
 one output and retain reply ownership across restart; delivery diagnostics
 contain IDs rather than message bodies.
 
-Autonomous worker tests cover fixed three-second windows under concurrent
+Autonomous worker tests cover configurable fixed windows (including the former
+three-second setting), the new one-second default, zero delay and mention bypass under concurrent
 speakers, minimum turn spacing, combined plain output, independent targeted
 replies, silence, own-output suppression, runtime enable/disable, foreign private
 chat isolation, source retraction, and interrupted KV-backed response plans. Failure tests cover stalled/erroring providers, ignored
@@ -418,6 +419,13 @@ without rewriting the instruction prefix, overlapping catalogue/history reads,
 suffix placement of repair feedback, and atomic rejection of jobs when the host
 reply limit is exceeded. Telemetry tests distinguish preparation/inference time
 and require first-delta measurements only for streamed responses.
+Input-validation tests cover dense range sharing, four-read sparse concurrency,
+abort before later groups, deleted/edited/mismatched IDs, byte-limited paging,
+revision conflict retries and refusal to publish mixed revisions. Reply latency
+tests cover shared group output, final multipart acknowledgement, retry call
+counts, edits, unknown timings after restart/eviction, formatted Markdown tables
+and bounded percentile samples. Loop tests verify one dense read for a multi-input
+batch and two model steps for three independent jobs followed by one answer.
 History reuse is covered separately: an unchanged content revision returns the
 verified prefix without re-reading retained history, an append leaves the first
 chunk byte-identical, and a revision change revalidates.

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { DEFAULT_BATCH_WINDOW_MS, MAX_BATCH_WINDOW_MS } from "./group.ts";
 
 /** Keys an operator may set or fetch. Unknown keys are rejected. */
 export const CONFIG_KEYS = [
@@ -35,6 +36,7 @@ export const CONFIG_KEYS = [
   "chat.acknowledgeReads",
   "chat.historyWindow",
   "chat.contextChars",
+  "chat.batchWindowMs",
   "model.maxToolCalls",
   "agent.maxConcurrentTicks",
   "agent.maxConcurrentJobs",
@@ -66,6 +68,7 @@ export interface Settings {
   "chat.acknowledgeReads": boolean;
   "chat.historyWindow": number;
   "chat.contextChars": number;
+  "chat.batchWindowMs": number;
   "model.maxToolCalls": number;
   "agent.maxConcurrentTicks": number;
   "agent.maxConcurrentJobs": number;
@@ -103,6 +106,7 @@ export const DEFAULTS: Settings = {
   "chat.acknowledgeReads": false,
   "chat.historyWindow": 50,
   "chat.contextChars": 131072,
+  "chat.batchWindowMs": DEFAULT_BATCH_WINDOW_MS,
   "model.maxToolCalls": 32,
   "agent.maxConcurrentTicks": 4,
   "agent.maxConcurrentJobs": 8,
@@ -188,6 +192,18 @@ export function coerce(key: ConfigKey, raw: string): string | number | boolean {
       if (!Number.isSafeInteger(value) || value < 0 || value > 524288)
         throw new Error(
           "context budget must be an integer 0-524288 characters",
+        );
+      return value;
+    }
+    case "chat.batchWindowMs": {
+      const value = Number(text);
+      if (
+        !Number.isSafeInteger(value) ||
+        value < 0 ||
+        value > MAX_BATCH_WINDOW_MS
+      )
+        throw new Error(
+          `batch window must be an integer 0-${MAX_BATCH_WINDOW_MS} ms`,
         );
       return value;
     }

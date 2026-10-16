@@ -96,6 +96,94 @@ async function fixture(
   };
 }
 
+test("dense group input revalidation uses one range read and one model step", async () => {
+  const h = await fixture(async (request) => {
+    request.onCall?.({
+      success: true,
+      durationMs: 10,
+      usage: { prompt: 100, completion: 1 },
+    });
+    return { ...wait, messages: [{ text: "combined answer" }] };
+  });
+  try {
+    h.config.set("autonomous", true);
+    h.config.set("chat.batchWindowMs", 0);
+    for (let index = 0; index < 20; index++)
+      h.server.addMessage(`input ${index}`, { mentions: [] });
+    await h.agent.requestSync();
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(h.agent.metrics("conv-1").validationInputs, 20);
+    assert.equal(h.agent.metrics("conv-1").validationRequests, 1);
+    assert.match(
+      h.agent.metrics("conv-1").report(),
+      /End-to-end reply \| [^|]+ \| [^|]+ \| [^|]+ \| 20 \|/,
+    );
+    assert.match(
+      h.agent.metrics("conv-1").report(),
+      /Model calls per answered input \| 1\.00/,
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("one step batches independent lookups and waits once for all results", async () => {
+  const h = await fixture(async (_request, call) =>
+    call === 1
+      ? {
+          messages: [],
+          actions: ["a", "b", "c"].map((id) => ({
+            id,
+            tool: "memory",
+            arguments: { action: "get", key: id },
+          })),
+          next: { kind: "on_jobs", jobs: ["a", "b", "c"], mode: "all" },
+        }
+      : { ...wait, messages: [{ text: "three results" }] },
+  );
+  try {
+    h.server.addMessage("@helper read three documents");
+    await h.agent.requestSync();
+    await until(() => h.server.state.sends.length === 1);
+    assert.equal(h.requests.length, 2);
+    assert.equal(
+      Object.values(h.store.state.sessions["conv-1"].jobs).filter(
+        (job) => job.status === "completed",
+      ).length,
+      3,
+    );
+    assert.equal(h.server.state.sends[0].text, "three results");
+  } finally {
+    await h.close();
+  }
+});
+
+test("autonomous windows are fixed, configurable, and explicit mentions bypass them", async () => {
+  const h = await fixture(async () => wait);
+  try {
+    h.config.set("autonomous", true);
+    h.config.set("chat.batchWindowMs", 10000);
+    const first = h.server.addMessage("background discussion", {
+      mentions: [],
+    });
+    await h.agent.requestSync(true, false);
+    const deadline = h.store.task("conv-1", first.id)?.readyAt;
+    assert.ok((deadline ?? 0) >= Date.now() + 9000);
+    h.config.set("chat.batchWindowMs", 250);
+    const later = h.server.addMessage("same window", { mentions: [] });
+    await h.agent.requestSync(true, false);
+    assert.equal(h.store.task("conv-1", later.id)?.readyAt, deadline);
+    assert.equal(h.requests.length, 0);
+    h.server.addMessage("@helper answer now");
+    await h.agent.requestSync(true, false);
+    await until(() => h.requests.length === 1);
+    assert.ok(h.requests[0].messages.at(-1)?.content.includes("answer now"));
+  } finally {
+    await h.close();
+  }
+});
+
 test("grant refreshes keep the instruction prefix stable and update metadata each tick", async () => {
   const h = await fixture(async () => wait);
   let reads = 0;

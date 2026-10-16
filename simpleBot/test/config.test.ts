@@ -23,6 +23,23 @@ function fixture() {
   };
 }
 
+test("autonomous collection defaults to one second and accepts bounded live windows", () => {
+  const f = fixture();
+  try {
+    const config = ConfigStore.load(f.path);
+    assert.equal(config.get("chat.batchWindowMs"), 1000);
+    for (const value of [0, 250, 3000, 10000]) {
+      config.set("chat.batchWindowMs", value);
+      assert.equal(ConfigStore.load(f.path).get("chat.batchWindowMs"), value);
+    }
+    for (const value of [-1, 0.5, 10001, Infinity])
+      assert.throws(() => config.set("chat.batchWindowMs", value), /integer/);
+    assert.equal(config.get("chat.batchWindowMs"), 10000);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("token thresholds are configurable, ordered and validated atomically", () => {
   const f = fixture();
   try {

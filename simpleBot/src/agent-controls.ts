@@ -6,7 +6,8 @@ const PUBLIC_COMMANDS: BotCommand[] = [
   {
     name: "/metrics",
     usage: "/metrics",
-    description: "Model usage and cache metrics for this conversation",
+    description:
+      "Reply latency, model usage and cache metrics for this conversation",
   },
   { name: "/help", usage: "/help", description: "How to chat with this bot" },
   {
@@ -208,8 +209,16 @@ export class Controls {
         name === "/ping"
           ? "Pong."
           : name === "/metrics"
-            ? this.host.metrics(conversation.id).report() +
-              `\nLimits: compact at ${this.host.options.config.get("model.compactTokens")} tokens; total ${this.host.options.config.get("model.contextTokens")} tokens (local estimates, including output reserve).`
+            ? this.host.metrics(conversation.id).report({
+                compactTokens: this.host.options.config.get(
+                  "model.compactTokens",
+                ),
+                contextTokens: this.host.options.config.get(
+                  "model.contextTokens",
+                ),
+                batchWindowMs:
+                  this.host.options.config.get("chat.batchWindowMs"),
+              })
             : "Mention me or send a direct message to ask a question. Reply to an older message to include its context; I can fetch more history when needed. Public commands: /help, /ping, /metrics.";
       return response;
     }

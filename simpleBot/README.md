@@ -178,11 +178,12 @@ is rejected with a reason and leaves the previous setting untouched, for example
 | `model.stream`             | `true`                   | streamed completions                                                             |
 | `model.maxTokens`          | `4096`                   | output budget including reasoning; 128–32768                                     |
 | `model.reasoningEffort`    | _(empty)_                | provider default when empty; none, low, medium or high if supported              |
-| `autonomous`               | `false`                  | Participate in writable rooms without mentions, using fixed 3-second batches     |
+| `autonomous`               | `false`                  | Participate in writable rooms without mentions, using fixed collection windows  |
 | `chat.respondToAllDms`     | `true`                   | answer every direct message, not only mentions                                   |
 | `chat.acknowledgeReads`    | `false`                  | enables the read acknowledgement tool                                            |
 | `chat.historyWindow`       | `50`                     | prior messages requested for model context, within the character budget          |
 | `chat.contextChars`        | `131072`                 | Additional history character ceiling; 0–524288, 0 disables history               |
+| `chat.batchWindowMs`       | `1000`                   | Autonomous room collection window; integer 0–10000 ms; mentions and DMs are immediate |
 | `model.contextTokens`      | `32768`                  | Total input/output token budget; measurements plus estimates for new content     |
 | `model.compactTokens`      | `24576`                  | Input threshold for context compaction; less than total                          |
 | `model.maxToolCalls`       | `32`                     | Maximum tool jobs per work episode; 1–128                                        |
@@ -484,6 +485,25 @@ reset on worker/transport replacement, and capped at 64 conversations with LRU
 eviction. Missing provider fields remain **unknown**, while an explicit zero is
 reported as zero. Ratios use only requests with both input and cached counts.
 Debug logs include the same numeric counters per model attempt.
+The command renders Markdown tables with latest/mean/P95 latency and sample
+counts for end-to-end replies, queueing (including collection), source validation,
+context preparation, model attempts, first streamed deltas, decision commits,
+delivery queueing and delivery. End-to-end timing starts when the worker admits
+an input and ends after its complete response's final part is acknowledged and
+saved. It includes tool waits and retries. Group members receive individual
+admission-to-delivery samples even when they share one response. Local controls,
+silent decisions and missing admission times after restart/metrics eviction do
+not create end-to-end samples. Replaced/retracted versions cannot complete an
+older version's timer. Mean model calls per answered input counts shared batch
+calls for each input up to its final plan commit; later background calls do not
+increase that answer's step count. It measures response steps rather than billing.
+P95 uses the latest 128 samples per stage; means and counts cover the current
+metrics lifetime. Stage rows have different denominators and must not be added.
+Counters also show source inputs validated versus HTTP reads and the configured
+collection window. Nearby inputs share bounded sequence-range reads; sparse
+ranges use at most four concurrent reads, including control detection. Commands
+are re-read immediately before execution. Byte-limited pages pin their revision;
+a conflict restarts the whole range once without mixing old and new rows.
 Preparation latency is measured separately from inference. The report also
 includes time to the first streamed text, reasoning or tool delta, with reporting
 coverage; buffered requests do not invent a first-delta measurement. Independent
@@ -592,7 +612,7 @@ the second command gives an older configuration more room for memory and tool us
 readable, writable rooms available to this worker, without changing server grants
 or DM behavior. Set it to `"false"` to return to mention-only room input.
 
-The first new room message starts a fixed three-second collection window.
+The first new room message starts a fixed collection window (one second by default).
 New arrivals join that window without postponing its deadline. Unmentioned pending room
 messages are considered together after the collection window. Direct mentions
 can accelerate it; tool completions and model-requested continuations run when ready. Each batch is bounded to 100 inputs
@@ -601,6 +621,13 @@ message IDs, mentions, replies and recent context. It is prompted to join only
 when useful, combine related questions in one plain group message, and answer
 independent questions with separate replies in the same decision turn. It should
 write minimally and naturally, without routine headings or narrating tools.
+
+Tune the delay live with `@helper /config set chat.batchWindowMs "250"` for a
+short window, `"0"` for no collection delay, or `"3000"` for the older behavior.
+The allowed range is 0–10000 ms. Existing admitted windows keep their saved
+deadline when the setting changes; new windows use the new value. Direct
+mentions and DMs remain immediate. Legacy v1 group checkpoints retain their
+original three-second recovery deadline.
 
 The model uses `finish_tick` with a `messages` array and an explicit `next`
 continuation. Omit `replyTo` for a plain group message, supply an input ID for a
@@ -740,9 +767,15 @@ completions cannot create extra ticks. Messages arriving during inference remain
 queued. Own output, duplicate notifications, unchanged snapshots and presence
 updates do not cause inference.
 
-Autonomous unmentioned room messages use a fixed three-second collection window;
+Autonomous unmentioned room messages use the configured fixed collection window;
 mentions can accelerate it. DMs and direct mentions are ready immediately.
 Job completions and self continuations do not incur the room batching delay.
+Simple questions should finish as ordinary final text in one step. Independent
+actions should share one decision and, when all results are prerequisites, one
+`on_jobs`/`all` wait. Additional steps remain available for dependent work; the
+worker does not add a separate planning-only or polling call. Prompts favor short
+answers and omit empty decision lists while preserving complete code and detail
+when needed. The output token ceiling remains unchanged to avoid truncation.
 
 Jobs belong to the worker rather than a single tick. They have durable IDs,
 intents and results and are separately bounded by `agent.maxConcurrentJobs`.

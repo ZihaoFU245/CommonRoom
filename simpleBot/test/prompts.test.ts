@@ -83,6 +83,23 @@ test("prompts guide natural participation, network scripts and separate storage 
       "private-configured-personality",
     ])
       assert.ok(!prompt.includes(secret));
+    assert.match(prompt, /without announcing plans or restating requests/);
+    assert.match(prompt, /Default to a short paragraph/);
+    assert.match(prompt, /Keep code complete/);
+    const tick = systemPrompt(
+      null,
+      config,
+      undefined,
+      true,
+      false,
+      "group",
+      true,
+    );
+    assert.match(tick, /a task may span several ticks/);
+    assert.match(tick, /Use ordinary final text for a complete answer/);
+    assert.match(tick, /Batch independent actions together/);
+    assert.match(tick, /Prefer on_jobs mode=all/);
+    assert.match(tick, /Never use continue to wait for a job/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

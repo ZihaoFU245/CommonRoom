@@ -163,7 +163,7 @@ eligible only with `autonomous=true`. Worker controls execute outside inference,
 with existing owner/admin checks, so a long model request cannot delay `/status`
 or cancellation. Configuration changes generate policy events.
 
-For autonomous rooms, retain the fixed three-second collection window: the first
+For autonomous rooms, use `chat.batchWindowMs` (default 1000; range 0–10000): the first
 eligible message sets a deadline, later messages do not postpone it. Direct
 mentions and DMs are ready immediately, with arrivals coalesced before dispatch.
 A mention can accelerate an open room window. Tool-result and model-requested
@@ -321,7 +321,7 @@ over accepted work.
    gets a model slot immediately. The job finishes, tick B answers and waits.
 2. A room burst produces one initial tick; the model can stay silent or request
    more ticks without another mention. No input or continuation means no calls.
-3. A sleeping three-second room batch does not delay a DM or direct mention.
+3. A sleeping room batch, including a configured three-second window, does not delay a DM or direct mention.
 4. New input during inference remains visible for a later tick. At most one
    model request per conversation is active at any time.
 5. A job completes during decision commit or before `on_jobs` registration;

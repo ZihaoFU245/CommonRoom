@@ -201,7 +201,7 @@ export function finishTickTool(tools: FunctionTool[]): FunctionTool {
     function: {
       name: "finish_tick",
       description:
-        "Commit this tick: messages (or [] for silence), independent tool jobs, and a one-shot next tick. Put every intended action in this one array, several together when they are independent: each separate round trip costs a whole extra call. Use on_jobs to yield for results; continue only for useful independent work. Jobs survive this tick. New eligible messages can always wake you. Never repeat an action to check status.",
+        "Commit one decision step: replies, independent tool jobs and a one-shot continuation. Use ordinary final text when only an answer is needed. Batch independent actions; omit empty messages/actions. Use on_jobs mode=all for prerequisites, any when the first result enables work; continue only for useful independent work. Jobs survive ticks. New eligible messages can always wake you. Never repeat an action to check status.",
       parameters: {
         type: "object",
         properties: {

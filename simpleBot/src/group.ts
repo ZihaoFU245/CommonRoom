@@ -3,7 +3,10 @@ import type { FunctionTool } from "./model.ts";
 import type { Message } from "./wire.ts";
 import type { TaskRecord } from "./store.ts";
 
-export const GROUP_INTERVAL_MS = 3000;
+/** Old v1 group checkpoints retain their original three-second deadline. */
+export const LEGACY_GROUP_INTERVAL_MS = 3000;
+export const DEFAULT_BATCH_WINDOW_MS = 1000;
+export const MAX_BATCH_WINDOW_MS = 10000;
 export const MAX_GROUP_INPUTS = 100;
 export const MAX_GROUP_CHARS = 16000;
 export const MAX_GROUP_RESPONSE_CHARS = 262144;

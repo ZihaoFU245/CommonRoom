@@ -81,6 +81,7 @@ export class Outbox {
           "pending send is near receipt expiry; inspect history before resolving it",
         );
       }
+      this.host.metrics(conversation.id).deliveryStarted(part.slot);
       const response = await this.host.options.api.send(part.request, part.key);
       part.response = {
         message: {
@@ -93,6 +94,7 @@ export class Outbox {
       if (response.replayed) store.metrics.replayed++;
       else store.metrics.sent++;
       await store.save();
+      this.host.metrics(conversation.id).delivered(part.slot);
       this.host.options.log(
         "debug",
         `reply delivered conversation=${conversation.id} input=${task.input} slot=${part.slot} reply_to=${part.request.reply_to ?? "none"} message=${response.message.id} replayed=${response.replayed}`,

@@ -320,7 +320,10 @@ export class ModelContext {
       signal,
       stopAfterTool: () => task.decision !== undefined,
       onCall: (call) => {
-        metrics.record(call);
+        metrics.record(
+          call,
+          (continuation ?? batch ?? [message]).map((input) => input.id),
+        );
         const usage = call.usage;
         // A completed request's measured usage is authoritative. Start a fresh
         // retained-history baseline for the next answer when it reaches the

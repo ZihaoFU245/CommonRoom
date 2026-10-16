@@ -1251,9 +1251,13 @@ test("public metrics are numeric, scoped to this conversation and need no model 
     h.server.addMessage("@helper /metrics");
     await h.agent.handleSnapshot(h.server.snapshot());
     const report = h.server.state.sends.at(-1)!.text;
-    assert.match(report, /Model attempts: 2/);
-    assert.match(report, /Input tokens: 100 \(1\/2 attempts reported\)/);
-    assert.match(report, /Cached input tokens: 60/);
+    assert.match(report, /Model attempts \| 2/);
+    assert.match(report, /Input tokens \| 100 \(1\/2 attempts reported\)/);
+    assert.match(report, /Cached input tokens \| 60/);
+    assert.ok(report.includes("| Stage | Latest | Mean | P95 | Samples |"));
+    assert.equal(h.server.state.messages.at(-1)?.markdown, true);
+    assert.match(report, /End-to-end reply \| [^|]+ \| [^|]+ \| [^|]+ \| 1 \|/);
+    assert.match(report, /Model calls per answered input \| 2\.00/);
     assert.match(report, /60\.0%/);
     assert.match(report, /compact at 24576 tokens; total 32768 tokens/);
     assert.ok(!report.includes("bot_test"));
@@ -1262,7 +1266,7 @@ test("public metrics are numeric, scoped to this conversation and need no model 
     await h.agent.handleSnapshot(h.server.snapshot());
     assert.match(
       h.server.state.sends.at(-1)!.text,
-      /Cached input tokens: unknown/,
+      /Cached input tokens \| unknown/,
     );
   } finally {
     await h.stop();
@@ -1396,7 +1400,7 @@ test("measured input at the compact threshold rebuilds the next answer's history
     await h.agent.handleSnapshot(h.server.snapshot());
     assert.match(
       h.server.state.sends.at(-1)!.text,
-      /Latest request input\/output \(provider\): 24576 \/ 1 tokens/,
+      /Latest request input\/output \| 24576 \/ 1 tokens/,
     );
   } finally {
     await h.stop();
@@ -1826,6 +1830,7 @@ test("autonomous groups collect a fixed window of speakers into one plain respon
   const h = await harness();
   try {
     h.config.set("autonomous", true);
+    h.config.set("chat.batchWindowMs", 3000);
     const first = h.server.addMessage("What is the plan?", {
       mentions: [],
       from: "alice",
@@ -1933,6 +1938,7 @@ test("group turns start at least three seconds apart while new input joins the n
   const h = await harness();
   try {
     h.config.set("autonomous", true);
+    h.config.set("chat.batchWindowMs", 3000);
     h.server.addMessage("first", { mentions: [] });
     const starts: number[] = [];
     h.model.complete = async (request) => {

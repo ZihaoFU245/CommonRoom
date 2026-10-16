@@ -10,7 +10,8 @@ import { ModelError } from "./model.ts";
 import { jobTerminal, sessionReady, type TickSession } from "./tick.ts";
 import { taskKey, textHash, type TaskRecord } from "./store.ts";
 import type { Message } from "./wire.ts";
-import { groupInputs, GROUP_INTERVAL_MS } from "./group.ts";
+import { groupInputs, MAX_BATCH_WINDOW_MS } from "./group.ts";
+import { locateInputs } from "./input-validation.ts";
 
 function repairing(session: TickSession | undefined): boolean {
   return (
@@ -211,7 +212,7 @@ export class AgentLoop {
       if (
         !waiting.length ||
         this.host.stopped ||
-        deadline > Date.now() + GROUP_INTERVAL_MS + 10
+        deadline > Date.now() + MAX_BATCH_WINDOW_MS + 10
       )
         return;
       if (deadline > Date.now())
@@ -232,18 +233,6 @@ export class AgentLoop {
     await this.delivery.close();
   }
 
-  private async locate(
-    conversation: string,
-    task: TaskRecord,
-  ): Promise<Message | undefined> {
-    const page = await this.host.options.api.history({
-      conversation_id: conversation,
-      around: task.sequence,
-      limit: 1,
-    });
-    return page.messages.find((message) => message.id === task.input);
-  }
-
   private async tick(id: string): Promise<void> {
     const { store, config, log } = this.host.options;
     const conversation = this.host.snapshot?.conversations.find(
@@ -251,6 +240,7 @@ export class AgentLoop {
     );
     if (!conversation || this.host.stopped || !conversation.permissions.send)
       return;
+    const metrics = this.host.metrics(id);
     // Local controls have already run during input admission.
     let pending = this.queued(id).filter(
       (task) => !task.autonomous || (task.readyAt ?? 0) <= Date.now(),
@@ -385,6 +375,7 @@ export class AgentLoop {
     root.attempts++;
     root.status = "running";
     for (const task of pending) task.status = "running";
+    for (const task of pending) metrics.dequeued(task.input);
     const tick = session.tick;
     log(
       "debug",
@@ -423,8 +414,23 @@ export class AgentLoop {
         id,
         inputs.map((task) => task.input),
       );
+      const validationStarted = performance.now();
+      const located = await abortable(
+        locateInputs(this.host.options.api, id, inputs, signal),
+        signal,
+      );
+      metrics.validated(
+        performance.now() - validationStarted,
+        inputs.length,
+        located.requests,
+      );
+      log(
+        "debug",
+        `input validation finished conversation=${id} inputs=${inputs.length} reads=${located.requests} duration_ms=${Math.round(performance.now() - validationStarted)}`,
+      );
+      if (!valid()) return;
       for (const task of inputs) {
-        const message = await abortable(this.locate(id, task), signal);
+        const message = located.messages.get(task.input);
         if (!message) {
           // Never drop an admitted input without a trace: the message is gone
           // from retained history (retracted, expired or never scanned).
@@ -433,6 +439,7 @@ export class AgentLoop {
             `input unavailable conversation=${id} input=${task.input} sequence=${task.sequence}; cancelling task`,
           );
           task.status = "cancelled";
+          metrics.forgetInput(task.input);
           continue;
         }
         task.promptHash = textHash(message.text);
@@ -526,6 +533,7 @@ export class AgentLoop {
         () => tickSucceeded,
       );
       if (!valid()) return;
+      const commitStarted = performance.now();
       const committed = await commitTick(
         this.host,
         this.outbox,
@@ -537,6 +545,7 @@ export class AgentLoop {
         decision,
         observed,
       );
+      metrics.committed(performance.now() - commitStarted);
       decision = committed.decision;
       const jobIds = committed.jobIds;
       tickSucceeded = true;
