@@ -154,6 +154,11 @@ Settings opens Account with `/rename` and `/passwd` forms. Appearance controls
 light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 (12–18px); preferences stay in this browser. Reset restores defaults. Theme
 applies before rendering, and palette text contrast is at least 4.5:1.
+Preferences provides Enable Markdown (the same sending preference as
+`/markdown on|off`) and Enable LaTeX math. Both are saved in this browser.
+The Markdown checkbox affects future messages; each stored message retains
+its existing format. The LaTeX checkbox immediately changes how Markdown
+messages are displayed, including history, without changing plain-text messages.
 
 Navigation remembers its open or closed state in this browser across refreshes.
 The menu button moves to the right of the logo and becomes an X while navigation
@@ -186,7 +191,40 @@ text (the default). `/man markdown` explains the feature; completion suggests
 message permissions. Each message retains its chosen format for recipients
 and history, independently of later toggle changes. Supported formatting includes
 bold, italic, strikethrough, headings, lists, quotes, code, tables and links.
-Raw HTML and embedded images are disabled; links allow HTTP, HTTPS and mailto.
+Enable LaTeX math in Settings → Preferences to render inline `$...$` / `\(...\)`
+and display `$$...$$` / `\[...\]` equations with KaTeX, including fractions,
+integrals, sums and matrices. It defaults off, works without HTML or scripts,
+and leaves code spans/blocks literal. Invalid math displays a readable fallback.
+This supports LaTeX math notation rather than full LaTeX documents.
+Markdown images and GIFs use `![alt](url)` and render without a separate opt-in.
+Only absolute HTTP/HTTPS URLs and base64 raster images (PNG, JPEG, GIF, WebP,
+AVIF, BMP) are allowed. Rejected URLs display the alt text. Images are lazy,
+use `no-referrer`, and fit the message width. Remote hosts still receive the
+viewer's IP address when an image loads.
+
+HTML displays as text when both Security options are off. Both options default
+off and are saved independently in this browser:
+
+- **Allow HTML (secure HTML)** (`commonroom-markdown-html`) automatically renders
+  sanitized passive HTML directly in the message. Scripts, CSS, events, controls
+  and raw HTML media are stripped. Unknown benign wrappers retain safe children.
+- **HTML (code)** (`commonroom-markdown-html-code`) enables a per-message Show text /
+  Render HTML choice for full HTML, CSS and JavaScript. Active content runs only
+  after selection, inside `markdown-frame.html` with an opaque-origin sandbox.
+  Passive HTML uses the direct sanitizer without a frame; it is automatic when
+  secure HTML is enabled, otherwise it also requires selection.
+
+Full HTML documents preserve indentation instead of becoming Markdown code.
+Fences, inline code, autolinks and Markdown images do not trigger HTML previews.
+Code previews allow inline CSS/JavaScript and data images/media/fonts, but block
+external dependencies/network fetches, forms, popups, parent access and top
+navigation. Preview code cannot read chat storage, cookies or the parent DOM.
+Choices survive virtual scrolling within the current bounded conversation window;
+edits, changing Security options, leaving the conversation, eviction and refresh
+reset them. A remounted frame restarts the app/game using the cached frame shell.
+Failed loads keep source visible and provide a status. These preferences do not
+change stored messages or other recipients. The basic renderer and optional HTML,
+TeX, KaTeX and frame dependencies load only when their rendering path is needed.
 
 ## Editing messages
 

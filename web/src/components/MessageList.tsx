@@ -1,3 +1,6 @@
+import { useMemo, useState } from "preact/hooks";
+import type { HtmlGateChoice, HtmlGateMode } from "./HtmlGateContext.ts";
+import { HtmlGateContext } from "./HtmlGateContext.ts";
 import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useVirtualTimeline } from "../hooks/useVirtualTimeline.ts";
@@ -20,6 +23,9 @@ interface Props {
   username: string;
   pending: boolean;
   debug: boolean;
+  allowHtml: boolean;
+  allowHtmlCode: boolean;
+  latex: boolean;
   permissions: string[];
   commands: Command[];
   unreadBoundary: number | null;
@@ -41,6 +47,9 @@ export const MessageList = memo(function MessageList({
   username,
   pending,
   debug,
+  allowHtml,
+  allowHtmlCode,
+  latex,
   permissions,
   commands,
   unreadBoundary,
@@ -53,11 +62,46 @@ export const MessageList = memo(function MessageList({
   end,
   onScroll,
 }: Props) {
+  // Bound choices to the current history window and conversation, surviving row unmounts.
+  const choices = useMemo(
+    () => new Map<string, HtmlGateChoice>(),
+    [motionScope, allowHtml, allowHtmlCode],
+  );
+  const [gateRevision, setGateRevision] = useState(0);
+  const liveMessages = useMemo(() => {
+    const messages = new Map<string, string>();
+    if (allowHtmlCode) {
+      for (const entry of entries) {
+        if (entry.kind === "message")
+          messages.set(entry.message.id, entry.message.text);
+      }
+    }
+    return messages;
+  }, [entries, allowHtmlCode]);
+  const gates = useMemo(() => {
+    for (const [key, choice] of choices) {
+      if (liveMessages.get(key) !== choice.text) choices.delete(key);
+    }
+    return {
+      choices,
+      change: (key: string, text: string, mode: HtmlGateMode) => {
+        const previous = choices.get(key);
+        if (previous?.text === text && previous.mode === mode) return;
+        if (mode) choices.set(key, { text, mode });
+        else choices.delete(key);
+        setGateRevision((value) => value + 1);
+      },
+    };
+  }, [choices, liveMessages, gateRevision]);
   const window = useVirtualTimeline(
     entries,
     historyElement,
     virtualTimeline,
     atBottom,
+    gateRevision * 8 +
+      (allowHtml ? 1 : 0) +
+      (latex ? 2 : 0) +
+      (allowHtmlCode ? 4 : 0),
   );
   useTimelineMotion(
     entries,
@@ -107,6 +151,9 @@ export const MessageList = memo(function MessageList({
           grouped={grouped && !entry.message.reply}
           pending={pending}
           debug={debug}
+          allowHtml={allowHtml}
+          allowHtmlCode={allowHtmlCode}
+          latex={latex}
           canReact={actions.react}
           canReply={actions.reply}
           canEdit={actions.edit}
@@ -123,22 +170,27 @@ export const MessageList = memo(function MessageList({
     );
   });
   return (
-    <section
-      ref={historyElement}
-      onScroll={onScroll}
-      class="message-list console-history"
-      aria-label="Conversation history"
-      aria-live="polite"
-    >
-      <div class="timeline-rows">
-        <div aria-hidden="true" style={{ height: window.top, flexShrink: 0 }} />
-        {renderedEntries}
-        <div
-          aria-hidden="true"
-          style={{ height: window.bottom, flexShrink: 0 }}
-        />
-        <div ref={end} />
-      </div>
-    </section>
+    <HtmlGateContext.Provider value={gates}>
+      <section
+        ref={historyElement}
+        onScroll={onScroll}
+        class="message-list console-history"
+        aria-label="Conversation history"
+        aria-live="polite"
+      >
+        <div class="timeline-rows">
+          <div
+            aria-hidden="true"
+            style={{ height: window.top, flexShrink: 0 }}
+          />
+          {renderedEntries}
+          <div
+            aria-hidden="true"
+            style={{ height: window.bottom, flexShrink: 0 }}
+          />
+          <div ref={end} />
+        </div>
+      </section>
+    </HtmlGateContext.Provider>
   );
 });

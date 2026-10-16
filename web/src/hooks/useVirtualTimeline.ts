@@ -22,6 +22,7 @@ export function useVirtualTimeline(
   container: RefObject<HTMLElement>,
   handle: RefObject<VirtualTimelineHandle>,
   atBottom: RefObject<boolean>,
+  renderVersion = 0,
 ) {
   const sizes = useRef(new Map<string, number>());
   const observer = useRef<ResizeObserver | null>(null);
@@ -29,6 +30,7 @@ export function useVirtualTimeline(
     entries: TimelineEntry[];
     start: number;
     end: number;
+    renderVersion: number;
   } | null>(null);
   const [measurements, setMeasurements] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
@@ -130,9 +132,15 @@ export function useVirtualTimeline(
     const measured = measuredWindow.current;
     const measure =
       measured?.entries !== entries ||
+      measured.renderVersion !== renderVersion ||
       measured.start !== window.start ||
       measured.end !== window.end;
-    measuredWindow.current = { entries, start: window.start, end: window.end };
+    measuredWindow.current = {
+      entries,
+      start: window.start,
+      end: window.end,
+      renderVersion,
+    };
     let changed = false;
     for (const element of container.current?.querySelectorAll<HTMLElement>(
       ".timeline-rows > [data-virtual-key]",

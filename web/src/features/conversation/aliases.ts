@@ -1,4 +1,4 @@
-import { markdownCommand } from "./markdown.ts";
+import { markdownCommand } from "../preferences/markdown.ts";
 import type { Command } from "../../api/protocol.ts";
 import { redactCommand } from "./console.ts";
 

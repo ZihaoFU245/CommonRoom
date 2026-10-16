@@ -1,8 +1,9 @@
 import {
   loadMarkdown,
   setMarkdown,
+  saveMarkdown,
   markdownManual,
-} from "../features/conversation/markdown.ts";
+} from "../features/preferences/markdown.ts";
 import type { RefObject } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
@@ -79,6 +80,9 @@ export function useCommands({
   logout,
 }: Context) {
   const [markdown, updateMarkdown] = useState(loadMarkdown);
+  function changeMarkdown(enabled: boolean) {
+    updateMarkdown(saveMarkdown(enabled));
+  }
   const [aliases, setAliases] = useState(loadAliases);
   function saveAliasMapping(name: string, target: string) {
     setAliases(setAlias(aliases, name, target));
@@ -407,6 +411,8 @@ export function useCommands({
     }
   }
   return {
+    markdown,
+    changeMarkdown,
     aliases,
     saveAliasMapping,
     removeAliasMapping,

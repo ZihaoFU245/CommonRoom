@@ -54,6 +54,26 @@ endpoint to Rust. Unknown static files return 404. Keep the trailing-slash
 redirect so relative asset and API URLs resolve correctly. For root hosting,
 set `base_url` to `/`, change the locations to `/api/`, `/ws`, and `/`, and
 remove the `/commonroom` redirect.
+The UI renders Markdown images/GIFs using validated absolute HTTP/HTTPS or
+base64 raster URLs, lazy loading and `no-referrer`. Keep `img-src` for those
+images and `font-src 'self' data:` for KaTeX fonts that Vite may inline.
+The secure HTML path renders sanitized nodes directly. HTML (code) previews use
+`markdown-frame.html`, generated into both UI builds. Deploy that file with the
+assets. The exact Nginx location in the example must precede/generalize correctly
+with your base path: it applies a separate CSP permitting inline scripts/styles
+only inside the sandboxed preview, plus `frame-ancestors 'self'`. Do not apply the
+main app's `frame-ancestors 'none'` / strict script policy to this file. Keep the
+main app's `script-src 'self'`, `style-src 'self'`, `frame-src 'self'` and
+`frame-ancestors 'none'`; do not add unsafe-inline to the main app.
+
+Frame URLs carry a content version; `public, max-age=31536000, immutable` avoids
+repeated network fetches when virtual rows remount. The shell has no external
+bundle requests, needs no public CORS headers and receives message HTML only via
+a one-shot postMessage, never a URL. Its leading meta CSP and iframe sandbox also
+apply without Nginx; a main-document meta policy restricts frames to self.
+Previews permit inline code and data media/fonts but deny network fetches, external
+scripts/styles, forms, nested frames, popups, parent access and top navigation.
+Frames are frontend static assets; no backend preview/proxy route is added.
 Validate with `rtk proxy nginx -t` before reloading Nginx.
 
 Release binaries require HTTPS, check request origins, set secure HttpOnly

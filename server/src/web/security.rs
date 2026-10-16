@@ -66,7 +66,7 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
         };
         let websocket_origin = origin.replacen("https://", "wss://", 1);
         let policy = format!(
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' {websocket_origin}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https: data:; font-src 'self' data:; connect-src 'self' {websocket_origin}; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
         );
         let Ok(policy) = HeaderValue::from_str(&policy) else {
             return error(

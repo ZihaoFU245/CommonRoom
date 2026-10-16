@@ -1,6 +1,14 @@
-import { defineConfig, type HttpProxy } from "vite";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { frameCsp } from "./src/features/conversation/framePolicy.ts";
+import { fileURLToPath } from "node:url";
+import {
+  defineConfig,
+  transformWithEsbuild,
+  type Plugin,
+  type HttpProxy,
+} from "vite";
 import preact from "@preact/preset-vite";
-
 // A browser may half-close TCP during logout/navigation while the server still
 // has notifications queued. Stop the pipe before those writes reach a closed
 // browser socket; actual connection errors still use Vite's normal reporting.
@@ -24,9 +32,110 @@ export function configureWebSocketProxy(proxy: HttpProxy.ProxyServer): void {
   });
 }
 
+// Expose the emitted module URL so failed imports can be retried with a fresh
+// URL. Browsers cache rejected module loads; importing the same URL cannot retry.
+function markdownRendererUrl(): Plugin {
+  const id = "virtual:markdown-renderer-url";
+  const resolved = "\0" + id;
+  let development = false;
+  return {
+    name: "markdown-renderer-url",
+    configResolved(config) {
+      development = config.command === "serve";
+    },
+    resolveId(source) {
+      return source === id ? resolved : null;
+    },
+    load(source) {
+      if (source !== resolved) return null;
+      if (development)
+        return 'export default "/src/features/conversation/richMarkdown.ts";';
+      const reference = this.emitFile({
+        type: "chunk",
+        preserveSignature: "strict",
+        id: fileURLToPath(
+          new URL(
+            "./src/features/conversation/richMarkdown.ts",
+            import.meta.url,
+          ),
+        ),
+      });
+      return `export default import.meta.ROLLUP_FILE_URL_${reference};`;
+    },
+  };
+}
+
+// One self-contained, versioned resource: no JS/CSS subrequests in the sandbox.
+function markdownFrame(): Plugin {
+  const id = "virtual:markdown-frame-url";
+  const resolved = "\0" + id;
+  const path = fileURLToPath(
+    new URL("./src/markdownFrame.ts", import.meta.url),
+  );
+  let development = false;
+  let document = "";
+  let version = "";
+  return {
+    name: "markdown-frame",
+    async configResolved(config) {
+      development = config.command === "serve";
+      const result = await transformWithEsbuild(
+        await readFile(path, "utf8"),
+        path,
+        { loader: "ts", minify: true, target: "es2022" },
+      );
+      document =
+        '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="' +
+        frameCsp +
+        '"><title>HTML preview</title></head><body><script>(()=>{' +
+        result.code.replaceAll("</script", "<\\/script") +
+        "})();</script></body></html>";
+      version = createHash("sha256")
+        .update(document)
+        .digest("hex")
+        .slice(0, 16);
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split("?")[0] !== "/markdown-frame.html") {
+          next();
+          return;
+        }
+        response.setHeader("Content-Type", "text/html; charset=utf-8");
+        response.setHeader(
+          "Content-Security-Policy",
+          frameCsp + "; frame-ancestors 'self'",
+        );
+        response.setHeader(
+          "Cache-Control",
+          "public, max-age=31536000, immutable",
+        );
+        response.end(document);
+      });
+    },
+    buildStart() {
+      this.addWatchFile(path);
+    },
+    resolveId(source) {
+      return source === id ? resolved : null;
+    },
+    load(source) {
+      if (source !== resolved) return null;
+      if (development)
+        return `export default "/markdown-frame.html?v=${version}";`;
+      const reference = this.emitFile({
+        type: "asset",
+        fileName: "markdown-frame.html",
+        source: document,
+      });
+      return `export default import.meta.ROLLUP_FILE_URL_${reference} + "?v=${version}";`;
+    },
+  };
+}
+
 export default defineConfig({
   base: "./",
-  plugins: [preact()],
+  plugins: [preact(), markdownRendererUrl(), markdownFrame()],
   server: {
     port: 5173,
     strictPort: true,

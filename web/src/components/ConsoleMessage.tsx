@@ -1,4 +1,4 @@
-import { Markdown } from "./Markdown.tsx";
+import { MarkdownMessage as Markdown } from "./MarkdownMessage.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
 import {
@@ -16,6 +16,9 @@ export function ConsoleMessage({
   grouped,
   pending,
   debug,
+  allowHtml,
+  allowHtmlCode,
+  latex,
   canReact,
   canReply,
   canDelete,
@@ -32,6 +35,9 @@ export function ConsoleMessage({
   grouped: boolean;
   pending: boolean;
   debug: boolean;
+  allowHtml: boolean;
+  allowHtmlCode: boolean;
+  latex: boolean;
   canReact: boolean;
   canReply: boolean;
   canDelete: boolean;
@@ -196,7 +202,14 @@ export function ConsoleMessage({
               <code>{invocation.command}</code>
             </p>
           ) : message.markdown ? (
-            <Markdown text={message.text} mentions={message.mentions} />
+            <Markdown
+              messageKey={message.id}
+              text={message.text}
+              mentions={message.mentions}
+              allowHtml={allowHtml}
+              allowHtmlCode={allowHtmlCode}
+              latex={latex}
+            />
           ) : (
             <p dir="auto">
               {text.map((part, index) =>

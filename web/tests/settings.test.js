@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultSeeds } from "../src/features/preferences/palette.ts";
 import {
+  loadMarkdownHtml,
+  saveMarkdownHtml,
+  loadMarkdownCode,
+  saveMarkdownCode,
+} from "../src/features/preferences/security.ts";
+import {
   defaultFonts,
   defaultTheme,
   fontSettings,
@@ -15,6 +21,30 @@ import {
   seedSettings,
   themeSetting,
 } from "../src/features/preferences/settings.ts";
+test("HTML rendering defaults off, requires explicit opt-in and survives refresh", () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key),
+    setItem: (key, value) => storage.set(key, value),
+  };
+  assert.equal(loadMarkdownHtml(), false);
+  saveMarkdownHtml(true);
+  assert.equal(loadMarkdownHtml(), true);
+  saveMarkdownHtml(false);
+  assert.equal(loadMarkdownHtml(), false);
+  globalThis.localStorage.getItem = () => "true";
+  assert.equal(loadMarkdownHtml(), false);
+  globalThis.localStorage = {
+    getItem() {
+      throw Error("Unavailable");
+    },
+    setItem() {
+      throw Error("Unavailable");
+    },
+  };
+  assert.equal(loadMarkdownHtml(), false);
+  assert.doesNotThrow(() => saveMarkdownHtml(true));
+});
 test("font preferences survive refresh and reset within independent size limits", () => {
   let saved = null;
   const storage = {
@@ -112,4 +142,41 @@ test("one unusable seed does not discard the other", () => {
   assert.doesNotThrow(() =>
     saveSeeds(blocked, { base: "#000000", accent: "#ffffff" }),
   );
+});
+
+test("retired media preferences do not enable HTML or get read", () => {
+  const reads = [];
+  globalThis.localStorage = {
+    getItem: (key) => {
+      reads.push(key);
+      return null;
+    },
+  };
+  assert.equal(loadMarkdownHtml(), false);
+  assert.deepEqual(reads, ["commonroom-markdown-html"]);
+});
+
+test("HTML code preference defaults off and persists independently of secure HTML", () => {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key),
+    setItem: (key, value) => storage.set(key, value),
+  };
+  assert.equal(loadMarkdownCode(), false);
+  saveMarkdownHtml(true);
+  assert.equal(loadMarkdownCode(), false);
+  saveMarkdownCode(true);
+  saveMarkdownHtml(false);
+  assert.equal(loadMarkdownCode(), true);
+  assert.equal(loadMarkdownHtml(), false);
+  globalThis.localStorage = {
+    getItem() {
+      throw Error("blocked");
+    },
+    setItem() {
+      throw Error("blocked");
+    },
+  };
+  assert.equal(loadMarkdownCode(), false);
+  assert.doesNotThrow(() => saveMarkdownCode(true));
 });

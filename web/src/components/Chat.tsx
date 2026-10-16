@@ -26,10 +26,17 @@ import { useBotCommands } from "../hooks/useBotCommands.ts";
 import { useHistory } from "../hooks/useHistory.ts";
 import { useComposerResize } from "../hooks/useComposerResize.ts";
 import { useFonts } from "../hooks/useFonts.ts";
+import {
+  loadMarkdownHtml,
+  saveMarkdownHtml,
+  loadMarkdownCode,
+  saveMarkdownCode,
+} from "../features/preferences/security.ts";
 import type { useTheme } from "../hooks/useTheme.ts";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useEvent } from "../hooks/useEvent.ts";
 import autoAnimate from "@formkit/auto-animate";
+import { loadLatex, saveLatex } from "../features/preferences/formatting.ts";
 
 export function Chat({
   initial,
@@ -41,6 +48,9 @@ export function Chat({
   appearance: ReturnType<typeof useTheme>;
 }) {
   const [fonts, setFonts] = useFonts();
+  const [latex, setLatex] = useState(loadLatex);
+  const [allowHtmlCode, setAllowHtmlCode] = useState(loadMarkdownCode);
+  const [allowHtml, setAllowHtml] = useState(loadMarkdownHtml);
   const { theme, setTheme, seeds, setSeeds } = appearance;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState(() => {
@@ -411,6 +421,23 @@ export function Chat({
           fonts={fonts}
           theme={theme}
           seeds={seeds}
+          markdown={commands.markdown}
+          onMarkdownChange={commands.changeMarkdown}
+          latex={latex}
+          onLatexChange={(enabled) => {
+            setLatex(enabled);
+            saveLatex(enabled);
+          }}
+          allowHtml={allowHtml}
+          allowHtmlCode={allowHtmlCode}
+          onAllowHtmlCodeChange={(enabled) => {
+            setAllowHtmlCode(enabled);
+            saveMarkdownCode(enabled);
+          }}
+          onAllowHtmlChange={(enabled) => {
+            setAllowHtml(enabled);
+            saveMarkdownHtml(enabled);
+          }}
           onChange={setFonts}
           onThemeChange={setTheme}
           onSeedsChange={setSeeds}
@@ -530,6 +557,9 @@ export function Chat({
             historyReady={historyReady}
             atBottom={atBottom}
             debug={commands.debug}
+            allowHtml={allowHtml}
+            allowHtmlCode={allowHtmlCode}
+            latex={latex}
             permissions={commands.permissions}
             commands={commands.serverCommands}
             entries={entries}

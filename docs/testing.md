@@ -50,7 +50,7 @@ rtk pnpm --dir web format
 
 Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
 
-Web helper tests cover the shared request lifecycle (success, rejection, mismatched acknowledgements, send failure, disconnect and account promises), captured confirmations, private command routing, browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
+Web helper tests cover the shared request lifecycle (success, rejection, mismatched acknowledgements, send failure, disconnect and account promises), captured confirmations, private command routing, browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Markdown tests cover browser-local HTML opt-in persistence, mixed HTML/Markdown, literal code, malformed markup and blocking active content, arbitrary attributes, unsafe links and images. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
 Build tests verify that both modes skip checks and that release packaging
 contains the `dist/` directory with its files. Rust tests also verify that a poisoned engine
@@ -85,6 +85,49 @@ rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --noc
 ## UI verification
 
 After changes to components/hooks, inspect both a wide desktop and compact view. Verify login, sidebar collapse and scrolling, room/private selection, local commands and hints, composing Unicode text, replies/reactions, settings, unread badges/jump, and reconnect behavior. Refresh must erase command output while restoring server chat history. Check browser errors and HTTP/WebSocket failures.
+
+The isolated browser fixture at `/scripts/markdown/` on the Vite dev server
+mounts 1,000 messages with counter, snake, safe HTML and isolation-check payloads.
+Both Security options and LaTeX start off. It does not access account data.
+
+- With all options off, HTML is text; optional HTML/TeX/KaTeX/frame modules do not
+  load. Plain-text chats also leave Markdown-it unloaded. Markdown images remain
+  validated, lazy, async and no-referrer, with rejected URLs falling back to alt.
+- Secure HTML renders sanitized passive nodes automatically, without frames or
+  Render buttons. Active subtrees, controls, styles/events and raw media disappear.
+- HTML (code) starts as a compact cover with no source or frame. Show text toggles
+  a scrollable source panel; Render HTML toggles the preview. Check smooth expansion,
+  accent styling, keyboard controls and reduced motion. Use Counter at end to verify
+  expansion pushes messages upward and keeps source/preview visible, including late
+  frame resizing; manual scrolling must release the anchor. Verify the counter
+  increments/decrements/resets and snake responds to keys only inside the frame.
+  A full indented HTML document must render as a document, not a Markdown fence.
+- Passive HTML with only HTML (code) enabled requires selection but creates no
+  frame. Enabling secure HTML makes that same passive content automatic.
+- Code fences/spans and autolinks remain literal. Unknown benign wrappers retain
+  children; forged private image/math markers never resolve. Failures retain text.
+- Frame isolation checks must show parent DOM, localStorage, cookies and fetch
+  blocked, with `self.origin` equal to `null`. Check the sandbox has allow-scripts
+  only. Spoofed height messages from other windows must be ignored; all reported
+  heights are bounded. Forms, popups, external resources and top navigation stay
+  blocked. Run the same checks without HTTP CSP headers to exercise the meta CSP.
+- Check keyboard focus/aria-pressed, wide/compact views, edits, Security toggles,
+  conversation switches, window eviction and refresh. Each invalidates consent.
+  Virtual scrolling preserves the choice but restarts a remounted frame; cached
+  shell transfers must be zero on remount, with no polling or script/CSS requests.
+- Verify image, math and frame resizing keeps timeline rows aligned and anchors
+  stable. Check the built UI under production CSP and a non-root base path. Ensure
+  the exact frame location has its own policy/cache headers and the main app keeps
+  strict script/style headers. Production bundle tests check the initial import
+  graph excludes Markdown-it, HTML, TeX, KaTeX and frame engines and packages the
+  single standalone frame resource.
+
+Math regressions cover dollar/bracket delimiters, inline/display formulas,
+code isolation, malformed expressions, expansion limits, blocked HTML/network
+extensions, independent preference persistence and both plain Markdown and safe HTML rendering.
+In the browser, verify the Markdown checkbox and `/markdown` stay synchronized,
+LaTeX toggles existing Markdown immediately, refresh preserves both preferences,
+and bundled math CSS/fonts work with both HTML settings disabled.
 
 For production deployment, additionally verify the actual public hostname through Nginx/cloudflared: HTTPS redirects, WSS, session cookies, and the configured base path. Local forwarded-header checks do not exercise public DNS/TLS infrastructure. Validate Nginx configuration on the target host.
 

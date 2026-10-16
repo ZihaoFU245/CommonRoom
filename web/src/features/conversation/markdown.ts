@@ -1,9 +1,26 @@
 import MarkdownIt from "markdown-it";
+import { safeMediaUrl } from "./mediaUrl.ts";
 type Token = ReturnType<typeof parser.parse>[number];
-import type { Command } from "../../api/protocol.ts";
 
 const parser = new MarkdownIt({ html: false, breaks: true });
-// Images stay as alt text: messages never fetch remote tracking images.
+// Tokenize rejected destinations too, so image URLs fall back to their alt text.
+// The node converter below owns link/image URL validation on every output path.
+parser.validateLink = () => true;
+
+let htmlDetector: typeof parser | undefined;
+export function hasRawHtml(text: string): boolean {
+  if (!text.includes("<")) return false;
+  htmlDetector ??= new MarkdownIt({ html: true, breaks: true });
+  function contains(tokens: Token[]): boolean {
+    return tokens.some(
+      (token) =>
+        token.type === "html_block" ||
+        token.type === "html_inline" ||
+        (token.children !== null && contains(token.children)),
+    );
+  }
+  return contains(htmlDetector.parse(text, {}));
+}
 
 const tags = new Set([
   "p",
@@ -36,8 +53,10 @@ export type MarkdownNode =
       children: MarkdownNode[];
       href?: string;
       start?: string;
+      math?: { source: string; display: boolean };
+      image?: { src: string; alt: string };
     };
-export function markdownNodes(text: string): MarkdownNode[] {
+export function markdownTokens(tokens: Token[]): MarkdownNode[] {
   function convert(tokens: Token[]): MarkdownNode[] {
     const root: MarkdownNode[] = [];
     const stack = [root];
@@ -54,7 +73,7 @@ export function markdownNodes(text: string): MarkdownNode[] {
         if (node.tag === "a") {
           const href = String(token.attrGet("href") ?? "");
           if (/^https?:\/\//iu.test(href) || /^mailto:/iu.test(href))
-            node.href = String(href);
+            node.href = href;
           else node.tag = "span";
         }
         if (node.tag === "ol") {
@@ -63,8 +82,27 @@ export function markdownNodes(text: string): MarkdownNode[] {
         }
         current.push(node);
         stack.push(node.children);
+      } else if (token.type === "image") {
+        const src = String(token.attrGet("src") ?? "");
+        const alt = parser.renderer.renderInlineAsText(
+          token.children ?? [],
+          parser.options,
+          {},
+        );
+        current.push(
+          safeMediaUrl(src)
+            ? { tag: "img", children: [], image: { src, alt } }
+            : alt,
+        );
       } else if (token.type === "inline") {
         current.push(...convert(token.children ?? []));
+      } else if (token.type === "math_inline" || token.type === "math_block") {
+        const display = token.type === "math_block";
+        current.push({
+          tag: display ? "div" : "span",
+          children: [],
+          math: { source: token.content, display },
+        });
       } else if (token.type === "fence" || token.type === "code_block") {
         current.push({
           tag: "pre",
@@ -82,43 +120,8 @@ export function markdownNodes(text: string): MarkdownNode[] {
     }
     return root;
   }
-  return convert(parser.parse(text, {}));
+  return convert(tokens);
 }
-export const markdownCommand: Command = {
-  name: "/markdown",
-  usage: "/markdown on|off",
-  description: "Format future messages with Markdown in this browser",
-  requirements: "",
-  section: "General",
-  admin: false,
-  console: false,
-};
-export const markdownManual = `# /markdown
-
-Use /markdown on to format future room messages, private messages and replies.
-Use /markdown off to send plain text again. The default is off.
-
-Supports bold, italic, strikethrough, headings, lists, quotes, code and links.
-Raw HTML and embedded images are disabled. Links allow HTTP, HTTPS and mailto.
-
-The setting stays in this browser. Each sent message keeps its own format,
-including after refresh; changing the setting does not change earlier messages.`;
-const key = "commonroom.markdown";
-export function loadMarkdown(): boolean {
-  try {
-    return localStorage.getItem(key) === "on";
-  } catch {
-    return false;
-  }
-}
-export function setMarkdown(input: string): boolean {
-  if (!/^\/markdown (on|off)$/u.test(input))
-    throw new Error("Usage: /markdown on|off");
-  const enabled = input === "/markdown on";
-  try {
-    localStorage.setItem(key, enabled ? "on" : "off");
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
-  return enabled;
+export function markdownNodes(text: string): MarkdownNode[] {
+  return markdownTokens(parser.parse(text, {}));
 }

@@ -69,6 +69,14 @@ export function Settings({
   fonts,
   theme,
   seeds,
+  markdown,
+  onMarkdownChange,
+  latex,
+  onLatexChange,
+  allowHtml,
+  allowHtmlCode,
+  onAllowHtmlCodeChange,
+  onAllowHtmlChange,
   onChange,
   onThemeChange,
   onSeedsChange,
@@ -83,12 +91,22 @@ export function Settings({
   fonts: Fonts;
   theme: Theme;
   seeds: Seeds;
+  markdown: boolean;
+  onMarkdownChange: (enabled: boolean) => void;
+  latex: boolean;
+  onLatexChange: (enabled: boolean) => void;
+  allowHtml: boolean;
+  allowHtmlCode: boolean;
+  onAllowHtmlCodeChange: (enabled: boolean) => void;
+  onAllowHtmlChange: (enabled: boolean) => void;
   onChange: (value: Fonts) => void;
   onThemeChange: (value: Theme) => void;
   onSeedsChange: (value: Seeds) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"account" | "appearance" | "alias">("account");
+  const [tab, setTab] = useState<
+    "account" | "appearance" | "alias" | "security" | "preferences"
+  >("account");
   const [name, setName] = useState(state.username);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -167,6 +185,20 @@ export function Settings({
           >
             Alias
           </button>
+          <button
+            type="button"
+            aria-current={tab === "preferences" ? "page" : undefined}
+            onClick={() => setTab("preferences")}
+          >
+            Preferences
+          </button>
+          <button
+            type="button"
+            aria-current={tab === "security" ? "page" : undefined}
+            onClick={() => setTab("security")}
+          >
+            Security
+          </button>
         </nav>
         <section
           key={tab}
@@ -177,7 +209,11 @@ export function Settings({
               ? "Account"
               : tab === "appearance"
                 ? "Appearance"
-                : "Alias"
+                : tab === "alias"
+                  ? "Alias"
+                  : tab === "security"
+                    ? "Security"
+                    : "Preferences"
           }
         >
           {tab === "account" ? (
@@ -296,6 +332,72 @@ export function Settings({
                   {feedback}
                 </p>
               )}
+            </>
+          ) : tab === "preferences" ? (
+            <>
+              <h3>Preferences</h3>
+              <label class="security-choice">
+                <input
+                  type="checkbox"
+                  checked={markdown}
+                  aria-describedby="markdown-preference-description"
+                  onChange={(event) =>
+                    onMarkdownChange(event.currentTarget.checked)
+                  }
+                />
+                <span>Enable Markdown</span>
+              </label>
+              <p id="markdown-preference-description" class="account-summary">
+                Format new messages with Markdown.
+              </p>
+              <label class="security-choice">
+                <input
+                  type="checkbox"
+                  checked={latex}
+                  aria-describedby="latex-preference-description"
+                  onChange={(event) =>
+                    onLatexChange(event.currentTarget.checked)
+                  }
+                />
+                <span>Enable LaTeX math</span>
+              </label>
+              <p id="latex-preference-description" class="account-summary">
+                Render equations in Markdown messages.
+              </p>
+            </>
+          ) : tab === "security" ? (
+            <>
+              <h3>Security</h3>
+              <label class="security-choice">
+                <input
+                  type="checkbox"
+                  checked={allowHtml}
+                  aria-describedby="markdown-html-description"
+                  onChange={(event) =>
+                    onAllowHtmlChange(event.currentTarget.checked)
+                  }
+                />
+                <span>Allow HTML (secure HTML)</span>
+              </label>
+              <p id="markdown-html-description" class="account-summary">
+                Render sanitized HTML directly. Scripts, CSS and active controls
+                are removed.
+              </p>
+              <label class="security-choice">
+                <input
+                  type="checkbox"
+                  checked={allowHtmlCode}
+                  aria-describedby="markdown-code-description"
+                  onChange={(event) =>
+                    onAllowHtmlCodeChange(event.currentTarget.checked)
+                  }
+                />
+                <span>HTML (code)</span>
+              </label>
+              <p id="markdown-code-description" class="account-summary">
+                Offer a per-message preview for HTML, CSS and JavaScript in an
+                isolated frame. Code runs only after Render HTML.
+              </p>
             </>
           ) : tab === "alias" ? (
             <AliasSettings
