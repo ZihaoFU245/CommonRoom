@@ -183,3 +183,10 @@ an operator can remove while the worker is stopped. Scripts and artifacts are
 ordinary files, outside the worker KV format and server SQLite schema. The model
 may modify or delete any file in its workspace. Back up that directory with the
 worker's other data when preserving scripts or generated artifacts matters.
+
+Optional shell jobs use the existing v2 durable job records, including command
+arguments/results and the optional `waitExpired` boolean. No server or worker
+format migration is required. The `--with-shell` capability is process state,
+never configuration or a persisted grant. Interrupted commands are not replayed
+when reopening storage; launching without shell access does not restore that
+capability from old jobs.

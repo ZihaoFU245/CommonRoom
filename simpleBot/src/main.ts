@@ -1,3 +1,4 @@
+import { startupOptions, requireShellPermission } from "./startup.ts";
 // Deno entrypoint. BOT_STORAGE selects the KV database; old JSON checkpoints
 // are ignored. CHAT_DATA relocates the default data directory. BOT_CONFIG still
 // selects the operator configuration file; BOT_TOKEN/CHAT_URL are process seeds.
@@ -15,6 +16,8 @@ import { LEVELS, type LogLevel } from "./log.ts";
 const SESSION = "simpleBot";
 
 async function main(): Promise<void> {
+  const startup = startupOptions(process.argv.slice(2));
+  if (startup.withShell) await requireShellPermission();
   const dataDir =
     process.env.CHAT_DATA ?? join(import.meta.dirname, "..", "data");
   const configPath = process.env.BOT_CONFIG ?? join(dataDir, "config.json");
@@ -75,6 +78,7 @@ async function main(): Promise<void> {
       config,
       model,
       workspace: join(dataDir, "workspace"),
+      withShell: startup.withShell,
       log,
       presence: () => online,
       socketReady: () => socket?.connected ?? false,
@@ -211,6 +215,10 @@ async function main(): Promise<void> {
   // ------------------------------------------------------------------ banner
 
   log("info", "CommonRoom simple bot starting");
+  log(
+    "info",
+    `shell      ${startup.withShell ? "enabled (--with-shell)" : "disabled"}`,
+  );
   log("info", `storage    ${statePath}`);
   log("info", `config     ${configPath}`);
   log(

@@ -34,11 +34,22 @@ export class NativeTools {
       argumentsText: string,
       toolSignal?: AbortSignal,
       effectId?: string,
+      onYield?: () => Promise<void>,
     ): Promise<string> => {
       const activeSignal = toolSignal
         ? AbortSignal.any([signal, toolSignal])
         : signal;
       activeSignal.throwIfAborted();
+      if (name === "run_shell") {
+        if (
+          this.host.stopped ||
+          !this.host.snapshot?.conversations.some(
+            (item) => item.id === conversation.id,
+          )
+        )
+          throw new Error("Shell job is no longer active");
+        return this.host.shell.execute(argumentsText, activeSignal, onYield);
+      }
       if (name === "read_job")
         return readJob(
           this.host.options.store.state.sessions[conversation.id],

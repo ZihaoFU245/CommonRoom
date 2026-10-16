@@ -336,7 +336,8 @@ function validateSession(value: unknown): void {
       !integer(job.created) ||
       (job.result !== undefined &&
         (typeof job.result !== "string" || job.result.length > 65536)) ||
-      (job.observed !== undefined && typeof job.observed !== "boolean")
+      (job.observed !== undefined && typeof job.observed !== "boolean") ||
+      (job.waitExpired !== undefined && typeof job.waitExpired !== "boolean")
     )
       throw new Error("Invalid durable job");
   for (const entry of value.trace)

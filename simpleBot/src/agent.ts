@@ -65,6 +65,7 @@ export class Agent extends AgentState {
     while (this.syncing)
       await new Promise((resolve) => setTimeout(resolve, 10));
     await this.execution.settle();
+    await this.shell.settle();
     await this.options.store.save();
   }
   /** Apply a snapshot and converge on the server's retained state. */

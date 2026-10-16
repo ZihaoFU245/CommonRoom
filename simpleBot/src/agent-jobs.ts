@@ -48,19 +48,17 @@ export class AgentJobs {
       session.started +
       this.host.options.config.get("agent.episodeTimeoutMs") -
       Date.now();
+    // Shell commands own their execution timeout; inference settings must not
+    // cut off a command that has already yielded its model slot.
+    const toolTimeout =
+      job.tool === "run_shell"
+        ? episodeRemaining
+        : this.host.options.config.get("model.timeoutMs");
     const activeSignal = AbortSignal.any([
       controller.signal,
       signal,
       this.host.abort.signal,
-      AbortSignal.timeout(
-        Math.max(
-          1,
-          Math.min(
-            this.host.options.config.get("model.timeoutMs"),
-            episodeRemaining,
-          ),
-        ),
-      ),
+      AbortSignal.timeout(Math.max(1, Math.min(toolTimeout, episodeRemaining))),
     ]);
     this.controllers.set(job.id, { conversation, controller });
     this.work.set(job.id, async () => {
@@ -85,6 +83,14 @@ export class AgentJobs {
               job.arguments,
               activeSignal,
               job.id,
+              async () => {
+                job.waitExpired = true;
+                await this.host.options.store.save();
+                this.host.options.log(
+                  "debug",
+                  `job yielded conversation=${conversation} job=${job.id}`,
+                );
+              },
             );
           },
         );

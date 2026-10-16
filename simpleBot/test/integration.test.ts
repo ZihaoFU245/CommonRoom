@@ -143,6 +143,7 @@ test(
           )?.[1];
           const saveScript = text.includes("save execution script");
           const runScript = text.includes("rerun execution script");
+          const shellCommand = text.includes("run shell smoke command");
           const command = room
             ? `/new room ${room}`
             : reaction
@@ -157,22 +158,30 @@ test(
                     id: `call-${modelRequests.length}`,
                     type: "function",
                     function: {
-                      name:
-                        saveScript || runScript
+                      name: shellCommand
+                        ? "run_shell"
+                        : saveScript || runScript
                           ? "execute_code"
                           : historyBefore
                             ? "read_history"
                             : "run_server_command",
                       arguments: JSON.stringify(
-                        saveScript
+                        shellCommand
                           ? {
-                              code: `await Deno.writeTextFile("reusable.ts", 'const value: number = 42; console.log("execution-result-" + value);'); console.log("execution-script-saved");`,
+                              command:
+                                "sleep 0.05; printf shell-integration-ok",
+                              waitMs: 1,
+                              timeoutMs: 3000,
                             }
-                          : runScript
-                            ? { file: "reusable.ts" }
-                            : historyBefore
-                              ? { before: Number(historyBefore), limit: 2 }
-                              : { command },
+                          : saveScript
+                            ? {
+                                code: `await Deno.writeTextFile("reusable.ts", 'const value: number = 42; console.log("execution-result-" + value);'); console.log("execution-script-saved");`,
+                              }
+                            : runScript
+                              ? { file: "reusable.ts" }
+                              : historyBefore
+                                ? { before: Number(historyBefore), limit: 2 }
+                                : { command },
                       ),
                     },
                   },
@@ -442,7 +451,13 @@ test(
         botLogs = "";
         bot = spawn(
           process.execPath,
-          ["run", "--unstable-kv", "-A", join(root, "simpleBot/src/main.ts")],
+          [
+            "run",
+            "--unstable-kv",
+            "-A",
+            join(root, "simpleBot/src/main.ts"),
+            "--with-shell",
+          ],
           {
             cwd: root,
             env: {
@@ -735,6 +750,14 @@ test(
               message.content.includes('"tool":"read_history"'),
           ),
         ),
+      );
+      await say(bob, "@helper run shell smoke command");
+      await until(
+        async () =>
+          (await ownMessages()).some((message) =>
+            message.text.includes("shell-integration-ok"),
+          ),
+        "shell tool through the actual worker",
       );
       await say(bob, "@helper save execution script");
       await until(

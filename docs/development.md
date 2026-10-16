@@ -96,3 +96,9 @@ Keep `/api/bot/v1/` as the sole bot API namespace; no alternative version is pla
 The debug WebSocket proxy disconnects paired streams when either peer ends its
 TCP stream, avoiding late writes during navigation/logout. Transport failures
 still use the normal Vite error reporting.
+
+SimpleBot's optional shell capability is enabled only by
+`deno task start --with-shell` (or `deno task dev --with-shell`). Its launcher
+grants Deno binary execution before worker startup; direct invocations must supply the matching runtime
+permissions. The tool starts in the workspace and leaves filesystem, environment
+and network policy to the deployment. See [SimpleBot](../simpleBot/README.md#optional-shell-and-binary-execution).

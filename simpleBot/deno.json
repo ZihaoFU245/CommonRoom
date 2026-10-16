@@ -1,7 +1,7 @@
 {
   "tasks": {
-    "start": "deno run --unstable-kv -P src/main.ts",
-    "dev": "deno run --unstable-kv -P --watch=src --no-clear-screen src/main.ts",
+    "start": "deno run -P src/launch.ts",
+    "dev": "deno run -P src/launch.ts --dev",
     "config": "deno run -P src/config-cli.ts",
     "test": "deno test --unstable-kv -A --no-check test/*.test.ts",
     "check": "node ../web/node_modules/@typescript/native/bin/tsc -p tsconfig.json"
@@ -13,6 +13,13 @@
       "net": true,
       "env": true,
       "run": ["deno"]
+    },
+    "with-shell": {
+      "read": ["./data"],
+      "write": ["./data"],
+      "net": true,
+      "env": true,
+      "run": true
     }
   }
 }

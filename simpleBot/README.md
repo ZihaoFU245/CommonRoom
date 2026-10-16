@@ -20,6 +20,8 @@ restricted code execution. Add any external `CHAT_DATA`, `BOT_CONFIG` or
 `BOT_STORAGE` paths to its read/write permissions if overriding those locations.
 Permission profiles are experimental in Deno and may print a warning. Model and
 chat connection settings remain in `data/config.json`, not in `deno.json`.
+`--with-shell` selects the separate launch permission profile described below;
+it is never a config key.
 
 It is deliberately more than a "hello world" reply loop. One bot demonstrates
 the core chat features the v1 surface offers, so the code doubles as executable
@@ -49,6 +51,10 @@ documentation:
 simpleBot/
 ├── src/
 │   ├── main.ts        entrypoint: config, transport, lifecycle, logging
+│   ├── launch.ts      select worker launch permissions and forward signals
+│   ├── startup.ts     immutable command-line capabilities
+│   ├── shell.ts       optional shell tool and quick-result grace handling
+│   ├── shell-process.ts command process-group supervision and bounded output
 │   ├── agent.ts       lifecycle, transport convergence and component wiring
 │   ├── agent-input.ts history convergence, source revisions and input admission
 │   ├── agent-loop.ts  per-conversation model ticks and event scheduling
@@ -691,6 +697,69 @@ stale information, or an operator must remove it. Losing room access makes the
 workspace unavailable to model turns; it remains on disk if access is restored.
 `chat.stateLimit` bounds delivery records, not model documents. The model is
 responsible for organizing and deleting obsolete notes.
+
+## Optional shell and binary execution
+
+Enable shell access when starting the worker:
+
+```sh
+# From simpleBot/:
+deno task start --with-shell
+deno task dev --with-shell
+# From the repository root:
+deno task --config simpleBot/deno.json start --with-shell
+# Direct invocation (supply the Deno launch grant yourself):
+deno run --unstable-kv -P=with-shell src/main.ts --with-shell
+```
+
+The task launcher selects Deno permissions before starting the worker. Without
+`--with-shell`, the default profile permits launching the restricted Deno code
+runner and the model has no shell tool. With it, Deno grants binary execution
+and the worker advertises `run_shell`. The executor independently checks the
+startup capability. `config.json`, `/config`, environment settings and reloads
+cannot enable or disable it; restart with different arguments to change it.
+Transport/configuration rebuilds retain the original startup choice. `/status`
+and the startup banner report shell availability.
+
+```json
+{
+  "command": "cd ~ && ls -la",
+  "waitMs": 1000,
+  "timeoutMs": 60000
+}
+```
+
+Each command uses a fresh `/bin/sh -c`, starting in the agent workspace. An
+optional `cwd` may be absolute, workspace-relative (including `..`), `~`, or
+`~/...`. Pipes, redirects, `cd`, and available binaries work normally. The shell
+inherits the worker environment, including `PATH` and `HOME`. Files persist;
+shell variables and directory changes do not carry to another command. Input
+is closed and there is no interactive terminal session.
+
+Filesystem, network and environment access are provided by the deployment,
+such as gVisor. SimpleBot does not configure that sandbox or impose shell
+command/path allowlists. The workspace is the default directory, not a shell
+filesystem boundary. The existing `execute_code` tool retains its own Deno
+permissions and is independent of this capability.
+
+`waitMs` is the quick-result grace period (default 1000, range 0–30000 ms).
+A quick command completes directly. If it is still running at the deadline,
+the job checkpoints `waitExpired: true` and continues in the background.
+Dispatch and grace waiting never hold a model slot; `next: on_jobs` wakes a
+later tick when the command terminates. Grace expiry does not itself call the
+model or terminate the command. Do not repeat a command to check its progress.
+
+`timeoutMs` bounds execution (default 60000, range 100–600000 ms), independently
+of the inference timeout and within the remaining episode deadline. Results
+contain `ok`, `exitCode`, `stdout`, `stderr`, elapsed time, and any stop reason.
+Combined stdout/stderr is capped at 32 KiB. Shell jobs share filesystem exclusion
+with code execution. Timeout, output overflow, cancellation and shutdown kill
+the command's process group and reap the shell. Deliberately detached processes
+require external supervisor/sandbox lifecycle controls.
+
+Shell intents/results use the durable job store. Restart reports interrupted
+commands as uncertain and never automatically repeats them, including when the
+replacement worker starts without `--with-shell`.
 
 ## Shared filesystem and JS/TS execution
 

@@ -195,6 +195,7 @@ export class ModelContext {
           !!batch,
           conversation.view,
           this.host.options.model.tick !== undefined,
+          this.host.shell.enabled,
         ),
       },
       ...(config.get("prompt").trim()
@@ -308,6 +309,7 @@ export class ModelContext {
         history: historyEnabled,
         reads: readsEnabled,
         ticks: this.host.options.model.tick !== undefined,
+        shell: this.host.shell.enabled,
       }),
       executeTool: this.tools.create(
         conversation,

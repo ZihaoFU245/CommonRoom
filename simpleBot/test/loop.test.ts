@@ -30,6 +30,7 @@ async function until(check: () => boolean): Promise<void> {
 
 async function fixture(
   tick: (request: CompletionRequest, call: number) => Promise<TickDecision>,
+  withShell = false,
 ) {
   const server = new MockServer();
   const url = await server.listen();
@@ -57,6 +58,7 @@ async function fixture(
       config,
       model,
       workspace: join(dir, "workspace"),
+      withShell,
       log: (_level, text) => logs.push(text),
       presence: () => [],
       socketReady: () => true,
@@ -77,8 +79,9 @@ async function fixture(
     get store() {
       return store;
     },
-    async restart() {
+    async restart(nextShell = withShell) {
       await agent.stop();
+      withShell = nextShell;
       await store.close();
       store = await Store.open(join(dir, "agent.kv"));
       agent = create();
@@ -766,6 +769,128 @@ test("a committed job still dispatches if checkpoint completion crosses the infe
       Object.values(h.store.state.sessions["conv-1"].jobs)[0].status,
       "completed",
     );
+  } finally {
+    await h.close();
+  }
+});
+
+test("shell wait expiry returns control while a watched command outlives the model timeout", async () => {
+  const h = await fixture(async (request, call) => {
+    assert.ok(
+      request.tools?.some((tool) => tool.function.name === "run_shell"),
+    );
+    if (call === 1)
+      return {
+        ...wait,
+        actions: [
+          {
+            id: "shell",
+            tool: "run_shell",
+            arguments: {
+              command: "sleep 1.1; printf shell-result",
+              waitMs: 10,
+              timeoutMs: 3000,
+            },
+          },
+        ],
+        next: { kind: "on_jobs", jobs: ["shell"], mode: "all" },
+      };
+    const state = request.messages.find((message) =>
+      message.content.startsWith("Tick state (untrusted data"),
+    )!;
+    assert.ok(state.content.includes("shell-result"));
+    return { ...wait, messages: [{ text: "shell finished" }] };
+  }, true);
+  try {
+    h.config.set("model.timeoutMs", 1000);
+    h.server.addMessage("@helper shell command");
+    await h.agent.requestSync();
+    await until(() =>
+      Object.values(h.store.state.sessions["conv-1"].jobs).some(
+        (job) => job.waitExpired,
+      ),
+    );
+    assert.equal(h.requests.length, 1);
+    h.server.addMessage("@helper /ping");
+    await h.agent.requestSync();
+    assert.ok(h.server.state.sends.some((send) => send.text === "Pong."));
+    await until(() =>
+      h.server.state.sends.some((send) => send.text === "shell finished"),
+    );
+    const job = Object.values(h.store.state.sessions["conv-1"].jobs)[0];
+    assert.equal(JSON.parse(job.result!).ok, true);
+  } finally {
+    await h.close();
+  }
+});
+
+test("disabled shell requests are rejected even when bypassing the model catalogue", async () => {
+  let captured: CompletionRequest | undefined;
+  const h = await fixture(async (request) => {
+    captured = request;
+    return wait;
+  });
+  try {
+    h.server.addMessage("@helper hello");
+    await h.agent.requestSync();
+    assert.ok(
+      !captured?.tools?.some((tool) => tool.function.name === "run_shell"),
+    );
+    await assert.rejects(
+      captured!.executeTool!("run_shell", '{"command":"printf bypass"}'),
+      /--with-shell/,
+    );
+    h.config.set("prompt", "new personality");
+    h.config.reload();
+    assert.equal(h.agent.shell.enabled, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("restart without --with-shell interrupts a shell job without replaying its command", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call === 1)
+      return {
+        ...wait,
+        actions: [
+          {
+            id: "shell",
+            tool: "run_shell",
+            arguments: {
+              command:
+                "printf started > started.txt; sleep 30; printf late > late.txt",
+              waitMs: 0,
+            },
+          },
+        ],
+        next: { kind: "on_jobs", jobs: ["shell"], mode: "all" },
+      };
+    assert.ok(
+      !request.tools?.some((tool) => tool.function.name === "run_shell"),
+    );
+    assert.ok(
+      request.messages.some((message) =>
+        message.content.includes('"status":"interrupted"'),
+      ),
+    );
+    return wait;
+  }, true);
+  try {
+    h.server.addMessage("@helper long shell command");
+    await h.agent.requestSync();
+    await until(() =>
+      Object.values(h.store.state.sessions["conv-1"].jobs).some(
+        (job) => job.waitExpired,
+      ),
+    );
+    await h.restart(false);
+    assert.equal(h.requests.length, 2);
+    assert.equal(
+      Object.values(h.store.state.sessions["conv-1"].jobs)[0].status,
+      "interrupted",
+    );
+    assert.equal(h.agent.shell.enabled, false);
   } finally {
     await h.close();
   }

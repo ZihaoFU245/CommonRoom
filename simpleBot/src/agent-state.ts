@@ -1,3 +1,4 @@
+import { Shell } from "./shell.ts";
 import { Execution } from "./execution.ts";
 import type { ConfigStore } from "./config.ts";
 import type { BotApi } from "./api.ts";
@@ -14,6 +15,7 @@ export interface AgentOptions {
   config: ConfigStore;
   model: ChatModel;
   workspace: string;
+  readonly withShell?: boolean;
   log: Logger;
   presence(): string[];
   socketReady(): boolean;
@@ -28,6 +30,7 @@ export class AgentState {
   readonly startedAt = Date.now();
   readonly abort = new AbortController();
   readonly execution: Execution;
+  readonly shell: Shell;
   readonly contexts = new Map<string, AppendHistory>();
   readonly modelMetrics = new Map<string, Metrics>();
   private readonly activity = new Map<string, ReturnType<typeof setInterval>>();
@@ -35,6 +38,7 @@ export class AgentState {
   constructor(options: AgentOptions) {
     this.options = options;
     this.execution = new Execution(options.workspace);
+    this.shell = new Shell(options.workspace, options.withShell === true);
   }
 
   metrics(conversation: string): Metrics {

@@ -37,6 +37,7 @@ export function appendTickState(
         resultTruncated:
           result !== undefined && excerpt?.length !== result.length,
         observed: job.observed ?? false,
+        waitExpired: job.waitExpired ?? false,
       };
     }),
     previousTicks: session.trace.slice(-8).map((entry) => ({

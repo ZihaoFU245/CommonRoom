@@ -129,6 +129,7 @@ export interface CompletionRequest {
     argumentsText: string,
     signal?: AbortSignal,
     effectId?: string,
+    onYield?: () => Promise<void>,
   ): Promise<string>;
   /** Return job handles for slow tools and resume inference in the meantime. */
   backgroundTools?: boolean;

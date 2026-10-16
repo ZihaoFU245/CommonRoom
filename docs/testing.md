@@ -366,3 +366,13 @@ invalid plans, distinct effect keys across ticks, bounded result paging, admissi
 token budgets, checkpoint/deadline races and lossless KV v1→v2 migration.
 The actual worker integration gateway emits finish_tick decisions for buffered
 and streaming requests and verifies native tools, output and restart recovery.
+
+Shell regressions in `simpleBot/test/shell.test.ts` exercise startup-only
+capability parsing, task-launch permission selection, default denial,
+configuration rejection, binaries/pipes/redirects, inherited HOME, absolute and
+parent working directories, quick-result grace, output bounds, timeout and
+process-group cleanup. Loop tests cover responsive controls while a shell job
+outlives inference settings, wait-expiry checkpoints and restart without shell
+access or command replay. The real worker integration includes a native shell
+command launched with `--with-shell`. These tests exercise process supervision;
+they do not install or validate a third-party sandbox.

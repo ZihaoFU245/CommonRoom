@@ -184,6 +184,7 @@ export class Controls {
             ...(session.error ? [`Last tick error: ${session.error}`] : []),
           ]
         : []),
+      `Shell access: ${this.host.shell.enabled ? "enabled (--with-shell)" : "disabled"} (startup-only capability)`,
       `Pending tasks: ${pending} · socket ${this.host.options.socketReady() ? "connected" : "reconnecting"}`,
       `Config: model ${config.get("model.name")}, stream=${config.get("model.stream")}, autonomous=${config.get("autonomous")}, respondToAllDms=${config.get("chat.respondToAllDms")}, acknowledgeReads=${config.get("chat.acknowledgeReads")}`,
       `Uptime: ${uptime}s · syncs ${store.metrics.syncs} · edits ${store.metrics.edits} · retractions ${store.metrics.retractions} · sent ${store.metrics.sent} · replays ${store.metrics.replayed}`,

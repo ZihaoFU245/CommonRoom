@@ -22,6 +22,7 @@ export interface TickJob {
   created: number;
   result?: string;
   observed?: boolean;
+  waitExpired?: boolean;
 }
 
 /** One record owns the atomic decision, job intents and one-shot continuation. */

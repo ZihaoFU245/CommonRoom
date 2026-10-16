@@ -1,3 +1,4 @@
+import { SHELL_TOOL } from "./shell.ts";
 import { READ_JOB_TOOL } from "./job-results.ts";
 import type { FunctionTool } from "./model.ts";
 import { FINISH_TURN_TOOL } from "./group.ts";
@@ -31,7 +32,7 @@ export function toolAccess(
       mode: read ? "read" : "write",
     };
   }
-  if (name === "execute_code")
+  if (name === "execute_code" || name === "run_shell")
     return { resource: `workspace:${workspace}`, mode: "write" };
   // History reads also mutate the turn's context budget and deduplication cache.
   if (name === "read_history")
@@ -46,6 +47,7 @@ export function modelTools(options: {
   history: boolean;
   reads: boolean;
   ticks?: boolean;
+  shell?: boolean;
 }): FunctionTool[] {
   const {
     group: batch,
@@ -57,6 +59,7 @@ export function modelTools(options: {
     MEMORY_TOOL,
     ...(options.ticks ? [READ_JOB_TOOL] : []),
     EXECUTION_TOOL,
+    ...(options.shell ? [SHELL_TOOL] : []),
     ...(batch ? [FINISH_TURN_TOOL] : []),
     ...(commands
       ? [
