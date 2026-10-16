@@ -1,0 +1,13 @@
+# Rust build output for the runner and the wasm guest.
+target/
+
+# Local secrets used for verification.
+.secrets.env
+
+# Staging directory used by agents/auto/*.sh when they copy the tree onto a Linux
+# filesystem. Only created here when AGENTS_BUILD_DIR points inside the checkout.
+.build/
+
+# Agent runtime state and the runner configuration live under the repository's
+# top-level data/ directory, which the root .gitignore already excludes. An entry
+# here would only match agents/data/ and would therefore cover nothing.

@@ -1,0 +1,21 @@
+[workspace]
+members = ["runner"]
+resolver = "2"
+
+# The agent runner keeps its own workspace so the host server's workspace stays
+# untouched: the runner links V8 and the guest builds for wasm32, and neither
+# belongs in the server's dependency graph.
+#
+# `lto`, `codegen-units` and `strip` match the root workspace's release profile.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# V8 needs optimization even in a debug runner, or isolate startup is unusably
+# slow. Keep the runner itself debuggable.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
