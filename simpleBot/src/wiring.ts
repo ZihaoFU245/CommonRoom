@@ -45,7 +45,7 @@ export function createSocketEvents(context: WiringContext): SocketEvents {
     async snapshot(frame: Extract<ServerFrame, { kind: "snapshot" }>) {
       store.metrics.frames++;
       try {
-        await context.agent()?.handleSnapshot(frame);
+        await context.agent()?.handleSnapshot(frame, false);
       } catch (error) {
         log("error", `snapshot handling failed: ${(error as Error).message}`);
       }
@@ -55,7 +55,7 @@ export function createSocketEvents(context: WiringContext): SocketEvents {
       log("debug", `notification ${conversationId} at revision ${revision}`);
       void context
         .agent()
-        ?.requestSync()
+        ?.requestSync(true, false)
         .catch((error) =>
           log("warn", `sync failed: ${(error as Error).message}`),
         );
@@ -87,7 +87,7 @@ export function createSocketEvents(context: WiringContext): SocketEvents {
     sync() {
       void context
         .agent()
-        ?.requestSync()
+        ?.requestSync(true, false)
         .catch((error) =>
           log("warn", `sync failed: ${(error as Error).message}`),
         );

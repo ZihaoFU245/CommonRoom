@@ -1,6 +1,7 @@
+import { object, nextTick, type TickSession } from "./tick.ts";
 import { MAX_GROUP_RESPONSE_CHARS } from "./group.ts";
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 export interface OutboxPart {
   slot: string;
@@ -17,6 +18,7 @@ export interface OutboxPart {
 
 export interface CommandAction {
   command: string;
+  effectId?: string;
   status: "pending" | "done";
   key?: string;
   created?: number;
@@ -71,6 +73,7 @@ export interface State {
   memory: Record<string, ConversationMemory>;
   tasks: Record<string, TaskRecord>;
   parts: Record<string, OutboxPart>;
+  sessions: Record<string, TickSession>;
 }
 
 export interface Metrics {
@@ -106,6 +109,7 @@ export function emptyState(): State {
     memory: Object.create(null) as Record<string, ConversationMemory>,
     tasks: Object.create(null) as Record<string, TaskRecord>,
     parts: Object.create(null) as Record<string, OutboxPart>,
+    sessions: Object.create(null) as Record<string, TickSession>,
   };
 }
 
@@ -116,13 +120,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Reject a checkpoint we do not understand instead of guessing. */
 export function validate(value: unknown): State {
   if (!isRecord(value)) throw new Error("checkpoint is not an object");
-  if (value.version !== STATE_VERSION) {
+  if (value.version !== STATE_VERSION && value.version !== 1) {
     throw new Error(
       `checkpoint version ${String(value.version)} is not supported (expected ${STATE_VERSION}); ` +
         "reconcile the old file deliberately before replacing it",
     );
   }
-  for (const key of ["cursors", "revisions", "memory", "tasks", "parts"]) {
+  if (value.version === 1 && value.sessions === undefined) value.sessions = {};
+  for (const key of [
+    "cursors",
+    "revisions",
+    "memory",
+    "tasks",
+    "parts",
+    "sessions",
+  ]) {
     if (!isRecord(value[key]))
       throw new Error(`checkpoint field ${key} is invalid`);
   }
@@ -208,6 +220,8 @@ export function validate(value: unknown): State {
               typeof action.command === "string" &&
               action.command.length <= 4100 &&
               ["pending", "done"].includes(String(action.status)) &&
+              (action.effectId === undefined ||
+                typeof action.effectId === "string") &&
               (action.key === undefined ||
                 (typeof action.key === "string" &&
                   /^[A-Za-z0-9._:-]{1,128}$/.test(action.key) &&
@@ -255,5 +269,84 @@ export function validate(value: unknown): State {
   state.memory = Object.assign(Object.create(null), state.memory);
   for (const memory of Object.values(state.memory))
     memory.known = Object.assign(Object.create(null), memory.known);
+  for (const session of Object.values(state.sessions)) validateSession(session);
   return state;
+}
+
+function validateSession(value: unknown): void {
+  const integer = (n: unknown) =>
+    typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+  if (
+    !object(value) ||
+    typeof value.root !== "string" ||
+    !integer(value.generation) ||
+    !integer(value.tick) ||
+    !integer(value.calls) ||
+    !integer(value.started) ||
+    !["ready", "calling", "idle", "failed"].includes(String(value.phase)) ||
+    !object(value.jobs) ||
+    !Array.isArray(value.sources) ||
+    value.sources.length > 400 ||
+    !Array.isArray(value.trace) ||
+    value.trace.length > 32 ||
+    (value.dueAt !== undefined && !integer(value.dueAt)) ||
+    (value.error !== undefined && typeof value.error !== "string") ||
+    (value.retries !== undefined && !integer(value.retries)) ||
+    (value.tokens !== undefined && !integer(value.tokens)) ||
+    (value.retryInputs !== undefined &&
+      (!Array.isArray(value.retryInputs) ||
+        !value.retryInputs.every((id: unknown) => typeof id === "string")))
+  )
+    throw new Error("Invalid tick session");
+  const next = nextTick(value.next);
+  if (next.kind === "after" && value.dueAt === undefined)
+    throw new Error("Missing tick deadline");
+  if (
+    next.kind === "on_jobs" &&
+    next.jobs.some(
+      (id) => !object(value.jobs) || !Object.hasOwn(value.jobs, id),
+    )
+  )
+    throw new Error("Unknown durable job watch");
+  for (const source of value.sources)
+    if (
+      !object(source) ||
+      typeof source.input !== "string" ||
+      typeof source.hash !== "string" ||
+      !integer(source.sequence)
+    )
+      throw new Error("Invalid tick source");
+  if (Object.keys(value.jobs).length > 128)
+    throw new Error("Too many durable jobs");
+  for (const [id, job] of Object.entries(value.jobs))
+    if (
+      !object(job) ||
+      job.id !== id ||
+      typeof job.tool !== "string" ||
+      (job.root !== undefined && typeof job.root !== "string") ||
+      (job.sources !== undefined &&
+        (!Array.isArray(job.sources) ||
+          job.sources.length > 400 ||
+          !job.sources.every((id: unknown) => typeof id === "string"))) ||
+      typeof job.arguments !== "string" ||
+      job.arguments.length > 65536 ||
+      !["queued", "running", "completed", "failed", "interrupted"].includes(
+        String(job.status),
+      ) ||
+      !integer(job.created) ||
+      (job.result !== undefined &&
+        (typeof job.result !== "string" || job.result.length > 65536)) ||
+      (job.observed !== undefined && typeof job.observed !== "boolean")
+    )
+      throw new Error("Invalid durable job");
+  for (const entry of value.trace)
+    if (
+      !object(entry) ||
+      !integer(entry.tick) ||
+      !Array.isArray(entry.messages) ||
+      !entry.messages.every((item: unknown) => typeof item === "string") ||
+      !Array.isArray(entry.actions) ||
+      !entry.actions.every((item: unknown) => typeof item === "string")
+    )
+      throw new Error("Invalid tick trace");
 }

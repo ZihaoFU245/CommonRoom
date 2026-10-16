@@ -1,3 +1,4 @@
+import { READ_JOB_TOOL } from "./job-results.ts";
 import type { FunctionTool } from "./model.ts";
 import { FINISH_TURN_TOOL } from "./group.ts";
 import { EXECUTION_TOOL } from "./execution.ts";
@@ -11,6 +12,8 @@ export function toolAccess(
   conversation: string,
   workspace: string,
 ): ToolAccess {
+  if (name === "read_job")
+    return { resource: `jobs:${conversation}`, mode: "read" };
   if (name === "memory") {
     let read = false;
     try {
@@ -42,6 +45,7 @@ export function modelTools(options: {
   commands: boolean;
   history: boolean;
   reads: boolean;
+  ticks?: boolean;
 }): FunctionTool[] {
   const {
     group: batch,
@@ -51,6 +55,7 @@ export function modelTools(options: {
   } = options;
   return [
     MEMORY_TOOL,
+    ...(options.ticks ? [READ_JOB_TOOL] : []),
     EXECUTION_TOOL,
     ...(batch ? [FINISH_TURN_TOOL] : []),
     ...(commands

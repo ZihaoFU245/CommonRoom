@@ -27,20 +27,20 @@ documentation:
 
 | Feature                                                    | Where                                                |
 | ---------------------------------------------------------- | ---------------------------------------------------- |
-| Snapshot catch-up with per-conversation cursors            | `src/agent.ts` (`syncOnce`, `advance`)               |
-| Keyed idempotent sends with a durable outbox               | `src/agent.ts` (`sendParts`), `src/store.ts`         |
+| Snapshot catch-up with per-conversation cursors            | `src/agent-input.ts` (`syncOnce`, `advance`)         |
+| Keyed idempotent sends with a durable outbox               | `src/outbox.ts` (`sendParts`), `src/store.ts`        |
 | Multi-part output over the 4,000-character limit           | `src/api.ts` (`chunkMessage`), `sendParts`           |
-| Edit/retraction handling via `content_revision`            | `src/agent.ts` (`reconcile`)                         |
+| Edit/retraction handling via `content_revision`            | `src/agent-input.ts` (`reconcile`)                   |
 | Revision-pinned history rescans (`409 conflict` → restart) | `src/api.ts` (`history`)                             |
 | Replies, mentions, desired-state reactions                 | native command tools and typed `BotApi.react`        |
 | Transient `working`/`idle` activity signals                | `beginActivity`, `setActivity`                       |
-| Owner/admin configuration through chat commands            | `src/agent.ts`, `src/config.ts`                     |
+| Owner/admin configuration through chat commands            | `src/agent-controls.ts`, `src/config.ts`             |
 | Secret redaction in configuration fetches                  | `ConfigStore.fetch`                                  |
 | Presence directory (account-wide credentials)              | `src/main.ts`, private status reports                |
 | Shared-unread acknowledgement behind explicit opt-in       | `acknowledge_read` tool, `chat.acknowledgeReads`     |
 | Credential scopes and expiring tokens                      | `/status`, `snapshot.credential`                     |
 | Conversation creation (rooms and DMs)                      | native `/new room`, `/tell` and typed client methods |
-| Durable KV state and model-owned conversation memory        | `src/store.ts`                                       |
+| Durable KV state and model-owned conversation memory       | `src/store.ts`                                       |
 | Bounded retries, `Retry-After`, typed error codes          | `src/api.ts`                                         |
 
 ## Files
@@ -49,7 +49,19 @@ documentation:
 simpleBot/
 ├── src/
 │   ├── main.ts        entrypoint: config, transport, lifecycle, logging
-│   ├── agent.ts       catch-up, revision reconciliation, commands, output
+│   ├── agent.ts       lifecycle, transport convergence and component wiring
+│   ├── agent-input.ts history convergence, source revisions and input admission
+│   ├── agent-loop.ts  per-conversation model ticks and event scheduling
+│   ├── agent-model.ts model context, history and memory preparation
+│   ├── agent-tools.ts native tool execution and keyed command receipts
+│   ├── agent-jobs.ts  durable worker-owned background jobs and shared locks
+│   ├── agent-controls.ts local public/owner command handling
+│   ├── agent-state.ts shared worker services and per-conversation activity
+│   ├── scheduler.ts   fair bounded scheduling and interruptible deadlines
+│   ├── tick.ts        decision schema, validation and durable session types
+│   ├── tick-commit.ts atomic decision/outbox/job publication
+│   ├── tick-request.ts tick context and custom model adapter compatibility
+│   ├── outbox.ts      durable multipart output and acknowledgement
 │   ├── context.ts     append-only history prefix and on-demand pages
 │   ├── tokens.ts      provider token baselines and bounded context compaction
 │   ├── metrics.ts     numeric model/cache diagnostics per conversation
@@ -147,28 +159,34 @@ is rejected with a reason and leaves the previous setting untouched, for example
 
 ### Recognized keys
 
-| Key                     | Default                  | Notes                                                                        |
-| ----------------------- | ------------------------ | ---------------------------------------------------------------------------- |
-| `prompt`                | _(empty)_                | Optional personality and user preferences; up to 4096 UTF-8 bytes            |
-| `chat.url`              | `http://127.0.0.1:3000/` | the only preset value; include the base path, omit `/api/bot/v1`             |
-| `chat.token`            | _(from `BOT_TOKEN`)_     | bot credential; redacted on fetch                                            |
-| `model.endpoint`        | _(empty)_                | OpenAI-compatible base URL or a full `/chat/completions` path                |
-| `model.token`           | _(empty)_                | optional bearer key; omitted entirely when empty                             |
-| `model.name`            | _(empty)_                | model id sent to the endpoint                                                |
-| `model.timeoutMs`       | `120000`                 | 1000–600000                                                                  |
-| `model.stream`          | `true`                   | streamed completions                                                         |
-| `model.maxTokens`       | `4096`                   | output budget including reasoning; 128–32768                                 |
-| `model.reasoningEffort` | _(empty)_                | provider default when empty; none, low, medium or high if supported          |
-| `autonomous`          | `false`                  | Participate in writable rooms without mentions, using fixed 3-second batches |
-| `chat.respondToAllDms`  | `true`                   | answer every direct message, not only mentions                               |
-| `chat.acknowledgeReads` | `false`                  | enables the read acknowledgement tool                                        |
-| `chat.historyWindow`    | `50`                     | prior messages requested for model context, within the character budget      |
-| `chat.contextChars`     | `131072`                 | Additional history character ceiling; 0–524288, 0 disables history           |
-| `model.contextTokens`   | `32768`                  | Total input/output token budget; measurements plus estimates for new content |
-| `model.compactTokens`   | `24576`                  | Input threshold for context compaction; less than total                      |
-| `model.maxToolCalls`    | `32`                     | Maximum tool calls per turn; 1–128                                           |
-| `chat.stateLimit`       | `200`                    | 10–5000 retained task records                                                |
-| `log.level`             | `info`                   | `debug`, `info`, `warn`, `error`, `silent`                                   |
+| Key                        | Default                  | Notes                                                                            |
+| -------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
+| `prompt`                   | _(empty)_                | Optional personality and user preferences; up to 4096 UTF-8 bytes                |
+| `chat.url`                 | `http://127.0.0.1:3000/` | the only preset value; include the base path, omit `/api/bot/v1`                 |
+| `chat.token`               | _(from `BOT_TOKEN`)_     | bot credential; redacted on fetch                                                |
+| `model.endpoint`           | _(empty)_                | OpenAI-compatible base URL or a full `/chat/completions` path                    |
+| `model.token`              | _(empty)_                | optional bearer key; omitted entirely when empty                                 |
+| `model.name`               | _(empty)_                | model id sent to the endpoint                                                    |
+| `model.timeoutMs`          | `120000`                 | 1000–600000                                                                      |
+| `model.stream`             | `true`                   | streamed completions                                                             |
+| `model.maxTokens`          | `4096`                   | output budget including reasoning; 128–32768                                     |
+| `model.reasoningEffort`    | _(empty)_                | provider default when empty; none, low, medium or high if supported              |
+| `autonomous`               | `false`                  | Participate in writable rooms without mentions, using fixed 3-second batches     |
+| `chat.respondToAllDms`     | `true`                   | answer every direct message, not only mentions                                   |
+| `chat.acknowledgeReads`    | `false`                  | enables the read acknowledgement tool                                            |
+| `chat.historyWindow`       | `50`                     | prior messages requested for model context, within the character budget          |
+| `chat.contextChars`        | `131072`                 | Additional history character ceiling; 0–524288, 0 disables history               |
+| `model.contextTokens`      | `32768`                  | Total input/output token budget; measurements plus estimates for new content     |
+| `model.compactTokens`      | `24576`                  | Input threshold for context compaction; less than total                          |
+| `model.maxToolCalls`       | `32`                     | Maximum tool jobs per work episode; 1–128                                        |
+| `agent.maxConcurrentTicks` | `4`                      | Maximum simultaneous model requests across conversations; 1–128                  |
+| `agent.maxConcurrentJobs`  | `8`                      | Maximum active tool jobs; 1–128                                                  |
+| `agent.maxTicks`           | `32`                     | Model requests per work episode, including retries; 1–128                        |
+| `agent.inboxLimit`         | `1000`                   | Maximum queued/running accepted inputs; 10–5000; scanning pauses when full       |
+| `agent.maxEpisodeTokens`   | `262144`                 | Episode input/output token budget; 1024–16777216; estimates when usage is absent |
+| `agent.episodeTimeoutMs`   | `600000`                 | Episode deadline; 1000–86400000 ms                                               |
+| `chat.stateLimit`          | `200`                    | 10–5000 retained task records                                                    |
+| `log.level`                | `info`                   | `debug`, `info`, `warn`, `error`, `silent`                                       |
 
 The model client uses the standard OpenAI-compatible text Chat Completions
 format, with optional bearer authentication and streamed or buffered responses.
@@ -228,7 +246,7 @@ with defaults.
 
 Mention the bot in a room; ordinary text in a DM is answered when
 `chat.respondToAllDms` is enabled. The model receives the server's current command
-catalogue and native function tools. For example, `@helper create a room named
+catalogue and a structured tick decision containing native tool actions. For example, `@helper create a room named
 study` can execute `/new room study` as **helper**, when helper has both command
 and action grants. Granting the bot admin access enables its corresponding
 server commands. The server rechecks grants on every execution; the requesting
@@ -314,7 +332,8 @@ and version refusal, cross-account refusal, activity signals, and the
   import or migration. The first run baselines from the server's current state;
   subsequent restarts recover cursors, message versions, tasks, group decisions,
   command intents/results and output keys from KV. Output is durable before send;
-  cursors advance after acknowledged delivery.
+  scan cursors advance after durable input admission, independently of delivery.
+  Validated worker KV v1 records migrate to v2 without changing pending keys.
 - **Targeted commits**: only changed records are encoded and written. Nested
   task mutations are tracked; small records publish directly in an atomic KV
   transaction. Large plans use immutable chunks and atomic record heads, so an
@@ -352,12 +371,13 @@ and version refusal, cross-account refusal, activity signals, and the
 
 ## Extending it
 
-`onMessage`-equivalent behaviour lives in `Agent.answer`. Replace `askModel` with
-your own orchestration, or add a private control in `WORKER_COMMANDS` and its handler. Keep the transport
-rules intact:
+`Agent` wires input convergence, the event scheduler, local controls and output.
+Extend `agent-loop.ts` for scheduling, `agent-tools.ts` for native effects, or
+`agent-controls.ts` for local commands. Keep the persistence rules intact:
 
 1. Persist the output request (payload and idempotency key) **before** sending.
-2. Never advance the input cursor before the output is acknowledged.
+2. Commit accepted input with its scan cursor; commit tick consumption, actions
+   and output together before effects. Delivery acknowledgements remain separate.
 3. Give each intended output a stable slot name so recovery reuses it.
 4. Treat `content_revision` as "something in retained history changed" and rescan
    with the revision pinned; do not assume it means an edit.
@@ -367,8 +387,9 @@ schema in [`docs/bot-v1.schema.json`](../docs/bot-v1.schema.json), and worker
 guidance in [`docs/agent-development.md`](../docs/agent-development.md).
 
 Native commands use separate durable server receipts. The worker saves command
-intent/key/time before execution, suppresses repeated identical calls, and retries
-only the identical key within the receipt window. On restart it recovers pending
+intent/key/time before execution and reuses the identical effect key during
+recovery within the receipt window. Distinct proposed actions in separate ticks
+have distinct keys, even if their arguments match. On restart it recovers pending
 keyed outcomes before asking the model to continue. Legacy unkeyed or expired
 uncertain actions require inspection. The KV store retains these records across restarts. Run one worker per database/account.
 
@@ -384,8 +405,9 @@ History context stays in memory, in chronological chunks that grow by appending.
 The initial baseline requests 50 recent messages; later answers append intervening
 messages instead of sliding the prefix on every answer. Before reuse, the worker
 revalidates cached messages against retained server history, rebuilding on edits,
-removal or retention. Raw model turns are not persisted. Restart discards
-that context and the next answer fetches retained history again.
+removal or retention. Raw provider conversations are not persisted. A bounded
+trace of accepted tick decisions and durable job outcomes survives restart;
+retained chat history is fetched again for the next tick.
 Delivery keys, pending command intent/results and input checkpoints remain durable
 so restart cannot duplicate committed effects. The default total budget is 32768
 tokens, including the requested output allowance; compaction starts at 24576
@@ -492,16 +514,15 @@ through owner/admin chat commands. Credential issuance
 and conversation creation lack retry keys and are deliberately not retried after
 an ambiguous transport failure.
 
-Each mention triggers one agent turn. The model receives the current sender's
+Each eligible message can start a model tick; the model can request further ticks without another message. The model receives the current sender's
 username and stable account ID and may use tools, reply, or finish silently with
-an empty final response. A silent decision is checkpointed and is not retriggered
+an empty `finish_tick.messages` array. A silent decision is checkpointed and is not retriggered
 by notifications or reconnects. Replies use the durable outbox; model command
 tools omit `/reply` and `/tell` to prevent a tool send plus a second final answer.
 
 The system prompt gives the model freedom to choose its response and manage its
 workspace. It distinguishes speaker claims, proposals, agreements and verified
 actions, while keeping server authorization in code.
-
 
 ## Autonomous group participation
 
@@ -518,70 +539,115 @@ readable, writable rooms available to this worker, without changing server grant
 or DM behavior. Set it to `"false"` to return to mention-only room input.
 
 The first new room message starts a fixed three-second collection window.
-New arrivals join that window without postponing its deadline. Pending room
-messages are considered together, at most once every three seconds per room;
-tool calls within a turn run immediately. Each batch is bounded to 100 inputs
+New arrivals join that window without postponing its deadline. Unmentioned pending room
+messages are considered together after the collection window. Direct mentions
+can accelerate it; tool completions and model-requested continuations run when ready. Each batch is bounded to 100 inputs
 and approximately 16,000 UTF-16 code units. The agent sees sender names/IDs,
 message IDs, mentions, replies and recent context. It is prompted to join only
 when useful, combine related questions in one plain group message, and answer
 independent questions with separate replies in the same decision turn. It should
 write minimally and naturally, without routine headings or narrating tools.
 
-The model can return plain final text or use `finish_turn` with a `messages`
-array. Omit `reply_to` for a plain group message, supply an input ID for a targeted
-reply, or return an empty array for silence. The complete plan is saved before
+The model uses `finish_tick` with a `messages` array and an explicit `next`
+continuation. Omit `replyTo` for a plain group message, supply an input ID for a
+targeted reply, or return an empty array for silence. The complete plan is saved before
 publishing, so interrupted multi-message delivery resumes without another model
-call. A finishing tool ends the model round immediately, preventing an extra
-summary. Own output is ignored; quiet decisions do not display typing activity.
+call. Each finish_tick decision completes one model request; only its continuation
+or eligible new input schedules another request. Own output is ignored; quiet decisions do not display typing activity.
 Worker commands still use the owner/admin checks and do not enter model context.
 
-`model.timeoutMs` bounds the whole model turn, including preparation, retries and
-tool rounds. Upstream HTTP failures are handled before reading their response
+`model.timeoutMs` bounds preparation and one inference attempt; tool jobs have
+their own deadline, also bounded by the work episode deadline. Upstream HTTP failures are handled before reading their response
 bodies. Timeout/error paths release the active queue; an abandoned model cannot
 execute late tools. Failed receipt lookups and inaccessible unresolved effects
 are retained for recovery without stopping healthy conversations. The worker persists group membership, response plans, timing and silent decisions
 in KV; obsolete JSON checkpoints are not loaded.
 
+## Async event loop and model ticks
 
-## Background tool jobs
+A **tick is one model request**. The production worker uses `ModelClient.tick()`;
+there is no hidden inference/tool loop inside that request. Provider retries and
+validation repairs are later ticks with their own IDs and budget charges.
 
-Tools run asynchronously during a model turn. Calls that finish within a short
-10 ms grace period return their normal result. Slower calls return a turn-local
-`job_id` and `queued` or `running` status, allowing another model request to run
-while the tool waits for I/O. Multiple independent jobs may be active together.
-Completed results arrive once as `tool_job_results` JSON data before a later
-model step. The model can call `wait_jobs` with `{"job_ids":["job-1"]}` or `{}`
-for all outstanding results; this yields until completion without polling.
-Quick results keep their existing shape. `wait_jobs` counts toward the configured
-tool-call limit, and the overall turn deadline still applies.
+The loop is `await relevant event → tick → persist decision → await next event`.
+A conversation has at most one active model request. A fair FIFO scheduler runs
+multiple conversations concurrently, bounded by `agent.maxConcurrentTicks`.
+Local worker commands bypass inference. Slow tools, future deadlines and network
+delivery do not occupy model slots.
 
-Resource locks are asynchronous and FIFO: concurrent memory reads are allowed,
-while a memory writer excludes readers and other writers in that conversation.
-Readers arriving after a queued writer wait their turn. History retrieval takes
-an exclusive conversation lock because it updates context budgets and caches.
-Server actions share an exclusive lock since commands can affect account-wide
-state. Every script takes the shared filesystem's exclusive lock; arbitrary
-code and network requests cannot be assumed read-only. Other resources remain
-available while a job holds its lock. Scripts can use `Promise.all` internally
-for independent network requests. Native KV atomic commits and version checks
-remain the durable consistency mechanism.
+The model returns exactly one `finish_tick` function call:
 
-A plain final draft produced before outstanding results are observed is withheld.
-The runtime waits for those results and asks the model for its final response.
-Group response plans reject finishing until results are collected, and a
-successful finishing tool prevents later effects in that response. Cancellation,
-provider failure, timeout and shutdown abort jobs and remove queued writes;
-active subprocesses are killed and reaped. Already issued writes/network effects
-may have happened and are not rolled back. HTTP cancellation suppresses retries;
-existing durable command receipts still recover uncertain server effects.
+```json
+{
+  "messages": [],
+  "actions": [
+    {
+      "id": "lookup",
+      "tool": "memory",
+      "arguments": { "action": "get", "key": "index" }
+    }
+  ],
+  "next": { "kind": "on_jobs", "jobs": ["lookup"], "mode": "all" }
+}
+```
 
-Job handles and results are in-memory and scoped to one model turn. They do not
-survive restart; KV memory, filesystem artifacts and the worker's command/outbox
-records retain their existing durability. Never reissue an effect just to check
-its job. Jobs and tool traces stay out of public replies. Buffered and streaming
-providers use the same protocol; streaming deltas are provisional. Conversations
-still use the worker's existing single turn queue: background tools enable
-inference and tools to overlap within a turn, not concurrent conversation turns.
+`messages` may be empty for silence, contain one combined response, or contain
+several messages with optional `replyTo` input IDs. This works identically in
+rooms and DMs. `actions` proposes independent jobs using the advertised native
+tool schemas. The host validates the whole decision and saves messages, job
+intents and continuation together before dispatch. Provisional stream deltas
+never publish effects. An action's success is available in a later tick; do not
+claim success merely because a job was proposed.
+
+`next` chooses a one-shot wake:
+
+- `wait`: await new eligible input; unwatched jobs may finish silently.
+- `continue`: enqueue another tick fairly for useful independent work.
+- `after` with `delayMs`: schedule one later tick, within 1 ms–24 hours and the
+  episode deadline.
+- `on_jobs` with `jobs` and `mode` (`any`/`all`): suspend until selected jobs are
+  terminal. Reference action IDs from this decision or existing durable job IDs.
+
+Every later tick chooses again. New eligible input can wake a conversation while
+it waits for a job or deadline. It consumes the old continuation and receives
+pending/completed jobs, new input and recent decisions. Old timers and unselected
+completions cannot create extra ticks. Messages arriving during inference remain
+queued. Own output, duplicate notifications, unchanged snapshots and presence
+updates do not cause inference.
+
+Autonomous unmentioned room messages use a fixed three-second collection window;
+mentions can accelerate it. DMs and direct mentions are ready immediately.
+Job completions and self continuations do not incur the room batching delay.
+
+Jobs belong to the worker rather than a single tick. They have durable IDs,
+intents and results and are separately bounded by `agent.maxConcurrentJobs`.
+Resource locks permit concurrent conversation-memory reads and exclude writers;
+history retrieval, shared filesystem scripts and account-wide server mutations
+retain their appropriate exclusive locks. Model-client configuration replacement
+does not replace the worker's lock manager. Tools and results remain untrusted
+context data. Ticks receive bounded result excerpts; `read_job` pages a terminal
+result within the current conversation when more detail is needed. Scripts can use `Promise.all` for independent network requests.
+
+The transport cursor advances after durable input admission, independently of
+model consumption and output delivery. Committed decisions and keyed output
+resume after restart without another model call. Interrupted jobs retain an
+interrupted/uncertain result; arbitrary scripts and external effects are never
+automatically repeated. Native keyed command receipts can recover committed
+outcomes. Cancellation/retraction aborts dependent work and drops unsent output;
+already issued effects may have occurred and are not rolled back.
+
+Self continuations, repairs and retries share the work episode's tick, token,
+tool and wall-clock budgets. Exceeding a budget stops automatic continuation and
+records a diagnostic visible through `/status`. Provider usage is charged when
+available; otherwise input estimates and the configured output allowance are
+charged conservatively. A new externally admitted episode starts a fresh budget;
+job deadlines already established are not extended. A worker bounds retained
+job records at 128 and preserves uncertain outcomes for inspection.
+
+See [the loop design](LOOP_DESIGN.md), `agent-loop.ts`, `scheduler.ts`,
+`tick-commit.ts` and `agent-jobs.ts` for the scheduling and persistence contract.
+The standalone `ModelClient.complete()` helper remains for existing custom
+adapters and transport tests; the production agent uses the single-call tick API.
 
 ## Model-owned persistent workspace
 
@@ -597,7 +663,11 @@ are fetched on demand. `list` supports prefix filtering and continuation cursors
 Large notes should be split into linked documents. For example:
 
 ```json
-{"action":"set","key":"topics/runtime","value":{"proposal":"Deno","agreement":"unresolved"}}
+{
+  "action": "set",
+  "key": "topics/runtime",
+  "value": { "proposal": "Deno", "agreement": "unresolved" }
+}
 ```
 
 `get` returns the document's version. Supply that version with `set` or `delete`
@@ -613,15 +683,14 @@ documents include the current input IDs, stable author IDs and content hashes as
 provenance. History rows also include stable author IDs. Memory is contextual
 data rather than instructions or authority.
 
-A turn can update notes and end silently. Save pending notes before calling
-`finish_turn`, which ends tool execution immediately. Durable workspace documents
+A tick can propose memory updates and choose silence. Use `on_jobs` to inspect
+their results in a later tick, or `wait` to let those jobs complete silently. Durable workspace documents
 survive task pruning and server history retention. They are not automatically
 removed when their source is edited or retracted; the model must revise or delete
 stale information, or an operator must remove it. Losing room access makes the
 workspace unavailable to model turns; it remains on disk if access is restored.
 `chat.stateLimit` bounds delivery records, not model documents. The model is
 responsible for organizing and deleting obsolete notes.
-
 
 ## Shared filesystem and JS/TS execution
 
@@ -637,15 +706,19 @@ execution folder and are not provided to the subprocess.
 Supply exactly one of `code` or `file`:
 
 ```json
-{"code":"const response = await fetch('https://docs.deno.com/'); console.log(response.status); await response.body?.cancel();"}
+{
+  "code": "const response = await fetch('https://docs.deno.com/'); console.log(response.status); await response.body?.cancel();"
+}
 ```
 
 ```json
-{"code":"await Deno.mkdir('scripts', {recursive:true}); await Deno.writeTextFile('scripts/answer.ts', 'const n: number = 42; console.log(n);');"}
+{
+  "code": "await Deno.mkdir('scripts', {recursive:true}); await Deno.writeTextFile('scripts/answer.ts', 'const n: number = 42; console.log(n);');"
+}
 ```
 
 ```json
-{"file":"scripts/answer.ts","timeoutMs":10000}
+{ "file": "scripts/answer.ts", "timeoutMs": 10000 }
 ```
 
 JS/TS, top-level await, built-in web/Node APIs and HTTPS module imports work.
@@ -667,7 +740,7 @@ workspace symlinks are refused; generated code cannot create them under the
 scoped permissions. These are Deno API permissions, not an OS container.
 
 Each execution defaults to ten seconds (`timeoutMs`: 100–30000 ms), also bounded
-by the agent turn's cancellation/deadline. Combined stdout/stderr is capped at
+by job cancellation and the work episode deadline. Combined stdout/stderr is capped at
 32 KiB. Timeouts, cancellation and excess output kill and reap the child; shutdown
 waits for pending execution cleanup. The child uses a 128 MiB V8 old-space limit,
 which is not a process RSS or disk quota. Files survive runs and restarts;

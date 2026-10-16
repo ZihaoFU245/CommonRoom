@@ -67,7 +67,6 @@ in one transaction. Stable room IDs keep history, ownership and scoped grants
 attached to the renamed room. Failed writes preserve the old name, revision,
 audit and cursors. Destination names do not inherit orphaned read positions.
 
-
 ## Storage layout and costs
 
 Room deletion removes that room's read-position rows in the metadata transaction.
@@ -99,7 +98,6 @@ Message JSON may include an `edited` boolean. Missing values default to false.
 This additive field uses the existing message storage. Edits update the
 message payload and conversation revision in one transaction; failed writes
 roll back both. Existing reply quotes retain the text captured when replying.
-
 
 ## Bot retry receipts
 
@@ -146,7 +144,6 @@ loaded as startup history; lookups use the account/key primary key. Per-account
 entry/byte limits and 24-hour expiry bound storage. See [Bots](bots.md) for retry
 and authenticated status semantics. These outcomes may include private text.
 
-
 ## SimpleBot durable storage
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
@@ -155,8 +152,15 @@ independently of server SQLite schema v10 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
-KV format v1 stores account binding, cursors, revisions, accepted message
-versions, tasks, group plans, command outcomes and the delivery outbox. Changed
+KV format v2 stores account binding, input scan cursors, revisions, accepted
+message versions, tasks, tick sessions/continuations, durable jobs, command
+outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
+format marker atomically while retaining existing tasks, payloads and retry
+keys; unsupported versions are rejected. This does not change server schema v10.
+Scan cursors advance on durable input admission; tick consumption and delivery
+acknowledgements are separate. Interrupted model attempts become runnable again;
+committed decisions are not regenerated. Interrupted jobs retain uncertain
+terminal results instead of automatically replaying arbitrary effects. Changed
 records commit asynchronously; large records stage immutable chunks before
 atomic publication. Interrupted chunks older than a day are reclaimed at startup.
 Pending keyed sends/commands retain their payloads and keys across restarts.

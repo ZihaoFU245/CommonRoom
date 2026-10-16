@@ -1,3 +1,4 @@
+import { finishTickTool, tickDecision, type TickDecision } from "./tick.ts";
 import { abortable } from "./async.ts";
 import { ToolJobs, WAIT_JOBS_TOOL } from "./tool-jobs.ts";
 import { ToolLocks, type ToolAccess } from "./tool-locks.ts";
@@ -127,6 +128,7 @@ export interface CompletionRequest {
     name: string,
     argumentsText: string,
     signal?: AbortSignal,
+    effectId?: string,
   ): Promise<string>;
   /** Return job handles for slow tools and resume inference in the meantime. */
   backgroundTools?: boolean;
@@ -145,6 +147,8 @@ export interface CompletionRequest {
   /** Numeric diagnostics only, once per model attempt (including tool rounds). */
   onCall?(call: ModelCall): void;
   contextTokens?: number;
+  /** Remaining episode allowance, including this request input and output. */
+  episodeTokens?: number;
   compactTokens?: number;
   /** Scope measurements to a conversation; omit for a standalone completion. */
   contextKey?: string;
@@ -171,6 +175,7 @@ export function completionsUrl(endpoint: string): string {
 export interface ChatModel {
   readonly describe: string;
   complete(request: CompletionRequest): Promise<string>;
+  tick?(request: CompletionRequest): Promise<TickDecision>;
 }
 
 export class ModelClient implements ChatModel {
@@ -191,6 +196,110 @@ export class ModelClient implements ChatModel {
   /** True once an endpoint and a model id have been configured. */
   get configured(): boolean {
     return this.options.endpoint.length > 0 && this.options.model.length > 0;
+  }
+
+  /** Exactly one provider request. Retries and tools belong to the event loop. */
+  async tick(request: CompletionRequest): Promise<TickDecision> {
+    const tools = (request.tools ?? []).filter(
+      (tool) => !["finish_turn", "wait_jobs"].includes(tool.function.name),
+    );
+    const envelope = finishTickTool(tools);
+    const meter = request.contextKey
+      ? (this.tokenMeters.get(request.contextKey) ?? new ProviderTokens())
+      : new ProviderTokens();
+    if (request.resetTokenBaseline) meter.reset();
+    if (request.contextKey) {
+      this.tokenMeters.delete(request.contextKey);
+      this.tokenMeters.set(request.contextKey, meter);
+      if (this.tokenMeters.size > 16)
+        this.tokenMeters.delete(this.tokenMeters.keys().next().value!);
+    }
+    let messages = [...request.messages];
+    const total = Math.min(
+      request.contextTokens ?? 32768,
+      request.episodeTokens ?? Infinity,
+    );
+    const target = Math.min(
+      request.compactTokens ?? 24576,
+      total - Math.min(request.maxTokens ?? 4096, Math.floor(total / 4)),
+    );
+    let budget = meter.count(messages, [envelope], request.reasoningEffort);
+    if (budget.tokens >= target && request.compact) {
+      messages = request.compact(
+        messages,
+        Math.max(
+          128,
+          target - estimateTokens({ tools: [envelope] }, meter.tokensPerByte),
+        ),
+        meter.tokensPerByte,
+      );
+      meter.reset();
+      budget = meter.count(messages, [envelope], request.reasoningEffort);
+    }
+    const maxTokens = Math.min(
+      request.maxTokens ?? 4096,
+      total - budget.tokens,
+    );
+    if (maxTokens < 128)
+      throw new ModelError(400, "model context budget exhausted");
+    const signal = request.signal
+      ? AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(this.options.timeoutMs),
+        ])
+      : AbortSignal.timeout(this.options.timeoutMs);
+    const started = performance.now();
+    try {
+      const input = {
+        ...request,
+        messages,
+        tools: [envelope],
+        maxTokens,
+        signal,
+      };
+      const turn = await abortable(
+        this.options.stream ? this.stream(input) : this.buffered(input),
+        signal,
+      );
+      request.onCall?.({
+        success: true,
+        durationMs: performance.now() - started,
+        inputBytes: Buffer.byteLength(
+          JSON.stringify({ messages, tools: [envelope] }),
+        ),
+        inputBudget: budget,
+        ...(turn.usage ? { usage: turn.usage } : {}),
+      });
+      if (turn.usage?.prompt !== undefined)
+        meter.observe(
+          messages,
+          [envelope],
+          request.reasoningEffort,
+          turn.usage.prompt,
+        );
+      if (
+        turn.calls.length !== 1 ||
+        turn.calls[0].function.name !== "finish_tick"
+      )
+        throw new ModelError(422, "Expected exactly one finish_tick decision");
+      try {
+        return tickDecision(
+          JSON.parse(turn.calls[0].function.arguments),
+          tools,
+        );
+      } catch {
+        throw new ModelError(422, "Invalid finish_tick decision");
+      }
+    } catch (error) {
+      // Validation failures follow a successful inference; do not double-count it.
+      if (!(error instanceof ModelError && error.status === 422))
+        request.onCall?.({
+          success: false,
+          durationMs: performance.now() - started,
+          inputBudget: budget,
+        });
+      throw error;
+    }
   }
 
   /** One completion, streamed or buffered. Retries transient gateway failures. */
@@ -495,6 +604,16 @@ export class ModelClient implements ChatModel {
         : {}),
       messages: request.messages,
       ...(request.tools?.length ? { tools: request.tools } : {}),
+      ...(request.tools?.length === 1 &&
+      request.tools[0].function.name === "finish_tick"
+        ? {
+            tool_choice: {
+              type: "function",
+              function: { name: "finish_tick" },
+            },
+            parallel_tool_calls: false,
+          }
+        : {}),
       ...(request.maxTokens === undefined
         ? {}
         : { max_tokens: request.maxTokens }),

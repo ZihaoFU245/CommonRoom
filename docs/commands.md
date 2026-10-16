@@ -229,7 +229,10 @@ remains fixed in code. These are worker controls; `/bot` remains server manageme
 
 SimpleBot optionally supports autonomous group participation. An owner/admin can
 use `@SimpleBot /config set autonomous "true"` to consider unmentioned room
-messages in fixed three-second batches. Related questions can share one plain
+messages in fixed three-second batches. Mentions can accelerate a batch; model continuations
+and tool completions can trigger further ticks without another mention. Rooms
+and DMs share the event-driven tick loop documented in
+[SimpleBot](../simpleBot/README.md#async-event-loop-and-model-ticks). Related questions can share one plain
 message; independent questions can receive separate targeted replies in one
 turn, or the bot can stay silent. This changes worker behavior within existing
 server grants. Set `autonomous` to `"false"` to restore mention-only room input.

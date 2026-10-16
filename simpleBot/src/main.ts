@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   setInterval(() => {
     if (stopping) return;
     void agent
-      .requestSync()
+      .requestSync(true, false)
       .catch((error) =>
         log("debug", `catch-up deferred: ${(error as Error).message}`),
       );
@@ -202,7 +202,7 @@ async function main(): Promise<void> {
     }
     log("info", "SIGHUP received; configuration reloaded, resyncing");
     void agent
-      .requestSync()
+      .requestSync(true, false)
       .catch((error) =>
         log("warn", `sync failed: ${(error as Error).message}`),
       );

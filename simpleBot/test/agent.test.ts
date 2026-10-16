@@ -692,7 +692,11 @@ test("expired pending output stops without issuing a fresh key", async () => {
       /receipt expiry/,
     );
     assert.equal(Object.values(h.store.state.parts)[0]?.key, part.key);
-    assert.ok(h.store.cursor(h.server.conversationId)! < m.sequence);
+    assert.equal(
+      h.store.cursor(h.server.conversationId),
+      m.sequence,
+      "scan cursor records durable admission independently of delivery",
+    );
   } finally {
     await h.stop();
   }

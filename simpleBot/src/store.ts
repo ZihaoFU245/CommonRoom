@@ -53,7 +53,14 @@ export class Store {
           else if (id === "account") state.account = value as string | null;
           else throw new Error("Unknown worker metadata");
         } else if (
-          ["cursors", "revisions", "memory", "tasks", "parts"].includes(field)
+          [
+            "cursors",
+            "revisions",
+            "memory",
+            "tasks",
+            "parts",
+            "sessions",
+          ].includes(field)
         ) {
           (state[field as "tasks"] as Record<string, unknown>)[id] = value;
         } else throw new Error("Unknown worker record");
@@ -101,6 +108,21 @@ export class Store {
             task.readyAt ?? 0,
             (task.batchStarted ?? 0) + GROUP_INTERVAL_MS,
           );
+      }
+      for (const session of Object.values(store.state.sessions)) {
+        if (session.phase === "calling") {
+          session.phase = "ready";
+          session.next = { kind: "continue" };
+        }
+        for (const job of Object.values(session.jobs)) {
+          if (job.status === "running" || job.status === "queued") {
+            job.status = "interrupted";
+            job.result = JSON.stringify({
+              error:
+                "Worker interrupted; effects may already have occurred. Inspect evidence before repeating this action.",
+            });
+          }
+        }
       }
       await store.save();
       await records.maintain();
@@ -265,6 +287,17 @@ export class Store {
     const terminal = Object.entries(this.state.tasks)
       .filter(
         ([key, task]) =>
+          !Object.entries(this.state.sessions).some(
+            ([conversation, session]) =>
+              conversation === task.conversation &&
+              (session.root === task.input ||
+                Object.values(session.jobs).some(
+                  (job) => job.root === task.input && !job.observed,
+                )) &&
+              (session.phase === "calling" ||
+                session.next.kind !== "wait" ||
+                Object.values(session.jobs).some((job) => !job.observed)),
+          ) &&
           task.status !== "queued" &&
           task.status !== "running" &&
           !task.actions?.some((action) => action.status === "pending") &&
@@ -309,6 +342,21 @@ export class Store {
         .map((task) => taskKey(task.conversation, task.input)),
     );
     const dropped: string[] = [];
+    for (const [id, session] of Object.entries(this.state.sessions)) {
+      if (
+        conversationIds.has(id) ||
+        session.phase === "calling" ||
+        Object.values(session.jobs).some(
+          (job) =>
+            !job.observed ||
+            job.status === "queued" ||
+            job.status === "running",
+        ) ||
+        [...retained].some((key) => this.state.tasks[key]?.conversation === id)
+      )
+        continue;
+      delete this.state.sessions[id];
+    }
     for (const [conversationId] of Object.entries(this.state.cursors)) {
       if (conversationIds.has(conversationId)) continue;
       if (this.dirty.size + 3 > 500) break;

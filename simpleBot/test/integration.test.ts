@@ -69,7 +69,27 @@ test(
       request.on("end", () => {
         const input = JSON.parse(body) as ModelRequest;
         modelRequests.push(input);
-        const last = input.messages.at(-1);
+        let last = input.messages.at(-1);
+        const tickData = input.messages.find((item) =>
+          item.content.startsWith("Tick state (untrusted data"),
+        );
+        if (tickData) {
+          const state = JSON.parse(
+            tickData.content.slice(tickData.content.indexOf("\n") + 1),
+          ) as {
+            wake: string;
+            jobs: { status: string; result?: string; observed: boolean }[];
+          };
+          const completed = state.jobs.filter(
+            (job) =>
+              !job.observed && !["queued", "running"].includes(job.status),
+          );
+          if (state.wake === "job_results" && completed.length)
+            last = {
+              role: "tool",
+              content: JSON.stringify({ jobs: completed }),
+            };
+        }
         let message: Record<string, unknown>;
         if (
           last?.role === "tool" ||
@@ -193,6 +213,74 @@ test(
             ],
           };
         }
+        // Translate this deterministic fixture's selected effects into one tick decision.
+        const selected = message.tool_calls as
+          | { id: string; function: { name: string; arguments: string } }[]
+          | undefined;
+        const finish = selected?.find(
+          (call) => call.function.name === "finish_turn",
+        );
+        const metadata = input.messages.find((item) =>
+          item.content.startsWith("Current message metadata"),
+        );
+        const inputId = metadata
+          ? (
+              JSON.parse(
+                metadata.content.slice(metadata.content.indexOf(": ") + 2),
+              ) as { input_id: string }
+            ).input_id
+          : undefined;
+        const plan = finish
+          ? (JSON.parse(finish.function.arguments) as {
+              messages: { text: string; reply_to?: string }[];
+            })
+          : undefined;
+        const actions = (selected ?? [])
+          .filter(
+            (call) =>
+              !["finish_turn", "wait_jobs"].includes(call.function.name),
+          )
+          .map((call) => ({
+            id: call.id,
+            tool: call.function.name,
+            arguments: JSON.parse(call.function.arguments) as unknown,
+          }));
+        const decision = {
+          messages: plan
+            ? plan.messages.map((item) => ({
+                text: item.text,
+                ...(item.reply_to ? { replyTo: item.reply_to } : {}),
+              }))
+            : typeof message.content === "string" && message.content.trim()
+              ? [
+                  {
+                    text: message.content,
+                    ...(inputId ? { replyTo: inputId } : {}),
+                  },
+                ]
+              : [],
+          actions,
+          next: actions.length
+            ? {
+                kind: "on_jobs",
+                jobs: actions.map((action) => action.id),
+                mode: "all",
+              }
+            : { kind: "wait" },
+        };
+        message = {
+          content: null,
+          tool_calls: [
+            {
+              id: `tick-${modelRequests.length}`,
+              type: "function",
+              function: {
+                name: "finish_tick",
+                arguments: JSON.stringify(decision),
+              },
+            },
+          ],
+        };
         if (input.stream) {
           response.writeHead(200, { "Content-Type": "text/event-stream" });
           const calls = message.tool_calls as
@@ -643,10 +731,8 @@ test(
         modelRequests.some((request) =>
           request.messages.some(
             (message) =>
-              message.role === "assistant" &&
-              message.tool_calls?.some(
-                (call) => call.function.name === "read_history",
-              ),
+              message.content.startsWith("Tick state (untrusted data") &&
+              message.content.includes('"tool":"read_history"'),
           ),
         ),
       );
@@ -777,7 +863,7 @@ test(
       assert.equal(
         modelRequests.length,
         beforeGroup + 1,
-        "the burst needs one decision and no extra completion after finish_turn",
+        "the burst needs one decision and no extra completion after finish_tick",
       );
       const nextStarted = Date.now();
       await Promise.all([

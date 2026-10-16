@@ -137,7 +137,6 @@ commands are rejected, including sudo-wrapped requests.
 Sudo debug checks cover the successful tab-local toggle and invalidation when
 either global sudo grant is revoked.
 
-
 ## Persistence benchmark
 
 Run `rtk proxy python3 auto/benchmark-storage.py` to build the baseline commit and
@@ -242,7 +241,6 @@ shrinkage while typing, and reflow at compact widths.
 Editor scroll geometry tests cover keeping the last message's footer anchored
 when the textarea grows/shrinks, temporary measurement collapse, and scroll
 bounds. Browser checks exercise this with the virtualized conversation list.
-
 
 ## Bot contract guardrails
 
@@ -358,3 +356,13 @@ the result, filesystem effects and runtime-cache cleanup. Context compaction
 preserves background job IDs/status and valid JSON while bounding result text.
 The real worker integration's model fixture understands job handles and waits
 before responding, including saved-script execution across restart.
+
+SimpleBot event-loop regressions in `simpleBot/test/loop.test.ts` cover one
+provider call per tick, explicit continuations, one-shot deadlines across restart,
+fast job-completion races, silent background work, cross-conversation inference,
+responsive local controls, serialized inference within a conversation, stale
+watches/timers, retraction cancellation, bounded self ticks, atomic rejection of
+invalid plans, distinct effect keys across ticks, bounded result paging, admission backpressure,
+token budgets, checkpoint/deadline races and lossless KV v1→v2 migration.
+The actual worker integration gateway emits finish_tick decisions for buffered
+and streaming requests and verifies native tools, output and restart recovery.

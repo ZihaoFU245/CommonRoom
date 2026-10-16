@@ -36,6 +36,12 @@ export const CONFIG_KEYS = [
   "chat.historyWindow",
   "chat.contextChars",
   "model.maxToolCalls",
+  "agent.maxConcurrentTicks",
+  "agent.maxConcurrentJobs",
+  "agent.maxTicks",
+  "agent.inboxLimit",
+  "agent.maxEpisodeTokens",
+  "agent.episodeTimeoutMs",
   "chat.stateLimit",
   "log.level",
 ] as const;
@@ -61,6 +67,12 @@ export interface Settings {
   "chat.historyWindow": number;
   "chat.contextChars": number;
   "model.maxToolCalls": number;
+  "agent.maxConcurrentTicks": number;
+  "agent.maxConcurrentJobs": number;
+  "agent.maxTicks": number;
+  "agent.inboxLimit": number;
+  "agent.maxEpisodeTokens": number;
+  "agent.episodeTimeoutMs": number;
   "chat.stateLimit": number;
   "log.level": string;
 }
@@ -92,6 +104,12 @@ export const DEFAULTS: Settings = {
   "chat.historyWindow": 50,
   "chat.contextChars": 131072,
   "model.maxToolCalls": 32,
+  "agent.maxConcurrentTicks": 4,
+  "agent.maxConcurrentJobs": 8,
+  "agent.maxTicks": 32,
+  "agent.inboxLimit": 1000,
+  "agent.maxEpisodeTokens": 262144,
+  "agent.episodeTimeoutMs": 600000,
   // Upper bound on retained task/outbox records in KV.
   "chat.stateLimit": 200,
   "log.level": "info",
@@ -173,6 +191,23 @@ export function coerce(key: ConfigKey, raw: string): string | number | boolean {
         );
       return value;
     }
+    case "agent.maxEpisodeTokens": {
+      const value = Number(text);
+      if (!Number.isSafeInteger(value) || value < 1024 || value > 16777216)
+        throw new Error(
+          "episode token budget must be an integer 1024-16777216",
+        );
+      return value;
+    }
+    case "agent.episodeTimeoutMs": {
+      const value = Number(text);
+      if (!Number.isSafeInteger(value) || value < 1000 || value > 86400000)
+        throw new Error("episode deadline must be an integer 1000-86400000 ms");
+      return value;
+    }
+    case "agent.maxConcurrentTicks":
+    case "agent.maxConcurrentJobs":
+    case "agent.maxTicks":
     case "model.maxToolCalls": {
       const value = Number(text);
       if (!Number.isSafeInteger(value) || value < 1 || value > 128)
@@ -186,6 +221,7 @@ export function coerce(key: ConfigKey, raw: string): string | number | boolean {
       }
       return value;
     }
+    case "agent.inboxLimit":
     case "chat.stateLimit": {
       const value = Number(text);
       if (!Number.isSafeInteger(value) || value < 10 || value > 5_000) {

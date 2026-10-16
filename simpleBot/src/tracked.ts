@@ -36,6 +36,7 @@ export function trackState(
     "memory",
     "tasks",
     "parts",
+    "sessions",
   ] as const) {
     Reflect.set(
       state,
