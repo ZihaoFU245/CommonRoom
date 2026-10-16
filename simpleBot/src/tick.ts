@@ -48,6 +48,61 @@ export function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const decisionSchema = {
+  type: "object",
+  properties: {
+    messages: { type: "array" },
+    actions: { type: "array" },
+    next: { type: "object" },
+  },
+  additionalProperties: false,
+};
+const actionSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    tool: { type: "string" },
+    arguments: { type: "object" },
+  },
+  additionalProperties: false,
+};
+
+/**
+ * Drop fields the advertised schema forbids instead of failing the whole tick.
+ * A model that adds a stray key has still expressed a usable intent, and a
+ * repair call costs a full inference. Only host-owned labels are recorded, so
+ * arbitrary model field names and values never reach a log or an error.
+ */
+export function pruneSchema(
+  value: unknown,
+  schema: Record<string, unknown>,
+  label: string,
+  normalized: string[],
+): unknown {
+  if (!object(value) || schema.type !== "object") return value;
+  const properties = object(schema.properties) ? schema.properties : {};
+  for (const key of Object.keys(value)) {
+    if (!Object.hasOwn(properties, key)) {
+      if (schema.additionalProperties === false) {
+        normalized.push(label);
+        delete value[key];
+      }
+      continue;
+    }
+    const child = properties[key];
+    if (!object(child)) continue;
+    if (
+      child.type === "array" &&
+      object(child.items) &&
+      Array.isArray(value[key])
+    )
+      for (const item of value[key])
+        pruneSchema(item, child.items, label, normalized);
+    else value[key] = pruneSchema(value[key], child, label, normalized);
+  }
+  return value;
+}
+
 /** Validate the supported JSON Schema subset before any proposed effect starts. */
 export function validateArguments(
   value: unknown,
@@ -139,35 +194,29 @@ const nextSchema = {
   additionalProperties: false,
 };
 
-export function finishTickTool(
-  tools: FunctionTool[],
-  replyTargets?: string[],
-  maxReplyMessages = 16,
-): FunctionTool {
+/** Keep request-specific reply constraints in Tick state, outside cached tools. */
+export function finishTickTool(tools: FunctionTool[]): FunctionTool {
   return {
     type: "function",
     function: {
       name: "finish_tick",
       description:
-        "Commit this tick: messages (or [] for silence), independent tool jobs, and a one-shot next tick. Use on_jobs to yield for results; continue only for useful independent work. Jobs survive this tick. New eligible messages can always wake you. Never repeat an action to check status.",
+        "Commit this tick: messages (or [] for silence), independent tool jobs, and a one-shot next tick. Put every intended action in this one array, several together when they are independent: each separate round trip costs a whole extra call. Use on_jobs to yield for results; continue only for useful independent work. Jobs survive this tick. New eligible messages can always wake you. Never repeat an action to check status.",
       parameters: {
         type: "object",
         properties: {
           messages: {
             type: "array",
-            maxItems: Math.min(16, Math.max(0, maxReplyMessages)),
+            maxItems: 16,
             items: {
               type: "object",
               properties: {
                 text: { type: "string", minLength: 1, maxLength: 262144 },
-                ...(replyTargets?.length === 0
-                  ? {}
-                  : {
-                      replyTo: {
-                        type: "string",
-                        ...(replyTargets ? { enum: replyTargets } : {}),
-                      },
-                    }),
+                replyTo: {
+                  type: "string",
+                  description:
+                    "Optional admitted input ID from Tick state's replyTargets. Omit for a combined reply.",
+                },
               },
               required: ["text"],
               additionalProperties: false,
@@ -180,6 +229,7 @@ export function finishTickTool(
               ? {
                   anyOf: tools.map((tool) => ({
                     type: "object",
+                    description: tool.function.description,
                     properties: {
                       id: {
                         type: "string",
@@ -206,8 +256,22 @@ export function finishTickTool(
   };
 }
 
-export function nextTick(value: unknown): NextTick {
-  validateArguments(value, nextSchema);
+export function nextTick(value: unknown, normalized: string[] = []): NextTick {
+  // A missing or shorthand continuation is the one field worth defaulting: the
+  // episode simply stops instead of spending a repair call on a cosmetic slip.
+  if (value === undefined || value === null) {
+    normalized.push("next");
+    return { kind: "wait" };
+  }
+  if (typeof value === "string") {
+    if (value === "wait" || value === "continue") {
+      normalized.push("next");
+      return { kind: value };
+    }
+    throw new Error("Invalid continuation arguments");
+  }
+  if (object(value)) pruneSchema(value, nextSchema, "next", normalized);
+  validateArguments(value, nextSchema, "next");
   if (!object(value)) throw new Error("Invalid continuation");
   if (value.kind === "wait" || value.kind === "continue") {
     if (Object.keys(value).length !== 1)
@@ -236,15 +300,16 @@ export function nextTick(value: unknown): NextTick {
 export function tickDecision(
   value: unknown,
   tools: FunctionTool[],
+  normalized: string[] = [],
 ): TickDecision {
   // Omitted output/job lists unambiguously mean no messages/jobs. Invalid
   // explicit values still fail; continuation always remains mandatory.
-  if (object(value)) value = { messages: [], actions: [], ...value };
+  if (object(value)) {
+    value = { messages: [], actions: [], ...value };
+    pruneSchema(value, decisionSchema, "finish_tick", normalized);
+  }
   if (
     !object(value) ||
-    Object.keys(value).some(
-      (key) => !["messages", "actions", "next"].includes(key),
-    ) ||
     !Array.isArray(value.messages) ||
     !Array.isArray(value.actions) ||
     value.messages.length > 16 ||
@@ -268,16 +333,11 @@ export function tickDecision(
   });
   const ids = new Set<string>();
   const actions = value.actions.map((item: unknown, index: number) => {
-    if (
-      !object(item) ||
-      typeof item.id !== "string" ||
-      Object.keys(item).some(
-        (key) => !["id", "tool", "arguments"].includes(key),
-      )
-    )
+    if (!object(item) || typeof item.id !== "string")
       throw new Error(
         `actions[${index}]: expected id, tool and arguments only`,
       );
+    pruneSchema(item, actionSchema, `actions[${index}]`, normalized);
     if (Array.from(item.id).length < 1 || Array.from(item.id).length > 64)
       throw new Error(`actions[${index}].id: expected 1 to 64 characters`);
     if (ids.has(item.id))
@@ -288,6 +348,12 @@ export function tickDecision(
       throw new Error(`actions[${index}].tool: expected a tool name`);
     const tool = tools.find((tool) => tool.function.name === item.tool);
     if (!tool) throw new Error(`actions[${index}].tool: unavailable tool`);
+    item.arguments = pruneSchema(
+      item.arguments,
+      tool.function.parameters,
+      tool.function.name,
+      normalized,
+    );
     validateArguments(
       item.arguments,
       tool.function.parameters,
@@ -323,7 +389,7 @@ export function tickDecision(
     ids.add(item.id);
     return { id: item.id, tool: item.tool, arguments: item.arguments };
   });
-  return { messages, actions, next: nextTick(value.next) };
+  return { messages, actions, next: nextTick(value.next, normalized) };
 }
 
 export function jobTerminal(job: TickJob): boolean {

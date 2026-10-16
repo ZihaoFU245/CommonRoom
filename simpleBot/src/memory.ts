@@ -72,10 +72,14 @@ export class Memory {
 
   /** Bounded bootstrap. Full documents remain on demand, preserving context. */
   async context(): Promise<string> {
+    const [index, documents] = await Promise.all([
+      this.get("index"),
+      this.list("", undefined, 20),
+    ]);
     return JSON.stringify({
       scope: "current conversation",
-      index: await this.get("index"),
-      documents: await this.list("", undefined, 20),
+      index,
+      documents,
     });
   }
 

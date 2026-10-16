@@ -19,7 +19,9 @@ export function appendTickState(
     delete request.executeTool;
   }
   if (session.error && session.retryInputs?.length) {
-    request.messages.splice(1, 0, {
+    // Repair instructions change each attempt. Keep them after retained history
+    // so the verified prefix remains reusable, while retaining system priority.
+    request.messages.splice(Math.max(1, request.messages.length - 1), 0, {
       role: "system",
       content: request.answerOnly
         ? "Tool planning repeatedly failed. This is the final recovery tick: tools are unavailable. Return ordinary final text, or silence if appropriate, with no tool calls or scheduling. Use only known facts and completed results. If the requested work could not be completed, say so briefly; do not invent success or expose internal errors."
@@ -33,6 +35,7 @@ export function appendTickState(
     wake,
     inputs,
     replyTargets: request.replyTargets,
+    maxReplyMessages: request.maxReplyMessages,
     remainingTicks: config.get("agent.maxTicks") - session.calls,
     remainingTokens: Math.max(
       0,

@@ -96,6 +96,124 @@ async function fixture(
   };
 }
 
+test("grant refreshes keep the instruction prefix stable and update metadata each tick", async () => {
+  const h = await fixture(async () => wait);
+  let reads = 0;
+  h.api.serverCommands = async () => ({
+    conversation_id: h.server.conversationId,
+    commands: [
+      {
+        name: `/command-${++reads}`,
+        usage: `/command-${reads}`,
+        description: "Synthetic command",
+      },
+    ],
+  });
+  try {
+    for (const text of ["first", "second"]) {
+      h.server.addMessage(`@helper ${text}`);
+      await h.agent.requestSync();
+      await until(() => h.requests.length === (text === "first" ? 1 : 2));
+    }
+    assert.equal(reads, 2);
+    assert.equal(
+      h.requests[0].messages[0].content,
+      h.requests[1].messages[0].content,
+    );
+    assert.ok(!h.requests[0].messages[0].content.includes("/command-1"));
+    assert.ok(
+      h.requests[0].messages.some((message) =>
+        message.content.includes("Server command grants: /command-1"),
+      ),
+    );
+    assert.ok(
+      h.requests[1].messages.some((message) =>
+        message.content.includes("Server command grants: /command-2"),
+      ),
+    );
+    assert.ok(
+      !h.requests[1].messages.some((message) =>
+        message.content.includes("Server command grants: /command-1"),
+      ),
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("live reply limits reject jobs atomically before any effect", async () => {
+  const h = await fixture(async (request, call) => {
+    if (call !== 1) return wait;
+    request.maxReplyMessages = 0;
+    return {
+      messages: [{ text: "must not send" }],
+      actions: [
+        {
+          id: "write",
+          tool: "memory",
+          arguments: { action: "set", key: "index", value: "must not save" },
+        },
+      ],
+      next: { kind: "wait" },
+    };
+  });
+  try {
+    h.server.addMessage("@helper bounded reply");
+    await h.agent.requestSync();
+    await until(() => h.requests.length === 2);
+    assert.equal(h.server.state.sends.length, 0);
+    assert.equal(Object.keys(h.store.state.sessions["conv-1"].jobs).length, 0);
+    assert.ok(
+      h.logs.some((line) =>
+        line.includes("Reply plan exceeds this tick's message limit"),
+      ),
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("context preparation overlaps live catalogue and retained-history reads", async () => {
+  const h = await fixture(async () => wait);
+  const gate = Promise.withResolvers<void>();
+  let catalogueStarted = false;
+  let historyStarted = false;
+  let syncing: Promise<void> | undefined;
+  const catalogue = h.api.serverCommands.bind(h.api);
+  const history = h.api.history.bind(h.api);
+  h.api.serverCommands = async (...args) => {
+    catalogueStarted = true;
+    await gate.promise;
+    return catalogue(...args);
+  };
+  h.api.history = async (query, signal) => {
+    if (query.before !== undefined) {
+      historyStarted = true;
+      await gate.promise;
+    }
+    return history(query, signal);
+  };
+  try {
+    h.config.set("chat.historyWindow", 5);
+    h.server.addMessage("@helper prepare context");
+    syncing = h.agent.requestSync();
+    await until(() => catalogueStarted && historyStarted);
+    assert.equal(h.requests.length, 0);
+    gate.resolve();
+    await syncing;
+    await until(() => h.requests.length === 1);
+    assert.ok(
+      h.logs.some((line) =>
+        /model preparation finished.*duration_ms=\d+/.test(line),
+      ),
+    );
+  } finally {
+    gate.resolve();
+    await syncing;
+    await h.close();
+  }
+});
+
 for (const stream of [false, true])
   test(`mixed provider response executes one durable job and sends one reply (stream=${stream})`, async (t) => {
     const fetch = globalThis.fetch;
@@ -201,7 +319,7 @@ for (const stream of [false, true])
   });
 
 for (const stream of [false, true])
-  test(`repeated invalid execute_code calls recover with one reply and later input still works (stream=${stream})`, async (t) => {
+  test(`an action with an unknown field is normalized and still runs once (stream=${stream})`, async (t) => {
     const fetch = globalThis.fetch;
     let calls = 0;
     let executions = 0;
@@ -214,51 +332,42 @@ for (const stream of [false, true])
           return fetch(input, init);
         calls++;
         const body = JSON.parse(String(init?.body));
-        if (calls === 2 || calls === 3)
-          assert.ok(
-            body.messages.some(
-              (message: { role: string; content: string }) =>
-                message.role === "system" &&
-                message.content.includes(
-                  'allowed fields: ["code","file","timeoutMs"]',
-                ),
-            ),
-          );
-        if (calls === 4) {
-          assert.equal(body.tools, undefined);
-          assert.equal(body.tool_choice, undefined);
-          assert.equal(body.answerOnly, undefined);
-          assert.ok(
-            body.messages.some(
-              (message: { role: string; content: string }) =>
-                message.role === "system" &&
-                message.content.includes("final recovery tick"),
-            ),
-          );
-        }
-        if (calls === 5) assert.ok(body.tools.length > 0);
-        const tools =
-          calls <= 3
-            ? [
-                {
-                  id: `call-${calls}`,
-                  type: "function",
-                  function: {
-                    name: "execute_code",
-                    arguments: JSON.stringify({
-                      code: "console.log(1)",
-                      language: "typescript",
-                    }),
-                  },
+        // One envelope only: tools are advertised inside finish_tick.actions so
+        // a tick can batch several actions instead of one call each.
+        assert.deepEqual(
+          body.tools.map(
+            (tool: { function: { name: string } }) => tool.function.name,
+          ),
+          ["finish_tick"],
+        );
+        const tools = [
+          calls === 1
+            ? {
+                id: "call-1",
+                type: "function",
+                function: {
+                  name: "memory",
+                  arguments: JSON.stringify({
+                    action: "get",
+                    key: "index",
+                    language: "typescript",
+                  }),
                 },
-              ]
-            : [];
-        const content =
-          calls <= 3
-            ? "provisional"
-            : calls === 4
-              ? "I couldn't complete that request."
-              : "I can answer your next message.";
+              }
+            : {
+                id: "call-2",
+                type: "function",
+                function: {
+                  name: "finish_tick",
+                  arguments: JSON.stringify({
+                    messages: [{ text: "normalized and done" }],
+                    actions: [],
+                    next: { kind: "wait" },
+                  }),
+                },
+              },
+        ];
+        const content = calls === 1 ? "provisional" : null;
         return stream
           ? new Response(
               `data: ${JSON.stringify({ choices: [{ delta: { content, tool_calls: tools.map((call, index) => ({ index, ...call })) }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
@@ -273,13 +382,14 @@ for (const stream of [false, true])
             });
       },
     );
+    const modelLogs: string[] = [];
     const model = new ModelClient({
       endpoint: "https://model.invalid/v1",
       model: "test",
       token: "",
       stream,
       timeoutMs: 1000,
-      log: () => {},
+      log: (level, message) => modelLogs.push(`${level} ${message}`),
     });
     const h = await fixture(async (request) => {
       const execute = request.executeTool;
@@ -291,29 +401,36 @@ for (const stream of [false, true])
       return await model.tick(request);
     });
     try {
-      h.server.addMessage("@helper original request");
+      h.server.addMessage("@helper read the index");
       await h.agent.requestSync();
       await until(() => h.server.state.sends.length === 1);
-      assert.equal(calls, 4);
-      assert.equal(executions, 0);
+      // One normalization, one real effect, no repair call in between.
+      assert.equal(calls, 2);
+      assert.equal(executions, 1);
       assert.equal(h.store.state.sessions["conv-1"].phase, "idle");
       assert.ok(
-        h.logs.some((line) => line.includes("tick recovery scheduled")),
+        modelLogs.some(
+          (line) =>
+            line.includes("model tick arguments normalized") &&
+            line.includes('labels=["memory"]'),
+        ),
       );
-      h.server.addMessage("@helper next message");
-      await h.agent.requestSync();
-      assert.equal(calls, 5);
-      assert.equal(h.requests[4].answerOnly, false);
+      assert.ok(!h.logs.some((line) => line.includes("tick retry scheduled")));
+      assert.ok(
+        modelLogs.some(
+          (line) =>
+            line.includes("model tick accepted") &&
+            line.includes("format=native_tools") &&
+            line.includes("normalized=1"),
+        ),
+      );
       assert.deepEqual(
         h.server.state.sends.map((send) => send.text),
-        [
-          "I couldn't complete that request.",
-          "I can answer your next message.",
-        ],
+        ["normalized and done"],
       );
       await h.restart();
-      assert.equal(calls, 5);
-      assert.equal(h.server.state.sends.length, 2);
+      assert.equal(calls, 2);
+      assert.equal(h.server.state.sends.length, 1);
     } finally {
       await h.close();
     }
@@ -429,9 +546,7 @@ test("a terminal model failure still spends one bounded tool-less recovery tick"
       textHash(input.text),
     );
     assert.equal(h.requests.length, 2);
-    assert.ok(
-      h.logs.some((line) => line.includes("tick recovery scheduled")),
-    );
+    assert.ok(h.logs.some((line) => line.includes("tick recovery scheduled")));
     assert.ok(!h.logs.some((line) => line.includes("tick failed")));
     await h.restart();
     assert.equal(h.requests.length, 2);
@@ -491,9 +606,7 @@ test("an exhausted tool budget still spends one tool-less tick to answer", async
     );
     assert.equal(h.store.task("conv-1", input.id)?.status, "answered");
     assert.equal(h.requests.length, 3);
-    assert.ok(
-      h.logs.some((line) => line.includes("tick recovery scheduled")),
-    );
+    assert.ok(h.logs.some((line) => line.includes("tick recovery scheduled")));
   } finally {
     await h.close();
   }
@@ -537,9 +650,7 @@ test("an exhausted episode tool budget publishes the answer instead of failing t
     // Only the action that fitted the budget became a durable job.
     assert.equal(Object.keys(session.jobs).length, 1);
     assert.ok(
-      h.logs.some((line) =>
-        line.includes("episode tool budget reached"),
-      ),
+      h.logs.some((line) => line.includes("episode tool budget reached")),
     );
     assert.ok(!h.logs.some((line) => line.includes("tick failed")));
     assert.equal(h.requests.length, 1);
@@ -1485,6 +1596,17 @@ test("invalid reply plans commit no jobs and repair on a separate tick", async (
         message.content.includes("Reply target must be an admitted input"),
       ),
     );
+    const repair = h.requests[1].messages.findIndex(
+      (message) =>
+        message.role === "system" &&
+        message.content.includes("previous decision was rejected"),
+    );
+    assert.ok(
+      repair >
+        h.requests[1].messages.findIndex((message) =>
+          message.content.startsWith("Your persistent workspace"),
+        ),
+    );
     assert.ok(
       h.logs.some(
         (line) =>
@@ -1890,13 +2012,21 @@ for (const stream of [false, true])
         async (_url: unknown, init: RequestInit) => {
           calls++;
           const body = JSON.parse(String(init.body));
-          assert.equal(body.tools.length, 2);
+          // One envelope: actions are batched into finish_tick, so a tick never
+          // spends a separate provider call per tool.
+          assert.equal(body.tools.length, 1);
           // Thinking models can reject a forced named tool even with one tool.
           // Leave selection to the provider; tick() validates the decision.
           assert.equal(body.tool_choice, undefined);
           assert.equal(body.parallel_tool_calls, undefined);
           assert.equal(body.tools[0].function.name, "finish_tick");
-          assert.equal(body.tools[1].function.name, "memory");
+          assert.deepEqual(
+            body.tools[0].function.parameters.properties.actions.items.anyOf.map(
+              (option: { properties: { tool: { enum: string[] } } }) =>
+                option.properties.tool.enum[0],
+            ),
+            ["memory"],
+          );
           assert.equal(body.reasoning_effort, reasoningEffort);
           const tool = {
             id: "tick-1",
@@ -2057,10 +2187,10 @@ for (const stream of [false, true])
         async (_url: unknown, init: RequestInit) => {
           calls++;
           const body = JSON.parse(String(init.body));
-          assert.deepEqual(
+          assert.equal(
             body.tools[0].function.parameters.properties.messages.items
               .properties.replyTo.enum,
-            ["input-id"],
+            undefined,
           );
           return stream
             ? new Response(

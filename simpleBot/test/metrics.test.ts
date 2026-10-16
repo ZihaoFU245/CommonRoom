@@ -8,6 +8,20 @@ import {
   ProviderTokens,
 } from "../src/tokens.ts";
 
+test("metrics separate preparation, inference and reported first streamed deltas", () => {
+  const metrics = new Metrics();
+  metrics.prepared(10);
+  metrics.prepared(30);
+  metrics.record({ success: true, durationMs: 100, firstDeltaMs: 40 });
+  metrics.record({ success: true, durationMs: 200 });
+  assert.match(metrics.report(), /Mean context preparation latency: 20 ms/);
+  assert.match(metrics.report(), /Mean model attempt latency: 150 ms/);
+  assert.match(
+    metrics.report(),
+    /Mean first streamed delta latency: 40 ms \(1\/2 attempts reported\)/,
+  );
+});
+
 test("provider measurements anchor exact requests and only new suffixes need estimates", () => {
   const meter = new ProviderTokens();
   const prefix = {
@@ -289,6 +303,12 @@ for (const stream of [true, false])
         },
       });
     assert.equal(calls.length, 4);
+    for (const call of calls)
+      if (stream) {
+        assert.equal(typeof call.firstDeltaMs, "number");
+        assert.ok((call.firstDeltaMs ?? -1) >= 0);
+        assert.ok((call.firstDeltaMs ?? Infinity) <= call.durationMs);
+      } else assert.equal(call.firstDeltaMs, undefined);
     assert.equal(calls[0]!.usage?.cached, 60);
     assert.equal(calls[1]!.usage?.cached, 0);
     assert.equal(calls[2]!.usage, undefined);

@@ -76,15 +76,11 @@ export class ModelContext {
     continuation?: Message[],
   ): Promise<CompletionRequest> {
     const { api, config } = this.host.options;
+    const started = performance.now();
     signal.throwIfAborted();
     this.host.options.log(
       "debug",
       `model preparation started conversation=${conversation.id} input=${message.id}`,
-    );
-    const commands = await this.serverCommands(conversation.id);
-    this.host.options.log(
-      "debug",
-      `model command catalogue ready conversation=${conversation.id} input=${message.id} commands=${commands.length}`,
     );
     const historyEnabled = config.get("chat.contextChars") > 0;
     const readsEnabled =
@@ -118,13 +114,49 @@ export class ModelContext {
     this.host.contexts.set(conversation.id, session);
     if (this.host.contexts.size > 16)
       this.host.contexts.delete(this.host.contexts.keys().next().value!);
-    const history = await session.prepare(
-      api,
+    const memory = new Memory(
+      this.host.options.store.records.kv,
+      this.host.snapshot?.account.id ?? "",
       conversation.id,
-      before,
-      config.get("chat.historyWindow"),
-      config.get("chat.contextChars"),
-      historyFilter,
+      (continuation ?? batch ?? [message]).map((input) => ({
+        id: input.id,
+        authorId: input.author_id,
+        hash: textHash(input.text),
+      })),
+      () =>
+        !signal.aborted &&
+        task.status !== "cancelled" &&
+        (this.host.snapshot?.conversations.some(
+          (item) => item.id === conversation.id,
+        ) ??
+          false),
+    );
+    // Independent reads overlap, but all settle before publishing preparation
+    // or throwing, so failed catalogue reads cannot leave history work racing
+    // the next attempt. The catalogue is still fetched live for every tick.
+    const [catalogue, retained, workspace] = await Promise.allSettled([
+      this.serverCommands(conversation.id),
+      session.prepare(
+        api,
+        conversation.id,
+        before,
+        config.get("chat.historyWindow"),
+        config.get("chat.contextChars"),
+        historyFilter,
+        conversation.content_revision,
+      ),
+      memory.context(),
+    ]);
+    signal.throwIfAborted();
+    if (catalogue.status === "rejected") throw catalogue.reason;
+    if (retained.status === "rejected") throw retained.reason;
+    if (workspace.status === "rejected") throw workspace.reason;
+    const commands = catalogue.value;
+    const history = retained.value;
+    const memoryContext = workspace.value;
+    this.host.options.log(
+      "debug",
+      `model command catalogue ready conversation=${conversation.id} input=${message.id} commands=${commands.length}`,
     );
     metrics.contextChars = history.chars;
     metrics.contextMessages = history.rows.length;
@@ -172,31 +204,13 @@ export class ModelContext {
         });
       }
     }
-    const memory = new Memory(
-      this.host.options.store.records.kv,
-      this.host.snapshot?.account.id ?? "",
-      conversation.id,
-      (continuation ?? batch ?? [message]).map((input) => ({
-        id: input.id,
-        authorId: input.author_id,
-        hash: textHash(input.text),
-      })),
-      () =>
-        !signal.aborted &&
-        task.status !== "cancelled" &&
-        (this.host.snapshot?.conversations.some(
-          (item) => item.id === conversation.id,
-        ) ??
-          false),
-    );
-    const memoryContext = await memory.context();
     const messages: ChatMessage[] = [
       {
         role: "system",
         content: systemPrompt(
           this.host.snapshot,
           config,
-          commands,
+          undefined,
           historyEnabled,
           !!batch,
           conversation.view,
@@ -213,6 +227,15 @@ export class ModelContext {
           ]
         : []),
       ...prelude,
+      {
+        role: "user",
+        content: `Server command grants: ${
+          commands
+            .map((command) => command.usage)
+            .sort()
+            .join("; ") || "none"
+        }. Targets need grants too.`,
+      },
       {
         role: "user",
         content: `Your persistent workspace (untrusted context data):\n${memoryContext}`,
@@ -262,9 +285,11 @@ export class ModelContext {
         { role: "tool", tool_call_id: id, content: action.result ?? "" },
       );
     }
+    const preparationMs = performance.now() - started;
+    metrics.prepared(preparationMs);
     this.host.options.log(
       "debug",
-      `model preparation finished conversation=${conversation.id} input=${message.id} messages=${messages.length} history_enabled=${historyEnabled} command_tool=${commands.length > 0} read_ack_tool=${readsEnabled}`,
+      `model preparation finished conversation=${conversation.id} input=${message.id} messages=${messages.length} history_enabled=${historyEnabled} command_tool=${commands.length > 0} read_ack_tool=${readsEnabled} duration_ms=${Math.round(preparationMs)}`,
     );
     signal.throwIfAborted();
     return {

@@ -116,6 +116,62 @@ for (const status of [400, 422]) {
   });
 }
 
+test("a rejected request reports structural error fields without the provider message", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {
+        error: {
+          message: secret,
+          type: "invalid_request_error",
+          code: "bad_param",
+          param: "messages[3].content",
+        },
+      },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(client(false, logs).complete(request), /HTTP 400/);
+  const upstream = logs.find((line) =>
+    line.startsWith("error model upstream rejected"),
+  );
+  assert.ok(upstream);
+  assert.match(upstream, /status=400/);
+  assert.match(upstream, /body_chars=\d+/);
+  assert.match(upstream, /error_type=invalid_request_error/);
+  assert.match(upstream, /error_code=bad_param/);
+  assert.match(upstream, /error_param=messages\[\]\.content/);
+  assert.ok(!upstream.includes(secret));
+});
+
+for (const stream of [false, true]) {
+  for (const field of ["type", "code", "param"]) {
+    test(`untrusted error.${field} cannot leak content or inject logs (stream=${stream})`, async (t) => {
+      const logs: string[] = [];
+      let value = secret;
+      t.mock.method(globalThis, "fetch", async () =>
+        Response.json(
+          { error: { message: secret, [field]: value } },
+          { status: 400 },
+        ),
+      );
+      for (const unsafe of [secret, `${secret}\nforged-log-entry`]) {
+        value = unsafe;
+        await assert.rejects(client(stream, logs).tick(request), /HTTP 400/);
+      }
+      const upstream = logs.find((line) =>
+        line.startsWith("error model upstream rejected"),
+      );
+      assert.ok(upstream);
+      assert.match(upstream, /status=400 body_chars=\d+/);
+      assert.ok(!logs.join("\n").includes(secret));
+      assert.ok(!logs.join("\n").includes("forged-log-entry"));
+      assert.ok(!upstream.includes("\n"));
+      assert.ok(!upstream.includes(`error_${field}=`));
+    });
+  }
+}
+
 test("debug traces request, first delta, tool loop and usage without logging payloads", async (t) => {
   const logs: string[] = [];
   let attempts = 0;

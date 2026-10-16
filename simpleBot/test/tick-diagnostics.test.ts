@@ -67,7 +67,17 @@ for (const stream of [false, true]) {
               : scenario === "invalid_json"
                 ? [call("finish_tick", secret)]
                 : scenario === "invalid_decision"
-                  ? [call("finish_tick", decision)]
+                  ? [
+                      call(
+                        "finish_tick",
+                        JSON.stringify({
+                          messages: secret,
+                          actions: [],
+                          next: { kind: "wait" },
+                          [secret]: secret,
+                        }),
+                      ),
+                    ]
                   : scenario === "valid_decision"
                     ? [
                         call(

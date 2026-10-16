@@ -484,6 +484,11 @@ reset on worker/transport replacement, and capped at 64 conversations with LRU
 eviction. Missing provider fields remain **unknown**, while an explicit zero is
 reported as zero. Ratios use only requests with both input and cached counts.
 Debug logs include the same numeric counters per model attempt.
+Preparation latency is measured separately from inference. The report also
+includes time to the first streamed text, reasoning or tool delta, with reporting
+coverage; buffered requests do not invent a first-delta measurement. Independent
+catalogue, retained-history and workspace reads overlap during preparation. The
+command catalogue is still fetched for every tick so changed grants apply live.
 
 Set `log.level` to `debug` to trace input selection (`not_addressed`,
 `send_not_permitted`, `existing_task` or `own_message`), queued/running/finished
@@ -514,6 +519,31 @@ rejecting that optional field fall back without it. Both DeepSeek
 `prompt_cache_hit_tokens` and standard `prompt_tokens_details.cached_tokens` are
 recognized. Test caching with repeated identical synthetic inputs, then compare
 real appended context; latency alone cannot establish a cache hit.
+
+Tool schemas stay identical when only reply IDs or per-tick reply limits change.
+Those constraints travel in Tick state; the host checks targets and the final
+message count before committing any jobs or output. Current command grants and
+repair feedback follow retained history, leaving the instruction/history prefix
+stable when those fields change.
+
+An opt-in synthetic check on 2026-10-16 verified the Tailscale Aperture route
+`https://ai.snowy-richter.ts.net/v1` and its advertised `deepseek-flash`
+(DeepSeek V4.1 Flash) model without a client API key. The spelling is **richter**.
+The existing `reasoning_effort: "none"` setting returned a non-thinking reply;
+streaming/cache usage continues to use the existing compatible request fields.
+No OpenAI-specific cache retention, cache key or paid service-tier fields are
+enabled automatically. DeepSeek's upstream cache is automatic.
+
+| Synthetic follow-up | Cached input | Total input | Cache ratio |
+| --- | ---: | ---: | ---: |
+| Changing reply-ID enum | 256 | 3726 | 6.9% |
+| Stable schema, first follow-up | 3456 | 3718 | 93.0% |
+| Stable schema, second follow-up | 3456 | 3718 | 93.0% |
+
+These are provider counters from five bounded synthetic requests, including
+initial requests to populate each prefix. They establish cache reuse for that
+route at the time of the check; the small sample does not establish a latency
+improvement or production-wide hit rate. No private chat content was sent.
 
 ## Safe server command retries and API demonstrations
 
@@ -580,9 +610,24 @@ call. Each finish_tick decision completes one model request; only its continuati
 or eligible new input schedules another request. Own output is ignored; quiet decisions do not display typing activity.
 Worker commands still use the owner/admin checks and do not enter model context.
 
+`finish_tick` is the only advertised tool. Every other tool is described inside
+`finish_tick.actions`, including its operational description, so a tick proposes
+all of its independent work at once instead of spending one request per tool.
+A native call that arrives anyway is
+still accepted and started as a durable job. Unknown argument fields are dropped
+with a host-owned label rather than rejecting the plan, and a missing or shorthand
+`next` becomes `wait`; the host logs the deviation. Arguments that are fenced,
+prose-wrapped or double-encoded JSON are repaired before parsing is declared
+failed. Unavailable tools, malformed types, duplicate action IDs and host checks
+still reject the whole plan before any effect starts.
+
 `model.timeoutMs` bounds preparation and one inference attempt; tool jobs have
-their own deadline, also bounded by the work episode deadline. Upstream HTTP failures are handled before reading their response
-bodies. Timeout/error paths release the active queue; an abandoned model cannot
+their own deadline, also bounded by the work episode deadline. A rejected request
+logs its status, body size and allowlisted `error.type`/`code`/`param` labels,
+omitting unknown labels and replacing parameter array indices with `[]`,
+never the provider's body text, and it is read under a short deadline so a stalled
+gateway cannot stall the worker. Timeout/error paths release the active queue; an
+abandoned model cannot
 execute late tools. Failed receipt lookups and inaccessible unresolved effects
 are retained for recovery without stopping healthy conversations. The worker persists group membership, response plans, timing and silent decisions
 in KV; obsolete JSON checkpoints are not loaded.
@@ -603,11 +648,12 @@ The request uses the OpenAI-compatible chat-completions `tools` field and leaves
 tool selection at its default. It does not force a named `tool_choice`, which
 some thinking models reject. The operator's reasoning setting remains unchanged.
 An ordinary assistant final-text response ends the tick with that answer and
-`next=wait`; empty final text means silence. Native tools are advertised alongside
-`finish_tick`. A native-only response starts durable jobs and yields until their
-results. Mixed responses may contain native calls and one `finish_tick`; an
-action represented both ways is coalesced so it executes once. Multiple
-`finish_tick` calls, unavailable tools or invalid arguments reject the entire
+`next=wait`; empty final text means silence. Only `finish_tick` is advertised: a
+native-only response is still accepted and starts durable jobs, and a response may
+mix native calls with one `finish_tick`; an
+action represented both ways is coalesced after argument normalization so it
+executes once. Multiple
+`finish_tick` calls or unavailable tools reject the entire
 plan before any effects are accepted. Text accompanying tool calls is not a
 final reply; use `finish_tick.messages` to commit a response alongside jobs.
 

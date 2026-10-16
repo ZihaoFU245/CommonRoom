@@ -908,7 +908,10 @@ test("model knows server grants and never receives worker administration or lega
     h.server.addMessage("@helper /model");
     h.server.addMessage("@helper what can you run?");
     await h.agent.handleSnapshot(h.server.snapshot());
-    const system = h.model.requests.at(-1)!.messages[0]!.content;
+    const system = h.model.requests
+      .at(-1)!
+      .messages.map((message) => message.content)
+      .join("\n");
     assert.match(system, /run_server_command/);
     assert.match(system, /\/new room name/);
     for (const privateName of [
@@ -971,7 +974,11 @@ test("restricted credentials have no server command tool or public maintenance c
       request.messages[0]!.content,
       /must mention the bot in both rooms and DMs/,
     );
-    assert.match(request.messages[0]!.content, /command grants: none/);
+    assert.ok(
+      request.messages.some((message) =>
+        /command grants: none/.test(message.content),
+      ),
+    );
     assert.deepEqual(
       request.tools?.map((tool) => tool.function.name),
       ["memory", "execute_code", "read_history"],
@@ -1709,7 +1716,9 @@ test("every granted server command is offered and executed, including sends", as
     });
     const complete = h.model.complete.bind(h.model);
     h.model.complete = async (request) => {
-      const system = request.messages[0]!.content;
+      const system = request.messages
+        .map((message) => message.content)
+        .join("\n");
       for (const usage of ["/reply id text", "/tell user text"])
         assert.ok(system.includes(usage), usage);
       for (const command of [

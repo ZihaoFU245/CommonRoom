@@ -13,6 +13,7 @@ export class AppendHistory {
   private used = 0;
   private settings = "";
   private before = 0;
+  private revision: number | undefined;
 
   async prepare(
     api: BotApi,
@@ -21,6 +22,7 @@ export class AppendHistory {
     window: number,
     budget: number,
     filter: (messages: Message[]) => Message[],
+    revision?: number,
   ): Promise<{
     chunks: string[];
     rows: Row[];
@@ -30,6 +32,25 @@ export class AppendHistory {
     const settings = `${window}:${budget}`;
     let additions: Message[] | undefined;
     const existing = this.chunks.length > 0;
+    // A continuation tick re-sends the identical request. Reusing the verified
+    // prefix keeps chunk[0] byte-stable, which is what a provider prefix cache
+    // matches on, and skips a full re-read that would otherwise rebuild the
+    // window on every tick of an episode. Only an explicit, unchanged content
+    // revision qualifies: without one, revalidate as before.
+    if (
+      existing &&
+      this.settings === settings &&
+      revision !== undefined &&
+      revision === this.revision &&
+      this.before > 0 &&
+      before === this.before
+    )
+      return {
+        chunks: [...this.chunks],
+        rows: [...this.rows],
+        rebuilt: false,
+        chars: this.used,
+      };
     if (existing && this.settings === settings && before > this.before) {
       // Revalidate the whole bounded prefix against retained state. Never keep
       // an edited, retracted, filtered or expired message merely for cache reuse.
@@ -75,6 +96,8 @@ export class AppendHistory {
         0,
         message.author_id,
       ]);
+      // Append-only: chunk[0] stays byte-identical so the prompt prefix a
+      // provider cache matches on never shifts. Only a rebuild rechunks.
       const chunk = JSON.stringify({ messages: rows });
       if (this.used + (rows.length ? chunk.length : 0) > budget)
         additions = undefined;
@@ -121,6 +144,7 @@ export class AppendHistory {
     }
     this.settings = settings;
     this.before = before;
+    this.revision = revision;
     return {
       chunks: [...this.chunks],
       rows: [...this.rows],

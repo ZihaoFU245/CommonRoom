@@ -72,6 +72,10 @@ export async function commitTick(
     accepted,
     decision,
   );
+  // Provider schemas stay static. Apply the live limit after combining parts
+  // for the same input and dropping replies that were already committed.
+  if (replies.messages.length > (request.maxReplyMessages ?? 16))
+    throw new ModelError(422, "Reply plan exceeds this tick's message limit");
   if (droppedActions && !decision.messages.length && !replies.finished) {
     // The host budget stopped this plan and the model produced no reply: commit
     // nothing and let the bounded tool-less recovery tick answer in prose.
@@ -133,9 +137,7 @@ export async function commitTick(
     const keep = [...sources].slice(-400);
     sources.clear();
     for (const input of keep) sources.add(input);
-    session.sources = session.sources.filter((item) =>
-      sources.has(item.input),
-    );
+    session.sources = session.sources.filter((item) => sources.has(item.input));
     host.options.log(
       "warn",
       `episode input bound reached conversation=${id} tick=${tick} tracked=${sources.size}; releasing oldest inputs`,

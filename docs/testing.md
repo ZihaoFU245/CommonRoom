@@ -400,7 +400,27 @@ Terminal failures spend one bounded tool-less recovery tick, and a second failur
 gives up without another call; a tool-budget stop publishes the decision's own
 messages instead of failing the input, and spends that recovery tick when nothing
 could be published. Streamed tool deltas tolerate a gateway repeating ids/names
-and omitting the index after the first chunk.
+and omitting the index after the first chunk. Only `finish_tick` is advertised:
+tests assert the request body's tool list and that the nested action schema still
+names every tool and preserves its description. Mixed-call regressions normalize
+both representations before deduplication while retaining distinct native intents.
+Unknown argument fields are dropped with a host-owned label and
+a missing or shorthand continuation defaults to `wait`, both covered without
+leaking model field names or values; fenced, prose-wrapped and double-encoded
+decisions are repaired, while unparseable arguments still fail. Rejected requests
+log status, body size and allowlisted `error.type`/`code`/`param` labels and never
+the provider body. Privacy regressions reject arbitrary values and log newlines
+in each field in buffered and streamed modes; parameter indices become `[]`.
+An HTTP failure still cancels a body that never ends.
+Cache regressions vary reply IDs and message limits without changing advertised
+tools or losing measured token baselines. Loop tests verify live grants refresh
+without rewriting the instruction prefix, overlapping catalogue/history reads,
+suffix placement of repair feedback, and atomic rejection of jobs when the host
+reply limit is exceeded. Telemetry tests distinguish preparation/inference time
+and require first-delta measurements only for streamed responses.
+History reuse is covered separately: an unchanged content revision returns the
+verified prefix without re-reading retained history, an append leaves the first
+chunk byte-identical, and a revision change revalidates.
 Reply-ownership regressions reject different second answers to one input,
 including job completion, delayed continuation and restart; multiple messages
 for one input within one tick are combined. Distinct new inputs

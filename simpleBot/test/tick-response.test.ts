@@ -5,6 +5,7 @@ import { EXECUTION_TOOL } from "../src/execution.ts";
 import { ModelClient, type ToolCall } from "../src/model.ts";
 import { sessionReady, tickDecision, type TickSession } from "../src/tick.ts";
 import { tickResponse } from "../src/tick-response.ts";
+import type { FunctionTool } from "../src/model.ts";
 
 const action = {
   id: "lookup",
@@ -27,6 +28,44 @@ const envelope = (actions = [action], jobs = actions.map((item) => item.id)) =>
     "envelope",
   );
 
+test("reply IDs and limits do not change provider tools or discard token measurements", async (t) => {
+  const advertised: FunctionTool[][] = [];
+  const sources: string[] = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      advertised.push(body.tools);
+      return Response.json({
+        choices: [{ message: { content: "" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 0 },
+      });
+    },
+  );
+  const model = new ModelClient({
+    endpoint: "https://model.invalid",
+    model: "test",
+    token: "",
+    stream: false,
+    timeoutMs: 1000,
+    log: () => {},
+  });
+  for (const replyTargets of [["input-a"], ["input-b", "input-c"], []])
+    await model.tick({
+      messages: [{ role: "user", content: "same retained prefix" }],
+      tools: [MEMORY_TOOL],
+      contextKey: "conversation",
+      replyTargets,
+      maxReplyMessages: replyTargets.length,
+      onCall: (call) => sources.push(call.inputBudget?.source ?? "unknown"),
+    });
+  assert.deepEqual(advertised[0], advertised[1]);
+  assert.deepEqual(advertised[1], advertised[2]);
+  assert.deepEqual(sources, ["estimate", "provider", "provider"]);
+  assert.ok(!JSON.stringify(advertised).includes("input-a"));
+});
+
 for (const stream of [false, true]) {
   for (const mixed of [false, true]) {
     test(`native calls become durable intents without inline effects (stream=${stream}, mixed=${mixed})`, async (t) => {
@@ -39,11 +78,26 @@ for (const stream of [false, true]) {
         async (_url: unknown, init: RequestInit) => {
           requests++;
           const body = JSON.parse(String(init.body));
+          // One envelope only: actions are batched, so a tick never spends a
+          // separate inference per tool. Every tool is still advertised, nested
+          // in the envelope's action schema.
           assert.deepEqual(
             body.tools.map(
               (tool: { function: { name: string } }) => tool.function.name,
             ),
-            ["finish_tick", "memory"],
+            ["finish_tick"],
+          );
+          assert.deepEqual(
+            body.tools[0].function.parameters.properties.actions.items.anyOf.map(
+              (option: { properties: { tool: { enum: string[] } } }) =>
+                option.properties.tool.enum[0],
+            ),
+            ["memory"],
+          );
+          assert.equal(
+            body.tools[0].function.parameters.properties.actions.items.anyOf[0]
+              .description,
+            MEMORY_TOOL.function.description,
           );
           return stream
             ? new Response(
@@ -120,6 +174,52 @@ test("identical but separate native calls retain distinct intent IDs", () => {
   assert.notEqual(result.decision.actions[0].id, result.decision.actions[1].id);
 });
 
+for (const stray of ["envelope", "native", "both"]) {
+  test(`mixed effects coalesce after argument normalization (stray=${stray})`, () => {
+    const args = { code: "console.log(1)" };
+    const result = tickResponse(
+      [
+        call(
+          "finish_tick",
+          {
+            actions: [
+              {
+                id: "run",
+                tool: "execute_code",
+                arguments: {
+                  ...args,
+                  ...(stray !== "native" ? { language: "typescript" } : {}),
+                },
+              },
+            ],
+            next: { kind: "on_jobs", jobs: ["call-1", "run"], mode: "all" },
+          },
+          "envelope",
+        ),
+        call("execute_code", {
+          ...args,
+          ...(stray !== "envelope" ? { language: "typescript" } : {}),
+        }),
+        // Matching one envelope representation must not merge two native intents.
+        call("execute_code", { ...args, language: "typescript" }, "call-2"),
+      ],
+      [EXECUTION_TOOL],
+    );
+    assert.equal(result.coalesced, 1);
+    assert.equal(result.decision.actions.length, 2);
+    assert.equal(result.decision.actions[0].id, "run");
+    assert.notEqual(result.decision.actions[1].id, "run");
+    for (const action of result.decision.actions)
+      assert.deepEqual(action.arguments, args);
+    assert.deepEqual(result.decision.next, {
+      kind: "on_jobs",
+      jobs: ["run"],
+      mode: "all",
+    });
+    assert.deepEqual([...new Set(result.normalized)], ["execute_code"]);
+  });
+}
+
 test("native IDs cannot ambiguously alias another envelope action", () => {
   assert.throws(
     () =>
@@ -161,32 +261,88 @@ test("omitted empty lists are normalized without accepting invalid explicit list
     () => tickDecision({ actions: null, next: { kind: "wait" } }, []),
     /Expected messages, actions and next/,
   );
+  // A missing or shorthand continuation stops the episode instead of spending a
+  // whole repair call. The host still learns the payload deviated.
+  const normalized: string[] = [];
+  assert.deepEqual(
+    tickDecision({ messages: [], actions: [] }, [], normalized).next,
+    { kind: "wait" },
+  );
+  assert.deepEqual(normalized, ["next"]);
+  assert.deepEqual(
+    tickDecision({ messages: [], actions: [], next: "continue" }, []).next,
+    { kind: "continue" },
+  );
   assert.throws(
-    () => tickDecision({ messages: [], actions: [] }, []),
-    /Expected argument object/,
+    () => tickDecision({ messages: [], actions: [], next: "later" }, []),
+    /Invalid continuation arguments/,
   );
 });
 
-test("unknown arguments identify the tool and allowed fields without exposing arbitrary keys or values", () => {
+test("unknown arguments are dropped with a host-owned label instead of failing the tick", () => {
   const secret = "private-unknown-field-and-value";
+  const normalized: string[] = [];
+  const decision = tickDecision(
+    {
+      messages: [],
+      actions: [
+        {
+          id: "run",
+          tool: "execute_code",
+          arguments: { code: "console.log(1)", [secret]: secret },
+        },
+      ],
+      next: { kind: "wait" },
+      [secret]: secret,
+    },
+    [EXECUTION_TOOL],
+    normalized,
+  );
+  assert.deepEqual(decision.actions[0]!.arguments, { code: "console.log(1)" });
+  assert.deepEqual([...new Set(normalized)].sort(), [
+    "execute_code",
+    "finish_tick",
+  ]);
+  assert.ok(!JSON.stringify(normalized).includes(secret));
+});
+
+test("a double-encoded or fenced decision is repaired instead of rejected", () => {
+  const value = {
+    messages: [{ text: "batched" }],
+    actions: [],
+    next: { kind: "wait" },
+  };
+  for (const argumentsText of [
+    JSON.stringify(JSON.stringify(value)),
+    "```json\n" + JSON.stringify(value) + "\n```",
+    `Here is the plan:\n${JSON.stringify(value)}\n`,
+  ])
+    assert.deepEqual(
+      tickResponse(
+        [
+          {
+            id: "envelope",
+            type: "function",
+            function: { name: "finish_tick", arguments: argumentsText },
+          },
+        ],
+        [],
+      ).decision.messages,
+      [{ text: "batched" }],
+    );
   assert.throws(
     () =>
       tickResponse(
-        [call("execute_code", { code: "console.log(1)", [secret]: secret })],
-        [EXECUTION_TOOL],
+        [
+          {
+            id: "envelope",
+            type: "function",
+            function: { name: "finish_tick", arguments: "not json at all" },
+          },
+        ],
+        [],
       ),
-    (error: unknown) => {
-      assert.ok(error instanceof Error);
-      assert.match(
-        error.message,
-        /actions\[0\].arguments \(execute_code\): Unknown argument/,
-      );
-      assert.ok(
-        error.message.includes('allowed fields: ["code","file","timeoutMs"]'),
-      );
-      assert.ok(!error.message.includes(secret));
-      return true;
-    },
+    /finish_tick: expected valid JSON arguments/,
   );
 });
 

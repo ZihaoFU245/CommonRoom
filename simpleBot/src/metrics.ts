@@ -7,6 +7,10 @@ export class Metrics {
   successes = 0;
   failures = 0;
   durationMs = 0;
+  preparations = 0;
+  preparationMs = 0;
+  firstDeltaMs = 0;
+  firstDeltaReports = 0;
   prompt = 0;
   promptReports = 0;
   completion = 0;
@@ -22,11 +26,20 @@ export class Metrics {
   latestOutput: number | undefined;
   latestBudget: TokenCount | undefined;
 
+  prepared(durationMs: number): void {
+    this.preparations++;
+    this.preparationMs += durationMs;
+  }
+
   record(call: ModelCall): void {
     this.attempts++;
     if (call.success) this.successes++;
     else this.failures++;
     this.durationMs += call.durationMs;
+    if (call.firstDeltaMs !== undefined) {
+      this.firstDeltaMs += call.firstDeltaMs;
+      this.firstDeltaReports++;
+    }
     const usage = call.usage;
     this.latestInput = usage?.prompt;
     this.latestOutput = usage?.completion;
@@ -58,6 +71,8 @@ export class Metrics {
       "**Metrics for this conversation, since worker start or metrics eviction**",
       `Model attempts: ${this.attempts}; succeeded: ${this.successes}; failed: ${this.failures} (includes tool rounds and retries)`,
       `Mean model attempt latency: ${this.attempts ? `${Math.round(this.durationMs / this.attempts)} ms` : "unknown"}`,
+      `Mean context preparation latency: ${this.preparations ? `${Math.round(this.preparationMs / this.preparations)} ms` : "unknown"}`,
+      `Mean first streamed delta latency: ${this.firstDeltaReports ? `${Math.round(this.firstDeltaMs / this.firstDeltaReports)} ms (${this.firstDeltaReports}/${this.attempts} attempts reported)` : "unknown"}`,
       `Input tokens: ${counter(this.prompt, this.promptReports)}`,
       `Output tokens: ${counter(this.completion, this.completionReports)}`,
       `Latest request input/output (provider): ${this.latestInput ?? "unknown"} / ${this.latestOutput ?? "unknown"} tokens`,

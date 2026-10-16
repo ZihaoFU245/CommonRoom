@@ -23,10 +23,26 @@ concurrently, with at most one active model request per conversation.
 
 ## Tick decision
 
-Use one required `finish_tick` function call as the provider-facing envelope.
-Its action variants reuse the schemas of the available tools. The model proposes
-actions; the runtime validates and persists the entire decision before starting
-any action. Do not execute function calls while streaming their arguments.
+Use one required `finish_tick` function call as the provider-facing envelope, and
+advertise nothing else: its action variants reuse the schemas of the available
+tools, so batching several independent actions into one decision is the only
+offered shape. A native call that arrives anyway is still accepted and started as
+a durable job, but it costs an extra tick, one request per tool. The model
+proposes actions; the runtime validates and persists the entire decision before
+starting any action. Do not execute function calls while streaming their
+arguments. Validation is deliberately forgiving about cosmetic deviation: unknown
+argument fields are dropped with a host-owned label, a missing or shorthand `next`
+becomes `wait`, and fenced, prose-wrapped or double-encoded JSON is repaired. A
+repair tick costs a full request, so only genuine mistakes — unavailable tools,
+wrong types, duplicate action IDs, host checks — reject a plan.
+
+Keep request-specific reply targets and message limits in Tick state rather than
+tool schemas, preserving the provider's cached prefix. The host validates live
+reply permissions/targets and the combined response count before any effect is
+committed. Repair feedback and current command grants follow retained history.
+Preparation overlaps independent catalogue/history/workspace reads; it does not
+cache command grants across ticks. Numeric metrics separate preparation,
+inference and the first streamed delta.
 
 ```ts
 type NextTick =

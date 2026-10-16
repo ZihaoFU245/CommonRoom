@@ -45,6 +45,79 @@ test("history context has a strict text budget, reserves space for retrieval and
   }
 });
 
+test("an unchanged revision reuses the verified prefix without re-reading history", async () => {
+  const server = new MockServer();
+  const url = await server.listen();
+  try {
+    const api = new BotApi({ baseUrl: url, token: server.token });
+    let reads = 0;
+    const history = api.history.bind(api);
+    api.history = (query, signal) => {
+      reads++;
+      return history(query, signal);
+    };
+    const session = new AppendHistory();
+    for (let i = 0; i < 20; i++) server.addMessage(`item ${i}`, { mentions: [] });
+    let sequence = server.state.messages.at(-1)!.sequence + 1;
+    const revision = server.state.revision;
+    const first = await session.prepare(
+      api,
+      server.conversationId,
+      sequence,
+      50,
+      131072,
+      (messages) => messages,
+      revision,
+    );
+    assert.ok(reads > 0);
+    const firstReads = reads;
+    // A continuation tick: same cutoff, same revision. No re-read, same bytes.
+    const again = await session.prepare(
+      api,
+      server.conversationId,
+      sequence,
+      50,
+      131072,
+      (messages) => messages,
+      revision,
+    );
+    assert.equal(reads, firstReads);
+    assert.equal(again.rebuilt, false);
+    assert.deepEqual(again.chunks, first.chunks);
+    // New input appends a chunk and leaves the cached prefix byte-identical.
+    server.addMessage("later item", { mentions: [] });
+    sequence = server.state.messages.at(-1)!.sequence + 1;
+    const appended = await session.prepare(
+      api,
+      server.conversationId,
+      sequence,
+      50,
+      131072,
+      (messages) => messages,
+      revision,
+    );
+    assert.equal(appended.chunks[0], first.chunks[0]);
+    assert.ok(appended.rows.length > first.rows.length);
+    // A revision change revalidates even without new input.
+    assert.equal(
+      (
+        await session.prepare(
+          api,
+          server.conversationId,
+          sequence,
+          50,
+          131072,
+          (messages) => messages,
+          revision + 1,
+        )
+      ).rebuilt,
+      true,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("append history keeps a stable prefix beyond 200 messages and rebuilds on edits, retention and character limits", async () => {
   const server = new MockServer();
   const url = await server.listen();

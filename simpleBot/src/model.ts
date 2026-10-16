@@ -38,6 +38,7 @@ interface Turn {
   calls: ToolCall[];
   reasoning?: string;
   usage?: ModelUsage;
+  firstDeltaMs?: number;
 }
 
 export interface ModelUsage {
@@ -51,6 +52,8 @@ export interface ModelCall {
   usage?: ModelUsage;
   inputBytes?: number;
   inputBudget?: TokenCount;
+  /** Includes response headers and the first text, reasoning or tool delta. */
+  firstDeltaMs?: number;
 }
 
 /** Optional provider telemetry is untrusted; absent/invalid counters stay unknown. */
@@ -213,12 +216,8 @@ export class ModelClient implements ChatModel {
     const tools = (request.answerOnly ? [] : (request.tools ?? [])).filter(
       (tool) => !["finish_turn", "wait_jobs"].includes(tool.function.name),
     );
-    const envelope = finishTickTool(
-      tools,
-      request.replyTargets,
-      request.maxReplyMessages,
-    );
-    const advertised = request.answerOnly ? [] : [envelope, ...tools];
+    const envelope = finishTickTool(tools);
+    const advertised = request.answerOnly ? [] : [envelope];
     const meter = request.contextKey
       ? (this.tokenMeters.get(request.contextKey) ?? new ProviderTokens())
       : new ProviderTokens();
@@ -296,6 +295,9 @@ export class ModelClient implements ChatModel {
           JSON.stringify({ messages, tools: advertised }),
         ),
         inputBudget: budget,
+        ...(turn.firstDeltaMs === undefined
+          ? {}
+          : { firstDeltaMs: turn.firstDeltaMs }),
         ...(turn.usage ? { usage: turn.usage } : {}),
       });
       if (turn.usage?.prompt !== undefined)
@@ -318,23 +320,22 @@ export class ModelClient implements ChatModel {
           next: { kind: "wait" },
         };
       }
+      const available = new Set([
+        "finish_tick",
+        ...(request.answerOnly
+          ? []
+          : (request.tools ?? []).map((tool) => tool.function.name)),
+      ]);
       if (
         turn.calls.filter((call) => call.function.name === "finish_tick")
           .length > 1 ||
-        turn.calls.some(
-          (call) =>
-            !advertised.some(
-              (tool) => tool.function.name === call.function.name,
-            ),
-        )
+        turn.calls.some((call) => !available.has(call.function.name))
       ) {
-        const known = new Set([
-          "finish_tick",
-          ...(request.tools ?? []).map((tool) => tool.function.name),
-        ]);
         const names = turn.calls
           .map((call) =>
-            known.has(call.function.name) ? call.function.name : "unavailable",
+            available.has(call.function.name)
+              ? call.function.name
+              : "unavailable",
           )
           .join(",");
         this.options.log(
@@ -347,7 +348,10 @@ export class ModelClient implements ChatModel {
         );
       }
       try {
-        const { decision, coalesced } = tickResponse(turn.calls, tools);
+        const { decision, coalesced, normalized } = tickResponse(
+          turn.calls,
+          tools,
+        );
         const format = turn.calls.every(
           (call) => call.function.name === "finish_tick",
         )
@@ -355,8 +359,14 @@ export class ModelClient implements ChatModel {
           : "native_tools";
         this.options.log(
           "debug",
-          `model tick accepted ${trace} format=${format} messages=${decision.messages.length} actions=${decision.actions.length} next=${decision.next.kind} coalesced_actions=${coalesced}`,
+          `model tick accepted ${trace} format=${format} messages=${decision.messages.length} actions=${decision.actions.length} next=${decision.next.kind} coalesced_actions=${coalesced} normalized=${normalized.length}`,
         );
+        if (normalized.length)
+          // Labels are host-owned tool and field names, never model input.
+          this.options.log(
+            "warn",
+            `model tick arguments normalized ${trace} count=${normalized.length} labels=${JSON.stringify([...new Set(normalized)])}`,
+          );
         return decision;
       } catch (error) {
         this.options.log(
@@ -631,6 +641,9 @@ export class ModelClient implements ChatModel {
           durationMs: performance.now() - started,
           inputBytes,
           inputBudget,
+          ...(turn.firstDeltaMs === undefined
+            ? {}
+            : { firstDeltaMs: turn.firstDeltaMs }),
           ...(turn.usage ? { usage: turn.usage } : {}),
         });
         this.options.log(
@@ -696,6 +709,125 @@ export class ModelClient implements ChatModel {
     });
   }
 
+  /**
+   * Read a bounded error body without letting a stalled gateway stall the
+   * worker: the read races a short deadline and the stream is always cancelled.
+   * Gateway failures are otherwise indistinguishable in a deployment log.
+   */
+  private async errorText(
+    response: Response,
+    limit = 4096,
+    graceMs = 250,
+  ): Promise<string> {
+    const reader = response.body?.getReader();
+    if (!reader) return "";
+    const decoder = new TextDecoder();
+    const deadline = AbortSignal.timeout(graceMs);
+    let text = "";
+    try {
+      for (;;) {
+        const { done, value } = await Promise.race([
+          reader.read(),
+          new Promise<never>((_resolve, reject) =>
+            deadline.addEventListener(
+              "abort",
+              () => reject(new Error("error body deadline")),
+              { once: true },
+            ),
+          ),
+        ]);
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+        if (text.length >= limit) break;
+      }
+    } catch {
+      // A stalled or failed read still reports its status and size below.
+    }
+    await reader.cancel().catch(() => {});
+    return text.slice(0, limit);
+  }
+
+  /**
+   * Log why a gateway rejected a request without logging its body: providers
+   * routinely quote prompt content and credentials in `error.message`. Only
+   * allowlisted diagnostic labels and a size are safe here. Structural fields
+   * are still provider-controlled and may contain private text or log newlines.
+   */
+  private logUpstream(status: number, body: string): void {
+    let type = "";
+    let code = "";
+    let param = "";
+    try {
+      const value: unknown = JSON.parse(body);
+      const error =
+        typeof value === "object" && value !== null && "error" in value
+          ? (value as { error: unknown }).error
+          : undefined;
+      const detail =
+        typeof error === "object" && error !== null
+          ? (error as Record<string, unknown>)
+          : {};
+      const safeLabel = (field: unknown, allowed: string[]): string =>
+        typeof field === "string" && allowed.includes(field) ? field : "";
+      type = safeLabel(detail.type, [
+        "invalid_request_error",
+        "authentication_error",
+        "permission_error",
+        "not_found_error",
+        "rate_limit_error",
+        "api_error",
+        "server_error",
+        "overloaded_error",
+      ]);
+      code = safeLabel(detail.code, [
+        "bad_param",
+        "invalid_api_key",
+        "model_not_found",
+        "context_length_exceeded",
+        "insufficient_quota",
+        "rate_limit_exceeded",
+        "invalid_parameter",
+        "unsupported_parameter",
+        "invalid_value",
+        "missing_required_parameter",
+        "content_filter",
+      ]);
+      param = safeLabel(
+        typeof detail.param === "string"
+          ? detail.param.replace(/\[\d+\]/gu, "[]")
+          : undefined,
+        [
+          "model",
+          "messages",
+          "messages[].role",
+          "messages[].content",
+          "messages[].tool_calls",
+          "messages[].tool_call_id",
+          "tools",
+          "tools[].function.name",
+          "tools[].function.description",
+          "tools[].function.parameters",
+          "tool_choice",
+          "parallel_tool_calls",
+          "max_tokens",
+          "reasoning_effort",
+          "stream",
+          "stream_options",
+          "stream_options.include_usage",
+        ],
+      );
+    } catch {
+      // A non-JSON body has no structural fields to report.
+    }
+    this.options.log(
+      "error",
+      `model upstream rejected request status=${status} body_chars=${body.length}` +
+        `${type ? ` error_type=${type}` : ""}` +
+        `${code ? ` error_code=${code}` : ""}` +
+        `${param ? ` error_param=${param}` : ""}`,
+    );
+  }
+
   private headers(): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -727,11 +859,6 @@ export class ModelClient implements ChatModel {
         "debug",
         `model HTTP response status=${response.status} stream=${stream}`,
       );
-      if (!response.ok)
-        this.options.log(
-          "error",
-          `model upstream rejected request status=${response.status}`,
-        );
       return response;
     } catch (error) {
       const name = (error as Error).name;
@@ -745,7 +872,8 @@ export class ModelClient implements ChatModel {
   private async buffered(request: CompletionRequest): Promise<Turn> {
     const response = await this.call(request, false);
     if (!response.ok) {
-      await response.body?.cancel();
+      const body = await this.errorText(response);
+      this.logUpstream(response.status, body);
       throw new ModelError(
         response.status,
         `model gateway returned HTTP ${response.status}`,
@@ -814,21 +942,20 @@ export class ModelClient implements ChatModel {
     const started = performance.now();
     const response = await this.call(request, true);
     if (!response.ok) {
+      const body = await this.errorText(response);
+      this.logUpstream(response.status, body);
       // Some compatible gateways reject this optional standard field. Fall back
       // only on an explicit field rejection, never on a general provider failure.
-      if (this.streamUsage && [400, 422].includes(response.status)) {
-        const error = await response.text();
-        if (/stream_options|include_usage/u.test(error)) {
-          this.streamUsage = false;
-          throw new ModelError(
-            0,
-            "gateway rejected optional stream usage; retrying without it",
-          );
-        }
-      } else {
-        // text() already consumes and may retain the stream lock in Deno.
-        // Cancel only bodies that were not read above.
-        await response.body?.cancel();
+      if (
+        this.streamUsage &&
+        [400, 422].includes(response.status) &&
+        /stream_options|include_usage/u.test(body)
+      ) {
+        this.streamUsage = false;
+        throw new ModelError(
+          0,
+          "gateway rejected optional stream usage; retrying without it",
+        );
       }
       throw new ModelError(
         response.status,
@@ -844,6 +971,7 @@ export class ModelClient implements ChatModel {
     let finishReason: unknown;
     let reasoning = "";
     let receivedDelta = false;
+    let firstDeltaMs: number | undefined;
     let usage: ModelUsage | undefined;
     const calls = new Map<
       number,
@@ -902,9 +1030,10 @@ export class ModelClient implements ChatModel {
                 : null;
         if (kind) {
           receivedDelta = true;
+          firstDeltaMs = performance.now() - started;
           this.options.log(
             "debug",
-            `model stream first delta kind=${kind} duration_ms=${Math.round(performance.now() - started)}`,
+            `model stream first delta kind=${kind} duration_ms=${Math.round(firstDeltaMs)}`,
           );
         }
       }
@@ -1004,6 +1133,7 @@ export class ModelClient implements ChatModel {
         [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call),
       ),
       ...(reasoning ? { reasoning } : {}),
+      ...(firstDeltaMs === undefined ? {} : { firstDeltaMs }),
     };
   }
 }
