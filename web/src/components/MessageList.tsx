@@ -97,6 +97,28 @@ export const MessageList = memo(function MessageList({
       },
     };
   }, [choices, liveMessages, gateRevision]);
+  const expandedMessages = useMemo(
+    () => new Map<string, string>(),
+    [motionScope],
+  );
+  const expansion = useMemo(() => {
+    const live = new Map(
+      entries.flatMap((entry) =>
+        entry.kind === "message"
+          ? [[entry.message.id, entry.message.text]]
+          : [],
+      ),
+    );
+    for (const [key, text] of expandedMessages) {
+      if (live.get(key) !== text) expandedMessages.delete(key);
+    }
+    return (message: Message, expanded: boolean) => {
+      atBottom.current = false;
+      if (expanded) expandedMessages.set(message.id, message.text);
+      else expandedMessages.delete(message.id);
+      setGateRevision((value) => value + 1);
+    };
+  }, [entries, expandedMessages, atBottom]);
   const window = useVirtualTimeline(
     entries,
     historyElement,
@@ -147,6 +169,10 @@ export const MessageList = memo(function MessageList({
         {isUnreadBoundary && <div class="unread-divider">New messages</div>}
         <ConsoleMessage
           message={entry.message}
+          expanded={
+            expandedMessages.get(entry.message.id) === entry.message.text
+          }
+          onExpandedChange={expansion}
           self={username}
           date={date}
           grouped={grouped && !entry.message.reply}

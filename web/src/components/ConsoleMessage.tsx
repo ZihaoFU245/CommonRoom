@@ -1,3 +1,4 @@
+import { CollapsibleMessage } from "./CollapsibleMessage.tsx";
 import { memo } from "preact/compat";
 import { MarkdownMessage as Markdown } from "./MarkdownMessage.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -23,6 +24,8 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   canReply,
   canDelete,
   canEdit,
+  expanded,
+  onExpandedChange,
   anchorEditorBottom = false,
   onEdit,
   onReact,
@@ -41,6 +44,8 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   canReply: boolean;
   canDelete: boolean;
   canEdit: boolean;
+  expanded: boolean;
+  onExpandedChange: (message: Message, expanded: boolean) => void;
   anchorEditorBottom?: boolean;
   onEdit: (message: Message, value: string) => Promise<boolean>;
   onReact: (message: Message, value: string) => void;
@@ -194,32 +199,39 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 </button>
               </div>
             </>
-          ) : invocation ? (
-            <p dir="auto">
-              <mark class="mention">{invocation.mention}</mark>
-              {invocation.separator}
-              <code>{invocation.command}</code>
-            </p>
-          ) : message.markdown ? (
-            <Markdown
-              messageKey={message.id}
-              text={message.text}
-              mentions={message.mentions}
-              allowHtml={allowHtml}
-              latex={latex}
-            />
           ) : (
-            <p dir="auto">
-              {text.map((part, index) =>
-                part.mention ? (
-                  <mark key={index} class="mention">
-                    {part.text}
-                  </mark>
-                ) : (
-                  part.text
-                ),
+            <CollapsibleMessage
+              expanded={expanded}
+              onExpandedChange={(next) => onExpandedChange(message, next)}
+            >
+              {invocation ? (
+                <p dir="auto">
+                  <mark class="mention">{invocation.mention}</mark>
+                  {invocation.separator}
+                  <code>{invocation.command}</code>
+                </p>
+              ) : message.markdown ? (
+                <Markdown
+                  messageKey={message.id}
+                  text={message.text}
+                  mentions={message.mentions}
+                  allowHtml={allowHtml}
+                  latex={latex}
+                />
+              ) : (
+                <p dir="auto">
+                  {text.map((part, index) =>
+                    part.mention ? (
+                      <mark key={index} class="mention">
+                        {part.text}
+                      </mark>
+                    ) : (
+                      part.text
+                    ),
+                  )}
+                </p>
               )}
-            </p>
+            </CollapsibleMessage>
           )}
         </form>
         {message.edited && <span class="message-edited">edited</span>}

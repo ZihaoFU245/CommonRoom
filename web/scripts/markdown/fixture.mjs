@@ -91,6 +91,23 @@ function Fixture() {
       },
       ...[
         ["Load counter", counterSource],
+        ["Load long code", "```html\n" + snakeSource + "\n```"],
+        [
+          "Load very long code",
+          "```html\n" +
+            Array.from(
+              { length: 180 },
+              (_, i) => `<div>HTML source line ${i + 1}</div>`,
+            ).join("\n") +
+            "\n```",
+        ],
+        [
+          "Load long plain text",
+          Array.from({ length: 80 }, (_, i) => `Plain text line ${i + 1}`).join(
+            "\n",
+          ),
+          false,
+        ],
         [
           "Load mixed HTML",
           "**Markdown test**\n\n<html>haha</html>\n\n**markdown**\n\nAnother <b>HTML portion</b> with **formatting**.",
@@ -100,14 +117,16 @@ function Fixture() {
           "Load safe HTML",
           "<section><h3>Safe formatting</h3><p>Hello <b>world</b>.</p><details><summary>More</summary>Safe details</details></section>",
         ],
-      ].map(([label, text]) =>
+      ].map(([label, text, markdown = true]) =>
         h(
           "button",
           {
             onClick: () => {
               setEntries(
                 initial.map((row, i) =>
-                  i === 0 ? { ...row, message: { ...row.message, text } } : row,
+                  i === 0
+                    ? { ...row, message: { ...row.message, text, markdown } }
+                    : row,
                 ),
               );
               setScope(label);
@@ -150,6 +169,82 @@ function Fixture() {
           },
         },
         "Counter at end",
+      ),
+      h(
+        "button",
+        {
+          onClick: async () => {
+            const viewport = container.current;
+            const article = viewport?.querySelector(".chat-message");
+            const panel = article?.querySelector(".message-preview");
+            const button = article?.querySelector(".message-expand-toggle");
+            const next =
+              article?.closest("[data-virtual-key]")?.nextElementSibling;
+            if (!viewport || !panel || !button || !next) {
+              setDiagnostics("Load long code first.");
+              return;
+            }
+            const frame = () =>
+              new Promise((resolve) => requestAnimationFrame(resolve));
+            const sample = async () => {
+              const heights = [],
+                neighbors = [];
+              for (let i = 0; i < 36; i++) {
+                await frame();
+                heights.push(panel.getBoundingClientRect().height);
+                neighbors.push(next.getBoundingClientRect().top);
+              }
+              return { heights, neighbors };
+            };
+            if (button.getAttribute("aria-expanded") === "true") {
+              button.click();
+              await sample();
+            }
+            const collapsed = panel.getBoundingClientRect().height;
+            const visibleHeight =
+              viewport.getBoundingClientRect().bottom -
+              panel.getBoundingClientRect().top;
+            button.click();
+            const expansion = await sample();
+            const full = panel.getBoundingClientRect().height;
+            viewport.scrollTop +=
+              button.getBoundingClientRect().bottom -
+              (viewport.getBoundingClientRect().top + 200);
+            await frame();
+            await frame();
+            const neighbor = next.getBoundingClientRect().top;
+            button.click();
+            const collapse = await sample();
+            const intermediate = (values) =>
+              values.filter(
+                (value) => value > collapsed + 1 && value < full - 1,
+              ).length;
+            setDiagnostics(
+              JSON.stringify({
+                expandedFrames: intermediate(expansion.heights),
+                visibleExpansionFrames: expansion.heights.filter(
+                  (height) =>
+                    height > collapsed + 1 && height < visibleHeight - 1,
+                ).length,
+                fullHeight: Math.round(full),
+                foldedFrames: intermediate(collapse.heights),
+                neighborDrift: Math.round(
+                  Math.max(
+                    ...collapse.neighbors.map((top) =>
+                      Math.abs(top - neighbor),
+                    ),
+                  ),
+                ),
+                collapsedHeight: Math.round(
+                  panel.getBoundingClientRect().height,
+                ),
+                buttonBorder: getComputedStyle(button).borderWidth,
+                buttonFont: getComputedStyle(button).fontSize,
+              }),
+            );
+          },
+        },
+        "Check fold motion",
       ),
       h("button", { onClick: () => setCompact(!compact) }, "Toggle compact"),
       h("button", { onClick: () => jump(1) }, "Jump to start"),

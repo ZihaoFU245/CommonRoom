@@ -69,16 +69,21 @@ export function useVirtualTimeline(
     const element = container.current;
     if (!element) return;
     const old = previous.current;
-    if (atBottom.current) {
-      element.scrollTop = element.scrollHeight - element.clientHeight;
-    } else if (old && element.scrollTop > 0) {
-      element.scrollTop = anchoredScrollTop(
-        old.keys,
-        old.offsets,
-        entries.map((entry) => entry.key),
-        offsets,
-        element.scrollTop,
-      );
+    // The expansion animation pins its own visible footer. Applying an interior
+    // row anchor here would fight that scroll correction on every resize frame.
+    const resizing = element.querySelector("[data-message-resizing]") !== null;
+    if (!resizing) {
+      if (atBottom.current) {
+        element.scrollTop = element.scrollHeight - element.clientHeight;
+      } else if (old && element.scrollTop > 0) {
+        element.scrollTop = anchoredScrollTop(
+          old.keys,
+          old.offsets,
+          entries.map((entry) => entry.key),
+          offsets,
+          element.scrollTop,
+        );
+      }
     }
     previous.current = { keys: entries.map((entry) => entry.key), offsets };
     updateViewport(element.scrollTop, element.clientHeight);

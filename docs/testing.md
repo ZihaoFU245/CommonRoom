@@ -96,6 +96,19 @@ Allow HTML and LaTeX start off. It does not access account data.
 - Allow HTML offers the same isolated Render HTML preview for passive markup and
   active HTML/CSS/JavaScript. No HTML renders automatically; no iframe mounts until
   the user selects Render HTML. Show text returns to the scrollable source panel.
+- Load long code and long plain text: each should start with only the top 256px
+  visible and a Show more button. Expand and fold with mouse and keyboard; verify
+  the entire body appears, reduced motion skips animation and folding keeps the
+  footer and following messages in place while text compacts from above. The
+  control must match the small borderless edited label with a down/up arrow.
+  Use Load very long code as well: expansion must spend multiple frames revealing
+  the visible viewport, even when the full body exceeds 3,000px.
+  Check fold motion samples intermediate expansion/collapse heights and reports
+  following-message drift; expect multiple animation frames and at most 1px drift
+  in desktop and compact layouts when the scroll range permits anchoring. Check
+  wide/compact layouts, delayed Markdown/image sizing,
+  virtual scroll away/back, editing, conversation switches and window eviction.
+  Short messages must have no dropdown and editors must remain fully visible.
 - In mixed messages, verify surrounding Markdown, inline emphasis, lists and math
   remain formatted while only HTML enters the viewer. Multiple separated portions
   need independent consent; adjacent HTML/CSS/scripts share a working preview.
