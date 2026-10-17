@@ -29,8 +29,6 @@ import { useFonts } from "../hooks/useFonts.ts";
 import {
   loadMarkdownHtml,
   saveMarkdownHtml,
-  loadMarkdownCode,
-  saveMarkdownCode,
 } from "../features/preferences/security.ts";
 import type { useTheme } from "../hooks/useTheme.ts";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
@@ -49,7 +47,6 @@ export function Chat({
 }) {
   const [fonts, setFonts] = useFonts();
   const [latex, setLatex] = useState(loadLatex);
-  const [allowHtmlCode, setAllowHtmlCode] = useState(loadMarkdownCode);
   const [allowHtml, setAllowHtml] = useState(loadMarkdownHtml);
   const { theme, setTheme, seeds, setSeeds } = appearance;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -429,11 +426,6 @@ export function Chat({
             saveLatex(enabled);
           }}
           allowHtml={allowHtml}
-          allowHtmlCode={allowHtmlCode}
-          onAllowHtmlCodeChange={(enabled) => {
-            setAllowHtmlCode(enabled);
-            saveMarkdownCode(enabled);
-          }}
           onAllowHtmlChange={(enabled) => {
             setAllowHtml(enabled);
             saveMarkdownHtml(enabled);
@@ -558,7 +550,6 @@ export function Chat({
             atBottom={atBottom}
             debug={commands.debug}
             allowHtml={allowHtml}
-            allowHtmlCode={allowHtmlCode}
             latex={latex}
             permissions={commands.permissions}
             commands={commands.serverCommands}

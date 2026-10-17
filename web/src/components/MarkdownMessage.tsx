@@ -37,7 +37,7 @@ export function MarkdownMessage(props: MarkdownProps) {
     <Renderer {...props} />
   ) : (
     <>
-      {props.allowHtmlCode ? (
+      {props.allowHtml ? (
         <p role="status">Loading message…</p>
       ) : (
         <p dir="auto">{props.text}</p>

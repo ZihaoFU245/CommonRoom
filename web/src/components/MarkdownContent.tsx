@@ -13,9 +13,11 @@ const Math = lazy(() =>
 export const MarkdownContent = memo(function MarkdownContent({
   nodes,
   mentions,
+  renderHtml,
 }: {
   nodes: MarkdownNode[];
   mentions: string[];
+  renderHtml?: (source: string, index: number) => ComponentChildren;
 }) {
   function render(nodes: MarkdownNode[], code = false): ComponentChildren {
     return nodes.map((node, index) => {
@@ -31,6 +33,10 @@ export const MarkdownContent = memo(function MarkdownContent({
                 part.text
               ),
             );
+      if (node.html)
+        return (
+          renderHtml?.(node.html.source, node.html.index) ?? node.html.source
+        );
       if (node.math)
         return (
           <Suspense key={index} fallback={node.math.source}>

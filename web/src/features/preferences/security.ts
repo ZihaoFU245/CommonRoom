@@ -15,7 +15,3 @@ function save(key: string, enabled: boolean): void {
 }
 export const loadMarkdownHtml = () => load(htmlKey);
 export const saveMarkdownHtml = (enabled: boolean) => save(htmlKey, enabled);
-
-const codeKey = "commonroom-markdown-html-code";
-export const loadMarkdownCode = () => load(codeKey);
-export const saveMarkdownCode = (enabled: boolean) => save(codeKey, enabled);

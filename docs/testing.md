@@ -88,22 +88,26 @@ After changes to components/hooks, inspect both a wide desktop and compact view.
 
 The isolated browser fixture at `/scripts/markdown/` on the Vite dev server
 mounts 1,000 messages with counter, snake, safe HTML and isolation-check payloads.
-Both Security options and LaTeX start off. It does not access account data.
+Allow HTML and LaTeX start off. It does not access account data.
 
 - With all options off, HTML is text; optional HTML/TeX/KaTeX/frame modules do not
   load. Plain-text chats also leave Markdown-it unloaded. Markdown images remain
   validated, lazy, async and no-referrer, with rejected URLs falling back to alt.
-- Secure HTML renders sanitized passive nodes automatically, without frames or
-  Render buttons. Active subtrees, controls, styles/events and raw media disappear.
-- HTML (code) starts as a compact cover with no source or frame. Show text toggles
-  a scrollable source panel; Render HTML toggles the preview. Check smooth expansion,
-  accent styling, keyboard controls and reduced motion. Use Counter at end to verify
-  expansion pushes messages upward and keeps source/preview visible, including late
-  frame resizing; manual scrolling must release the anchor. Verify the counter
+- Allow HTML offers the same isolated Render HTML preview for passive markup and
+  active HTML/CSS/JavaScript. No HTML renders automatically; no iframe mounts until
+  the user selects Render HTML. Show text returns to the scrollable source panel.
+- In mixed messages, verify surrounding Markdown, inline emphasis, lists and math
+  remain formatted while only HTML enters the viewer. Multiple separated portions
+  need independent consent; adjacent HTML/CSS/scripts share a working preview.
+  Editing any part resets all choices. Code fences/spans remain literal.
+- HTML starts as a compact cover with Show text / Render HTML controls. Show text
+  toggles a source panel capped at 400px with horizontal and vertical scrolling.
+  With Allow HTML off, source uses the same bounded panel directly. Check smooth
+  panel expansion and folding, keyboard controls, reduced motion and compact widths.
+  Use Counter at end to verify preview expansion and late frame resizing preserve
+  the scroll anchor; manual scrolling must release it. Verify the counter
   increments/decrements/resets and snake responds to keys only inside the frame.
   A full indented HTML document must render as a document, not a Markdown fence.
-- Passive HTML with only HTML (code) enabled requires selection but creates no
-  frame. Enabling secure HTML makes that same passive content automatic.
 - Code fences/spans and autolinks remain literal. Unknown benign wrappers retain
   children; forged private image/math markers never resolve. Failures retain text.
 - Frame isolation checks must show parent DOM, localStorage, cookies and fetch
@@ -127,7 +131,7 @@ code isolation, malformed expressions, expansion limits, blocked HTML/network
 extensions, independent preference persistence and both plain Markdown and safe HTML rendering.
 In the browser, verify the Markdown checkbox and `/markdown` stay synchronized,
 LaTeX toggles existing Markdown immediately, refresh preserves both preferences,
-and bundled math CSS/fonts work with both HTML settings disabled.
+and bundled math CSS/fonts work with Allow HTML disabled.
 
 For production deployment, additionally verify the actual public hostname through Nginx/cloudflared: HTTPS redirects, WSS, session cookies, and the configured base path. Local forwarded-header checks do not exercise public DNS/TLS infrastructure. Validate Nginx configuration on the target host.
 

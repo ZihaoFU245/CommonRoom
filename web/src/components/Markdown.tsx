@@ -1,10 +1,13 @@
 import { lazy, memo, Suspense } from "preact/compat";
 import { useMemo } from "preact/hooks";
+import { markdownNodes } from "../features/conversation/markdown.ts";
+import { HtmlSource } from "./HtmlSource.tsx";
+import { HtmlCover, type HtmlCoverProps } from "./HtmlCover.tsx";
+import type { ComponentChildren } from "preact";
 import {
-  markdownNodes,
-  hasRawHtml,
-} from "../features/conversation/markdown.ts";
-import { HtmlCover } from "./HtmlCover.tsx";
+  htmlFragments,
+  restoreHtmlFragments,
+} from "../features/conversation/htmlFragments.ts";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 const HtmlMarkdown = lazy(() =>
   import("./HtmlMarkdownGate.tsx")
@@ -12,22 +15,11 @@ const HtmlMarkdown = lazy(() =>
       default: module.HtmlMarkdownGate,
     }))
     .catch(() => ({
-      default: (
-        props: MarkdownProps & { fallback: import("preact").ComponentChildren },
-      ) => {
+      default: (props: HtmlCoverProps & { fallback: ComponentChildren }) => {
         const error = (
           <p role="status">Unable to load HTML preview. Reload to retry.</p>
         );
-        return props.allowHtmlCode ? (
-          <HtmlCover text={props.text} messageKey={props.messageKey}>
-            {error}
-          </HtmlCover>
-        ) : (
-          <>
-            {props.fallback}
-            {error}
-          </>
-        );
+        return <HtmlCover {...props}>{error}</HtmlCover>;
       },
     })),
 );
@@ -43,36 +35,46 @@ export interface MarkdownProps {
   mentions: string[];
   messageKey: string;
   allowHtml: boolean;
-  allowHtmlCode: boolean;
   latex: boolean;
 }
 export const Markdown = memo(function Markdown(props: MarkdownProps) {
-  const nodes = useMemo(() => markdownNodes(props.text), [props.text]);
-  const plain = <MarkdownContent nodes={nodes} mentions={props.mentions} />;
-  const content = props.latex ? (
+  const parts = useMemo(() => htmlFragments(props.text), [props.text]);
+  const nodes = useMemo(
+    () => restoreHtmlFragments(markdownNodes(parts.markdown), parts.fragments),
+    [parts],
+  );
+  const renderHtml = (source: string, index: number) => {
+    if (!props.allowHtml) return <HtmlSource key={index} text={source} />;
+    const cover: HtmlCoverProps = {
+      text: source,
+      messageKey: props.messageKey,
+      choiceKey: JSON.stringify([props.messageKey, index]),
+      consentText: props.text,
+    };
+    const fallback = <HtmlSource text={source} />;
+    return (
+      <Suspense key={index} fallback={<HtmlCover {...cover} />}>
+        <HtmlMarkdown {...cover} fallback={fallback} />
+      </Suspense>
+    );
+  };
+  const plain = (
+    <MarkdownContent
+      nodes={nodes}
+      mentions={props.mentions}
+      renderHtml={renderHtml}
+    />
+  );
+  return props.latex ? (
     <Suspense fallback={plain}>
-      <MathMarkdown text={props.text} mentions={props.mentions} />
+      <MathMarkdown
+        text={parts.markdown}
+        mentions={props.mentions}
+        fragments={parts.fragments}
+        renderHtml={renderHtml}
+      />
     </Suspense>
   ) : (
     plain
   );
-  const html = useMemo(
-    () => (props.allowHtml || props.allowHtmlCode) && hasRawHtml(props.text),
-    [props.allowHtml, props.allowHtmlCode, props.text],
-  );
-  if (html)
-    return (
-      <Suspense
-        fallback={
-          props.allowHtmlCode ? (
-            <HtmlCover text={props.text} messageKey={props.messageKey} />
-          ) : (
-            <p role="status">Loading HTML preview…</p>
-          )
-        }
-      >
-        <HtmlMarkdown {...props} fallback={content} />
-      </Suspense>
-    );
-  return content;
 });

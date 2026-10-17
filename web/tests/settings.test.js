@@ -4,8 +4,6 @@ import { defaultSeeds } from "../src/features/preferences/palette.ts";
 import {
   loadMarkdownHtml,
   saveMarkdownHtml,
-  loadMarkdownCode,
-  saveMarkdownCode,
 } from "../src/features/preferences/security.ts";
 import {
   defaultFonts,
@@ -156,27 +154,15 @@ test("retired media preferences do not enable HTML or get read", () => {
   assert.deepEqual(reads, ["commonroom-markdown-html"]);
 });
 
-test("HTML code preference defaults off and persists independently of secure HTML", () => {
-  const storage = new Map();
+test("retired HTML code opt-in cannot enable unified HTML rendering", () => {
+  const storage = new Map([["commonroom-markdown-html-code", "on"]]);
   globalThis.localStorage = {
     getItem: (key) => storage.get(key),
     setItem: (key, value) => storage.set(key, value),
   };
-  assert.equal(loadMarkdownCode(), false);
-  saveMarkdownHtml(true);
-  assert.equal(loadMarkdownCode(), false);
-  saveMarkdownCode(true);
-  saveMarkdownHtml(false);
-  assert.equal(loadMarkdownCode(), true);
   assert.equal(loadMarkdownHtml(), false);
-  globalThis.localStorage = {
-    getItem() {
-      throw Error("blocked");
-    },
-    setItem() {
-      throw Error("blocked");
-    },
-  };
-  assert.equal(loadMarkdownCode(), false);
-  assert.doesNotThrow(() => saveMarkdownCode(true));
+  saveMarkdownHtml(true);
+  assert.equal(loadMarkdownHtml(), true);
+  saveMarkdownHtml(false);
+  assert.equal(loadMarkdownHtml(), false);
 });

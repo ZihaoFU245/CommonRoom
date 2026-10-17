@@ -21,16 +21,17 @@ Supports bold, italic, strikethrough, headings, lists, quotes, code and links.
 Markdown images and GIFs use ![alt](url) and load without a separate media opt-in.
 Remote images disclose your IP to their host; lazy loading and no-referrer limit exposure.
 Only absolute HTTP/HTTPS and safe base64 raster image URLs are supported.
-Raw HTML displays as text when both Security options are off.
-Allow HTML (secure HTML) renders sanitized formatting directly, without a frame.
-HTML (code) offers Show text / Render HTML for full HTML, CSS and JavaScript.
-Code runs only after selection in an isolated markdown-frame.html preview.
-Passive HTML uses no frame; with only HTML (code) enabled it also requires selection.
-Editing a message or changing Security options resets the per-message choice.
+Raw HTML displays as text when Settings → Security → Allow HTML is off.
+Allow HTML offers Render HTML for every HTML message, including passive formatting.
+Surrounding Markdown renders normally; only HTML portions enter the viewer.
+Each portion needs its own selection. Adjacent HTML, CSS and scripts share a preview.
+All HTML uses the same isolated markdown-frame.html preview, only after selection.
+HTML starts as a compact cover. Show text opens a scrollable source panel; click again to fold it.
+Editing a message or changing Allow HTML resets the per-message choice.
 Full HTML documents preserve indentation. Fences and inline code stay literal.
 Frames allow inline code and data media, blocking external dependencies, chat DOM,
 chat storage, forms, popups and top navigation. Scrolling may restart a preview,
-but its versioned frame shell is cached. Direct safe HTML never executes scripts.
+but its versioned frame shell is cached.
 Links allow HTTP, HTTPS and mailto.
 
 The /markdown sending preference stays in this browser. Each sent message keeps

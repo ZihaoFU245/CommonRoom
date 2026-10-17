@@ -41,7 +41,6 @@ const initial = Array.from({ length: 1000 }, (_, i) =>
 function Fixture() {
   const [entries, setEntries] = useState(initial);
   const [html, setHtml] = useState(false);
-  const [htmlCode, setHtmlCode] = useState(false);
   const [latex, setLatex] = useState(false);
   const [compact, setCompact] = useState(false);
   const [scope, setScope] = useState("demo");
@@ -68,17 +67,7 @@ function Fixture() {
         checked: html,
         onChange: (e) => setHtml(e.currentTarget.checked),
       }),
-      "Allow HTML (secure HTML)",
-    ),
-    h(
-      "label",
-      null,
-      h("input", {
-        type: "checkbox",
-        checked: htmlCode,
-        onChange: (e) => setHtmlCode(e.currentTarget.checked),
-      }),
-      "HTML (code)",
+      "Allow HTML",
     ),
     h(
       "label",
@@ -102,6 +91,10 @@ function Fixture() {
       },
       ...[
         ["Load counter", counterSource],
+        [
+          "Load mixed HTML",
+          "**Markdown test**\n\n<html>haha</html>\n\n**markdown**\n\nAnother <b>HTML portion</b> with **formatting**.",
+        ],
         ["Load isolation checks", isolationSource],
         [
           "Load safe HTML",
@@ -233,7 +226,6 @@ function Fixture() {
         pending: false,
         debug: false,
         allowHtml: html,
-        allowHtmlCode: htmlCode,
         latex,
         permissions: [],
         commands: [],

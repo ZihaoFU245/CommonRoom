@@ -202,17 +202,18 @@ AVIF, BMP) are allowed. Rejected URLs display the alt text. Images are lazy,
 use `no-referrer`, and fit the message width. Remote hosts still receive the
 viewer's IP address when an image loads.
 
-HTML displays as text when both Security options are off. Both options default
-off and are saved independently in this browser:
-
-- **Allow HTML (secure HTML)** (`commonroom-markdown-html`) automatically renders
-  sanitized passive HTML directly in the message. Scripts, CSS, events, controls
-  and raw HTML media are stripped. Unknown benign wrappers retain safe children.
-- **HTML (code)** (`commonroom-markdown-html-code`) enables a per-message Show text /
-  Render HTML choice for full HTML, CSS and JavaScript. Active content runs only
-  after selection, inside `markdown-frame.html` with an opaque-origin sandbox.
-  Passive HTML uses the direct sanitizer without a frame; it is automatic when
-  secure HTML is enabled, otherwise it also requires selection.
+HTML displays as text when Settings → Security → **Allow HTML** is off.
+This single option defaults off and is saved in this browser as
+`commonroom-markdown-html`. It offers a per-message Render HTML button for all
+HTML, CSS and JavaScript, including passive markup. Every preview uses the same
+`markdown-frame.html` opaque-origin sandbox and requires an explicit click.
+In mixed messages, surrounding Markdown renders normally; only HTML portions
+appear in compact Show text / Render HTML covers. Adjacent HTML, CSS and scripts
+share a single preview. Each portion has an independent rendering choice. Show text toggles a
+scrollable source panel capped at 400px; selecting it again folds the panel.
+With Allow HTML off, the bounded source panel appears directly. Panel transitions
+respect reduced-motion preferences. Show text also switches a rendered preview
+back to its source. Editing the message resets every portion’s choice.
 
 Full HTML documents preserve indentation instead of becoming Markdown code.
 Fences, inline code, autolinks and Markdown images do not trigger HTML previews.
@@ -220,7 +221,7 @@ Code previews allow inline CSS/JavaScript and data images/media/fonts, but block
 external dependencies/network fetches, forms, popups, parent access and top
 navigation. Preview code cannot read chat storage, cookies or the parent DOM.
 Choices survive virtual scrolling within the current bounded conversation window;
-edits, changing Security options, leaving the conversation, eviction and refresh
+edits, changing Allow HTML, leaving the conversation, eviction and refresh
 reset them. A remounted frame restarts the app/game using the cached frame shell.
 Failed loads keep source visible and provide a status. These preferences do not
 change stored messages or other recipients. The basic renderer and optional HTML,

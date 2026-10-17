@@ -18,7 +18,6 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   pending,
   debug,
   allowHtml,
-  allowHtmlCode,
   latex,
   canReact,
   canReply,
@@ -37,7 +36,6 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   pending: boolean;
   debug: boolean;
   allowHtml: boolean;
-  allowHtmlCode: boolean;
   latex: boolean;
   canReact: boolean;
   canReply: boolean;
@@ -208,7 +206,6 @@ export const ConsoleMessage = memo(function ConsoleMessage({
               text={message.text}
               mentions={message.mentions}
               allowHtml={allowHtml}
-              allowHtmlCode={allowHtmlCode}
               latex={latex}
             />
           ) : (

@@ -1,22 +1,28 @@
+import { HtmlSource } from "./HtmlSource.tsx";
 import type { ComponentChildren } from "preact";
 import { useContext, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { HtmlGateContext, type HtmlGateMode } from "./HtmlGateContext.ts";
 import { messageMotion } from "../features/conversation/timelineMotion.ts";
 
+export interface HtmlCoverProps {
+  text: string;
+  messageKey: string;
+  choiceKey?: string;
+  consentText?: string;
+  children?: ComponentChildren;
+  label?: string;
+}
 export function HtmlCover({
   text,
   messageKey,
   children,
-  label = "HTML code",
-}: {
-  text: string;
-  messageKey: string;
-  children?: ComponentChildren;
-  label?: string;
-}) {
+  label = "HTML content",
+  choiceKey = messageKey,
+  consentText = text,
+}: HtmlCoverProps) {
   const gates = useContext(HtmlGateContext);
-  const choice = gates?.choices.get(messageKey);
-  const mode = choice?.text === text ? choice.mode : null;
+  const choice = gates?.choices.get(choiceKey);
+  const mode = choice?.text === consentText ? choice.mode : null;
   const panel = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const scrollFrame = useRef(0);
@@ -56,7 +62,12 @@ export function HtmlCover({
     }
     previousHeight.current = panel.current?.getBoundingClientRect().height ?? 0;
     stopAnimation();
-    gates?.change(messageKey, text, mode === next ? null : next);
+    gates?.change(
+      choiceKey,
+      messageKey,
+      consentText,
+      mode === next ? null : next,
+    );
   }
   useLayoutEffect(() => {
     const element = panel.current;
@@ -141,11 +152,7 @@ export function HtmlCover({
       </div>
       <div ref={panel} class="html-gate-panel">
         <div ref={content} class="html-gate-content">
-          {mode === "text" && (
-            <pre class="html-gate-source" tabIndex={0}>
-              <code>{text}</code>
-            </pre>
-          )}
+          {mode === "text" && <HtmlSource text={text} />}
           {mode === "render" && (
             <div class="html-gate-preview">
               {children ?? <p role="status">Loading HTML preview…</p>}

@@ -57,7 +57,7 @@ remove the `/commonroom` redirect.
 The UI renders Markdown images/GIFs using validated absolute HTTP/HTTPS or
 base64 raster URLs, lazy loading and `no-referrer`. Keep `img-src` for those
 images and `font-src 'self' data:` for KaTeX fonts that Vite may inline.
-The secure HTML path renders sanitized nodes directly. HTML (code) previews use
+All HTML previews require a per-message Render HTML click and use
 `markdown-frame.html`, generated into both UI builds. Deploy that file with the
 assets. The exact Nginx location in the example must precede/generalize correctly
 with your base path: it applies a separate CSP permitting inline scripts/styles

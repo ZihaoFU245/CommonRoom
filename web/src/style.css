@@ -1949,7 +1949,7 @@ button:focus-visible {
 .html-gate-preview {
   margin-top: 12px;
 }
-.html-gate .html-gate-source {
+.html-gate-source {
   max-height: 400px;
   overflow: auto;
   margin-bottom: 0;

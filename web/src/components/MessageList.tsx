@@ -24,7 +24,6 @@ interface Props {
   pending: boolean;
   debug: boolean;
   allowHtml: boolean;
-  allowHtmlCode: boolean;
   latex: boolean;
   permissions: string[];
   commands: Command[];
@@ -48,7 +47,6 @@ export const MessageList = memo(function MessageList({
   pending,
   debug,
   allowHtml,
-  allowHtmlCode,
   latex,
   permissions,
   commands,
@@ -65,29 +63,35 @@ export const MessageList = memo(function MessageList({
   // Bound choices to the current history window and conversation, surviving row unmounts.
   const choices = useMemo(
     () => new Map<string, HtmlGateChoice>(),
-    [motionScope, allowHtml, allowHtmlCode],
+    [motionScope, allowHtml],
   );
   const [gateRevision, setGateRevision] = useState(0);
   const liveMessages = useMemo(() => {
     const messages = new Map<string, string>();
-    if (allowHtmlCode) {
+    if (allowHtml) {
       for (const entry of entries) {
         if (entry.kind === "message")
           messages.set(entry.message.id, entry.message.text);
       }
     }
     return messages;
-  }, [entries, allowHtmlCode]);
+  }, [entries, allowHtml]);
   const gates = useMemo(() => {
     for (const [key, choice] of choices) {
-      if (liveMessages.get(key) !== choice.text) choices.delete(key);
+      if (liveMessages.get(choice.messageKey) !== choice.text)
+        choices.delete(key);
     }
     return {
       choices,
-      change: (key: string, text: string, mode: HtmlGateMode) => {
+      change: (
+        key: string,
+        messageKey: string,
+        text: string,
+        mode: HtmlGateMode,
+      ) => {
         const previous = choices.get(key);
         if (previous?.text === text && previous.mode === mode) return;
-        if (mode) choices.set(key, { text, mode });
+        if (mode) choices.set(key, { messageKey, text, mode });
         else choices.delete(key);
         setGateRevision((value) => value + 1);
       },
@@ -98,10 +102,7 @@ export const MessageList = memo(function MessageList({
     historyElement,
     virtualTimeline,
     atBottom,
-    gateRevision * 8 +
-      (allowHtml ? 1 : 0) +
-      (latex ? 2 : 0) +
-      (allowHtmlCode ? 4 : 0),
+    gateRevision * 4 + (allowHtml ? 1 : 0) + (latex ? 2 : 0),
   );
   useTimelineMotion(
     entries,
@@ -152,7 +153,6 @@ export const MessageList = memo(function MessageList({
           pending={pending}
           debug={debug}
           allowHtml={allowHtml}
-          allowHtmlCode={allowHtmlCode}
           latex={latex}
           canReact={actions.react}
           canReply={actions.reply}

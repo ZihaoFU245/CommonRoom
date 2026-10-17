@@ -38,7 +38,7 @@ export function MarkdownFrame({ source }: { source: string }) {
       <iframe
         key={attempt}
         ref={frame}
-        title="HTML code preview"
+        title="HTML preview"
         class="markdown-frame"
         sandbox={frameSandbox}
         referrerPolicy="no-referrer"

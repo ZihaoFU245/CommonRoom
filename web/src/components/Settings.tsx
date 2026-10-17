@@ -74,8 +74,6 @@ export function Settings({
   latex,
   onLatexChange,
   allowHtml,
-  allowHtmlCode,
-  onAllowHtmlCodeChange,
   onAllowHtmlChange,
   onChange,
   onThemeChange,
@@ -96,8 +94,6 @@ export function Settings({
   latex: boolean;
   onLatexChange: (enabled: boolean) => void;
   allowHtml: boolean;
-  allowHtmlCode: boolean;
-  onAllowHtmlCodeChange: (enabled: boolean) => void;
   onAllowHtmlChange: (enabled: boolean) => void;
   onChange: (value: Fonts) => void;
   onThemeChange: (value: Theme) => void;
@@ -377,26 +373,11 @@ export function Settings({
                     onAllowHtmlChange(event.currentTarget.checked)
                   }
                 />
-                <span>Allow HTML (secure HTML)</span>
+                <span>Allow HTML</span>
               </label>
               <p id="markdown-html-description" class="account-summary">
-                Render sanitized HTML directly. Scripts, CSS and active controls
-                are removed.
-              </p>
-              <label class="security-choice">
-                <input
-                  type="checkbox"
-                  checked={allowHtmlCode}
-                  aria-describedby="markdown-code-description"
-                  onChange={(event) =>
-                    onAllowHtmlCodeChange(event.currentTarget.checked)
-                  }
-                />
-                <span>HTML (code)</span>
-              </label>
-              <p id="markdown-code-description" class="account-summary">
-                Offer a per-message preview for HTML, CSS and JavaScript in an
-                isolated frame. Code runs only after Render HTML.
+                Offer an isolated preview for all HTML, CSS and JavaScript. Each
+                message requires a click on Render HTML before it runs.
               </p>
             </>
           ) : tab === "alias" ? (

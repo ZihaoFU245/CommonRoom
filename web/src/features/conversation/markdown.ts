@@ -55,6 +55,7 @@ export type MarkdownNode =
       start?: string;
       math?: { source: string; display: boolean };
       image?: { src: string; alt: string };
+      html?: { source: string; index: number };
     };
 export function markdownTokens(tokens: Token[]): MarkdownNode[] {
   function convert(tokens: Token[]): MarkdownNode[] {
