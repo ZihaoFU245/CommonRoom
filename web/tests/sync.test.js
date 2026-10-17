@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { snapshotSync } from "../src/hooks/sync.ts";
+import { snapshotSync, olderSnapshot } from "../src/hooks/sync.ts";
 
 function deferred() {
   let resolve, reject;
@@ -95,4 +95,21 @@ test("signing out ignores pending refreshes, and errors allow a later retry", as
   fail = false;
   await retry.refresh();
   assert.deepEqual(states, [{ rooms: [] }]);
+});
+
+test("an older socket baseline cannot overwrite a newer HTTP refresh, including after restart", async () => {
+  const states = [];
+  let fresh = { sync: { instance: "one", revision: 10 }, rooms: ["new"] };
+  const sync = snapshotSync(
+    async () => fresh,
+    (state) => states.push(state),
+    assert.fail,
+    olderSnapshot,
+  );
+  await sync.refresh();
+  sync.receive({ sync: { instance: "one", revision: 9 }, rooms: ["old"] });
+  assert.deepEqual(states, [fresh]);
+  fresh = { sync: { instance: "two", revision: 0 }, rooms: ["restarted"] };
+  sync.receive(fresh, true);
+  assert.deepEqual(states.at(-1), fresh);
 });

@@ -108,6 +108,8 @@ pub struct Grant {
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Audit {
+    #[serde(default)]
+    pub id: String,
     pub time: u64,
     pub actor_id: String,
     pub operation: String,
@@ -133,7 +135,7 @@ impl Rights {
     pub fn has(self, action: Action) -> bool {
         self.actions & action.bit() != 0
     }
-    fn command(self, command: &str) -> bool {
+    pub(in crate::engine) fn command(self, command: &str) -> bool {
         command_bit(command).is_some_and(|b| self.commands & b != 0)
     }
     fn insert(&mut self, name: &str) -> Result<(), String> {

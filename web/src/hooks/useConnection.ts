@@ -6,7 +6,7 @@ import {
   boundSnapshot,
   applyConversation,
 } from "../features/conversation/historyCache.ts";
-import { snapshotSync } from "./sync.ts";
+import { snapshotSync, olderSnapshot } from "./sync.ts";
 interface Callbacks {
   onSnapshot: (previous: Snapshot, data: Snapshot, baseline: boolean) => void;
   onResult: (data: Acknowledgement) => void;
@@ -47,6 +47,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         callbacks.current.onSnapshot(previous, data, baseline);
       },
       handleSyncError,
+      olderSnapshot,
     );
     const resume = () => {
       if (!document.hidden) sync.refresh().catch(handleSyncError);
@@ -66,7 +67,6 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         if (stopped || socket.current !== ws) return;
         attempts = 0;
         setStatus("online");
-        sync.refresh().catch(handleSyncError);
       };
       let baseline = true;
       ws.onmessage = (event) => {
@@ -111,8 +111,9 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         if (stopped) return;
         setStatus("offline");
         callbacks.current.onDisconnect();
-        sync
-          .refresh()
+        api
+          .session()
+          .catch(handleSyncError)
           .then(() => {
             if (!stopped)
               retry = setTimeout(

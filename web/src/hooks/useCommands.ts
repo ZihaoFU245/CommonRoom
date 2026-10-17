@@ -5,7 +5,7 @@ import {
   markdownManual,
 } from "../features/preferences/markdown.ts";
 import type { RefObject } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useMemo, useState } from "preact/hooks";
 import type {
   Snapshot,
   Message,
@@ -98,7 +98,10 @@ export function useCommands({
     room?.commands ??
     state.private_access[selected]?.commands ??
     (direct ? state.private_commands : state.commands);
-  const availableCommands = browserCommands(serverCommands, aliases);
+  const availableCommands = useMemo(
+    () => browserCommands(serverCommands, aliases),
+    [serverCommands, aliases],
+  );
   const canExecute = (name: string) =>
     serverCommands.some((command) => command.name === name);
   const [debug, setDebug] = useState(false);

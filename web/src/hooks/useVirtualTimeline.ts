@@ -1,11 +1,5 @@
 import type { RefObject } from "preact";
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "preact/hooks";
+import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { TimelineEntry } from "../api/protocol.ts";
 import {
   indexAt,
@@ -25,6 +19,7 @@ export function useVirtualTimeline(
   renderVersion = 0,
 ) {
   const sizes = useRef(new Map<string, number>());
+  const observed = useRef(new Set<HTMLElement>());
   const observer = useRef<ResizeObserver | null>(null);
   const measuredWindow = useRef<{
     entries: TimelineEntry[];
@@ -34,6 +29,13 @@ export function useVirtualTimeline(
   } | null>(null);
   const [measurements, setMeasurements] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
+  function updateViewport(top: number, height: number) {
+    setViewport((previous) =>
+      previous.top === top && previous.height === height
+        ? previous
+        : { top, height },
+    );
+  }
   const offsets = useMemo(() => {
     return timelineOffsets(
       entries.map((entry) => entry.key),
@@ -58,7 +60,7 @@ export function useVirtualTimeline(
         const element = container.current;
         if (index >= 0 && element) {
           element.scrollTop = offsets[index] ?? 0;
-          setViewport({ top: element.scrollTop, height: element.clientHeight });
+          updateViewport(element.scrollTop, element.clientHeight);
         }
       },
     };
@@ -79,19 +81,19 @@ export function useVirtualTimeline(
       );
     }
     previous.current = { keys: entries.map((entry) => entry.key), offsets };
-    setViewport({ top: element.scrollTop, height: element.clientHeight });
+    updateViewport(element.scrollTop, element.clientHeight);
     const live = new Set(entries.map((entry) => entry.key));
     for (const key of sizes.current.keys())
       if (!live.has(key)) sizes.current.delete(key);
   }, [entries, offsets, viewport.height]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = container.current;
     if (!element) return;
     let frame = 0;
     const refresh = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() =>
-        setViewport({ top: element.scrollTop, height: element.clientHeight }),
+        updateViewport(element.scrollTop, element.clientHeight),
       );
     };
     const resize = new ResizeObserver(refresh);
@@ -122,13 +124,22 @@ export function useVirtualTimeline(
       resize.disconnect();
       observer.current?.disconnect();
       observer.current = null;
+      observed.current.clear();
       element.removeEventListener("scroll", refresh);
     };
   }, []);
   const window = virtualWindow(offsets, viewport.top, viewport.height);
   useLayoutEffect(() => {
     const currentObserver = observer.current;
-    currentObserver?.disconnect();
+    if (!currentObserver) return;
+    const liveElements = new Set(
+      container.current?.querySelectorAll<HTMLElement>(
+        ".timeline-rows > [data-virtual-key]",
+      ) ?? [],
+    );
+    for (const element of observed.current) {
+      if (!liveElements.has(element)) currentObserver.unobserve(element);
+    }
     const measured = measuredWindow.current;
     const measure =
       measured?.entries !== entries ||
@@ -142,9 +153,7 @@ export function useVirtualTimeline(
       renderVersion,
     };
     let changed = false;
-    for (const element of container.current?.querySelectorAll<HTMLElement>(
-      ".timeline-rows > [data-virtual-key]",
-    ) ?? []) {
+    for (const element of liveElements) {
       if (measure) {
         const key = element.dataset.virtualKey;
         const height = element.getBoundingClientRect().height;
@@ -157,11 +166,12 @@ export function useVirtualTimeline(
           changed = true;
         }
       }
-      currentObserver?.observe(element);
+      if (!observed.current.has(element)) currentObserver.observe(element);
     }
+    observed.current = liveElements;
     // Resolve new/edited row sizes before motion captures the final positions.
     if (changed) setMeasurements((value) => value + 1);
-  });
+  }, [entries, renderVersion, window.start, window.end]);
   return {
     visible: entries.slice(window.start, window.end),
     start: window.start,

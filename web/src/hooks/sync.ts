@@ -4,13 +4,17 @@ export function snapshotSync<T>(
   fetchSnapshot: () => Promise<T>,
   applySnapshot: (snapshot: T, baseline: boolean) => void,
   onError: (error: unknown) => void,
+  isOlder: (incoming: T, current: T) => boolean = () => false,
 ) {
   let generation = 0;
   let active = true;
+  let current: T | undefined;
   let pending: Promise<void> | null = null;
   return {
     receive(snapshot: T, baseline = false) {
-      if (!active) return;
+      if (!active || (current !== undefined && isOlder(snapshot, current)))
+        return;
+      current = snapshot;
       generation++;
       applySnapshot(snapshot, baseline);
     },
@@ -21,7 +25,13 @@ export function snapshotSync<T>(
       pending = Promise.resolve()
         .then(fetchSnapshot)
         .then((snapshot) => {
-          if (!active || generation !== started) return;
+          if (
+            !active ||
+            generation !== started ||
+            (current !== undefined && isOlder(snapshot, current))
+          )
+            return;
+          current = snapshot;
           generation++;
           applySnapshot(snapshot, true);
         })
@@ -38,4 +48,16 @@ export function snapshotSync<T>(
       generation++;
     },
   };
+}
+
+export function olderSnapshot(
+  incoming: { sync?: { instance: string; revision: number } },
+  current: { sync?: { instance: string; revision: number } },
+) {
+  return (
+    incoming.sync !== undefined &&
+    current.sync !== undefined &&
+    incoming.sync.instance === current.sync.instance &&
+    incoming.sync.revision < current.sync.revision
+  );
 }

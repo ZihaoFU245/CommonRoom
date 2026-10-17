@@ -89,7 +89,7 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v11; validated v9/v10 databases upgrade transactionally, and older schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v12; validated v9/v10/v11 databases upgrade transactionally, and older schemas are rejected.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
@@ -102,9 +102,11 @@ History uses stable sequence cursors, not deep OFFSET pagination. Requesting a r
 This release is a single-process service. Multiple application replicas must not share a data folder; an OS lock enforces one owner. Horizontal scaling would require shared persistence and cross-process event delivery. A reverse proxy/load balancer currently supplies TLS and routes to that single process.
 
 Socket baselines share serialized buffers per account and browser/bot profile.
-The cache is bounded to 128 entries/32 MiB and cleared under the engine writer
-lock before mutable access; every socket rechecks its own credential before
-reuse. Concurrent readers share one baseline build per key; partial baselines are not retained. History responses
+The cache is bounded to 128 entries/32 MiB and keyed by mutation revision,
+visible presence revision, and the account's read revision. Browser HTTP/socket
+baselines share buffers; bot v1 HTTP/socket keys also include the credential ID.
+Read-only commands and unrelated read cursors preserve baselines. Every caller
+rechecks its credential before reuse. Concurrent readers share one baseline build per key; partial baselines are not retained. History responses
 share immutable page slices and exact per-message wire sizes, so cache hits and
 snapshot byte budgets do not copy or serialize message bodies again. Unread
 lookup uses a hash index with bounded ordered recency tracking. Command lists
@@ -115,7 +117,8 @@ and skips sorting when no new message IDs arrive.
 
 `engine/storage/command_receipts.rs` owns atomic native command outcomes. An outer
 SQLite savepoint encloses ordinary command storage savepoints and its receipt;
-receipt failure restores both persistent and in-memory state before broadcasting.
+receipt failure rolls back SQLite and reloads authoritative metadata/cursors
+before broadcasting; successful commands do not clone all metadata/cursors.
 
 Browser API failures retain HTTP status; 401 responses return the user to login.
 Requests have a 15-second client deadline. Login sessions are capped at eight per
@@ -124,3 +127,21 @@ History retries preserve range/direction and stop after three attempts. A cohere
 received page remains usable during live revision churn, with a refresh status.
 Live snapshot tails enter the ledger even when paging fails. Read acknowledgements
 use one pending timer reading current state, so incoming messages cannot starve it.
+
+Schema v12 stores audit entries separately from policy JSON. Metadata saves write
+only changed entities; retraction and cleanup use targeted message/revision/audit
+transactions with rollback recovery. History pages batch reactions in one range
+query. Unread counts/first/bounds come from one SQL statement, seeking only the
+unread sequence range and indexed retention edges. Snapshot construction reuses
+one effective-rights result per scope. Bot sends prepare receipt/reply lookups
+under a reader guard, then recheck revision, grants and receipt under the writer.
+
+Virtual rows retain their ResizeObserver subscriptions until removal; unchanged
+viewport coordinates do not trigger state updates. Message rows, date formatting,
+composer suggestions and visible history arrays are memoized. Motion captures
+geometry on layout/transition changes and derives interrupted animation offsets
+from animation timing, without a per-animation-frame measurement loop.
+
+If rollback recovery cannot reload or validate authoritative metadata, engine
+access fails closed with a restart diagnostic; partially mutated memory is not
+reused by HTTP, socket or console callers.

@@ -97,13 +97,17 @@ impl Context {
         let user = self.user(engine)?;
         let c = self.metadata(engine)?;
         let mut snapshot = engine.bot_snapshot(&user)?;
-        snapshot
-            .conversations
-            .retain(|v| self.permits(engine, "read", Some(&v.id)).is_ok());
+        let permits = |operation: &str, id: &str| {
+            c.operations
+                .as_ref()
+                .is_none_or(|ops| ops.contains(operation))
+                && c.conversations.as_ref().is_none_or(|ids| ids.contains(id))
+        };
+        snapshot.conversations.retain(|v| permits("read", &v.id));
         for v in &mut snapshot.conversations {
-            v.permissions.send &= self.permits(engine, "send", Some(&v.id)).is_ok();
+            v.permissions.send &= permits("send", &v.id);
             v.permissions.reply &= v.permissions.send;
-            v.permissions.react &= self.permits(engine, "react", Some(&v.id)).is_ok();
+            v.permissions.react &= permits("react", &v.id);
         }
         snapshot.credential = serde_json::json!({"id":self.credential,"expires":c.expires,"conversations":c.conversations,"operations":c.operations});
         Ok(snapshot)

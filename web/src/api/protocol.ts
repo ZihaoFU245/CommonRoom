@@ -65,6 +65,7 @@ export interface Access {
   commands: Command[];
 }
 export interface Snapshot {
+  sync?: { instance: string; revision: number };
   kind: "snapshot";
   username: string;
   groups: string[];
@@ -213,6 +214,10 @@ const commands = (v: unknown): v is Command[] =>
   );
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
+  (v.sync === undefined ||
+    (record(v.sync) &&
+      typeof v.sync.instance === "string" &&
+      integer(v.sync.revision))) &&
   v.kind === "snapshot" &&
   typeof v.username === "string" &&
   typeof v.admin === "boolean" &&

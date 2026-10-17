@@ -820,6 +820,25 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
             .as_ptr(),
         values[0].as_str().as_ptr()
     );
+    // Read-only commands acquire no mutation epoch and preserve cached buffers.
+    app.engine()
+        .unwrap()
+        .execute(Some("alice"), None, "/help")
+        .unwrap();
+    assert_eq!(
+        snapshots::value(&app, &headers, false)
+            .unwrap()
+            .as_str()
+            .as_ptr(),
+        values[0].as_str().as_ptr()
+    );
+    assert!(
+        app.engine_read()
+            .unwrap()
+            .read_command(Some("alice"), None, "/whoami")
+            .unwrap()
+            .is_ok()
+    );
     // Simulate a token expiring while the user's cached baseline remains available.
     app.engine
         .write()
@@ -852,6 +871,22 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
         snapshots::value(&app, &bob_headers, false)
             .unwrap()
             .contains("changed")
+    );
+    let bob_before_read = snapshots::value(&app, &bob_headers, false).unwrap();
+    let sequence = app.engine_read().unwrap().data.next_sequence;
+    app.engine()
+        .unwrap()
+        .mark_read("alice", "support", sequence)
+        .unwrap();
+    let bob_after_read = snapshots::value(&app, &bob_headers, false).unwrap();
+    assert_eq!(
+        bob_before_read.as_str().as_ptr(),
+        bob_after_read.as_str().as_ptr()
+    );
+    let alice_after_read = snapshots::value(&app, &headers, false).unwrap();
+    assert_ne!(
+        changed.as_str().as_ptr(),
+        alice_after_read.as_str().as_ptr()
     );
     app.engine()
         .unwrap()

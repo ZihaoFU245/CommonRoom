@@ -3,7 +3,7 @@ mod bot_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
 pub(crate) mod security;
-mod snapshots;
+pub(crate) mod snapshots;
 pub(crate) mod socket;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
@@ -61,10 +61,7 @@ impl App {
             .engine
             .write()
             .map_err(|_| "Server state unavailable; restart the service.")?;
-        self.snapshots
-            .lock()
-            .map_err(|_| "Snapshot cache unavailable.")?
-            .clear();
+        engine.ensure_recovered()?;
         Ok(engine)
     }
     // Extra tabs only change a counter; preserve shared baselines unless the
@@ -78,21 +75,21 @@ impl App {
             .engine
             .write()
             .map_err(|_| "Server state unavailable; restart the service.")?;
+        engine.ensure_recovered()?;
         let disconnected = old.is_some_and(|name| engine.disconnect(name));
         let connected = current.is_some_and(|name| engine.connect(name));
         if disconnected || connected {
-            self.snapshots
-                .lock()
-                .map_err(|_| "Snapshot cache unavailable.")?
-                .clear();
             let _ = self.changes.send(Change::Presence);
         }
         Ok(())
     }
     pub fn engine_read(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, String> {
-        self.engine
+        let engine = self
+            .engine
             .read()
-            .map_err(|_| "Server state unavailable; restart the service.".into())
+            .map_err(|_| "Server state unavailable; restart the service.")?;
+        engine.ensure_recovered()?;
+        Ok(engine)
     }
     fn engine_read_api(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, ApiError> {
         self.engine_read()
@@ -114,6 +111,7 @@ pub fn router(app: App) -> Router {
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
+        .route("/api/session", get(auth::session_status))
         .route("/api/history", get(history::history))
         .route("/api/read", post(history::read))
         .route("/api/bot-commands", get(bot_commands::get))

@@ -919,3 +919,91 @@ async fn unhealthy_unread_metadata_does_not_hide_healthy_bot_conversations() {
 
 #[path = "discovery_tests.rs"]
 mod discovery_tests;
+
+#[test]
+fn bot_baselines_share_buffers_but_isolate_credentials_and_recheck_revocation() {
+    let (app, secret) = fixture();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {secret}").parse().unwrap(),
+    );
+    let context = Context::authenticate(&app, &headers).unwrap();
+    let first = {
+        let engine = app.engine_read().unwrap();
+        crate::web::snapshots::bot_value(&app, &engine, &context).unwrap()
+    };
+    let again = {
+        let engine = app.engine_read().unwrap();
+        crate::web::snapshots::bot_value(&app, &engine, &context).unwrap()
+    };
+    assert_eq!(first.as_str().as_ptr(), again.as_str().as_ptr());
+    app.update_presence(None, Some("admin")).unwrap();
+    let after_presence = {
+        let engine = app.engine_read().unwrap();
+        crate::web::snapshots::bot_value(&app, &engine, &context).unwrap()
+    };
+    assert_eq!(first.as_str().as_ptr(), after_presence.as_str().as_ptr());
+    let second = app
+        .engine()
+        .unwrap()
+        .execute(None, None, "/bot token new helper scoped")
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_owned();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {second}").parse().unwrap(),
+    );
+    let scoped = Context::authenticate(&app, &headers).unwrap();
+    let scoped_value = {
+        let engine = app.engine_read().unwrap();
+        crate::web::snapshots::bot_value(&app, &engine, &scoped).unwrap()
+    };
+    let parsed: Value = serde_json::from_str(&scoped_value).unwrap();
+    assert_eq!(parsed["credential"]["id"], scoped.credential);
+    assert_ne!(parsed["credential"]["id"], context.credential);
+    app.engine()
+        .unwrap()
+        .execute(
+            None,
+            None,
+            &format!("/bot token rm helper {}", scoped.credential),
+        )
+        .unwrap();
+    let engine = app.engine_read().unwrap();
+    assert!(crate::web::snapshots::bot_value(&app, &engine, &scoped).is_err());
+    assert!(crate::web::snapshots::bot_value(&app, &engine, &context).is_ok());
+}
+
+#[tokio::test]
+async fn reconnect_session_check_authenticates_without_building_history() {
+    let (app, _) = fixture();
+    app.engine()
+        .unwrap()
+        .login("web".into(), "admin", "hash", None)
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(header::COOKIE, "chat_session=web".parse().unwrap());
+    headers.insert(header::ORIGIN, "http://localhost:5173".parse().unwrap());
+    let before = app.engine_read().unwrap().history_store.stats().unwrap();
+    assert!(
+        web::auth::session_status(State(app.clone()), headers.clone())
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        app.engine_read().unwrap().history_store.stats().unwrap(),
+        before
+    );
+    app.engine().unwrap().logout("web").unwrap();
+    assert_eq!(
+        web::auth::session_status(State(app), headers)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}

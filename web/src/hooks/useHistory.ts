@@ -1,6 +1,6 @@
 import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "./useVirtualTimeline.ts";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type {
   HistoryRange,
   Message,
@@ -45,11 +45,16 @@ export function useHistory(
     range: HistoryRange;
     direction?: "older" | "newer";
   }>({ range: {} });
-  // Live tails must enter the local ordering ledger even if history is offline.
-  ingest(
-    state,
-    ledger.current,
-    loaded?.view === selected ? loaded.messages : [],
+  // Reuse ledger work across composer/status renders while keeping live tails
+  // available independently of paging success.
+  useMemo(
+    () =>
+      ingest(
+        state,
+        ledger.current,
+        loaded?.view === selected ? loaded.messages : [],
+      ),
+    [state.rooms, state.direct, loaded?.messages, loaded?.view, selected],
   );
   const unread = state.unread[selected];
   const id =
@@ -231,10 +236,8 @@ export function useHistory(
       (error: unknown) => setHistoryError(errorMessage(error)),
     );
   }, [selected, id, unread?.revision, state.policy_revision, retry, target]);
-  return {
-    unread,
-    historyReady,
-    messages:
+  const messages = useMemo(
+    () =>
       loaded?.view === selected && loaded.id === id
         ? loaded.has_after
           ? loaded.messages
@@ -246,6 +249,12 @@ export function useHistory(
               ),
             ].slice(-1000)
         : tail,
+    [loaded, selected, id, tail],
+  );
+  return {
+    unread,
+    historyReady,
+    messages,
     historyError,
     loading,
     refreshing:

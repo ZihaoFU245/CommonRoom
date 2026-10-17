@@ -67,6 +67,7 @@ export const api = {
       signal,
     ),
   me: () => request("me", isSnapshot),
+  session: () => request("session", isOk),
   login: (username: string, password: string) =>
     request("login", isOk, { username, password }),
   logout: () => request("logout", isOk, {}),

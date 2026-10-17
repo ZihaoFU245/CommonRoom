@@ -1,3 +1,4 @@
+import { memo } from "preact/compat";
 import { MarkdownMessage as Markdown } from "./MarkdownMessage.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Message } from "../api/protocol.ts";
@@ -9,7 +10,7 @@ import type { MessageDate } from "../features/conversation/messages.ts";
 import { useMessageEditorLayout } from "../hooks/useMessageEditorLayout.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
 
-export function ConsoleMessage({
+export const ConsoleMessage = memo(function ConsoleMessage({
   message,
   self,
   date,
@@ -43,10 +44,10 @@ export function ConsoleMessage({
   canDelete: boolean;
   canEdit: boolean;
   anchorEditorBottom?: boolean;
-  onEdit: (value: string) => Promise<boolean>;
-  onReact: (value: string) => void;
-  onReply: () => void;
-  onDelete: () => void;
+  onEdit: (message: Message, value: string) => Promise<boolean>;
+  onReact: (message: Message, value: string) => void;
+  onReply: (message: Message) => void;
+  onDelete: (message: Message) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -148,7 +149,7 @@ export function ConsoleMessage({
               changeEditing(false);
               return;
             }
-            onEdit(editText).then(
+            onEdit(message, editText).then(
               (saved) => {
                 if (saved) changeEditing(false);
                 else setEditError("Could not save your edit. Try again.");
@@ -251,7 +252,7 @@ export function ConsoleMessage({
               aria-pressed={users.includes(self)}
               title={users.join(", ")}
               aria-label={`React ${value}: ${users.length}`}
-              onClick={() => onReact(value)}
+              onClick={() => onReact(message, value)}
             >
               {value}
               <span>{users.length}</span>
@@ -266,7 +267,7 @@ export function ConsoleMessage({
           <button
             type="button"
             disabled={pending}
-            onClick={onReply}
+            onClick={() => onReply(message)}
             aria-label={`Reply to ${message.from}'s message`}
           >
             Reply
@@ -293,7 +294,7 @@ export function ConsoleMessage({
           <button
             type="button"
             disabled={pending}
-            onClick={onDelete}
+            onClick={() => onDelete(message)}
             aria-label={
               message.from === self ? "Delete your message" : "Delete message"
             }
@@ -328,7 +329,7 @@ export function ConsoleMessage({
                     disabled={pending}
                     aria-label={`Add reaction ${value}`}
                     onClick={() => {
-                      onReact(value);
+                      onReact(message, value);
                       setReactionOpen(false);
                     }}
                   >
@@ -339,7 +340,7 @@ export function ConsoleMessage({
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  onReact(reaction);
+                  onReact(message, reaction);
                   setReaction("");
                   setReactionOpen(false);
                 }}
@@ -370,4 +371,4 @@ export function ConsoleMessage({
       </div>
     </article>
   );
-}
+});

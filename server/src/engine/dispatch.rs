@@ -30,6 +30,55 @@ pub(super) struct CommandContext<'a> {
     pub(super) author: &'a str,
 }
 impl Engine {
+    pub fn read_command(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        input: &str,
+    ) -> Option<Result<String, String>> {
+        let parts: Vec<_> = input.split_whitespace().collect();
+        if !matches!(
+            parts.first().copied(),
+            Some(
+                "/permissions"
+                    | "/debug"
+                    | "/help"
+                    | "/man"
+                    | "/whoami"
+                    | "/console"
+                    | "/ls"
+                    | "/members"
+                    | "/history"
+            )
+        ) {
+            return None;
+        }
+        Some((|| {
+            if input.chars().count() > 4100 {
+                return Err("Enter a message of up to 4000 characters or a command.".into());
+            }
+            if actor.is_some_and(|name| !self.active(name)) {
+                return Err("Account unavailable.".into());
+            }
+            self.require_command(actor, view, parts[0])?;
+            let context = CommandContext {
+                actor,
+                room: view.filter(|v| !v.starts_with('@')),
+                input,
+                parts: &parts,
+                view,
+                scope: self.command_scope(actor, view)?,
+                markdown: false,
+                author: actor.unwrap_or("console"),
+            };
+            if parts[0] == "/permissions" {
+                self.apply_permissions(&context)
+            } else {
+                self.apply_queries(&context)
+            }
+        })())
+    }
+
     pub fn execute(
         &mut self,
         actor: Option<&str>,
@@ -182,6 +231,19 @@ impl Engine {
             let result = self.apply(actor, room, input, markdown);
             return self.finish_message_change(change, result, None, std::convert::identity);
         }
+        if matches!(parts.first().copied(), Some("/retract" | "/clean")) {
+            let revision = self.revision;
+            let changed = self.changed_conversation.clone();
+            let result = self.apply(actor, room, input, markdown).and_then(|reply| {
+                self.save_history_maintenance()?;
+                Ok(reply)
+            });
+            if result.is_err() {
+                self.restore_command_state(revision, changed)
+                    .map_err(|e| e.to_string())?;
+            }
+            return result;
+        }
         let before = self.data.clone();
         let result = self.apply(actor, room, input, markdown);
         match result {
@@ -200,7 +262,7 @@ impl Engine {
                     .filter(|name| !self.data.rooms.contains_key(*name))
                     .cloned()
                     .collect::<Vec<_>>();
-                if let Err(e) = self.save_with_removed_rooms(&removed_rooms) {
+                if let Err(e) = self.save_with_removed_rooms(&removed_rooms, Some(&before)) {
                     self.data = before;
                     return Err(e);
                 }

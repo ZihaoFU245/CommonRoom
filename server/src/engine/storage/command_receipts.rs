@@ -75,10 +75,8 @@ impl Engine {
             db.execute_batch("SAVEPOINT bot_command_receipt;")
                 .map_err(Error::storage)?;
         }
-        let before = self.data.clone();
         let revision = self.revision;
         let changed = self.changed_conversation.clone();
-        let cursors = self.read_positions.clone();
         let outcome = execute(self).and_then(|result| {
             if result.len() > MAX_RESULT / 2 {
                 return Err(Error::new(
@@ -91,7 +89,7 @@ impl Engine {
         // SQLITE_FULL/IOERR and RAISE(ROLLBACK) may abort the whole outer
         // transaction. Restore memory even when there is no savepoint left.
         if self.db.lock().map_err(Error::storage)?.is_autocommit() {
-            self.restore_command_state(before, revision, changed, cursors)?;
+            self.restore_command_state(revision, changed)?;
             return Err(Error::storage("Command transaction aborted."));
         }
         // A command may have touched multiple savepoints. Roll back the complete
@@ -102,7 +100,7 @@ impl Engine {
                 .map_err(Error::storage)?
                 .execute_batch("ROLLBACK TO bot_command_receipt;")
                 .map_err(Error::storage)?;
-            self.restore_command_state(before.clone(), revision, changed.clone(), cursors.clone())?;
+            self.restore_command_state(revision, changed.clone())?;
         }
         // Availability failures are transient; no effect or terminal receipt.
         if let Err(error) = &outcome
@@ -156,19 +154,46 @@ impl Engine {
                     .map_err(Error::storage)
                 }
             };
-            self.restore_command_state(before, revision, changed, cursors)?;
+            self.restore_command_state(revision, changed)?;
             rollback?;
             return Err(error);
         }
         Ok(outcome)
     }
-    fn restore_command_state(
+    pub(in crate::engine) fn restore_command_state(
         &mut self,
-        data: Data,
         revision: u64,
         changed: Option<String>,
-        cursors: BTreeMap<String, BTreeMap<String, u64>>,
     ) -> Result<(), Error> {
+        self.recovery_failed = true;
+        // Rollback is rare. Recover authoritative metadata/cursors after SQLite
+        // rollback instead of cloning the whole instance for every native call.
+        let (data, cursors) = {
+            let db = self.db.lock().map_err(Error::storage)?;
+            let raw: String = db
+                .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
+                .map_err(Error::storage)?;
+            let mut data: Data = serde_json::from_str(&raw).map_err(Error::storage)?;
+            load_entities(&db, &mut data).map_err(Error::storage)?;
+            let mut cursors: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+            let mut query = db
+                .prepare("SELECT username,conversation,sequence FROM read_positions")
+                .map_err(Error::storage)?;
+            let rows = query
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, u64>(2)?,
+                    ))
+                })
+                .map_err(Error::storage)?;
+            for row in rows {
+                let (user, view, through) = row.map_err(Error::storage)?;
+                cursors.entry(user).or_default().insert(view, through);
+            }
+            (data, cursors)
+        };
         self.authorization =
             authorization::CompiledPolicy::compile(&data).map_err(Error::storage)?;
         self.bot_index = crate::bots::models::Index::build(&data);
@@ -177,6 +202,7 @@ impl Engine {
         self.changed_conversation = changed;
         self.read_positions = cursors;
         self.clear_working_messages();
+        self.recovery_failed = false;
         Ok(())
     }
 }
@@ -305,7 +331,7 @@ mod tests {
             .db
             .lock()
             .unwrap()
-            .execute_batch("DROP TABLE bot_command_receipts; DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=9;")
+            .execute_batch("DROP TABLE bot_command_receipts; UPDATE state SET json=json_set(json,'$.policy.audit',json(coalesce((SELECT json_group_array(json(json)) FROM (SELECT json FROM audit_entries ORDER BY sequence)),'[]'))); DROP TABLE audit_entries; DROP INDEX messages_reply; DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=9;")
             .unwrap();
         let before = engine.data.clone();
         drop(engine);
@@ -318,7 +344,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            11
+            12
         );
         engine
             .db

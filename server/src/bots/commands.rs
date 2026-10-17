@@ -124,6 +124,9 @@ impl Engine {
             self.require_target_command(actor, &Scope::Server, "/bot")?;
             return self.delete_user(actor, name);
         }
+        if matches!(parts.get(1).copied(), Some("ls" | "info")) {
+            return self.apply_bot_command(actor, view, parts);
+        }
         let before = self.data.clone();
         let result = self.apply_bot_command(actor, view, parts);
         match result {
@@ -132,7 +135,7 @@ impl Engine {
                     return Ok(reply);
                 }
                 self.data.policy.revision = before.policy.revision.wrapping_add(1);
-                if let Err(error) = self.save() {
+                if let Err(error) = self.save_delta(&before) {
                     self.data = before;
                     return Err(error);
                 }

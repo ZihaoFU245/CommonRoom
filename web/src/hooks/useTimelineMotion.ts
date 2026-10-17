@@ -57,7 +57,35 @@ export function useTimelineMotion(
   const capturedScrollTop = useRef(0);
   const animations = useRef(new Set<Animation>());
   const ghosts = useRef(new Set<HTMLElement>());
-  const frame = useRef(0);
+  const positions = useRef(
+    new Map<HTMLElement, { animation: Animation; shift: number }>(),
+  );
+  function displacement(element: HTMLElement) {
+    const motion = positions.current.get(element);
+    if (!motion) return 0;
+    const progress = motion.animation.effect?.getComputedTiming().progress ?? 1;
+    return motion.shift * (1 - progress);
+  }
+  function visualRows() {
+    return new Map(
+      [...rows.current].map(([key, row]) => {
+        const body = row.element.querySelector<HTMLElement>(
+          ".message-body, .message-editor",
+        );
+        return [
+          key,
+          {
+            ...row,
+            top: row.top + displacement(row.element),
+            bodyOffset:
+              row.bodyOffset === null
+                ? null
+                : row.bodyOffset + (body ? displacement(body) : 0),
+          },
+        ];
+      }),
+    );
+  }
   const scheduled = useRef(0);
   const pending = useRef<{
     entries: TimelineEntry[];
@@ -85,12 +113,12 @@ export function useTimelineMotion(
           element.dataset.virtualKey ?? "",
           {
             element,
-            top: rect.top - bounds.top,
+            top: rect.top - bounds.top - displacement(element),
             left: rect.left - bounds.left,
             width: rect.width,
             height: rect.height,
             bodyOffset: body
-              ? body.getBoundingClientRect().top - rect.top
+              ? body.getBoundingClientRect().top - rect.top - displacement(body)
               : null,
             meta: chromeSnapshot(
               element.querySelector<HTMLElement>(".message-meta"),
@@ -106,7 +134,6 @@ export function useTimelineMotion(
     );
   }
   function stop() {
-    cancelAnimationFrame(frame.current);
     for (const animation of animations.current) animation.cancel();
     animations.current.clear();
     for (const ghost of ghosts.current) ghost.remove();
@@ -137,8 +164,17 @@ export function useTimelineMotion(
     }
     const animation = element.animate(keyframes, messageMotion);
     animations.current.add(animation);
+    const transform = keyframes[0]?.transform;
+    if (typeof transform === "string" && transform.startsWith("translateY(")) {
+      positions.current.set(element, {
+        animation,
+        shift: parseFloat(transform.slice(11)),
+      });
+    }
     const finish = () => {
       animations.current.delete(animation);
+      if (positions.current.get(element)?.animation === animation)
+        positions.current.delete(element);
       if (remove) {
         element.remove();
         ghosts.current.delete(element);
@@ -147,11 +183,6 @@ export function useTimelineMotion(
     };
     animation.addEventListener("finish", finish, { once: true });
     animation.addEventListener("cancel", finish, { once: true });
-  }
-  function follow() {
-    if (pending.current) return;
-    capture();
-    if (animations.current.size) frame.current = requestAnimationFrame(follow);
   }
   function exit(row: Row, chrome?: Chrome) {
     const viewport = container.current;
@@ -205,14 +236,13 @@ export function useTimelineMotion(
           pending.current = {
             entries: source,
             changes,
-            before: previous?.before ?? new Map(rows.current),
+            before: previous?.before ?? visualRows(),
             pinBottom: previous?.pinBottom ?? atBottom.current === true,
           };
         } else pending.current = null;
       }
       baseline.current = { scope, revision, entries };
     }
-    cancelAnimationFrame(frame.current);
     // Settle layout effects and virtual measurements before the browser paints.
     const ticket = ++scheduled.current;
     queueMicrotask(() => {
@@ -221,7 +251,7 @@ export function useTimelineMotion(
       const update = pending.current;
       pending.current = null;
       if (!viewport || !update) {
-        follow();
+        capture();
         return;
       }
       stop();
@@ -276,7 +306,7 @@ export function useTimelineMotion(
         const row = update.before.get(key);
         if (row) exit(row);
       }
-      follow();
+      // Final geometry was captured once before starting the animations.
     });
   }, [
     entries,

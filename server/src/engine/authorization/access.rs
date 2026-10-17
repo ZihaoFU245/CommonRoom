@@ -305,13 +305,21 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
     ) -> Vec<crate::commands::Command> {
-        let Some(id) = self.principal_id(actor) else {
-            return Vec::new();
-        };
         let Ok(scope) = self.command_scope(actor, room) else {
             return Vec::new();
         };
-        let mut allowed = self.effective(actor, &scope);
+        self.commands_for_rights(actor, room, self.effective(actor, &scope))
+    }
+    pub(in crate::engine) fn commands_for_rights(
+        &self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        mut allowed: Rights,
+    ) -> Vec<crate::commands::Command> {
+        let Some(id) = self.principal_id(actor) else {
+            return Vec::new();
+        };
+
         if room.is_none() {
             if let Some(scopes) = self.authorization.scopes.get(id) {
                 for rights in scopes.values() {
@@ -391,6 +399,7 @@ impl Engine {
             self.data.policy.audit.pop_front();
         }
         self.data.policy.audit.push_back(Audit {
+            id: uuid::Uuid::new_v4().to_string(),
             time: now(),
             actor_id,
             operation: operation.into(),

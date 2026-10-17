@@ -95,7 +95,13 @@ pub struct Access {
     pub commands: Vec<crate::commands::Command>,
 }
 #[derive(Serialize)]
+pub struct SyncVersion {
+    pub instance: String,
+    pub revision: u64,
+}
+#[derive(Serialize)]
 pub struct Snapshot {
+    pub sync: SyncVersion,
     pub kind: &'static str,
     pub username: String,
     pub groups: Vec<String>,

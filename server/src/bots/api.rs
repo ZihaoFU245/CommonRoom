@@ -63,14 +63,22 @@ pub(super) async fn work<T: Serialize + Send + 'static>(
     .await
     .map_err(Error::storage)?
 }
-async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Json<models::Snapshot>, Error> {
-    work(app, headers, |app, context| {
+async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
+    let Json(value) = work(app, headers, |app, context| {
         let engine = app.engine_read().map_err(Error::storage)?;
         context.user(&engine)?;
-        context.snapshot(&engine)
+        crate::web::snapshots::bot_value(app, &engine, context)
+            .map(|v| v.to_string())
+            .map_err(Error::storage)
     })
-    .await
+    .await?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        value,
+    )
+        .into_response())
 }
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryQuery {
@@ -160,10 +168,16 @@ async fn message(
 ) -> Result<Json<Value>, Error> {
     let key = idempotency_key(&headers)?;
     work(app, headers, move |app, context| {
+        let prepared = {
+            let engine = app.engine_read().map_err(Error::storage)?;
+            let user = context.user(&engine)?;
+            context.permits(&engine, "send", Some(&input.conversation_id))?;
+            engine.prepare_bot_send(&user, &input, Some(&key))?
+        };
         let mut engine = app.engine().map_err(Error::storage)?;
         let user = admit(&mut engine, context)?;
         context.permits(&engine, "send", Some(&input.conversation_id))?;
-        let sent = engine.send_bot_message(&user, &input, Some(&key))?;
+        let sent = engine.commit_bot_send(&user, &input, Some(&key), prepared)?;
         if !sent.replayed {
             let _ = app
                 .changes

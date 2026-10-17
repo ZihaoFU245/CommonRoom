@@ -6,6 +6,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | --- | --- | --- |
 | `POST /api/login` | `{username,password}` | `{ok:true}` and HttpOnly session cookie |
 | `POST /api/logout` | `{}` | `{ok:true}` and cleared cookie |
+| `GET /api/session` | Cookie credential | `{ok:true}` or 401; lightweight reconnect authentication |
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
@@ -142,3 +143,13 @@ reactions, and existing reply quotes, and recalculate mentions. An `edited`
 boolean marks edited messages; absent values default to false. Changes persist
 and are broadcast only to authorized conversation readers. Editing does not
 create a new message or advance read cursors.
+
+Browser snapshots additionally include `sync: {instance, revision}`. The instance
+changes on server restart; revision monotonically combines state, presence and
+read-cursor changes during that instance. Clients ignore an older full snapshot
+from the same instance, preventing a queued WebSocket baseline from replacing a
+newer HTTP refresh. The validator accepts omitted sync metadata from older servers.
+Socket open uses the server's baseline without a redundant HTTP snapshot build.
+
+Reconnect checks `/api/session` for credential validity and obtains chat state from
+the WebSocket baseline. Focus resynchronization continues to use `/api/me`.

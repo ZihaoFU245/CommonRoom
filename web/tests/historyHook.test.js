@@ -17,12 +17,22 @@ const registration = registerHooks({
         format: "module",
         shortCircuit: true,
         source:
-          "export const useState = (...a) => globalThis.historyTestHooks.state(...a); export const useRef = (...a) => globalThis.historyTestHooks.ref(...a); export const useEffect = (...a) => globalThis.historyTestHooks.effect(...a);",
+          "export const useState = (...a) => globalThis.historyTestHooks.state(...a); export const useRef = (...a) => globalThis.historyTestHooks.ref(...a); export const useEffect = (...a) => globalThis.historyTestHooks.effect(...a); export const useMemo = (...a) => globalThis.historyTestHooks.memo(...a);",
       };
     return next(url, context);
   },
 });
 globalThis.historyTestHooks = {
+  memo(callback, deps) {
+    const index = active.index++;
+    const previous = active.slots[index];
+    if (
+      !previous ||
+      deps.some((value, i) => !Object.is(value, previous.deps[i]))
+    )
+      active.slots[index] = { deps, value: callback() };
+    return active.slots[index].value;
+  },
   state(initial) {
     const index = active.index++;
     if (!(index in active.slots)) active.slots[index] = initial;
@@ -230,7 +240,12 @@ test("busy history preserves explicit paging, bounds retries and keeps live tail
     };
     result.retryHistory();
     await settle();
-    state.rooms[0].messages.push(message(201));
+    state.rooms = [
+      {
+        ...state.rooms[0],
+        messages: [...state.rooms[0].messages, message(201)],
+      },
+    ];
     state.unread.team = { ...state.unread.team, revision: 100 };
     harness.dirty = true;
     await settle();

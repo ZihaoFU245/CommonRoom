@@ -159,12 +159,10 @@ export const MessageList = memo(function MessageList({
           canEdit={actions.edit}
           anchorEditorBottom={index === entries.length - 1}
           canDelete={actions.retract}
-          onEdit={(value) => onEdit(entry.message, value)}
-          onReact={(value) => onReact(entry.message, value)}
-          onDelete={() => onDelete(entry.message)}
-          onReply={() => {
-            onReply(entry.message);
-          }}
+          onEdit={onEdit}
+          onReact={onReact}
+          onDelete={onDelete}
+          onReply={onReply}
         />
       </div>
     );

@@ -391,15 +391,18 @@ impl HistoryStore {
             let sql = format!("SELECT json FROM messages WHERE conversation=?1 AND sequence>=?2 AND sequence<=?3 ORDER BY sequence {} LIMIT ?4", if ascending { "ASC" } else { "DESC" });
             let mut query = tx.prepare(&sql).map_err(|e| e.to_string())?;
             let rows = query.query_map(params![id,lower,upper,limit], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-            let mut messages = Vec::new();let mut sizes = Vec::new();let mut payload_bytes=0usize;
-            for row in rows {
-                let mut message: Message = serde_json::from_str(&row.map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-                load_reactions(&tx, id, &mut message)?;
-                let size=serde_json::to_vec(&message).map_err(|e|e.to_string())?.len();
-                if !messages.is_empty() && payload_bytes.saturating_add(size)>PAGE_BYTES {break;}
-                payload_bytes=payload_bytes.saturating_add(size);
-                sizes.push(size); messages.push(message);
+            let mut messages = rows.map(|row| {
+                let raw = row.map_err(|e| e.to_string())?;
+                serde_json::from_str::<Message>(&raw).map_err(|e| e.to_string())
+            }).collect::<Result<Vec<_>, String>>()?;
+            load_page_reactions(&tx, id, &mut messages)?;
+            let mut sizes = Vec::new(); let mut payload_bytes=0usize;
+            for message in &messages {
+                let size=serde_json::to_vec(message).map_err(|e|e.to_string())?.len();
+                if !sizes.is_empty() && payload_bytes.saturating_add(size)>PAGE_BYTES {break;}
+                payload_bytes=payload_bytes.saturating_add(size); sizes.push(size);
             }
+            messages.truncate(sizes.len());
             if !ascending { messages.reverse(); sizes.reverse(); }
             let before = messages.first().map(|m|m.sequence).unwrap_or(if ascending { lower } else { range.before.or(range.start).unwrap_or(0) });
             let after = messages.last().map(|m|m.sequence).unwrap_or(if ascending { range.after.or(range.end).unwrap_or(9_007_199_254_740_991) } else { upper });
@@ -473,11 +476,10 @@ impl HistoryStore {
         }
         let result=self.read(|db| {
             let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
-            let total:usize=tx.query_row("SELECT count(*) FROM messages WHERE conversation=?1 AND sequence>?2",params![id,read],|r|r.get(0)).map_err(|e|e.to_string())?;
-            let own:usize=tx.query_row("SELECT count(*) FROM messages WHERE conversation=?1 AND json_extract(json,'$.from')=?2 AND sequence>?3",params![id,user,read],|r|r.get(0)).map_err(|e|e.to_string())?;
-            let count=total.saturating_sub(own);
-            let first:Option<u64>=tx.query_row("SELECT (SELECT sequence FROM messages WHERE conversation=?1 AND sequence>?2 AND json_extract(json,'$.from')!=?3 ORDER BY sequence LIMIT 1)",params![id,read,user],|r|r.get(0)).map_err(|e|e.to_string())?;
-            let (oldest,through)=tx.query_row("SELECT coalesce((SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence LIMIT 1),0),coalesce((SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence DESC LIMIT 1),0)",[id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+            let (count, first, oldest, through) = tx.query_row(
+                "SELECT count(*),min(sequence),coalesce((SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence LIMIT 1),0),coalesce((SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence DESC LIMIT 1),0) FROM messages WHERE conversation=?1 AND sequence>?2 AND json_extract(json,'$.from')!=?3",
+                params![id,read,user], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
+            ).map_err(|e|e.to_string())?;
             Ok(Unread { count,first,oldest,through,revision })
         })?;
         let mut cache = self
@@ -507,6 +509,38 @@ pub(super) fn load_reactions(
     for row in rows {
         let (reaction, user) = row.map_err(|e| e.to_string())?;
         message.reactions.entry(reaction).or_default().insert(user);
+    }
+    Ok(())
+}
+
+fn load_page_reactions(db: &Connection, id: &str, messages: &mut [Message]) -> Result<(), String> {
+    let Some(low) = messages.iter().map(|m| m.sequence).min() else {
+        return Ok(());
+    };
+    let high = messages.iter().map(|m| m.sequence).max().unwrap_or(low);
+    let mut positions: BTreeMap<u64, usize> = BTreeMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        positions.insert(message.sequence, index);
+    }
+    let mut query = db.prepare_cached("SELECT sequence,reaction,username FROM reactions WHERE conversation=?1 AND sequence BETWEEN ?2 AND ?3").map_err(|e| e.to_string())?;
+    let rows = query
+        .query_map(params![id, low, high], |r| {
+            Ok((
+                r.get::<_, u64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (sequence, reaction, user) = row.map_err(|e| e.to_string())?;
+        if let Some(index) = positions.get(&sequence) {
+            messages[*index]
+                .reactions
+                .entry(reaction)
+                .or_default()
+                .insert(user);
+        }
     }
     Ok(())
 }
@@ -1088,7 +1122,7 @@ mod tests {
                 .unwrap()
                 .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            11
+            12
         );
     }
     #[test]

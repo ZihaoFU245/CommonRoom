@@ -40,6 +40,11 @@ const VISIBLE_HISTORY: usize = 50;
 pub struct Engine {
     pub data: Data,
     pub revision: u64,
+    recovery_failed: bool,
+    pub(crate) presence_revision: u64,
+    pub(crate) read_clock: u64,
+    pub(crate) instance: String,
+    pub(crate) read_revisions: BTreeMap<String, u64>,
     pub changed_conversation: Option<String>,
     max_users: usize,
     max_rooms: usize,
@@ -54,4 +59,13 @@ pub struct Engine {
     read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     authorization: authorization::CompiledPolicy,
     _lock: Option<std::fs::File>,
+}
+
+impl Engine {
+    pub(crate) fn ensure_recovered(&self) -> Result<(), String> {
+        if self.recovery_failed {
+            return Err("Server state recovery failed; restart the service.".into());
+        }
+        Ok(())
+    }
 }

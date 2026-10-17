@@ -322,7 +322,7 @@ fn registrations_and_credentials_survive_current_schema_restart() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        11
+        12
     );
 }
 
@@ -732,5 +732,37 @@ fn private_ids_preserve_participants_and_cross_conversation_replies_are_rejected
             .unwrap()
             .code,
         Code::NotFound
+    );
+}
+
+#[test]
+fn prepared_bot_send_rechecks_revision_permissions_and_concurrent_receipts() {
+    let mut e = fixture();
+    new_bot(&mut e);
+    let input = crate::bots::models::MessageInput {
+        conversation_id: e.data.rooms["support"].id.clone(),
+        text: "prepared".into(),
+        reply_to: None,
+        markdown: false,
+    };
+    let prepared = e.prepare_bot_send("helper", &input, Some("same")).unwrap();
+    e.send_bot_message("helper", &input, Some("same")).unwrap();
+    assert_eq!(
+        e.commit_bot_send("helper", &input, Some("same"), prepared)
+            .err()
+            .unwrap()
+            .code,
+        crate::bots::error::Code::Conflict
+    );
+    assert_eq!(e.history("helper", "support").unwrap().messages.len(), 1);
+    let prepared = e.prepare_bot_send("helper", &input, Some("next")).unwrap();
+    e.execute(None, None, "/revoke helper support w:message.create")
+        .unwrap();
+    assert_eq!(
+        e.commit_bot_send("helper", &input, Some("next"), prepared)
+            .err()
+            .unwrap()
+            .code,
+        crate::bots::error::Code::Forbidden
     );
 }

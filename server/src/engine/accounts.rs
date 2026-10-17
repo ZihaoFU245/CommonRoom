@@ -58,7 +58,7 @@ impl Engine {
                 room.members.insert(new_name.into());
             }
         }
-        if let Err(error) = self.store_account_rename(name, new_name, &conversations) {
+        if let Err(error) = self.store_account_rename(name, new_name, &conversations, &before) {
             self.data = before;
             tracing::error!(error = %error, "Account rename failed");
             return Err("Storage unavailable; rename was not applied.".into());
@@ -113,7 +113,7 @@ impl Engine {
         self.data
             .sessions
             .retain(|token, session| session.username != user || token == keep);
-        if let Err(error) = self.save() {
+        if let Err(error) = self.save_delta(&before) {
             self.data = before;
             return Err(error);
         }
@@ -188,7 +188,7 @@ impl Engine {
                 expires: now() + 43200,
             },
         );
-        if let Err(e) = self.save() {
+        if let Err(e) = self.save_sessions(&before) {
             self.data.sessions = before;
             return Err(e);
         }
@@ -197,7 +197,7 @@ impl Engine {
     pub fn logout(&mut self, token: &str) -> Result<(), String> {
         let before = self.data.sessions.clone();
         self.data.sessions.remove(token);
-        if let Err(e) = self.save() {
+        if let Err(e) = self.save_sessions(&before) {
             self.data.sessions = before;
             return Err(e);
         }
@@ -280,7 +280,7 @@ impl Engine {
             );
             self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         }
-        if let Err(e) = self.save() {
+        if let Err(e) = self.save_delta(&before) {
             self.data = before;
             return Err(e);
         }
@@ -377,13 +377,14 @@ impl Engine {
         });
         // Commit account/session/history cleanup and read positions together.
         // Only update the in-memory cursor cache after the transaction succeeds.
-        let result = self.store_account_deletion(name, &removed);
+        let result = self.store_account_deletion(name, &removed, &previous);
         if let Err(error) = result {
             self.data = previous;
             tracing::error!(error = %error, "Account deletion failed");
             return Err("Storage unavailable; account deletion was not applied.".into());
         }
         self.rebuild_authorization()?;
+        self.read_revisions.remove(&deleted_id);
         self.read_positions.remove(name);
         for positions in self.read_positions.values_mut() {
             positions.retain(|view, _| !removed.contains(view));

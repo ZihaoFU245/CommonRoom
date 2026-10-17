@@ -2,14 +2,18 @@
 
 ## Database compatibility
 
-Validated v9/v10 databases upgrade transactionally to v11. V9 first gains native
+Validated v9/v10/v11 databases upgrade transactionally to v12. V9 first gains native
 command receipts. V11 adds a reverse index of author, recipient, reply-author and
 mention names, maintained by message insert/update/delete operations, plus a
 reaction-user index. Existing retained history is indexed once during migration.
 Failed migration rolls back all schema/version changes. Back up before upgrading;
-older binaries cannot open v11.
+older binaries cannot open v12.
 
-Empty databases initialize as v11. Existing v11 databases reopen without migration.
+V12 moves the bounded audit log to append-only `audit_entries` records and adds a
+reply-target index. Migration copies embedded audit entries before removing them
+from the policy state row; retention prunes only records beyond the latest 1,000.
+
+Empty databases initialize as v12. Existing v12 databases reopen without migration.
 History, message receipts, accounts, sessions and read cursors are preserved.
 
 The removed `x:group.su.assign` permission is accepted only in existing stored
@@ -18,7 +22,7 @@ with `/revoke user scope x:group.su.assign`; new grants of this name are rejecte
 Su group assignment still requires su authority, including authorized `/sudo`.
 That permission-catalog change itself requires no data rewrite.
 
-Schemas other than v9/v10/v11 and existing unversioned databases are rejected before
+Schemas other than v9/v10/v11/v12 and existing unversioned databases are rejected before
 changing journal settings, schema, state or version. Do not lower `user_version`
 manually on a working database.
 
@@ -53,7 +57,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v11 and upgrades v9/v10. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v12 and upgrades v9/v10/v11. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -79,7 +83,7 @@ This cleanup uses the existing tables and does not change the database schema.
 `entities` stores one account, session, room metadata, or private-conversation
 metadata per row. `messages` is keyed by stable conversation ID and sequence;
 `reactions` stores individual reaction memberships and cascades when a message is
-deleted. The small `state` row contains policy/audit data, and `counters` contains
+deleted. The small `state` row contains policy and bot metadata, and `counters` contains
 the global sequence. Room/private revisions are separate columns, so a send does
 not serialize memberships or policy. Composite tables use `WITHOUT ROWID` to avoid
 a redundant row index; cursor cleanup also has a conversation index.
@@ -150,7 +154,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v11 and the minimal reference worker.
+independently of server SQLite schema v12 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -158,7 +162,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v11.
+keys; unsupported versions are rejected. This does not change server schema v12.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -199,3 +203,11 @@ format migration is required. The `--with-shell` capability is process state,
 never configuration or a persisted grant. Interrupted commands are not replayed
 when reopening storage; launching without shell access does not restore that
 capability from old jobs.
+
+Metadata commands persist only changed entities and removed identities. Retraction
+and cleanup delete affected message rows, update affected conversation revisions,
+and append their audit record in one savepoint. Explicit cleanup keeps reply quote
+text, as before; retraction scrubs it through the reply-target index. Native bot
+command receipts still enclose the complete effect; rollback reloads authoritative
+metadata/cursors only after failure rather than pre-cloning them on every request.
+Expired sessions are filtered at startup and removed from disk during login.

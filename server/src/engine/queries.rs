@@ -80,6 +80,19 @@ impl Engine {
             return Ok(false);
         }
         self.store_read_position(user, key, through)?;
+        self.read_clock = self.read_clock.wrapping_add(1);
+        let version = self
+            .read_revisions
+            .entry(
+                self.data
+                    .users
+                    .get(user)
+                    .ok_or("Account unavailable.")?
+                    .id
+                    .clone(),
+            )
+            .or_default();
+        *version = version.wrapping_add(1);
         self.read_positions
             .entry(user.into())
             .or_default()
@@ -87,20 +100,33 @@ impl Engine {
         Ok(true)
     }
     pub fn unreads(&self, name: &str) -> Result<BTreeMap<String, Unread>, String> {
-        self.collect_unreads(name, false)
+        self.collect_unreads(name, false, None)
     }
     fn collect_unreads(
         &self,
         name: &str,
         partial: bool,
+        rights: Option<&BTreeMap<Scope, authorization::Rights>>,
     ) -> Result<BTreeMap<String, Unread>, String> {
         self.history_store.ensure_available()?;
+        let readable = |scope: &Scope| {
+            rights.map_or_else(
+                || self.allows(Some(name), scope, Action::Read),
+                |rights| {
+                    rights
+                        .get(scope)
+                        .copied()
+                        .unwrap_or_default()
+                        .has(Action::Read)
+                },
+            )
+        };
         let mut result = BTreeMap::new();
         for (view, id, revision, key) in self
             .data
             .rooms
             .iter()
-            .filter(|(_, r)| self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read))
+            .filter(|(_, r)| readable(&Scope::Room(r.id.clone())))
             .map(|(name, r)| {
                 (
                     name.clone(),
@@ -113,9 +139,7 @@ impl Engine {
                 self.data
                     .private
                     .iter()
-                    .filter(|(key, _)| {
-                        self.allows(Some(name), &self.private_scope(key), Action::Read)
-                    })
+                    .filter(|(key, _)| readable(&self.private_scope(key)))
                     .map(|(key, c)| {
                         (
                             private_peer(key, name).map_or_else(
@@ -145,13 +169,18 @@ impl Engine {
     pub fn connect(&mut self, name: &str) -> bool {
         let count = self.online_connections.entry(name.into()).or_default();
         *count += 1;
-        *count == 1
+        let changed = *count == 1;
+        if changed {
+            self.presence_revision = self.presence_revision.wrapping_add(1);
+        }
+        changed
     }
     pub fn disconnect(&mut self, name: &str) -> bool {
         if let Some(count) = self.online_connections.get_mut(name) {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 self.online_connections.remove(name);
+                self.presence_revision = self.presence_revision.wrapping_add(1);
                 return true;
             }
         }
@@ -219,6 +248,7 @@ impl Engine {
             serde_json::json!({"kind":"conversation","view":view,"id":id,"messages":page.messages,"unread":unread}),
         ))
     }
+    #[cfg(test)]
     pub fn try_snapshot(&self, name: &str) -> Result<Option<Snapshot>, String> {
         Ok(self.snapshot_baseline(name)?.map(|(snapshot, _)| snapshot))
     }
@@ -235,6 +265,22 @@ impl Engine {
     fn snapshot_inner(&self, name: &str) -> Option<(Snapshot, bool)> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         let account_scope = Scope::Account(account.id.clone());
+        let mut scope_rights = BTreeMap::new();
+        for scope in [
+            Scope::Server,
+            account_scope.clone(),
+            self.private_scope(&private_key(name, name)),
+        ]
+        .into_iter()
+        .chain(self.data.rooms.values().map(|r| Scope::Room(r.id.clone())))
+        .chain(self.data.private.keys().map(|key| self.private_scope(key)))
+        {
+            scope_rights
+                .entry(scope.clone())
+                .or_insert_with(|| self.effective(Some(name), &scope));
+        }
+        let rights = |scope: &Scope| scope_rights.get(scope).copied().unwrap_or_default();
+        let server_commands = self.commands_for_rights(Some(name), None, rights(&Scope::Server));
         let mut tails = BTreeMap::new();
         let mut complete = true;
         let mut readable = 0;
@@ -252,7 +298,7 @@ impl Engine {
                     .map(|(key, c)| (&c.id, c.revision, self.private_scope(key))),
             )
         {
-            if self.allows(Some(name), &scope, Action::Read) {
+            if rights(&scope).has(Action::Read) {
                 readable += 1;
                 if tail_budget == 0 {
                     continue;
@@ -279,31 +325,35 @@ impl Engine {
                 tails.insert(id.clone(), messages);
             }
         }
-        let unread = self.collect_unreads(name, true).ok()?;
+        let unread = self.collect_unreads(name, true, Some(&scope_rights)).ok()?;
         complete &= unread.len() == readable;
         let snapshot = Snapshot {
+            sync: SyncVersion {
+                instance: self.instance.clone(),
+                revision: self
+                    .revision
+                    .saturating_add(self.presence_revision)
+                    .saturating_add(self.read_clock),
+            },
             kind: "snapshot",
             username: name.into(),
             admin: self.is_admin(name),
             groups: self.groups(Some(name)),
-            permissions: self.effective(Some(name), &Scope::Server).names(),
+            permissions: rights(&Scope::Server).names(),
             account_access: Access {
                 id: account.id.clone(),
-                permissions: self.effective(Some(name), &account_scope).names(),
-                commands: self
-                    .commands_for(Some(name), None)
-                    .into_iter()
-                    .filter(|command| {
-                        self.require_target_command(Some(name), &account_scope, command.name)
-                            .is_ok()
-                    })
+                permissions: rights(&account_scope).names(),
+                commands: server_commands
+                    .iter()
+                    .filter(|command| rights(&account_scope).command(command.name))
+                    .cloned()
                     .collect(),
             },
             private_access: self
                 .data
                 .private
                 .iter()
-                .filter(|(key, _)| self.allows(Some(name), &self.private_scope(key), Action::Read))
+                .filter(|(key, _)| rights(&self.private_scope(key)).has(Action::Read))
                 .filter_map(|(key, chat)| {
                     private_peer(key, name).map(|peer| {
                         let view = format!("@direct:{peer}");
@@ -311,19 +361,23 @@ impl Engine {
                             view.clone(),
                             Access {
                                 id: chat.id.clone(),
-                                permissions: self
-                                    .effective(Some(name), &self.private_scope(key))
-                                    .names(),
-                                commands: self.commands_for(Some(name), Some(&view)),
+                                permissions: rights(&self.private_scope(key)).names(),
+                                commands: self.commands_for_rights(
+                                    Some(name),
+                                    Some(&view),
+                                    rights(&self.private_scope(key)),
+                                ),
                             },
                         )
                     })
                 })
                 .collect(),
-            private_permissions: self
-                .effective(Some(name), &self.private_scope(&private_key(name, name)))
-                .names(),
-            private_commands: self.commands_for(Some(name), Some(&format!("@direct:{name}"))),
+            private_permissions: rights(&self.private_scope(&private_key(name, name))).names(),
+            private_commands: self.commands_for_rights(
+                Some(name),
+                Some(&format!("@direct:{name}")),
+                rights(&self.private_scope(&private_key(name, name))),
+            ),
             policy_revision: self.data.policy.revision,
             online: self.online(name),
             users: self
@@ -331,7 +385,7 @@ impl Engine {
                 .users
                 .iter()
                 .filter(|(_, u)| {
-                    self.allows(Some(name), &Scope::Server, Action::Directory)
+                    rights(&Scope::Server).has(Action::Directory)
                         && (self.is_admin(name) || !u.disabled)
                 })
                 .map(|(n, _)| n.clone())
@@ -340,17 +394,18 @@ impl Engine {
                 .data
                 .rooms
                 .iter()
-                .filter(|(_, r)| self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read))
+                .filter(|(_, r)| rights(&Scope::Room(r.id.clone())).has(Action::Read))
                 .map(|(n, r)| RoomView {
                     id: r.id.clone(),
                     owner: self.room_owner_name(&r.owner_id).into(),
-                    permissions: self
-                        .effective(Some(name), &Scope::Room(r.id.clone()))
-                        .names(),
-                    commands: self.commands_for(Some(name), Some(n)),
+                    permissions: rights(&Scope::Room(r.id.clone())).names(),
+                    commands: self.commands_for_rights(
+                        Some(name),
+                        Some(n),
+                        rights(&Scope::Room(r.id.clone())),
+                    ),
                     name: n.clone(),
-                    members: if self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Members)
-                    {
+                    members: if rights(&Scope::Room(r.id.clone())).has(Action::Members) {
                         r.members.clone()
                     } else {
                         BTreeSet::new()
@@ -363,7 +418,7 @@ impl Engine {
                         .iter()
                         .filter(|(key, _)| {
                             private_peer(key, name).is_none()
-                                && self.allows(Some(name), &self.private_scope(key), Action::Read)
+                                && rights(&self.private_scope(key)).has(Action::Read)
                         })
                         .map(|(key, chat)| {
                             let view = format!("@private:{key}");
@@ -372,9 +427,13 @@ impl Engine {
                                 id: chat.id.clone(),
                                 name: view.clone(),
                                 owner: "participants".into(),
-                                permissions: self.effective(Some(name), &scope).names(),
-                                commands: self.commands_for(Some(name), Some(&view)),
-                                members: if self.allows(Some(name), &scope, Action::Members) {
+                                permissions: rights(&scope).names(),
+                                commands: self.commands_for_rights(
+                                    Some(name),
+                                    Some(&view),
+                                    rights(&self.private_scope(key)),
+                                ),
+                                members: if rights(&scope).has(Action::Members) {
                                     key.split(':').map(str::to_owned).collect()
                                 } else {
                                     BTreeSet::new()
@@ -391,7 +450,7 @@ impl Engine {
                     .iter()
                     .filter(|(key, _)| {
                         private_peer(key, name).is_some()
-                            && self.allows(Some(name), &self.private_scope(key), Action::Read)
+                            && rights(&self.private_scope(key)).has(Action::Read)
                     })
                     .flat_map(|(_, chat)| {
                         tails
@@ -408,26 +467,26 @@ impl Engine {
                 .data
                 .private
                 .keys()
-                .filter(|key| self.allows(Some(name), &self.private_scope(key), Action::Read))
+                .filter(|key| rights(&self.private_scope(key)).has(Action::Read))
                 .filter_map(|key| private_peer(key, name))
                 .map(String::from)
                 .collect(),
             unread,
-            commands: self.commands_for(Some(name), None),
+            commands: server_commands,
             available_rooms: self
                 .data
                 .rooms
                 .iter()
                 .filter(|(_, r)| {
-                    self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Discover)
-                        || self.allows(Some(name), &Scope::Room(r.id.clone()), Action::Read)
+                    rights(&Scope::Room(r.id.clone())).has(Action::Discover)
+                        || rights(&Scope::Room(r.id.clone())).has(Action::Read)
                 })
                 .map(|(n, _)| n.clone())
                 .collect(),
         };
         Some((snapshot, complete))
     }
-    pub(super) fn apply_queries(&mut self, context: &CommandContext<'_>) -> Result<String, String> {
+    pub(super) fn apply_queries(&self, context: &CommandContext<'_>) -> Result<String, String> {
         let CommandContext {
             actor, room, parts, ..
         } = *context;

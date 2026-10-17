@@ -580,7 +580,7 @@ fn removed_su_assignment_permission_preserves_database_and_command_compatibility
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[test]
@@ -1979,7 +1979,7 @@ fn rename_storage_failure_rolls_back_account_and_read_positions() {
     e.mark_read("bob", "@direct:eve", sequence).unwrap();
     let before = e.data.clone();
     let positions = e.read_positions.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_rename BEFORE UPDATE ON state BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_rename BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
     assert!(e.execute(Some("bob"), None, "/rename 改名").is_err());
     assert!(e.data == before);
     assert_eq!(e.read_positions, positions);
@@ -2310,7 +2310,7 @@ fn room_rename_storage_failures_roll_back_disk_memory_cursors_and_authority() {
     for trigger in [
         "CREATE TRIGGER fail_rename BEFORE UPDATE ON read_positions BEGIN SELECT RAISE(ABORT,'cursor failure'); END;",
         "CREATE TRIGGER fail_rename BEFORE INSERT ON entities WHEN NEW.kind='room' AND NEW.key='new' BEGIN SELECT RAISE(ABORT,'metadata failure'); END;",
-        "CREATE TRIGGER fail_rename BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'audit failure'); END;",
+        "CREATE TRIGGER fail_rename BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(ABORT,'audit failure'); END;",
     ] {
         e.db.lock().unwrap().execute_batch(trigger).unwrap();
         assert!(

@@ -1,5 +1,11 @@
 import type { JSX, RefObject } from "preact";
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import type {
   Snapshot,
   Room,
@@ -86,42 +92,64 @@ export function useCommandComposer({
     setCycle(null);
     setHintIndex(0);
   }, [botCommands]);
-  const completion = cursorSuggestions(draft, caret, (prefix) =>
-    prefix.startsWith("/")
-      ? suggestions(
-          /\s/u.test(prefix) && !prefix.startsWith("/alias ")
-            ? expandAlias(prefix, aliases)
-            : prefix,
-          /\s/u.test(prefix) && !prefix.startsWith("/alias ")
-            ? serverCommands
-            : availableCommands,
-          state.users,
-          state.available_rooms || state.rooms.map((r) => r.name),
-          {
-            messages: direct
-              ? state.direct.filter(
-                  (message) =>
-                    (message.from === state.username && message.to === peer) ||
-                    (message.from === peer && message.to === state.username),
-                )
-              : room?.messages || [],
-            aliases: Object.keys(aliases),
-            privateScopes: Object.keys(state.private_access).map((view) =>
-              view.startsWith("@direct:")
-                ? `@private:${[state.username, view.slice(8)].sort().join(":")}`
-                : view,
-            ),
-          },
-        )
-      : [
-          ...botCommandSuggestions(prefix, botCommands),
-          ...mentionSuggestions(
-            prefix,
-            direct
-              ? [state.username, ...(peer ? [peer] : [])]
-              : [...(room?.members || [])],
-          ),
-        ],
+  const completion = useMemo(
+    () =>
+      cursorSuggestions(draft, caret, (prefix) =>
+        prefix.startsWith("/")
+          ? suggestions(
+              /\s/u.test(prefix) && !prefix.startsWith("/alias ")
+                ? expandAlias(prefix, aliases)
+                : prefix,
+              /\s/u.test(prefix) && !prefix.startsWith("/alias ")
+                ? serverCommands
+                : availableCommands,
+              state.users,
+              state.available_rooms || state.rooms.map((r) => r.name),
+              {
+                messages: direct
+                  ? state.direct.filter(
+                      (message) =>
+                        (message.from === state.username &&
+                          message.to === peer) ||
+                        (message.from === peer &&
+                          message.to === state.username),
+                    )
+                  : room?.messages || [],
+                aliases: Object.keys(aliases),
+                privateScopes: Object.keys(state.private_access).map((view) =>
+                  view.startsWith("@direct:")
+                    ? `@private:${[state.username, view.slice(8)].sort().join(":")}`
+                    : view,
+                ),
+              },
+            )
+          : [
+              ...botCommandSuggestions(prefix, botCommands),
+              ...mentionSuggestions(
+                prefix,
+                direct
+                  ? [state.username, ...(peer ? [peer] : [])]
+                  : [...(room?.members || [])],
+              ),
+            ],
+      ),
+    [
+      draft,
+      caret,
+      aliases,
+      serverCommands,
+      availableCommands,
+      state.users,
+      state.available_rooms,
+      state.rooms,
+      state.direct,
+      state.private_access,
+      state.username,
+      direct,
+      peer,
+      room,
+      botCommands,
+    ],
   );
   const currentCompletion = cycle || completion;
   const hints = hintDismissed || pending ? [] : currentCompletion.hints;

@@ -21,7 +21,19 @@ const fullDate = new Intl.DateTimeFormat(undefined, {
   dateStyle: "full",
   timeStyle: "long",
 });
+const dates = new Map<number, MessageDate>();
 export function messageDate(seconds: number): MessageDate {
+  const cached = dates.get(seconds);
+  if (cached) return cached;
+  const value = formatMessageDate(seconds);
+  dates.set(seconds, value);
+  if (dates.size > 2000) {
+    const first = dates.keys().next().value;
+    if (first !== undefined) dates.delete(first);
+  }
+  return value;
+}
+function formatMessageDate(seconds: number): MessageDate {
   const date = new Date(seconds * 1000);
   if (!Number.isFinite(date.getTime()))
     return {

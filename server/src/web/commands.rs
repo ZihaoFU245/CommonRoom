@@ -46,7 +46,7 @@ async fn execute_input_inner(
     input: &Input,
 ) -> Result<(String, Option<Change>), String> {
     {
-        let engine = app.engine()?;
+        let engine = app.engine_read()?;
         if identity(&engine, headers).as_deref() != Some(user) {
             return Err("Please log in.".into());
         }
@@ -88,6 +88,17 @@ async fn execute_input_inner(
     }
     let passwd = parts.first() == Some(&"/passwd");
     if !passwd && provision.is_none() {
+        if !sudo {
+            let engine = app.engine_read()?;
+            if identity(&engine, headers).as_deref() != Some(user) {
+                return Err("Please log in.".into());
+            }
+            if let Some(result) =
+                engine.read_command(Some(user), input.room.as_deref(), &input.text)
+            {
+                return result.map(|reply| (reply, None));
+            }
+        }
         let mut engine = app.engine()?;
         if identity(&engine, headers).as_deref() != Some(user) {
             return Err("Please log in.".into());

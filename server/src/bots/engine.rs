@@ -11,6 +11,13 @@ pub(crate) struct Target {
     pub scope: Scope,
     pub revision: u64,
 }
+pub(crate) struct PreparedSend {
+    revision: u64,
+    account: String,
+    digest: String,
+    reply: Option<Reply>,
+    replay: Option<Message>,
+}
 impl Engine {
     pub(crate) fn bot_command_peers(
         &self,
@@ -118,22 +125,34 @@ impl Engine {
                 )
             }))
         {
-            let target = match self.bot_target(user, id, Action::Read) {
-                Ok(target) => target,
-                Err(_) => continue,
+            let Some(internal_view) = self.bot_index.conversations.get(id) else {
+                continue;
             };
-            let send = self.allows(Some(user), &target.scope, Action::Send);
-            let command = |name, action| {
-                self.require_message_action(
-                    Some(user),
-                    Some(&target.view),
-                    &target.scope,
-                    name,
-                    action,
-                )
-                .is_ok()
+            let scope = self
+                .command_scope(Some(user), Some(internal_view))
+                .map_err(Error::storage)?;
+            let rights = self.effective(Some(user), &scope);
+            if !rights.has(Action::Read) {
+                continue;
+            }
+            let target = Target {
+                view: internal_view.clone(),
+                scope,
+                revision: self
+                    .data
+                    .rooms
+                    .get(internal_view)
+                    .map(|r| r.revision)
+                    .or_else(|| {
+                        internal_view
+                            .strip_prefix("@private:")
+                            .and_then(|key| self.data.private.get(key).map(|c| c.revision))
+                    })
+                    .ok_or_else(|| Error::storage("Missing conversation metadata."))?,
             };
-            let members = if self.allows(Some(user), &target.scope, Action::Members) {
+            let send = rights.has(Action::Send);
+            let command = |name, action| rights.command(name) && rights.has(action);
+            let members = if rights.has(Action::Members) {
                 self.data.rooms.get(&view).map_or_else(
                     || {
                         target
@@ -236,7 +255,7 @@ impl Engine {
                 operations: Some(input.operations),
             },
         );
-        if let Err(error) = self.save() {
+        if let Err(error) = self.save_bot_metadata() {
             if let Some(r) = self.data.bots.get_mut(&context.account) {
                 r.tokens.remove(&id);
             }
@@ -297,7 +316,7 @@ impl Engine {
                         ..Default::default()
                     },
                 );
-                if let Err(error) = self.save() {
+                if let Err(error) = self.save_empty_private(&key) {
                     self.data.private.remove(&key);
                     return Err(Error::storage(error));
                 }
@@ -408,12 +427,7 @@ impl Engine {
         self.clear_working_messages();
         result
     }
-    pub fn send_bot_message(
-        &mut self,
-        user: &str,
-        input: &models::MessageInput,
-        key: Option<&str>,
-    ) -> Result<SendResult, Error> {
+    fn validate_bot_send(&self, user: &str, input: &models::MessageInput) -> Result<Target, Error> {
         let text = input.text.trim();
         if text.is_empty() || input.text.chars().count() > 4000 {
             return Err(Error::new(
@@ -448,7 +462,26 @@ impl Engine {
         {
             return Err(Error::new(Code::Forbidden, "Reply permission denied."));
         }
-        self.changed_conversation = None;
+        Ok(target)
+    }
+    #[cfg(test)]
+    pub fn send_bot_message(
+        &mut self,
+        user: &str,
+        input: &models::MessageInput,
+        key: Option<&str>,
+    ) -> Result<SendResult, Error> {
+        let prepared = self.prepare_bot_send(user, input, key)?;
+        self.commit_bot_send(user, input, key, prepared)
+    }
+    pub(crate) fn prepare_bot_send(
+        &self,
+        user: &str,
+        input: &models::MessageInput,
+        key: Option<&str>,
+    ) -> Result<PreparedSend, Error> {
+        let target = self.validate_bot_send(user, input)?;
+        let text = input.text.trim();
         let account_id = self
             .data
             .users
@@ -490,9 +523,12 @@ impl Engine {
                 let message = page.messages.first().cloned().ok_or_else(|| {
                     Error::new(Code::MessageGone, "Original message is no longer retained.")
                 })?;
-                return Ok(SendResult {
-                    message,
-                    replayed: true,
+                return Ok(PreparedSend {
+                    revision: target.revision,
+                    account: account_id,
+                    digest,
+                    reply: None,
+                    replay: Some(message),
                 });
             }
             self.admit_bot_receipt(&account_id)?;
@@ -517,6 +553,60 @@ impl Engine {
                     })
             })
             .transpose()?;
+        Ok(PreparedSend {
+            revision: target.revision,
+            account: account_id,
+            digest,
+            reply,
+            replay: None,
+        })
+    }
+    pub(crate) fn commit_bot_send(
+        &mut self,
+        user: &str,
+        input: &models::MessageInput,
+        key: Option<&str>,
+        prepared: PreparedSend,
+    ) -> Result<SendResult, Error> {
+        let target = self.validate_bot_send(user, input)?;
+        let account_id = self
+            .data
+            .users
+            .get(user)
+            .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?
+            .id
+            .clone();
+        if account_id != prepared.account || target.revision != prepared.revision {
+            return Err(Error::new(
+                Code::Conflict,
+                "Conversation changed; retry send.",
+            ));
+        }
+        if let Some(key) = key {
+            if let Some(receipt) = self.bot_receipt(&account_id, key).map_err(Error::storage)? {
+                if receipt.digest != prepared.digest {
+                    return Err(Error::new(
+                        Code::IdempotencyConflict,
+                        "Key already used for another message.",
+                    ));
+                }
+                if let Some(message) = prepared.replay.filter(|m| m.sequence == receipt.sequence) {
+                    return Ok(SendResult {
+                        message,
+                        replayed: true,
+                    });
+                }
+                return Err(Error::new(Code::Conflict, "Receipt changed; retry send."));
+            }
+            if prepared.replay.is_some() {
+                return Err(Error::new(Code::Conflict, "Receipt expired; retry send."));
+            }
+            self.admit_bot_receipt(&account_id)?;
+        }
+        self.changed_conversation = None;
+        let digest = prepared.digest;
+        let reply = prepared.reply;
+        let text = input.text.trim();
         let change = self
             .capture_message_change(&target.view, None, false)
             .ok_or_else(|| Error::storage("Missing mutation context"))?;

@@ -233,6 +233,10 @@ and private checkpoint directory; the chat server does not start it. Run one
 worker per checkpoint and use a distinct bot account when permissions differ.
 See [Agent development](agent-development.md) for the runnable reference worker.
 
-This release accepts existing v11 data, transactionally upgrades validated v9/v10
-data, or initializes an empty data folder. Back up v9 data before upgrading;
+This release accepts existing v12 data, transactionally upgrades validated v9/v10/v11
+data, or initializes an empty data folder. Back up v9/v10/v11 data before upgrading;
 older schemas remain unsupported. See [Data](data.md) for backups and compatibility.
+
+Supported configuration ceilings are 256 users, 1,024 rooms and 1,000,000 retained
+messages per conversation. Values beyond these ceilings are rejected before
+configuration writes or engine retention changes; existing data is preserved.

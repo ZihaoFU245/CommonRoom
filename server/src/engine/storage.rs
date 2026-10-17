@@ -32,9 +32,10 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 9 && version != 10 && version != 11 {
+        if version != 0 && version != 9 && version != 10 && version != 11 && version != 12 {
             return Err(
-                "Unsupported database schema; only v9/v10 migration and v11 are supported.".into(),
+                "Unsupported database schema; only v9/v10/v11 migration and v12 are supported."
+                    .into(),
             );
         }
         if version == 0 {
@@ -67,6 +68,9 @@ impl Engine {
             transaction
                 .execute_batch(command_receipts::SCHEMA)
                 .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(AUDIT_SCHEMA)
+                .map_err(|e| e.to_string())?;
             write_data(&transaction, &data)?;
             transaction
                 .execute_batch(INDEXES)
@@ -75,7 +79,7 @@ impl Engine {
                 .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=11;")
+                .execute_batch("PRAGMA user_version=12;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -110,21 +114,34 @@ impl Engine {
             }
         }
         // Validate all existing metadata before performing the additive v9 upgrade.
-        if version == 9 || version == 10 {
+        if matches!(version, 9..=11) {
             let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
             if version == 9 {
                 migration
                     .execute_batch(command_receipts::SCHEMA)
                     .map_err(|e| e.to_string())?;
             }
+            if version <= 10 {
+                migration
+                    .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
+                    .map_err(|e| e.to_string())?;
+            }
             migration
-                .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
+                .execute_batch(AUDIT_SCHEMA)
                 .map_err(|e| e.to_string())?;
+            for entry in &mut data.policy.audit {
+                if entry.id.is_empty() {
+                    entry.id = uuid::Uuid::new_v4().to_string();
+                }
+            }
+            write_audit(&migration, &data)?;
+            write_state(&migration, &data)?;
             migration
-                .execute_batch("PRAGMA user_version=11;")
+                .execute_batch("PRAGMA user_version=12;")
                 .map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
+        data.sessions.retain(|_, session| session.expires > now());
         for room in data.rooms.values_mut() {
             room.messages.clear();
         }
@@ -139,6 +156,11 @@ impl Engine {
             data,
             read_positions,
             revision: 0,
+            recovery_failed: false,
+            presence_revision: 0,
+            read_clock: 0,
+            instance: uuid::Uuid::new_v4().to_string(),
+            read_revisions: BTreeMap::new(),
             changed_conversation: None,
             max_users: 64,
             max_rooms: 64,
@@ -158,9 +180,7 @@ impl Engine {
         max_rooms: usize,
         max_messages: usize,
     ) -> Result<(), String> {
-        if max_users == 0 || max_rooms == 0 || max_messages == 0 {
-            return Err("max_users, max_rooms and max_messages must be positive integers.".into());
-        }
+        crate::config::validate_limits(max_users, max_rooms, max_messages)?;
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.savepoint().map_err(|e| e.to_string())?;
@@ -204,10 +224,18 @@ impl Engine {
 
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn save(&mut self) -> Result<(), String> {
-        self.save_with_removed_rooms(&[])
+        self.save_with_removed_rooms(&[], None)
     }
-    pub(super) fn save_with_removed_rooms(&mut self, rooms: &[String]) -> Result<(), String> {
+    pub(super) fn save_delta(&mut self, before: &Data) -> Result<(), String> {
+        self.save_with_removed_rooms(&[], Some(before))
+    }
+    pub(super) fn save_with_removed_rooms(
+        &mut self,
+        rooms: &[String],
+        before: Option<&Data>,
+    ) -> Result<(), String> {
         let authorization = if self.authorization.revision != self.data.policy.revision {
             Some(super::authorization::CompiledPolicy::compile(&self.data)?)
         } else {
@@ -216,7 +244,11 @@ impl Engine {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.savepoint().map_err(|e| e.to_string())?;
-        write_data(&tx, &self.data).map_err(storage_error)?;
+        if let Some(before) = before {
+            write_delta(&tx, &self.data, before).map_err(storage_error)?;
+        } else {
+            write_data(&tx, &self.data).map_err(storage_error)?;
+        }
         for room in rooms {
             tx.execute(
                 "DELETE FROM read_positions WHERE conversation=?1",
@@ -224,22 +256,7 @@ impl Engine {
             )
             .map_err(|e| storage_error(e.to_string()))?;
         }
-        for (id, sequence) in &self.pending_deletes {
-            let message_id:String=tx.query_row("SELECT json_extract(json,'$.id') FROM messages WHERE conversation=?1 AND sequence=?2",params![id,sequence],|r|r.get(0)).map_err(|e|storage_error(e.to_string()))?;
-            tx.execute("UPDATE messages SET json=json_set(json,'$.reply',NULL) WHERE conversation=?1 AND json_extract(json,'$.reply.id')=?2",params![id,message_id]).map_err(|e|storage_error(e.to_string()))?;
-            tx.execute(
-                "DELETE FROM messages WHERE conversation=?1 AND sequence=?2",
-                params![id, sequence],
-            )
-            .map_err(|e| storage_error(e.to_string()))?;
-        }
-        for (id, cutoff) in &self.pending_cleanups {
-            tx.execute(
-                "DELETE FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2",
-                params![id, cutoff],
-            )
-            .map_err(|e| storage_error(e.to_string()))?;
-        }
+        write_history_deletions(&tx, &self.pending_deletes, &self.pending_cleanups)?;
         tx.commit().map_err(|e| storage_error(e.to_string()))?;
         for room in rooms {
             let key = format!("room:{room}");
@@ -275,7 +292,12 @@ impl Engine {
     }
     /// Room metadata and name-based read cursors move together; history and
     /// grants remain attached to the unchanged room ID.
-    pub(super) fn store_room_rename(&mut self, name: &str, new_name: &str) -> Result<(), String> {
+    pub(super) fn store_room_rename(
+        &mut self,
+        name: &str,
+        new_name: &str,
+        before: &Data,
+    ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let transaction = db.savepoint().map_err(|e| e.to_string())?;
@@ -292,7 +314,7 @@ impl Engine {
                 params![format!("room:{new_name}"), format!("room:{name}")],
             )
             .map_err(|e| e.to_string())?;
-        write_data(&transaction, &self.data)?;
+        write_delta(&transaction, &self.data, before)?;
         transaction.commit().map_err(|e| e.to_string())
     }
     /// Rename account state and every affected read cursor in one transaction.
@@ -301,6 +323,7 @@ impl Engine {
         name: &str,
         new_name: &str,
         conversations: &BTreeMap<String, String>,
+        before: &Data,
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
@@ -350,7 +373,7 @@ impl Engine {
                 *revision = revision.wrapping_add(1);
             }
         }
-        write_data(&transaction, &self.data)?;
+        write_delta(&transaction, &self.data, before)?;
         transaction.commit().map_err(|e| e.to_string())
     }
     /// Account deletion and its cursor cleanup must commit atomically.
@@ -358,12 +381,13 @@ impl Engine {
         &mut self,
         name: &str,
         removed: &BTreeSet<String>,
+        before: &Data,
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let transaction = db.savepoint().map_err(|e| e.to_string())?;
         rewrite_account_messages(&transaction, name, None)?;
-        write_data(&transaction, &self.data)?;
+        write_delta(&transaction, &self.data, before)?;
         transaction
             .execute(
                 "DELETE FROM read_positions WHERE username=?1",
@@ -497,13 +521,20 @@ fn private_metadata(chat: &PrivateChat) -> PrivateChat {
 }
 fn write_state(db: &Connection, data: &Data) -> Result<(), String> {
     let metadata = Data {
-        policy: data.policy.clone(),
+        policy: authorization::Policy {
+            revision: data.policy.revision,
+            assignments: data.policy.assignments.clone(),
+            grants: data.policy.grants.clone(),
+            ..Default::default()
+        },
         bots: data.bots.clone(),
         ..Data::default()
     };
+    let mut metadata = metadata;
+    metadata.policy.audit.clear();
     let json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
     db.execute(
-        "INSERT INTO state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
+        "INSERT INTO state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE json!=excluded.json",
         params![json],
     )
     .map_err(|e| e.to_string())?;
@@ -571,6 +602,7 @@ fn write_data(db: &Connection, data: &Data) -> Result<(), String> {
     db.execute("DELETE FROM bot_receipts WHERE account_id NOT IN (SELECT json_extract(json,'$.id') FROM entities WHERE kind='account')", [])
         .map_err(|e| e.to_string())?;
     db.execute("DELETE FROM bot_command_receipts WHERE account_id NOT IN (SELECT json_extract(json,'$.id') FROM entities WHERE kind='account')", []).map_err(|e| e.to_string())?;
+    write_audit(db, data)?;
     write_state(db, data)
 }
 pub(super) fn load_entities(db: &Connection, data: &mut Data) -> Result<(), String> {
@@ -631,6 +663,20 @@ pub(super) fn load_entities(db: &Connection, data: &mut Data) -> Result<(), Stri
         }
     }
 
+    let has_audit: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='audit_entries' AND type='table')", [], |r|r.get(0)).map_err(|e|e.to_string())?;
+    if has_audit {
+        let mut query = db
+            .prepare("SELECT json FROM audit_entries ORDER BY sequence")
+            .map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        data.policy.audit = rows
+            .map(|row| {
+                serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+            })
+            .collect::<Result<_, String>>()?;
+    }
     Ok(())
 }
 
@@ -895,4 +941,262 @@ fn account_conversations(db: &Connection, name: &str) -> Result<BTreeSet<String>
         .map_err(|e| e.to_string())?
         .collect::<Result<BTreeSet<_>, _>>()
         .map_err(|e| e.to_string())
+}
+
+const AUDIT_SCHEMA: &str = "CREATE TABLE audit_entries(sequence INTEGER PRIMARY KEY AUTOINCREMENT,entry_id TEXT NOT NULL UNIQUE,json TEXT NOT NULL); CREATE INDEX messages_reply ON messages(conversation,json_extract(json,'$.reply.id'));";
+fn write_audit(db: &Connection, data: &Data) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
+    let last: Option<String> = db
+        .query_row(
+            "SELECT entry_id FROM audit_entries ORDER BY sequence DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let start = last
+        .and_then(|id| data.policy.audit.iter().rposition(|entry| entry.id == id))
+        .map_or(0, |index| index + 1);
+    for entry in data.policy.audit.iter().skip(start) {
+        let raw = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+        db.execute(
+            "INSERT OR IGNORE INTO audit_entries(entry_id,json) VALUES(?1,?2)",
+            params![entry.id, raw],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // Append only until the bounded audit retention is reached; old records
+    // are pruned without rewriting any retained audit payload.
+    db.execute("DELETE FROM audit_entries WHERE sequence <= (SELECT sequence FROM audit_entries ORDER BY sequence DESC LIMIT 1 OFFSET 1000)", []).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+fn write_map_delta<T: serde::Serialize + PartialEq>(
+    db: &Connection,
+    kind: &str,
+    values: &BTreeMap<String, T>,
+    before: &BTreeMap<String, T>,
+) -> Result<(), String> {
+    for (key, value) in values {
+        if before.get(key) != Some(value) {
+            put_entity(db, kind, key, value)?;
+        }
+    }
+    for key in before.keys().filter(|key| !values.contains_key(*key)) {
+        db.execute(
+            "DELETE FROM entities WHERE kind=?1 AND key=?2",
+            params![kind, key],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+fn write_delta(db: &Connection, data: &Data, before: &Data) -> Result<(), String> {
+    write_map_delta(db, "account", &data.users, &before.users)?;
+    write_map_delta(db, "session", &data.sessions, &before.sessions)?;
+    for (kind, current, previous) in [
+        (
+            "room",
+            data.rooms
+                .iter()
+                .map(|(key, r)| (key, &r.id, r.revision))
+                .collect::<Vec<_>>(),
+            before
+                .rooms
+                .iter()
+                .map(|(key, r)| (key, &r.id, r.revision))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "private",
+            data.private
+                .iter()
+                .map(|(key, c)| (key, &c.id, c.revision))
+                .collect(),
+            before
+                .private
+                .iter()
+                .map(|(key, c)| (key, &c.id, c.revision))
+                .collect(),
+        ),
+    ] {
+        for (key, _, revision) in &current {
+            let changed = if kind == "room" {
+                data.rooms.get(*key) != before.rooms.get(*key)
+            } else {
+                data.private.get(*key) != before.private.get(*key)
+            };
+            if changed {
+                if kind == "room" {
+                    if let Some(room) = data.rooms.get(*key) {
+                        put_entity(db, kind, key, &room_metadata(room))?;
+                    }
+                } else if let Some(chat) = data.private.get(*key) {
+                    put_entity(db, kind, key, &private_metadata(chat))?;
+                }
+                db.execute(
+                    "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2 AND revision!=?3",
+                    params![kind, key, revision],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        let keys: BTreeSet<_> = current.iter().map(|(key, _, _)| *key).collect();
+        let ids: BTreeSet<_> = current.iter().map(|(_, id, _)| *id).collect();
+        for (key, id, _) in previous.iter().filter(|(key, _, _)| !keys.contains(key)) {
+            if !ids.contains(id) {
+                db.execute("DELETE FROM messages WHERE conversation=?1", [id])
+                    .map_err(|e| e.to_string())?;
+            }
+            db.execute(
+                "DELETE FROM entities WHERE kind=?1 AND key=?2",
+                params![kind, key],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    for account in before
+        .users
+        .values()
+        .filter(|old| !data.users.values().any(|new| new.id == old.id))
+    {
+        db.execute(
+            "DELETE FROM bot_receipts WHERE account_id=?1",
+            [&account.id],
+        )
+        .map_err(|e| e.to_string())?;
+        db.execute(
+            "DELETE FROM bot_command_receipts WHERE account_id=?1",
+            [&account.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if data.next_sequence != before.next_sequence {
+        db.execute(
+            "UPDATE counters SET sequence=?1 WHERE id=1",
+            [data.next_sequence],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    write_audit(db, data)?;
+    if data.policy.revision != before.policy.revision
+        || data.policy.assignments != before.policy.assignments
+        || data.policy.grants != before.policy.grants
+        || data.bots != before.bots
+    {
+        write_state(db, data)?;
+    }
+    Ok(())
+}
+
+fn write_history_deletions(
+    tx: &Connection,
+    deletes: &[(String, u64)],
+    cleanups: &[(String, u64)],
+) -> Result<(), String> {
+    for (id, sequence) in deletes {
+        let message_id:String=tx.query_row("SELECT json_extract(json,'$.id') FROM messages WHERE conversation=?1 AND sequence=?2",params![id,sequence],|r|r.get(0)).map_err(|e|storage_error(e.to_string()))?;
+        tx.execute("UPDATE messages SET json=json_set(json,'$.reply',NULL) WHERE conversation=?1 AND json_extract(json,'$.reply.id')=?2",params![id,message_id]).map_err(|e|storage_error(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM messages WHERE conversation=?1 AND sequence=?2",
+            params![id, sequence],
+        )
+        .map_err(|e| storage_error(e.to_string()))?;
+    }
+    for (id, cutoff) in cleanups {
+        tx.execute(
+            "DELETE FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2",
+            params![id, cutoff],
+        )
+        .map_err(|e| storage_error(e.to_string()))?;
+    }
+    Ok(())
+}
+impl Engine {
+    pub(super) fn save_sessions(
+        &mut self,
+        before: &BTreeMap<String, Session>,
+    ) -> Result<(), String> {
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
+        write_map_delta(&tx, "session", &self.data.sessions, before).map_err(storage_error)?;
+        tx.execute(
+            "DELETE FROM entities WHERE kind='session' AND json_extract(json,'$.expires')<=?1",
+            [now()],
+        )
+        .map_err(|e| storage_error(e.to_string()))?;
+        tx.commit().map_err(|e| storage_error(e.to_string()))?;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+    pub(super) fn save_history_maintenance(&mut self) -> Result<(), String> {
+        let ids: BTreeSet<_> = self
+            .pending_deletes
+            .iter()
+            .chain(self.pending_cleanups.iter())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
+        write_history_deletions(&tx, &self.pending_deletes, &self.pending_cleanups)?;
+        for (kind, key, id, revision) in self
+            .data
+            .rooms
+            .iter()
+            .map(|(key, r)| ("room", key, &r.id, r.revision))
+            .chain(
+                self.data
+                    .private
+                    .iter()
+                    .map(|(key, c)| ("private", key, &c.id, c.revision)),
+            )
+        {
+            if ids.contains(id) {
+                tx.execute(
+                    "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                    params![kind, key, revision],
+                )
+                .map_err(|e| storage_error(e.to_string()))?;
+            }
+        }
+        write_audit(&tx, &self.data).map_err(storage_error)?;
+        tx.commit().map_err(|e| storage_error(e.to_string()))?;
+        self.revision = self.revision.wrapping_add(1);
+        if ids.len() == 1 {
+            self.changed_conversation = ids.into_iter().next();
+        }
+        Ok(())
+    }
+}
+
+impl Engine {
+    pub(super) fn save_bot_metadata(&mut self) -> Result<(), String> {
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
+        write_state(&tx, &self.data).map_err(storage_error)?;
+        tx.commit().map_err(|e| storage_error(e.to_string()))?;
+        self.bot_index = crate::bots::models::Index::build(&self.data);
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+    pub(super) fn save_empty_private(&mut self, key: &str) -> Result<(), String> {
+        let chat = self
+            .data
+            .private
+            .get(key)
+            .ok_or("Private conversation not found.")?;
+        let writer = self.db.clone();
+        let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
+        let tx = db.savepoint().map_err(|e| e.to_string())?;
+        put_entity(&tx, "private", key, &private_metadata(chat)).map_err(storage_error)?;
+        tx.commit().map_err(|e| storage_error(e.to_string()))?;
+        self.bot_index
+            .conversations
+            .insert(chat.id.clone(), format!("@private:{key}"));
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
 }

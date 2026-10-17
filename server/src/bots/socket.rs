@@ -7,6 +7,7 @@ use crate::{
     engine::authorization::Action,
     web::{App, Change, socket::send},
 };
+use axum::extract::ws::Utf8Bytes;
 use axum::{
     extract::{
         WebSocketUpgrade,
@@ -16,7 +17,7 @@ use axum::{
     response::Response,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::time::{Duration, Instant};
 
 pub(super) async fn upgrade(
@@ -54,7 +55,7 @@ async fn value(
     app: &App,
     context: &Context,
     change: Option<Change>,
-) -> Result<Option<Value>, Error> {
+) -> Result<Option<Utf8Bytes>, Error> {
     let app = app.clone();
     let context = context.clone();
     let permit = app.io_permit().map_err(Error::storage)?;
@@ -66,12 +67,12 @@ async fn value(
         match change {
             Some(Change::Conversation(id)) => {
                 if context.permits(&engine, "read", Some(&id)).is_err() { return Ok(None); }
-                Ok(engine.bot_target(&user, &id, Action::Read).ok().map(|t| json!({"kind":"conversation","conversation_id":id,"content_revision":t.revision})))
+                Ok(engine.bot_target(&user, &id, Action::Read).ok().map(|t| json!({"kind":"conversation","conversation_id":id,"content_revision":t.revision}).to_string().into()))
             }
             Some(Change::Presence) if context.metadata(&engine)?.conversations.is_some() => Ok(None),
-            Some(Change::Presence) => Ok(Some(json!({"kind":"presence","online":engine.online(&user)}))),
+            Some(Change::Presence) => Ok(Some(json!({"kind":"presence","online":engine.online(&user)}).to_string().into())),
             Some(Change::Read(name)) if name != user => Ok(None),
-            _ => context.snapshot(&engine).map(|s| Some(json!(s))),
+            _ => crate::web::snapshots::bot_value(&app,&engine,&context).map(Some).map_err(Error::storage),
         }
     }).await.map_err(Error::storage)?
 }
@@ -195,9 +196,9 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
     }
     let _ = send(&mut socket, Message::Close(None)).await;
 }
-async fn emit(socket: &mut WebSocket, result: Result<Option<Value>, Error>) -> bool {
+async fn emit(socket: &mut WebSocket, result: Result<Option<Utf8Bytes>, Error>) -> bool {
     match result {
-        Ok(Some(v)) => send(socket, Message::Text(v.to_string().into())).await,
+        Ok(Some(v)) => send(socket, Message::Text(v)).await,
         Ok(None) => true,
         Err(e) => {
             let _ = send(

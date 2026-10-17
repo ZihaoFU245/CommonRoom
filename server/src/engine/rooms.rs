@@ -25,7 +25,7 @@ impl Engine {
         let mut room = self.data.rooms.remove(name).ok_or("Room not found.")?;
         room.revision = room.revision.wrapping_add(1);
         self.data.rooms.insert(new_name.into(), room);
-        if let Err(error) = self.store_room_rename(name, new_name) {
+        if let Err(error) = self.store_room_rename(name, new_name, &before) {
             self.data = before;
             tracing::error!(error = %error, "Room rename failed");
             return Err("Storage unavailable; rename was not applied.".into());

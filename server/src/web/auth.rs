@@ -220,7 +220,32 @@ async fn logout_inner(State(app): State<App>, headers: HeaderMap) -> Result<Resp
     );
     Ok(response)
 }
-pub(crate) async fn me(
+pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
+    check_read_origin_or_bot(&app, &headers)?;
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        authenticate(&app, &headers)?;
+        let value = super::snapshots::value(&app, &headers, false)
+            .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+        Ok((
+            [(header::CONTENT_TYPE, "application/json")],
+            value.to_string(),
+        )
+            .into_response())
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Snapshot worker unavailable.",
+        )
+    })?
+}
+
+pub(crate) async fn session_status(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -230,19 +255,14 @@ pub(crate) async fn me(
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let username = authenticate(&app, &headers)?;
-        let snapshot = app
-            .engine_read_api()?
-            .try_snapshot(&username)
-            .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?
-            .ok_or_else(|| error(StatusCode::SERVICE_UNAVAILABLE, "Snapshot unavailable."))?;
-        Ok(Json(json!(snapshot)))
+        authenticate(&app, &headers)?;
+        Ok(Json(json!({"ok":true})))
     })
     .await
     .map_err(|_| {
         error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Snapshot worker unavailable.",
+            "Session worker unavailable.",
         )
     })?
 }

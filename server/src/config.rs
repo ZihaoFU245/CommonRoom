@@ -118,9 +118,7 @@ impl Config {
             axum::http::HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| "set_real_ip_from must be a valid HTTP header name or null.")?;
         }
-        if config.max_users == 0 || config.max_rooms == 0 || config.max_messages == 0 {
-            return Err("max_users, max_rooms and max_messages must be positive integers.".into());
-        }
+        validate_limits(config.max_users, config.max_rooms, config.max_messages)?;
         config
             .bind
             .parse::<std::net::SocketAddr>()
@@ -153,6 +151,16 @@ fn normalize_base_url(value: &str) -> Result<String, String> {
         );
     }
     Ok(format!("{}/", value.trim_end_matches('/')))
+}
+
+pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Result<(), String> {
+    if users == 0 || rooms == 0 || messages == 0 {
+        return Err("max_users, max_rooms and max_messages must be positive integers.".into());
+    }
+    if users > 256 || rooms > 1024 || messages > 1_000_000 {
+        return Err("Limits exceed supported ceilings: max_users 256, max_rooms 1024, max_messages 1000000.".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

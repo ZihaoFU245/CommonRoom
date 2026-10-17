@@ -58,7 +58,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v10 restart and v9 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v12 restart and v9/v10/v11 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -144,7 +144,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v10 restart and v9 migration and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v12 restart and v9/v10/v11 migration and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -499,3 +499,12 @@ administrators in last-admin guards, indexed rename isolation and v10 migration
 backfill/rollback. Hook tests drive continuous revision changes during explicit
 paging and continuous snapshots during read acknowledgements; retries stay bounded,
 the original range is preserved, and live tails remain in the ordering ledger.
+
+Performance regressions guard unrelated entity/state writes during retraction and
+cleanup, audit retention without rewriting retained entries, v11 audit migration
+and failed-DDL rollback, startup expiry pruning, configuration ceilings, shared
+snapshot buffers after read-only commands, credential-isolated bot cache reuse,
+revocation checks, prepared-send races and fail-closed rollback reload failures. Snapshot synchronization tests reject
+older socket baselines after newer HTTP data and accept a restarted instance.
+The motion fixture passes all 20 scenarios in wide and compact modes, including
+1,000-message windows, rapid changes, edits, paging and reduced motion.

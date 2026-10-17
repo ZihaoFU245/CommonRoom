@@ -16,6 +16,8 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
     request = { url: String(url), options };
     return new Response(JSON.stringify({ ok: true }));
   };
+  await api.session();
+  assert.equal(request.url, "https://example.com/commonroom/api/session");
   await api.login("alice", "secret");
   assert.equal(request.url, "https://example.com/commonroom/api/login");
   assert.equal(request.options.credentials, "same-origin");

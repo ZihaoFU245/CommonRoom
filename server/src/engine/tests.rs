@@ -528,7 +528,7 @@ fn message_features_persist_and_rollback() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        11
+        12
     );
 }
 #[test]
@@ -1037,7 +1037,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 99] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 13, 99] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1283,7 +1283,7 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            11
+            12
         );
     }
 }
@@ -1817,7 +1817,7 @@ fn v10_reference_migration_backfills_and_rolls_back_on_failure() {
         e.execute(Some("alice"), None, "/new room team").unwrap();
         e.execute(Some("alice"), Some("team"), "before migration")
             .unwrap();
-        e.db.lock().unwrap().execute_batch("DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=10;").unwrap();
+        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.audit',json(coalesce((SELECT json_group_array(json(json)) FROM (SELECT json FROM audit_entries ORDER BY sequence)),'[]'))); DROP TABLE audit_entries; DROP INDEX messages_reply; DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=10;").unwrap();
         if fail {
             e.db.lock()
                 .unwrap()
@@ -1848,4 +1848,177 @@ fn v10_reference_migration_backfills_and_rolls_back_on_failure() {
             assert_eq!(room_messages(&e, "team")[0].from, "renamed");
         }
     }
+}
+
+#[test]
+fn maintenance_writes_only_target_revision_messages_and_append_only_audit() {
+    let mut e = engine();
+    e.execute(Some("alice"), None, "/new room untouched")
+        .unwrap();
+    e.execute(Some("bob"), Some("lobby"), "remove me").unwrap();
+    let message = room_messages(&e, "lobby")[0].clone();
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/reply {} retained reply", message.id),
+    )
+    .unwrap();
+    let state: String =
+        e.db.lock()
+            .unwrap()
+            .query_row("SELECT json FROM state", [], |r| r.get(0))
+            .unwrap();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER no_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'state rewrite'); END; CREATE TRIGGER no_entities_insert BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'metadata upsert'); END; CREATE TRIGGER no_audit_update BEFORE UPDATE ON audit_entries BEGIN SELECT RAISE(ABORT,'audit rewrite'); END;").unwrap();
+    e.execute(
+        Some("bob"),
+        Some("lobby"),
+        &format!("/retract {}", message.id),
+    )
+    .unwrap();
+    assert_eq!(room_messages(&e, "lobby").len(), 1);
+    assert!(room_messages(&e, "lobby")[0].reply.is_none());
+    age_first(&e, &e.data.rooms["lobby"].id);
+    e.execute(None, Some("lobby"), "/clean 7d").unwrap();
+    assert!(room_messages(&e, "lobby").is_empty());
+    assert_eq!(
+        e.db.lock()
+            .unwrap()
+            .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+            .unwrap(),
+        state
+    );
+    assert!(stored_data(&e) == e.data);
+}
+#[test]
+fn maintenance_audit_failure_restores_messages_revisions_and_memory() {
+    let mut e = engine();
+    e.execute(Some("bob"), Some("lobby"), "retained").unwrap();
+    let message = room_messages(&e, "lobby")[0].clone();
+    let before = e.data.clone();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER no_audit BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(ABORT,'audit failure'); END;").unwrap();
+    assert!(
+        e.execute(
+            Some("bob"),
+            Some("lobby"),
+            &format!("/retract {}", message.id)
+        )
+        .is_err()
+    );
+    assert!(e.data == before);
+    assert_eq!(room_messages(&e, "lobby")[0].text, "retained");
+}
+#[test]
+fn audit_retention_appends_without_rewriting_policy_or_retained_entries() {
+    let mut e = engine();
+    e.db.lock().unwrap().execute_batch("CREATE TRIGGER no_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'state rewrite'); END; CREATE TRIGGER no_audit_update BEFORE UPDATE ON audit_entries BEGIN SELECT RAISE(ABORT,'audit rewrite'); END;").unwrap();
+    for i in 0..1005 {
+        e.audit(None, "test", &i.to_string());
+        e.save().unwrap();
+    }
+    assert_eq!(e.data.policy.audit.len(), 1000);
+    assert_eq!(e.data.policy.audit.front().unwrap().target, "5");
+    assert!(stored_data(&e) == e.data);
+}
+#[test]
+fn v11_audit_migration_preserves_entries_and_failed_ddl_rolls_back() {
+    for fail in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        let audit = e.data.policy.audit.clone();
+        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.audit',json((SELECT json_group_array(json_remove(json,'$.id')) FROM (SELECT json FROM audit_entries ORDER BY sequence)))); DROP TABLE audit_entries; PRAGMA user_version=11;").unwrap();
+        if !fail {
+            e.db.lock()
+                .unwrap()
+                .execute_batch("DROP INDEX messages_reply;")
+                .unwrap();
+        }
+        drop(e);
+        if fail {
+            assert!(Engine::open(&path).is_err());
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                11
+            );
+            assert_eq!(
+                db.query_row::<u32, _, _>(
+                    "SELECT count(*) FROM sqlite_master WHERE name='audit_entries'",
+                    [],
+                    |r| r.get(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            let e = Engine::open(&path).unwrap();
+            assert!(e.data.policy.audit.iter().all(|entry| !entry.id.is_empty()));
+            let mut restored = e.data.policy.audit.clone();
+            let mut expected = audit;
+            for entry in &mut restored {
+                entry.id.clear();
+            }
+            for entry in &mut expected {
+                entry.id.clear();
+            }
+            assert!(restored == expected);
+            assert_eq!(
+                e.db.lock()
+                    .unwrap()
+                    .query_row::<usize, _, _>(
+                        "SELECT json_array_length(json,'$.policy.audit') FROM state",
+                        [],
+                        |r| r.get(0)
+                    )
+                    .unwrap(),
+                0
+            );
+        }
+    }
+}
+#[test]
+fn expired_sessions_are_not_loaded_and_login_removes_expired_disk_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("alice", "hash".into(), true, false).unwrap();
+    e.login("expired".into(), "alice", "hash", None).unwrap();
+    e.db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE entities SET json=json_set(json,'$.expires',0) WHERE kind='session'",
+            [],
+        )
+        .unwrap();
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    assert!(e.data.sessions.is_empty());
+    e.login("fresh".into(), "alice", "hash", None).unwrap();
+    assert_eq!(
+        e.db.lock()
+            .unwrap()
+            .query_row::<usize, _, _>(
+                "SELECT count(*) FROM entities WHERE kind='session'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert!(e.set_limits(257, 64, 1000).is_err());
+    assert!(e.set_limits(64, 1025, 1000).is_err());
+    assert!(e.set_limits(64, 64, 1_000_001).is_err());
+}
+
+#[test]
+fn failed_rollback_reload_requires_restart_instead_of_reusing_partial_memory() {
+    let mut e = engine();
+    e.db.lock()
+        .unwrap()
+        .execute_batch("DROP TABLE entities;")
+        .unwrap();
+    assert!(e.restore_command_state(e.revision, None).is_err());
+    assert!(e.ensure_recovered().unwrap_err().contains("restart"));
 }
