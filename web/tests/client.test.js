@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { api, sendFrame } from "../src/api/client.ts";
+import { api, sendFrame, ApiError, isUnauthorized } from "../src/api/client.ts";
 
 test("HTTP client preserves base paths, cookies, cancellation and validates responses", async (t) => {
   const originalFetch = globalThis.fetch,
@@ -42,7 +42,7 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
     request.url,
     "https://example.com/commonroom/api/history?view=%40direct%3Abob",
   );
-  assert.equal(request.options.signal, controller.signal);
+  assert.equal(request.options.signal.aborted, false);
   assert.equal(request.options.method, "GET");
   for (const range of [
     { start: 0, end: 1099, limit: 100 },
@@ -54,13 +54,25 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
     const url = new URL(request.url);
     for (const [key, value] of Object.entries(range))
       assert.equal(url.searchParams.get(key), String(value));
-    assert.equal(request.options.signal, controller.signal);
+    assert.equal(request.options.signal.aborted, false);
   }
   globalThis.fetch = async () => new Response(JSON.stringify({ rooms: [] }));
   await assert.rejects(api.me(), /Invalid server response/);
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ error: "Please log in." }), { status: 401 });
-  await assert.rejects(api.me(), /Please log in/);
+    new Response(JSON.stringify({ error: "Invalid or expired credential." }), {
+      status: 401,
+    });
+  await assert.rejects(
+    api.me(),
+    (error) =>
+      isUnauthorized(error) &&
+      error.message === "Invalid or expired credential.",
+  );
+  globalThis.fetch = async () => new Response("Bad gateway", { status: 502 });
+  await assert.rejects(
+    api.me(),
+    (error) => error instanceof ApiError && error.status === 502,
+  );
 });
 test("outbound frames retain the request ID and Unicode text", () => {
   let raw;

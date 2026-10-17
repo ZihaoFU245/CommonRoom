@@ -233,6 +233,6 @@ and private checkpoint directory; the chat server does not start it. Run one
 worker per checkpoint and use a distinct bot account when permissions differ.
 See [Agent development](agent-development.md) for the runnable reference worker.
 
-This release accepts existing v10 data, transactionally upgrades validated v9
+This release accepts existing v11 data, transactionally upgrades validated v9/v10
 data, or initializes an empty data folder. Back up v9 data before upgrading;
 older schemas remain unsupported. See [Data](data.md) for backups and compatibility.

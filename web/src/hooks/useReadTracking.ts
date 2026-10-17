@@ -2,6 +2,7 @@ import type { VirtualTimelineHandle } from "./useVirtualTimeline.ts";
 import type { RefObject } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { Message, Unread, LocalOutput } from "../api/protocol.ts";
+import { useEvent } from "./useEvent.ts";
 import { api } from "../api/client.ts";
 import { visibleReadPosition } from "../features/conversation/unread.ts";
 interface Context {
@@ -71,14 +72,15 @@ export function useReadTracking({
     }
   }, [messages, selected, historyReady, output, cleared]);
   function acknowledgeVisible() {
-    clearTimeout(readTimer.current);
+    if (readTimer.current !== undefined) return;
     readTimer.current = setTimeout(() => {
+      readTimer.current = undefined;
       recordVisibleRead().catch((error: unknown) => {
         console.error("Read tracking failed", error);
       });
     }, 250);
   }
-  async function recordVisibleRead() {
+  const recordVisibleRead = useEvent(async () => {
     if (
       readBusy.current ||
       !historyReady ||
@@ -115,17 +117,17 @@ export function useReadTracking({
     } finally {
       readBusy.current = false;
     }
-  }
+  });
   useEffect(() => {
     acknowledgeVisible();
     window.addEventListener("focus", acknowledgeVisible);
     document.addEventListener("visibilitychange", acknowledgeVisible);
     return () => {
-      clearTimeout(readTimer.current);
       window.removeEventListener("focus", acknowledgeVisible);
       document.removeEventListener("visibilitychange", acknowledgeVisible);
     };
   }, [selected, messages, unread, historyReady, menu, settingsOpen, status]);
+  useEffect(() => () => clearTimeout(readTimer.current), []);
   function jumpToUnread() {
     if (!unread?.first) return;
     if (

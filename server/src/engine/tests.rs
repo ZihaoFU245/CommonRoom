@@ -528,7 +528,7 @@ fn message_features_persist_and_rollback() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        10
+        11
     );
 }
 #[test]
@@ -1037,7 +1037,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 99] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 99] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1094,7 +1094,7 @@ fn hot_mutations_write_constant_rows_and_leave_unrelated_history_untouched() {
     let changes = e.db.lock().unwrap().total_changes();
     e.execute(Some("alice"), None, "/tell bob new private")
         .unwrap();
-    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 4); // insert, evict, counter, revision
+    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 8); // insert/evict, reverse-name references, counter, revision
     let id = private_messages(&e, "alice:bob")[0].id.clone();
     e.db.lock().unwrap().execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
     let changes = e.db.lock().unwrap().total_changes();
@@ -1283,7 +1283,7 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            10
+            11
         );
     }
 }
@@ -1722,4 +1722,130 @@ fn session_only_rollback_preserves_expired_and_replaced_sessions_on_failure() {
     assert!(e.data == before);
     assert!(e.logout("existing").is_err());
     assert!(e.data == before);
+}
+
+#[test]
+fn session_eviction_is_per_account_and_does_not_block_other_logins() {
+    let mut e = engine();
+    for i in 0..256 {
+        e.login(format!("alice-{i}"), "alice", "test-hash", None)
+            .unwrap();
+    }
+    assert_eq!(e.data.sessions.len(), 8);
+    e.login("bob-session".into(), "bob", "test-hash", None)
+        .unwrap();
+    assert_eq!(e.session("bob-session").as_deref(), Some("bob"));
+    assert!(e.session("alice-0").is_none());
+    assert_eq!(
+        e.data
+            .sessions
+            .values()
+            .filter(|s| s.username == "alice")
+            .count(),
+        8
+    );
+}
+#[test]
+fn disabled_administrators_do_not_allow_removing_the_last_active_admin() {
+    for command in [
+        "/disable alice",
+        "/revoke alice admin",
+        "/rm group alice admin",
+    ] {
+        let mut e = engine();
+        e.execute(None, None, "/grant bob admin").unwrap();
+        e.execute(None, None, "/disable bob").unwrap();
+        assert!(
+            e.execute(Some("alice"), None, command)
+                .unwrap_err()
+                .contains("last active"),
+            "{command}"
+        );
+        assert!(e.active("alice") && e.is_admin("alice"));
+    }
+}
+#[test]
+fn rename_only_rewrites_indexed_references_and_revises_affected_conversations() {
+    let mut e = engine();
+    e.execute(Some("alice"), None, "/new room unrelated")
+        .unwrap();
+    e.execute(Some("alice"), Some("unrelated"), "untouched")
+        .unwrap();
+    e.execute(Some("bob"), Some("lobby"), "old author").unwrap();
+    let original = room_messages(&e, "lobby")[0].id.clone();
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/reply {original} @bob hello"),
+    )
+    .unwrap();
+    let unrelated = e.data.rooms["unrelated"].clone();
+    let lobby_revision = e.data.rooms["lobby"].revision;
+    e.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_unrelated BEFORE UPDATE ON messages WHEN OLD.conversation='{}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END;", unrelated.id)).unwrap();
+    e.execute(Some("bob"), None, "/rename robert").unwrap();
+    assert_eq!(e.data.rooms["unrelated"].revision, unrelated.revision);
+    assert_eq!(e.data.rooms["lobby"].revision, lobby_revision + 1);
+    let messages = room_messages(&e, "lobby");
+    assert_eq!(messages[0].from, "robert");
+    assert_eq!(messages[1].reply.as_ref().unwrap().from, "robert");
+    assert!(messages[1].mentions.contains("robert"));
+    let db = e.db.lock().unwrap();
+    let old: usize = db
+        .query_row(
+            "SELECT count(*) FROM message_accounts WHERE name='bob'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old, 0);
+    let plan: String = db
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT conversation FROM message_accounts WHERE name='robert'",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("SEARCH"), "{plan}");
+}
+#[test]
+fn v10_reference_migration_backfills_and_rolls_back_on_failure() {
+    for fail in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.execute(Some("alice"), None, "/new room team").unwrap();
+        e.execute(Some("alice"), Some("team"), "before migration")
+            .unwrap();
+        e.db.lock().unwrap().execute_batch("DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=10;").unwrap();
+        if fail {
+            e.db.lock()
+                .unwrap()
+                .execute_batch("CREATE TABLE reactions_username(dummy);")
+                .unwrap();
+        }
+        drop(e);
+        if fail {
+            assert!(Engine::open(&path).is_err());
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                10
+            );
+            assert_eq!(
+                db.query_row::<u32, _, _>(
+                    "SELECT count(*) FROM sqlite_master WHERE name='message_accounts'",
+                    [],
+                    |r| r.get(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            let mut e = Engine::open(&path).unwrap();
+            e.execute(Some("alice"), None, "/rename renamed").unwrap();
+            assert_eq!(room_messages(&e, "team")[0].from, "renamed");
+        }
+    }
 }

@@ -146,6 +146,99 @@ test("completed jumps allow live merging and refresh around the current anchor",
   } finally {
     api.history = original;
     for (const slot of harness.slots) slot?.cleanup?.();
-    delete globalThis.historyTestHooks;
+  }
+});
+
+test("busy history preserves explicit paging, bounds retries and keeps live tails visible", async () => {
+  const original = api.history;
+  const message = (sequence) => ({
+    id: String(sequence),
+    sequence,
+    time: sequence,
+    from: "alice",
+    to: null,
+    text: "hello",
+    reactions: {},
+    reply: null,
+    mentions: [],
+  });
+  const state = {
+    rooms: [{ name: "team", id: "stable", messages: [message(200)] }],
+    direct: [],
+    private_access: {},
+    unread: { team: { revision: 1, through: 200, oldest: 1 } },
+    policy_revision: 0,
+  };
+  const snapshot = { current: state };
+  const ledger = { current: { sequence: 0, messages: new Map() } };
+  const harness = { slots: [], index: 0, effects: [], dirty: true };
+  let result;
+  const requests = [];
+  let busy = false;
+  api.history = async (view, signal, range) => {
+    requests.push(range);
+    const revision = state.unread.team.revision;
+    if (busy)
+      state.unread.team = { ...state.unread.team, revision: revision + 1 };
+    return {
+      view,
+      revision,
+      messages: range.before ? [message(100)] : [message(200)],
+      has_before: true,
+      has_after: false,
+    };
+  };
+  async function settle() {
+    for (let round = 0; round < 20; round++) {
+      if (harness.dirty) {
+        active = harness;
+        harness.index = 0;
+        harness.effects = [];
+        harness.dirty = false;
+        result = useHistory(
+          state,
+          "team",
+          state.rooms[0].messages,
+          snapshot,
+          ledger,
+          { current: { anchor: () => 200 } },
+          { current: true },
+        );
+        for (const effect of harness.effects) effect();
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      if (!harness.dirty) return;
+    }
+    assert.fail("busy history did not settle");
+  }
+  try {
+    await settle();
+    busy = true;
+    result.loadOlder();
+    await settle();
+    assert.deepEqual(requests.slice(1, 4), [
+      { before: 200 },
+      { before: 200 },
+      { before: 200 },
+    ]);
+    assert.ok(result.messages.some((m) => m.sequence === 100));
+    assert.equal(result.historyReady, true);
+    assert.match(result.historyError, /changing quickly/);
+    // A broken history endpoint cannot hide newly received live messages.
+    api.history = async () => {
+      throw new Error("unavailable");
+    };
+    result.retryHistory();
+    await settle();
+    state.rooms[0].messages.push(message(201));
+    state.unread.team = { ...state.unread.team, revision: 100 };
+    harness.dirty = true;
+    await settle();
+    assert.ok(ledger.current.messages.get("201") > 0);
+    assert.ok(result.messages.some((message) => message.sequence === 201));
+    assert.match(result.historyError, /unavailable/);
+  } finally {
+    api.history = original;
+    for (const slot of harness.slots) slot?.cleanup?.();
   }
 });

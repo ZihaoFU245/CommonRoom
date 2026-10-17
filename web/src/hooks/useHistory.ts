@@ -8,7 +8,7 @@ import type {
   Ledger,
 } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
-import { api } from "../api/client.ts";
+import { api, ApiError } from "../api/client.ts";
 import { ingest } from "../features/conversation/console.ts";
 import {
   mergePage,
@@ -31,21 +31,32 @@ export function useHistory(
   const [historyError, setHistoryError] = useState("");
   const [loading, setLoading] = useState(false);
   const [retry, setRetry] = useState(0);
-  const [target, setTarget] = useState<number | undefined>();
+  const [jump, setJump] = useState<
+    { view: string; sequence: number } | undefined
+  >();
+  const target = jump?.view === selected ? jump.sequence : undefined;
   const active = useRef(selected);
   active.current = selected;
   const current = useRef(loaded);
   current.current = loaded;
   const request = useRef<AbortController | null>(null);
+  const paused = useRef(false);
+  const lastRange = useRef<{
+    range: HistoryRange;
+    direction?: "older" | "newer";
+  }>({ range: {} });
+  // Live tails must enter the local ordering ledger even if history is offline.
+  ingest(
+    state,
+    ledger.current,
+    loaded?.view === selected ? loaded.messages : [],
+  );
   const unread = state.unread[selected];
   const id =
     state.private_access[selected]?.id ??
     state.rooms.find((room) => room.name === selected)?.id;
   const historyReady =
-    !!unread &&
-    loaded?.view === selected &&
-    loaded.id === id &&
-    loaded.revision === unread.revision;
+    !!unread && loaded?.view === selected && loaded.id === id;
   function commit(page: CachedHistory) {
     const metadata = currentState.current.unread[page.view];
     if (metadata)
@@ -56,6 +67,9 @@ export function useHistory(
     ingest(currentState.current, ledger.current, page.messages);
   }
   async function fetchPage(range: HistoryRange, direction?: "older" | "newer") {
+    paused.current = false;
+    lastRange.current =
+      direction === undefined ? { range } : { range, direction };
     const view = active.current;
     const snapshot = currentState.current;
     const conversationId =
@@ -68,7 +82,27 @@ export function useHistory(
     setLoading(true);
     setHistoryError("");
     try {
-      const page = await api.history(view, controller.signal, range);
+      let page;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          page = await api.history(view, controller.signal, range);
+          if (page.view !== view)
+            throw new Error(
+              "History response belongs to another conversation.",
+            );
+          if (currentState.current.unread[view]?.revision === page.revision)
+            break;
+        } catch (error) {
+          if (
+            !(error instanceof ApiError && error.status === 409) ||
+            attempt === 2
+          )
+            throw error;
+        }
+        if (controller.signal.aborted) return;
+      }
+      if (!page)
+        throw new Error("History is changing quickly. Retry the current page.");
       const latest = currentState.current;
       const latestId =
         latest.private_access[view]?.id ??
@@ -80,8 +114,10 @@ export function useHistory(
       )
         return;
       if (latest.unread[view]?.revision !== page.revision) {
-        setRetry((value) => value + 1);
-        return;
+        paused.current = true;
+        setHistoryError(
+          "History is changing quickly. Showing the last received page; retry to refresh.",
+        );
       }
       const previous = current.current;
       commit(
@@ -100,11 +136,17 @@ export function useHistory(
       // A jump applies to this fetch only. Later refreshes use the visible
       // window's anchor, and live appends can resume their merge path.
       if (range.around !== undefined)
-        setTarget((pending) =>
-          pending === range.around ? undefined : pending,
+        setJump((pending) =>
+          pending?.view === view && pending.sequence === range.around
+            ? undefined
+            : pending,
         );
     } catch (error) {
-      if (!controller.signal.aborted) setHistoryError(errorMessage(error));
+      if (!controller.signal.aborted) {
+        if (error instanceof ApiError && error.status === 409)
+          paused.current = true;
+        setHistoryError(errorMessage(error));
+      }
     } finally {
       if (request.current === controller) {
         request.current = null;
@@ -113,6 +155,17 @@ export function useHistory(
     }
   }
   useEffect(() => {
+    paused.current = false;
+    setJump(undefined);
+    setHistoryError("");
+    request.current?.abort();
+    request.current = null;
+    return () => {
+      request.current?.abort();
+      request.current = null;
+    };
+  }, [selected, id, state.policy_revision]);
+  useEffect(() => {
     // Revocation and resource identity reuse cannot retain accessible cached history.
     for (const [view, page] of cache.current) {
       const accessId =
@@ -120,9 +173,8 @@ export function useHistory(
         state.rooms.find((room) => room.name === view)?.id;
       if (!accessId || accessId !== page.id) cache.current.delete(view);
     }
-    request.current?.abort();
-    request.current = null;
-    setLoading(false);
+    if (request.current || paused.current) return;
+    setHistoryError("");
     if (!unread || !id) {
       setLoaded(null);
       setLoading(false);
@@ -178,16 +230,22 @@ export function useHistory(
     fetchPage(anchor === undefined ? {} : { around: anchor }).catch(
       (error: unknown) => setHistoryError(errorMessage(error)),
     );
-    return () => request.current?.abort();
   }, [selected, id, unread?.revision, state.policy_revision, retry, target]);
-  useEffect(() => {
-    setTarget(undefined);
-  }, [selected]);
   return {
     unread,
     historyReady,
     messages:
-      loaded?.view === selected && loaded.id === id ? loaded.messages : tail,
+      loaded?.view === selected && loaded.id === id
+        ? loaded.has_after
+          ? loaded.messages
+          : [
+              ...loaded.messages,
+              ...tail.filter(
+                (message) =>
+                  message.sequence > (loaded.messages.at(-1)?.sequence ?? 0),
+              ),
+            ].slice(-1000)
+        : tail,
     historyError,
     loading,
     refreshing:
@@ -198,7 +256,12 @@ export function useHistory(
       loaded.revision !== unread?.revision,
     hasBefore: loaded?.view === selected && loaded.has_before,
     hasAfter: loaded?.view === selected && loaded.has_after,
-    retryHistory: () => setRetry((value) => value + 1),
+    retryHistory: () => {
+      const { range, direction } = lastRange.current;
+      fetchPage(range, direction).catch((error: unknown) =>
+        setHistoryError(errorMessage(error)),
+      );
+    },
     loadOlder: () => {
       const first = current.current?.messages[0];
       if (!request.current && first && current.current?.has_before)
@@ -214,14 +277,20 @@ export function useHistory(
         );
     },
     loadLatest: () => {
-      setTarget(undefined);
+      request.current?.abort();
+      request.current = null;
+      paused.current = false;
+      setJump(undefined);
       setLoaded(null);
       current.current = null;
       cache.current.delete(active.current);
       setRetry((value) => value + 1);
     },
     loadSequence: (sequence: number) => {
-      setTarget(sequence);
+      paused.current = false;
+      request.current?.abort();
+      request.current = null;
+      setJump({ view: active.current, sequence });
       setRetry((value) => value + 1);
     },
   };

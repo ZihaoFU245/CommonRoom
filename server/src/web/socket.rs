@@ -222,8 +222,10 @@ pub(crate) async fn connection(
                             Err(_) => (0, Err("Invalid message format.".into())),
                         };
                         let reply = match &result { Ok((text, _)) => json!({ "kind": "notice", "id": id, "text": text }), Err(text) => json!({ "kind": "error", "id": id, "text": text }) };
-                        if !send(&mut socket, Message::Text(reply.to_string().into())).await { break; }
+                        // Persistence is already committed. Notify peers even if
+                        // the requester's connection can no longer accept its reply.
                         if let Ok((_,Some(change)))=result { let _=app.changes.send(change); }
+                        if !send(&mut socket, Message::Text(reply.to_string().into())).await { break; }
                     },
                     Message::Close(_) => break,
                     Message::Binary(_) => break,

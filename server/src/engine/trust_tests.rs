@@ -580,7 +580,7 @@ fn removed_su_assignment_permission_preserves_database_and_command_compatibility
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[test]

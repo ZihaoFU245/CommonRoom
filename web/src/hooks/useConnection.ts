@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Snapshot, Acknowledgement } from "../api/protocol.ts";
-import { parseFrame, errorMessage } from "../api/protocol.ts";
-import { api } from "../api/client.ts";
+import { parseFrame } from "../api/protocol.ts";
+import { api, isUnauthorized } from "../api/client.ts";
 import {
   boundSnapshot,
   applyConversation,
@@ -30,10 +30,12 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
     const handleSyncError = (error: unknown) => {
-      if (
-        ["Please log in.", "Account unavailable."].includes(errorMessage(error))
-      )
+      if (isUnauthorized(error)) {
+        stopped = true;
+        clearTimeout(retry);
+        socket.current?.close();
         callbacks.current.onLogout();
+      }
       // Transient refresh failures retry on reconnect/focus; socket updates remain authoritative.
     };
     const sync = snapshotSync(

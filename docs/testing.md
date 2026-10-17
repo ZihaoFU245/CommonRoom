@@ -492,3 +492,10 @@ outlives inference settings, wait-expiry checkpoints and restart without shell
 access or command replay. The real worker integration includes a native shell
 command launched with `--with-shell`. These tests exercise process supervision;
 they do not install or validate a third-party sandbox.
+
+Correctness/availability regressions cover the actual HTTP 401 message and non-JSON
+proxy failures, per-account session eviction after 256 login attempts, disabled
+administrators in last-admin guards, indexed rename isolation and v10 migration
+backfill/rollback. Hook tests drive continuous revision changes during explicit
+paging and continuous snapshots during read acknowledgements; retries stay bounded,
+the original range is preserved, and live tails remain in the ordering ledger.

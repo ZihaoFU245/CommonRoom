@@ -2,7 +2,7 @@ import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { Snapshot } from "./api/protocol.ts";
 import { errorMessage } from "./api/protocol.ts";
-import { api } from "./api/client.ts";
+import { api, isUnauthorized } from "./api/client.ts";
 import { Chat } from "./components/Chat.tsx";
 import { Login } from "./components/Login.tsx";
 import { bootAppearance } from "./features/preferences/appearance.ts";
@@ -34,11 +34,7 @@ function App() {
       .me()
       .then(setAccount)
       .catch((error) => {
-        if (
-          errorMessage(error) !== "Please log in." &&
-          errorMessage(error) !== "Account unavailable."
-        )
-          setInitialError(errorMessage(error));
+        if (!isUnauthorized(error)) setInitialError(errorMessage(error));
         setAccount(null);
       });
   }, []);

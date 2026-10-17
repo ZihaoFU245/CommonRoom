@@ -381,7 +381,13 @@ impl Engine {
                     && scope == Scope::Server
                     && !self.is_su(actor)
                     && self.is_admin(parts[1])
-                    && self.data.users.keys().filter(|n| self.is_admin(n)).count() == 1
+                    && self
+                        .data
+                        .users
+                        .keys()
+                        .filter(|n| self.active(n) && self.is_admin(n))
+                        .count()
+                        == 1
                 {
                     return Err("Cannot revoke the last active administrator.".into());
                 }

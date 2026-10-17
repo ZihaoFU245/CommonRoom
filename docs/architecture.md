@@ -49,7 +49,7 @@ checkpoint/outbox, not a server-side agent runtime.
 
 `web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` handles asynchronous account commands and configuration output. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.
 
-One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mutations. Database/lock work runs on blocking workers; HTTP work admission is capped at 64 jobs. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for SQLite I/O, then rechecks session, access, identity and revision before returning. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
+One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mutations. Database/lock work runs on blocking workers; HTTP work admission is capped at 64 jobs. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for SQLite I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
 
 ## Web ownership
 
@@ -89,11 +89,11 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v10; validated v9 databases upgrade transactionally, and older schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v11; validated v9/v10 databases upgrade transactionally, and older schemas are rejected.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
-Schema v7 adds indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback clones metadata rather than history. Account rename/deletion streams 100-row batches inside one transaction. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
+Schema v7 adds indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback clones metadata rather than history. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
 
 New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy changes use a full snapshot. Presence changes send only the authorized online directory, and extra tabs do not broadcast unchanged presence. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
 
@@ -116,3 +116,11 @@ and skips sorting when no new message IDs arrive.
 `engine/storage/command_receipts.rs` owns atomic native command outcomes. An outer
 SQLite savepoint encloses ordinary command storage savepoints and its receipt;
 receipt failure restores both persistent and in-memory state before broadcasting.
+
+Browser API failures retain HTTP status; 401 responses return the user to login.
+Requests have a 15-second client deadline. Login sessions are capped at eight per
+account with oldest-expiry eviction; the instance ceiling scales with max_users.
+History retries preserve range/direction and stop after three attempts. A coherent
+received page remains usable during live revision churn, with a refresh status.
+Live snapshot tails enter the ledger even when paging fails. Read acknowledgements
+use one pending timer reading current state, so incoming messages cannot starve it.

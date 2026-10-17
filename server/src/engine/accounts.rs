@@ -58,15 +58,6 @@ impl Engine {
                 room.members.insert(new_name.into());
             }
         }
-        for revision in self
-            .data
-            .rooms
-            .values_mut()
-            .map(|r| &mut r.revision)
-            .chain(self.data.private.values_mut().map(|c| &mut c.revision))
-        {
-            *revision = revision.wrapping_add(1);
-        }
         if let Err(error) = self.store_account_rename(name, new_name, &conversations) {
             self.data = before;
             tracing::error!(error = %error, "Account rename failed");
@@ -158,9 +149,37 @@ impl Engine {
         if let Some(old) = old {
             self.data.sessions.remove(old);
         }
-        if self.data.sessions.len() >= 256 {
-            self.data.sessions = before;
-            return Err("Session limit reached.".into());
+        // One account cannot reserve the instance's login capacity. Expiry
+        // orders sessions without changing the persisted session format.
+        while self
+            .data
+            .sessions
+            .values()
+            .filter(|s| s.username == username)
+            .count()
+            >= 8
+        {
+            let oldest = self
+                .data
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.username == username)
+                .min_by_key(|(_, s)| s.expires)
+                .map(|(token, _)| token.clone());
+            if let Some(oldest) = oldest {
+                self.data.sessions.remove(&oldest);
+            }
+        }
+        while self.data.sessions.len() >= self.max_users.saturating_mul(8) {
+            let oldest = self
+                .data
+                .sessions
+                .iter()
+                .min_by_key(|(_, s)| s.expires)
+                .map(|(token, _)| token.clone());
+            if let Some(oldest) = oldest {
+                self.data.sessions.remove(&oldest);
+            }
         }
         self.data.sessions.insert(
             token,
@@ -281,7 +300,13 @@ impl Engine {
         }
         if !self.is_su(actor)
             && self.is_admin(name)
-            && self.data.users.keys().filter(|n| self.is_admin(n)).count() == 1
+            && self
+                .data
+                .users
+                .keys()
+                .filter(|n| self.active(n) && self.is_admin(n))
+                .count()
+                == 1
         {
             return Err("Cannot delete the last active administrator.".into());
         }
@@ -393,7 +418,13 @@ impl Engine {
                 self.require_target_command(actor, &scope, parts[0])?;
                 if !self.is_su(actor)
                     && self.is_admin(parts[1])
-                    && self.data.users.keys().filter(|n| self.is_admin(n)).count() == 1
+                    && self
+                        .data
+                        .users
+                        .keys()
+                        .filter(|n| self.active(n) && self.is_admin(n))
+                        .count()
+                        == 1
                 {
                     return Err("Cannot disable the last active admin.".into());
                 }

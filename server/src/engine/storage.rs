@@ -32,9 +32,9 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 9 && version != 10 {
+        if version != 0 && version != 9 && version != 10 && version != 11 {
             return Err(
-                "Unsupported database schema; only v9 migration and v10 are supported.".into(),
+                "Unsupported database schema; only v9/v10 migration and v11 are supported.".into(),
             );
         }
         if version == 0 {
@@ -72,7 +72,10 @@ impl Engine {
                 .execute_batch(INDEXES)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=10;")
+                .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=11;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -107,13 +110,18 @@ impl Engine {
             }
         }
         // Validate all existing metadata before performing the additive v9 upgrade.
-        if version == 9 {
+        if version == 9 || version == 10 {
             let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            if version == 9 {
+                migration
+                    .execute_batch(command_receipts::SCHEMA)
+                    .map_err(|e| e.to_string())?;
+            }
             migration
-                .execute_batch(command_receipts::SCHEMA)
+                .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
                 .map_err(|e| e.to_string())?;
             migration
-                .execute_batch("PRAGMA user_version=10;")
+                .execute_batch("PRAGMA user_version=11;")
                 .map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -324,7 +332,24 @@ impl Engine {
                 )
                 .map_err(|e| e.to_string())?;
         }
+        let affected = account_conversations(&transaction, name)?;
         rewrite_account_messages(&transaction, name, Some(new_name))?;
+        for (id, revision) in self
+            .data
+            .rooms
+            .values_mut()
+            .map(|r| (&r.id, &mut r.revision))
+            .chain(
+                self.data
+                    .private
+                    .values_mut()
+                    .map(|c| (&c.id, &mut c.revision)),
+            )
+        {
+            if affected.contains(id) {
+                *revision = revision.wrapping_add(1);
+            }
+        }
         write_data(&transaction, &self.data)?;
         transaction.commit().map_err(|e| e.to_string())
     }
@@ -789,9 +814,9 @@ fn rewrite_account_messages(
         .unwrap_or_else(|| format!("{name} (deleted)"));
     let mut after = 0u64;
     loop {
-        let mut query=db.prepare("SELECT conversation,json FROM messages WHERE sequence>?1 ORDER BY sequence LIMIT 100").map_err(|e|e.to_string())?;
+        let mut query=db.prepare("SELECT m.conversation,m.json FROM message_accounts a JOIN messages m ON m.conversation=a.conversation AND m.sequence=a.sequence WHERE a.name=?2 AND a.sequence>?1 ORDER BY a.sequence LIMIT 100").map_err(|e|e.to_string())?;
         let rows = query
-            .query_map([after], |r| {
+            .query_map(params![after, name], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
@@ -840,4 +865,34 @@ fn rewrite_account_messages(
     db.execute("DELETE FROM reactions WHERE username=?1", [name])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// This reverse index covers author, recipient, reply author and mentions. SQL
+// triggers keep it correct for all mutation paths, including reply scrubbing.
+const ACCOUNT_REFERENCE_SCHEMA: &str = "
+CREATE TABLE message_accounts(name TEXT NOT NULL,conversation TEXT NOT NULL,sequence INTEGER NOT NULL,
+ PRIMARY KEY(name,sequence,conversation), FOREIGN KEY(conversation,sequence) REFERENCES messages(conversation,sequence) ON DELETE CASCADE ON UPDATE CASCADE) WITHOUT ROWID;
+CREATE INDEX message_accounts_message ON message_accounts(conversation,sequence);
+CREATE INDEX reactions_username ON reactions(username,conversation);
+CREATE TRIGGER message_accounts_insert AFTER INSERT ON messages BEGIN
+ INSERT OR IGNORE INTO message_accounts SELECT value,NEW.conversation,NEW.sequence FROM
+ (SELECT json_extract(NEW.json,'$.from') AS value UNION SELECT json_extract(NEW.json,'$.to') UNION SELECT json_extract(NEW.json,'$.reply.from') UNION SELECT value FROM json_each(NEW.json,'$.mentions')) WHERE value IS NOT NULL;
+END;
+CREATE TRIGGER message_accounts_update AFTER UPDATE OF json ON messages BEGIN
+ DELETE FROM message_accounts WHERE conversation=OLD.conversation AND sequence=OLD.sequence;
+ INSERT OR IGNORE INTO message_accounts SELECT value,NEW.conversation,NEW.sequence FROM
+ (SELECT json_extract(NEW.json,'$.from') AS value UNION SELECT json_extract(NEW.json,'$.to') UNION SELECT json_extract(NEW.json,'$.reply.from') UNION SELECT value FROM json_each(NEW.json,'$.mentions')) WHERE value IS NOT NULL;
+END;
+INSERT OR IGNORE INTO message_accounts SELECT json_extract(json,'$.from'),conversation,sequence FROM messages WHERE json_extract(json,'$.from') IS NOT NULL;
+INSERT OR IGNORE INTO message_accounts SELECT json_extract(json,'$.to'),conversation,sequence FROM messages WHERE json_extract(json,'$.to') IS NOT NULL;
+INSERT OR IGNORE INTO message_accounts SELECT json_extract(json,'$.reply.from'),conversation,sequence FROM messages WHERE json_extract(json,'$.reply.from') IS NOT NULL;
+INSERT OR IGNORE INTO message_accounts SELECT j.value,m.conversation,m.sequence FROM messages m,json_each(m.json,'$.mentions') j;
+";
+fn account_conversations(db: &Connection, name: &str) -> Result<BTreeSet<String>, String> {
+    let mut query = db.prepare("SELECT conversation FROM message_accounts WHERE name=?1 UNION SELECT conversation FROM reactions WHERE username=?1").map_err(|e| e.to_string())?;
+    query
+        .query_map([name], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|e| e.to_string())
 }

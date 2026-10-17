@@ -305,7 +305,7 @@ mod tests {
             .db
             .lock()
             .unwrap()
-            .execute_batch("DROP TABLE bot_command_receipts; PRAGMA user_version=9;")
+            .execute_batch("DROP TABLE bot_command_receipts; DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=9;")
             .unwrap();
         let before = engine.data.clone();
         drop(engine);
@@ -318,7 +318,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            10
+            11
         );
         engine
             .db

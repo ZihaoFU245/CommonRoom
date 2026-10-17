@@ -7,6 +7,18 @@ import {
 } from "./protocol.ts";
 import type { ClientFrame, HistoryRange } from "./protocol.ts";
 
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+export function isUnauthorized(error: unknown) {
+  return error instanceof ApiError && error.status === 401;
+}
+
 export function sendFrame(socket: WebSocket, frame: ClientFrame) {
   socket.send(JSON.stringify(frame));
 }
@@ -21,7 +33,9 @@ async function request<T>(
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     cache: "no-store",
-    ...(signal === undefined ? {} : { signal }),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
+      : AbortSignal.timeout(15000),
     ...(body === undefined
       ? {}
       : {
@@ -29,8 +43,14 @@ async function request<T>(
           body: JSON.stringify(body),
         }),
   });
-  const value: unknown = await response.json();
-  if (!response.ok) throw new Error(responseError(value));
+  const value: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      response.status,
+      value === null
+        ? `Server request failed (${response.status}).`
+        : responseError(value),
+    );
   if (!validate(value))
     throw new Error(
       "Invalid server response. Please reload or check the server version.",

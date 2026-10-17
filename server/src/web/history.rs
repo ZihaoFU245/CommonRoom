@@ -63,10 +63,10 @@ pub(crate) async fn history(
             })?;
         let current = authenticate(&app, &headers)?;
         let engine = app.engine_read_api()?;
-        let (_, current_id, current_revision) = engine
+        let (_, current_id, _) = engine
             .conversation(&current, &input.view)
             .map_err(|e| error(StatusCode::FORBIDDEN, &e))?;
-        if current != user || current_id != id || current_revision != page.revision {
+        if current != user || current_id != id {
             return Err(error(
                 StatusCode::CONFLICT,
                 "History changed; retry the current page.",

@@ -2,13 +2,15 @@
 
 ## Database compatibility
 
-The current schema is v10. Empty databases initialize transactionally as v10.
-Existing v9 databases upgrade transactionally after metadata validation: the
-migration adds the command receipt table and index, then advances `user_version`.
+Validated v9/v10 databases upgrade transactionally to v11. V9 first gains native
+command receipts. V11 adds a reverse index of author, recipient, reply-author and
+mention names, maintained by message insert/update/delete operations, plus a
+reaction-user index. Existing retained history is indexed once during migration.
+Failed migration rolls back all schema/version changes. Back up before upgrading;
+older binaries cannot open v11.
+
+Empty databases initialize as v11. Existing v11 databases reopen without migration.
 History, message receipts, accounts, sessions and read cursors are preserved.
-Existing v10 databases reopen without migrations. Older schemas are unsupported.
-Back up v9 data before upgrading; a v9-only binary cannot reopen upgraded data.
-A failed migration rolls back its schema/version changes.
 
 The removed `x:group.su.assign` permission is accepted only in existing stored
 grants and supplies no authority. Those entries are preserved and can be removed
@@ -16,7 +18,7 @@ with `/revoke user scope x:group.su.assign`; new grants of this name are rejecte
 Su group assignment still requires su authority, including authorized `/sudo`.
 That permission-catalog change itself requires no data rewrite.
 
-Schemas other than v9/v10 and existing unversioned databases are rejected before
+Schemas other than v9/v10/v11 and existing unversioned databases are rejected before
 changing journal settings, schema, state or version. Do not lower `user_version`
 manually on a working database.
 
@@ -51,7 +53,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v10 and upgrades v9. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v11 and upgrades v9/v10. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -60,7 +62,7 @@ On Unix, startup restricts the data directory to its owner (`0700`). This
 folder contains private messages and active session credentials; keep
 backups private as well.
 
-Account renames use the current schema. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. No new schema migration is required.
+Account renames use the v11 reverse name index. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. The index is backfilled by the v11 migration.
 
 Room renames retain the existing metadata layout. Room metadata and every name-based read cursor move
 in one transaction. Stable room IDs keep history, ownership and scoped grants
@@ -88,7 +90,7 @@ Sends/replies insert one message, prune beyond the configured per-conversation r
 
 Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. One writer connection and four independent read-only connections use WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages are bounded to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting; SQLite page caches and response copies are additional memory.
 
-Account rename/deletion streams at most 100 message records at a time inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains metadata only. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.
+Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains metadata only. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.
 
 Message JSON may include a boolean `markdown` field. Missing fields default to
 false, preserving plain-text rendering for existing messages. This additive JSON
@@ -148,7 +150,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v10 and the minimal reference worker.
+independently of server SQLite schema v11 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -156,7 +158,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v10.
+keys; unsupported versions are rejected. This does not change server schema v11.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
