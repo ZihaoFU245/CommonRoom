@@ -186,6 +186,8 @@ impl Engine {
         }
         Ok(models::Snapshot {
             kind: "snapshot",
+            policy_revision: self.data.policy.revision,
+            server_instance: self.instance.clone(),
             credential: serde_json::Value::Null,
             account: models::Account {
                 id: account.id.clone(),

@@ -13,6 +13,7 @@ import type {
   PendingCommand,
   Acknowledgement,
   BotCommands,
+  ReplyTarget,
 } from "../api/protocol.ts";
 import { privatePeers, commandText } from "../features/conversation/console.ts";
 import { sendFrame } from "../api/client.ts";
@@ -37,6 +38,15 @@ import {
 import type { ComposerSubmission } from "../features/conversation/submission.ts";
 
 import { useCommandComposer } from "./useCommandComposer.ts";
+
+interface Outgoing {
+  key: string;
+  view: string;
+  draft: string;
+  text: string;
+  reply: ReplyTarget | null;
+  error?: string;
+}
 
 interface Context {
   botCommands: BotCommands[];
@@ -119,9 +129,12 @@ export function useCommands({
     }
   }, [canDebug]);
   const [pending, setPending] = useState(false);
+  const [outgoing, setOutgoing] = useState<Outgoing[]>([]);
+  const outgoingSerial = useRef(0);
   const {
     draft,
     draftRef,
+    draftVersion,
     setDraft,
     replyTarget,
     setReplyTarget,
@@ -254,7 +267,11 @@ export function useCommands({
   function send(event: Event) {
     event.preventDefault();
     const text = expandAlias(draft.trim(), aliases);
-    if (!text || lifecycle.pending) return;
+    if (
+      !text ||
+      (text.startsWith("/") ? lifecycle.pending : !lifecycle.canSubmitMessage())
+    )
+      return;
     if (text.split(/\s+/u)[0] === "/markdown") {
       try {
         const enabled = setMarkdown(text.replace(/\s+/gu, " "));
@@ -347,8 +364,27 @@ export function useCommands({
     submitComposer(submission);
   }
   function submitComposer(submission: Readonly<ComposerSubmission>) {
-    if (lifecycle.pending) return;
     const { text, selected: view, replyId } = submission;
+    const message = !text.startsWith("/");
+    if (message ? !lifecycle.canSubmitMessage() : lifecycle.pending) return;
+    const outgoingKey = message ? `outgoing-${++outgoingSerial.current}` : null;
+    const submittedVersion = draftVersion.current;
+    if (outgoingKey) {
+      setOutgoing((items) => [
+        ...items.filter(
+          (item, index) => !item.error || index >= items.length - 48,
+        ),
+        {
+          key: outgoingKey,
+          view,
+          draft: submission.draft,
+          text,
+          reply: replyTarget,
+        },
+      ]);
+      setDraft("");
+      setReplyTarget(null);
+    }
     dismissHints();
     lifecycle.submit({
       command: {
@@ -358,14 +394,33 @@ export function useCommands({
         reply: !!replyId && !text.startsWith("/"),
       },
       frame: submissionFrame(submission),
-      complete: (data, current) =>
-        handleAcknowledgement(data, current, submission.draft),
+      parallel: message,
+      complete: (data, current) => {
+        if (outgoingKey) {
+          setOutgoing((items) =>
+            data.kind === "error"
+              ? items.map((item) =>
+                  item.key === outgoingKey
+                    ? { ...item, error: data.text }
+                    : item,
+                )
+              : items.filter((item) => item.key !== outgoingKey),
+          );
+        } else
+          handleAcknowledgement(
+            data,
+            current,
+            submission.draft,
+            submittedVersion,
+          );
+      },
     });
   }
   function handleAcknowledgement(
     data: Acknowledgement,
     current: PendingCommand,
     submittedDraft?: string,
+    submittedVersion?: number,
   ) {
     const error = data.kind === "error";
     if (current.key) {
@@ -376,7 +431,11 @@ export function useCommands({
       complete(current.key, (data.text || "Done.") + localHelp, error);
     } else if (error) append(current.text, data.text, true, current.room);
     if (!error && !current.action) {
-      if (draftRef.current === submittedDraft) setDraft("");
+      if (
+        draftRef.current === submittedDraft &&
+        draftVersion.current === submittedVersion
+      )
+        setDraft("");
       if (current.reply) setReplyTarget(null);
       const [command, argument, name] = commandText(current.text).split(/\s+/u);
       const target =
@@ -424,7 +483,20 @@ export function useCommands({
     serverCommands,
     debug: debug && canDebug,
     draft,
-    pending,
+    pending:
+      pending ||
+      (draft.trim().startsWith("/")
+        ? lifecycle.pending
+        : !lifecycle.canSubmitMessage()),
+    outgoing,
+    restoreOutgoing: (key: string) => {
+      const item = outgoing.find((entry) => entry.key === key);
+      if (!item || !item.error || draftRef.current) return;
+      setSelected(item.view);
+      setDraft(item.draft);
+      setReplyTarget(item.reply);
+      setOutgoing((items) => items.filter((entry) => entry.key !== key));
+    },
     replyTarget,
     setReplyTarget,
     hints,

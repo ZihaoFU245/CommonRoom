@@ -25,6 +25,8 @@ pub(crate) struct Command {
     #[serde(default, skip_serializing_if = "is_false")]
     pub operator_only: bool,
 }
+const REQUEST_TTL: Duration = Duration::from_secs(60);
+
 fn is_false(value: &bool) -> bool {
     !value
 }
@@ -176,6 +178,34 @@ impl Hub {
         }
         Ok(())
     }
+    fn retain(&self, lease: &Lease, ids: &BTreeSet<String>) -> Result<(), Error> {
+        let mut publishers = self.0.lock().map_err(Error::storage)?;
+        if let Some(publisher) = publishers
+            .get_mut(&lease.account)
+            .filter(|p| p.session == lease.session)
+        {
+            publisher.catalogues.retain(|id, _| {
+                if ids.contains(id) {
+                    return true;
+                }
+                let _ = lease.changes.send(Change::BotCommands(id.clone()));
+                false
+            });
+            publisher.bytes = publisher
+                .catalogues
+                .values()
+                .map(|commands| serde_json::to_vec(commands).map(|bytes| bytes.len()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Error::storage)?
+                .into_iter()
+                .sum();
+            // Ownership/visibility may have changed even when syntax did not.
+            for id in publisher.catalogues.keys() {
+                let _ = lease.changes.send(Change::BotCommands(id.clone()));
+            }
+        }
+        Ok(())
+    }
     fn publish(&self, lease: &Lease, id: &str, commands: Vec<Command>) -> Result<(), Error> {
         let mut publishers = self.0.lock().map_err(Error::storage)?;
         let publisher = publishers
@@ -243,6 +273,7 @@ pub(crate) struct Runtime {
     lease: Option<Lease>,
     pending: BTreeMap<String, (String, Instant)>,
     queue: VecDeque<String>,
+    attempts: BTreeMap<String, u8>,
 }
 impl Runtime {
     pub(crate) async fn apply(
@@ -278,7 +309,7 @@ impl Runtime {
         };
         let engine = app.engine_read().map_err(Error::storage)?;
         let user = context.user(&engine)?;
-        let ids: Vec<_> = engine
+        let ids: BTreeSet<_> = engine
             .bot_index
             .conversations
             .keys()
@@ -291,19 +322,36 @@ impl Runtime {
             .take(256)
             .cloned()
             .collect();
-        app.bot_runtimes.commands.clear(lease)?;
-        self.pending.clear();
-        self.queue = ids.into();
+        app.bot_runtimes.commands.retain(lease, &ids)?;
+        self.pending.retain(|_, (id, _)| ids.contains(id));
+        self.queue.retain(|id| ids.contains(id));
+        self.attempts.retain(|id, _| ids.contains(id));
+        for id in ids {
+            if !self.pending.values().any(|(pending, _)| pending == &id)
+                && !self.queue.contains(&id)
+            {
+                self.attempts.remove(&id);
+                self.queue.push_back(id);
+            }
+        }
         Ok(())
     }
     pub(crate) fn next(&mut self) -> Option<serde_json::Value> {
-        self.pending
-            .retain(|_, (_, at)| at.elapsed() < Duration::from_secs(10));
+        self.pending.retain(|_, (id, at)| {
+            if at.elapsed() < REQUEST_TTL {
+                return true;
+            }
+            if self.attempts.get(id).copied().unwrap_or(0) < 3 && !self.queue.contains(id) {
+                self.queue.push_back(id.clone());
+            }
+            false
+        });
         if self.pending.len() >= 8 {
             return None;
         }
         let conversation = self.queue.pop_front()?;
         let id = uuid::Uuid::new_v4().to_string();
+        *self.attempts.entry(conversation.clone()).or_default() += 1;
         self.pending
             .insert(id.clone(), (conversation.clone(), Instant::now()));
         Some(serde_json::json!({"kind":"commands_request","id":id,"conversation_id":conversation}))
@@ -330,6 +378,12 @@ impl Runtime {
                         "Register commands_ready first.",
                     ));
                 }
+                if let Some(lease) = &self.lease {
+                    app.bot_runtimes.commands.clear(lease)?;
+                }
+                self.pending.clear();
+                self.queue.clear();
+                self.attempts.clear();
                 self.refresh(app, context)?;
                 Ok(None)
             }
@@ -338,7 +392,7 @@ impl Runtime {
                     .pending
                     .remove(&id)
                     .ok_or_else(|| Error::new(Code::NotFound, "Unknown command request."))?;
-                if at.elapsed() >= Duration::from_secs(10) {
+                if at.elapsed() >= REQUEST_TTL {
                     return Err(Error::new(Code::NotFound, "Command request expired."));
                 }
                 validate(&commands)?;
@@ -374,7 +428,7 @@ mod tests {
         }
         assert!(runtime.next().is_none());
         for (_, at) in runtime.pending.values_mut() {
-            *at = Instant::now() - Duration::from_secs(11);
+            *at = Instant::now() - Duration::from_secs(61);
         }
         assert!(runtime.next().is_some());
         assert_eq!(runtime.pending.len(), 1);

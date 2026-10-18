@@ -2005,3 +2005,37 @@ button:focus-visible {
     animation: html-preview-enter 180ms ease-out;
   }
 }
+
+.outgoing-messages {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+}
+.outgoing-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 64px;
+  overflow-y: auto;
+}
+.outgoing-message small {
+  color: var(--muted);
+}
+.outgoing-message button {
+  margin-left: 8px;
+}
+
+.bot-progress {
+  padding: 8px 16px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.bot-progress small {
+  color: var(--muted);
+}
+.bot-progress p {
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

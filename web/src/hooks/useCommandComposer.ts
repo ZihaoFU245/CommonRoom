@@ -53,7 +53,8 @@ export function useCommandComposer({
   availableCommands,
   send,
 }: Context) {
-  const [draft, setDraft] = useState("");
+  const [draft, updateDraft] = useState("");
+  const draftVersion = useRef(0);
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [hintIndex, setHintIndex] = useState(0);
   const [hintDismissed, setHintDismissed] = useState(false);
@@ -75,6 +76,11 @@ export function useCommandComposer({
   }, [draft, caret]);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  function setDraft(value: string) {
+    draftVersion.current++;
+    draftRef.current = value;
+    updateDraft(value);
+  }
   useEffect(() => {
     if (pending || !draft) {
       setCycle(null);
@@ -152,7 +158,7 @@ export function useCommandComposer({
     ],
   );
   const currentCompletion = cycle || completion;
-  const hints = hintDismissed || pending ? [] : currentCompletion.hints;
+  const hints = hintDismissed ? [] : currentCompletion.hints;
   const activeHint = Math.min(hintIndex, Math.max(0, hints.length - 1));
 
   function edit(value: string) {
@@ -234,6 +240,7 @@ export function useCommandComposer({
   return {
     draft,
     draftRef,
+    draftVersion,
     setDraft,
     replyTarget,
     setReplyTarget,

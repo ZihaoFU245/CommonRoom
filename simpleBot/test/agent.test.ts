@@ -2469,3 +2469,113 @@ test("stopping the agent kills and reaps active code without a late reply", asyn
     await h.stop();
   }
 });
+
+test("socket baselines avoid /me and append-only intervals avoid retained rescans", async () => {
+  const h = await harness();
+  try {
+    h.server.addMessage("seed", { mentions: [] });
+    await h.agent.handleSnapshot(h.server.snapshot());
+    let reads = 0;
+    const history = h.api.history.bind(h.api);
+    h.api.history = (query, signal) => {
+      reads++;
+      return history(query, signal);
+    };
+    h.api.me = () => {
+      throw new Error("socket baseline must not fetch /me");
+    };
+    const revisions = h.store.metrics.revisions;
+    h.server.addMessage("ordinary chatter", { mentions: [] });
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.equal(
+      reads,
+      1,
+      "one pinned append read, independent of retained history size",
+    );
+    assert.equal(h.store.metrics.revisions, revisions);
+    h.server.editMessage(h.server.state.messages[0].id, "edited seed");
+    h.server.addMessage("another append", { mentions: [] });
+    await h.agent.handleSnapshot(h.server.snapshot());
+    assert.equal(
+      h.store.metrics.revisions,
+      revisions + 1,
+      "mixed edits must force reconciliation",
+    );
+    assert.equal(h.store.metrics.edits, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("native catalogues reuse an authenticated policy revision and refresh after it changes", async () => {
+  const h = await harness();
+  try {
+    let reads = 0;
+    const commands = h.api.serverCommands.bind(h.api);
+    h.api.serverCommands = (id) => {
+      reads++;
+      return commands(id);
+    };
+    const baseline = () => ({ ...h.server.snapshot(), policy_revision: 1 });
+    await h.agent.handleSnapshot(baseline());
+    h.server.addMessage("@helper first");
+    await h.agent.handleSnapshot(baseline());
+    h.server.addMessage("@helper second");
+    await h.agent.handleSnapshot(baseline());
+    assert.equal(reads, 1);
+    await h.agent.handleSnapshot({
+      ...h.server.snapshot(),
+      policy_revision: 2,
+    });
+    h.server.addMessage("@helper third");
+    await h.agent.handleSnapshot({
+      ...h.server.snapshot(),
+      policy_revision: 2,
+    });
+    assert.equal(reads, 2);
+    await h.agent.handleSnapshot({
+      ...h.server.snapshot(),
+      policy_revision: 2,
+      server_instance: "restarted",
+    });
+    h.server.addMessage("@helper after restart");
+    await h.agent.handleSnapshot({
+      ...h.server.snapshot(),
+      policy_revision: 2,
+      server_instance: "restarted",
+    });
+    assert.equal(reads, 3);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("plain model deltas are provisional while final output still uses the durable outbox", async () => {
+  const h = await harness();
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const previews: string[] = [];
+  h.agent.options.setPreview = (_id, text) => previews.push(text);
+  h.model.complete = async (request) => {
+    request.onDelta?.("Provisional");
+    await held;
+    return "Final answer";
+  };
+  try {
+    h.server.addMessage("@helper hello");
+    const turn = h.agent.handleSnapshot(h.server.snapshot());
+    await h.waitFor("first provisional text", () => previews.length > 0);
+    assert.equal(previews[0], "Provisional");
+    assert.equal(h.server.state.sends.length, 0);
+    release();
+    await turn;
+    assert.equal(h.server.state.sends.length, 1);
+    assert.equal(h.server.state.sends[0].text, "Final answer");
+    assert.equal(h.activities.at(-1), "idle");
+  } finally {
+    release();
+    await h.stop();
+  }
+});

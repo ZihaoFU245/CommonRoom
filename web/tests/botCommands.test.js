@@ -199,3 +199,21 @@ test("subcommands descend through three levels and preserve arguments at the car
     false,
   );
 });
+
+test("provisional bot progress validates bounds and never becomes a chat message", () => {
+  const frame = {
+    kind: "activity",
+    conversation_id: "room",
+    account_id: "bot",
+    state: "working",
+    expires: 1234,
+    draft: "Hello",
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
+  for (const draft of [null, 123, "x".repeat(4001)])
+    assert.equal(parseFrame(JSON.stringify({ ...frame, draft })), null);
+  assert.equal(
+    parseFrame(JSON.stringify({ ...frame, state: "unknown" })),
+    null,
+  );
+});

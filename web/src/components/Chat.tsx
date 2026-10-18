@@ -19,6 +19,7 @@ import { DeleteConfirmation } from "./DeleteConfirmation.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { OnlineUsers } from "./OnlineUsers.tsx";
 import { Settings } from "./Settings.tsx";
+import { BotProgress } from "./BotProgress.tsx";
 import { Composer } from "./Composer.tsx";
 import { MessageList } from "./MessageList.tsx";
 import { useConnection } from "../hooks/useConnection.ts";
@@ -156,53 +157,59 @@ export function Chat({
   const input = useRef<HTMLTextAreaElement>(null);
   const { output, cleared, setCleared, ledger, append, complete, clearView } =
     useLocalConsole(initial, selected, selectedRef, atBottom);
-  const { state, currentState, status, socket, botCommandVersions } =
-    useConnection(initial, {
-      onLogout,
-      onSnapshot(previous, data, baseline) {
-        const view = selectedRef.current;
-        const oldId =
-          previous.private_access[view]?.id ??
-          previous.rooms.find((room) => room.name === view)?.id;
-        if (
-          oldId &&
-          !data.private_access[view] &&
-          !data.rooms.some((room) => room.name === view)
-        ) {
-          const renamedView =
-            Object.keys(data.private_access).find(
-              (key) => data.private_access[key]?.id === oldId,
-            ) ?? data.rooms.find((room) => room.id === oldId)?.name;
-          if (renamedView) setSelected(renamedView);
-        }
-        const contentChanged =
-          previous.rooms !== data.rooms || previous.direct !== data.direct;
-        if (contentChanged)
-          notifyMentions(previous, data, {
-            baseline,
-            enabled: notificationsRef.current,
-            NotificationClass: window.Notification,
-            background: document.hidden || !document.hasFocus(),
-            selected: selectedRef.current,
-            open: (view) => {
-              window.focus();
-              setSelected(view);
-            },
-          });
+  const {
+    state,
+    currentState,
+    status,
+    socket,
+    botCommandVersions,
+    botActivities,
+  } = useConnection(initial, {
+    onLogout,
+    onSnapshot(previous, data, baseline) {
+      const view = selectedRef.current;
+      const oldId =
+        previous.private_access[view]?.id ??
+        previous.rooms.find((room) => room.name === view)?.id;
+      if (
+        oldId &&
+        !data.private_access[view] &&
+        !data.rooms.some((room) => room.name === view)
+      ) {
+        const renamedView =
+          Object.keys(data.private_access).find(
+            (key) => data.private_access[key]?.id === oldId,
+          ) ?? data.rooms.find((room) => room.id === oldId)?.name;
+        if (renamedView) setSelected(renamedView);
+      }
+      const contentChanged =
+        previous.rooms !== data.rooms || previous.direct !== data.direct;
+      if (contentChanged)
+        notifyMentions(previous, data, {
+          baseline,
+          enabled: notificationsRef.current,
+          NotificationClass: window.Notification,
+          background: document.hidden || !document.hasFocus(),
+          selected: selectedRef.current,
+          open: (view) => {
+            window.focus();
+            setSelected(view);
+          },
+        });
 
-        if (
-          desiredRoom.current &&
-          (data.rooms.some((r) => r.name === desiredRoom.current) ||
-            (desiredRoom.current.startsWith("@direct:") &&
-              privatePeers(data).includes(desiredRoom.current.slice(8))))
-        ) {
-          setSelected(desiredRoom.current);
-          desiredRoom.current = null;
-        }
-      },
-      onResult: (data) => commands.receive(data),
-      onDisconnect: () => commands.disconnect(),
-    });
+      if (
+        desiredRoom.current &&
+        (data.rooms.some((r) => r.name === desiredRoom.current) ||
+          (desiredRoom.current.startsWith("@direct:") &&
+            privatePeers(data).includes(desiredRoom.current.slice(8))))
+      ) {
+        setSelected(desiredRoom.current);
+        desiredRoom.current = null;
+      }
+    },
+    onResult: (data) => commands.receive(data),
+    onDisconnect: () => commands.disconnect(),
+  });
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
     () => privatePeers(state),
@@ -234,11 +241,21 @@ export function Chat({
   const commands = useCommands({
     botCommands: useBotCommands(
       room?.id ?? state.private_access[selected]?.id,
-      botCommandVersions.get(
-        room?.id ?? state.private_access[selected]?.id ?? "",
-      ) ?? 0,
-      state.policy_revision,
-      room?.members.join("\0") ?? peer ?? "",
+      botCommandVersions,
+      `${state.account_access.id}:${state.sync?.instance ?? ""}:${state.policy_revision}`,
+      useMemo(
+        () =>
+          new Map([
+            ...state.rooms.map((item): [string, string] => [
+              item.id,
+              item.members.join("\0"),
+            ]),
+            ...Object.entries(state.private_access).map(
+              ([view, access]): [string, string] => [access.id, view],
+            ),
+          ]),
+        [state.rooms, state.private_access],
+      ),
       status === "online",
     ),
     selected,
@@ -566,6 +583,34 @@ export function Chat({
             end={end}
             onScroll={handleScroll}
           />
+          <BotProgress
+            activities={botActivities.filter(
+              (item) =>
+                item.conversation_id ===
+                (room?.id ?? state.private_access[selected]?.id),
+            )}
+          />
+          {commands.outgoing.some((item) => item.view === selected) && (
+            <div class="outgoing-messages" aria-live="polite">
+              {commands.outgoing
+                .filter((item) => item.view === selected)
+                .map((item) => (
+                  <div key={item.key} class="outgoing-message">
+                    <p dir="auto">{item.text}</p>
+                    <small>{item.error ?? "Sending…"}</small>
+                    {item.error && (
+                      <button
+                        type="button"
+                        disabled={!!commands.draft}
+                        onClick={() => commands.restoreOutgoing(item.key)}
+                      >
+                        Edit and resend
+                      </button>
+                    )}
+                  </div>
+                ))}
+            </div>
+          )}
           <Composer
             canWrite={commands.permissions.includes("w:message.create")}
             minimumComposerHeight={minimumComposerHeight}

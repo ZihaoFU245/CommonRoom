@@ -232,10 +232,20 @@ export class BotApi {
     );
   }
 
+  previewSupported = false;
   async supportsActivity(): Promise<boolean> {
     const schema = await this.schema();
     const definitions = schema.definitions;
+    this.previewSupported = false;
     if (typeof definitions !== "object" || definitions === null) return false;
+    const activity = (definitions as Record<string, unknown>).ActivityRequest;
+    if (typeof activity === "object" && activity !== null) {
+      const properties = (activity as Record<string, unknown>).properties;
+      this.previewSupported =
+        typeof properties === "object" &&
+        properties !== null &&
+        "draft" in properties;
+    }
     const frames = (definitions as Record<string, unknown>).ClientFrame;
     if (typeof frames !== "object" || frames === null) return false;
     const choices = (frames as Record<string, unknown>).oneOf;

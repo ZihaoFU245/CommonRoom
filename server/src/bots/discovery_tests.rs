@@ -452,3 +452,45 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
         1
     );
 }
+
+#[test]
+fn slow_refresh_keeps_catalogues_and_pending_requests_until_replacement() {
+    let (app, token) = fixture();
+    let context = context(&app, &token);
+    let mut runtime = Runtime::default();
+    let conversation = publish(&app, &context, &mut runtime);
+    runtime.refresh(&app, &context).unwrap();
+    let pending = runtime.next().unwrap();
+    for _ in 0..10 {
+        runtime.refresh(&app, &context).unwrap();
+    }
+    assert!(
+        runtime.next().is_none(),
+        "metadata churn must not restart a slow request"
+    );
+    assert_eq!(
+        app.bot_runtimes
+            .commands
+            .visible(&app.engine_read().unwrap(), "admin", &conversation)
+            .unwrap()
+            .len(),
+        1
+    );
+    runtime
+        .control(
+            &app,
+            &context,
+            Control::Response {
+                id: pending["id"].as_str().unwrap().into(),
+                commands: vec![],
+            },
+        )
+        .unwrap();
+    assert!(
+        app.bot_runtimes
+            .commands
+            .visible(&app.engine_read().unwrap(), "admin", &conversation)
+            .unwrap()
+            .is_empty()
+    );
+}

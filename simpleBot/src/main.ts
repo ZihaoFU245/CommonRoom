@@ -84,6 +84,8 @@ async function main(): Promise<void> {
       socketReady: () => socket?.connected ?? false,
       setActivity: (conversationId, state) =>
         socket?.activity(conversationId, state),
+      setPreview: (conversationId, text) =>
+        socket?.preview(conversationId, text),
     });
   }
 
@@ -130,6 +132,7 @@ async function main(): Promise<void> {
     socket = new BotSocket({
       ...endpoint,
       supportsActivity: () => api.supportsActivity(),
+      supportsPreview: () => api.previewSupported,
       log,
       events: {
         ...events,

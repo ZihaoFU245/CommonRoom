@@ -5,12 +5,21 @@ import type { ModelContext } from "./agent-model.ts";
 import { BotApiError, type BotApi } from "./api.ts";
 import { abortable } from "./async.ts";
 import { taskKey, textHash } from "./store.ts";
-import type { Conversation, Message, HistoryResponse } from "./wire.ts";
+import type {
+  Conversation,
+  Message,
+  HistoryResponse,
+  Snapshot,
+} from "./wire.ts";
 
 /** Authoritative history convergence, version reconciliation and input admission. */
 export class InputSync {
   blocked = false;
   private dirty = false;
+  private readonly retainedBaselines = new Map<
+    string,
+    { revision: number; oldest: number }
+  >();
   private readonly host: AgentState;
   private readonly loop: AgentLoop;
   private readonly controls: Controls;
@@ -26,13 +35,13 @@ export class InputSync {
     this.controls = controls;
     this.modelContext = context;
   }
-  async syncOnce(): Promise<boolean> {
+  async syncOnce(baseline?: Snapshot): Promise<boolean> {
     const { api, store, log } = {
       api: this.host.options.api,
       store: this.host.options.store,
       log: this.host.options.log,
     };
-    const snapshot = await api.me();
+    const snapshot = baseline ?? (await api.me());
     this.blocked = false;
     let save = store.state.account === null;
     if (
@@ -43,6 +52,7 @@ export class InputSync {
     }
     store.state.account = snapshot.account.id;
     this.host.snapshot = snapshot;
+    this.modelContext.warmCatalogues();
     store.metrics.syncs++;
 
     const live = new Set(
@@ -120,6 +130,10 @@ export class InputSync {
       if (cursor === undefined) {
         store.setCursor(conversation.id, conversation.unread.through);
         store.setRevision(conversation.id, conversation.content_revision);
+        this.retainedBaselines.set(conversation.id, {
+          revision: conversation.content_revision,
+          oldest: conversation.unread.oldest,
+        });
         await store.save();
         log(
           "info",
@@ -139,21 +153,85 @@ export class InputSync {
         cursor >= conversation.unread.through
       )
         continue;
+      let prefetched: Message[] | undefined;
       if (
         previous !== undefined &&
         previous !== conversation.content_revision
       ) {
-        await this.reconcile(conversation, previous);
+        prefetched = await this.appendOnly(conversation, previous);
+        if (prefetched === undefined)
+          prefetched = await this.reconcile(conversation, previous);
+        else {
+          store.setRevision(conversation.id, conversation.content_revision);
+          save = true;
+        }
       } else if (previous === undefined) {
         store.setRevision(conversation.id, conversation.content_revision);
         save = true;
       }
-      await this.advance(conversation);
+      await this.advance(conversation, prefetched);
+      if (store.revision(conversation.id) === conversation.content_revision) {
+        this.retainedBaselines.delete(conversation.id);
+        this.retainedBaselines.set(conversation.id, {
+          revision: conversation.content_revision,
+          oldest: conversation.unread.oldest,
+        });
+        if (this.retainedBaselines.size > 256)
+          this.retainedBaselines.delete(
+            this.retainedBaselines.keys().next().value!,
+          );
+      }
     }
     if (save) await store.save();
     const rerun = this.dirty;
     this.dirty = false;
     return rerun;
+  }
+
+  /** Every insertion and every other content mutation increments revision.
+   * Equal revision delta and appended-row count proves an append-only interval,
+   * provided retention did not move. Never infer this from sequence gaps. */
+  private async appendOnly(
+    conversation: Conversation,
+    previous: number,
+  ): Promise<Message[] | undefined> {
+    const baseline = this.retainedBaselines.get(conversation.id);
+    const cursor = this.host.options.store.cursor(conversation.id) ?? 0;
+    const delta = conversation.content_revision - previous;
+    if (
+      !baseline ||
+      baseline.revision !== previous ||
+      !conversation.unread ||
+      baseline.oldest !== conversation.unread.oldest ||
+      delta <= 0 ||
+      delta > 1000 ||
+      conversation.unread.through <= cursor
+    )
+      return undefined;
+    const messages: Message[] = [];
+    let after = cursor;
+    for (;;) {
+      let page: HistoryResponse;
+      try {
+        page = await this.history({
+          conversation_id: conversation.id,
+          after,
+          limit: 100,
+          content_revision: conversation.content_revision,
+        });
+      } catch (error) {
+        if (error instanceof BotApiError && error.code === "conflict")
+          return undefined;
+        throw error;
+      }
+      messages.push(...page.messages);
+      if (messages.length > delta) return undefined;
+      const last = page.messages.at(-1)?.sequence;
+      if (!page.has_after || last === undefined) break;
+      if (last <= after) throw new Error("Append history did not advance");
+      after = last;
+    }
+    return messages.length === delta ? messages : undefined;
   }
 
   /**
@@ -163,16 +241,22 @@ export class InputSync {
    * delivery have independent checkpoints, so slow work cannot pin scanning.
    * A crash resumes accepted tasks instead of refetching them as new work.
    */
-  private async advance(conversation: Conversation): Promise<void> {
+  private async advance(
+    conversation: Conversation,
+    prefetched?: Message[],
+  ): Promise<void> {
     const { store } = this.host.options;
     const accountId = this.host.snapshot?.account.id;
     let after = store.cursor(conversation.id) ?? 0;
     for (;;) {
-      const page = await this.history({
-        conversation_id: conversation.id,
-        after,
-        limit: 100,
-      });
+      const page =
+        prefetched === undefined
+          ? await this.history({
+              conversation_id: conversation.id,
+              after,
+              limit: 100,
+            })
+          : { messages: prefetched, has_after: false };
       this.host.options.log(
         "debug",
         `input history page conversation=${conversation.id} after=${after} messages=${page.messages.length} has_after=${page.has_after}`,
@@ -222,8 +306,10 @@ export class InputSync {
   private async reconcile(
     conversation: Conversation,
     previous: number,
-  ): Promise<void> {
+  ): Promise<Message[] | undefined> {
     const { store, log } = this.host.options;
+    let admitted: Message[] | undefined = [];
+    const cursor = store.cursor(conversation.id) ?? 0;
     const revision = conversation.content_revision;
     log(
       "info",
@@ -253,6 +339,10 @@ export class InputSync {
         throw error;
       }
       for (const message of scanned.messages) {
+        if (message.sequence > cursor && admitted) {
+          admitted.push(message);
+          if (admitted.length > 1000) admitted = undefined;
+        }
         seen.set(message.id, textHash(message.text));
         around = Math.max(around, message.sequence);
       }
@@ -282,6 +372,7 @@ export class InputSync {
       store.rememberVersion(conversation.id, id, hash, 0);
     store.setRevision(conversation.id, revision);
     await store.save();
+    return admitted;
   }
 
   /**

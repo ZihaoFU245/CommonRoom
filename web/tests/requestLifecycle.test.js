@@ -169,3 +169,29 @@ test("private history keeps current syntax and messages/replies retain Unicode",
   context.consoleView = true;
   assert.equal(submissionFrame(context).room, null);
 });
+
+test("ordinary sends overlap while commands remain exclusive and acknowledgements correlate", () => {
+  const f = fixture();
+  const send = (text) =>
+    f.lifecycle.submit({
+      command: { text, room: "lobby", key: null },
+      frame: { text, room: "lobby" },
+      parallel: true,
+      complete: (ack, request) => f.results.push({ ack, request }),
+    });
+  for (let i = 0; i < 16; i++) assert.equal(send(String(i)), true);
+  assert.equal(send("overflow"), false);
+  assert.equal(f.submit("/clean 1d"), false);
+  assert.ok(
+    f.pending.every((value) => value === false),
+    "message acknowledgement must not disable typing",
+  );
+  f.lifecycle.receive({ kind: "notice", id: f.frames[7].id, text: "sent" });
+  assert.equal(f.results[0].request.text, "7");
+  assert.equal(send("replacement"), true);
+  f.lifecycle.disconnect();
+  assert.equal(f.results.length, 17);
+  assert.equal(f.lifecycle.pending, false);
+  assert.equal(f.submit("/help"), true);
+  assert.equal(send("blocked by command"), false);
+});

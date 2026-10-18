@@ -112,7 +112,16 @@ export interface Acknowledgement {
   id: number;
   text: string;
 }
+export interface BotActivity {
+  kind: "activity";
+  conversation_id: string;
+  account_id: string;
+  state: "working" | "idle";
+  expires: number;
+  draft?: string;
+}
 export type ServerFrame =
+  | BotActivity
   | { kind: "bot_commands"; conversation_id: string }
   | Snapshot
   | ConversationUpdate
@@ -276,6 +285,25 @@ export function parseFrame(raw: string): ServerFrame | null {
   }
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
+  if (
+    value.kind === "activity" &&
+    typeof value.conversation_id === "string" &&
+    typeof value.account_id === "string" &&
+    (value.state === "working" || value.state === "idle") &&
+    integer(value.expires) &&
+    (value.draft === undefined ||
+      (typeof value.draft === "string" &&
+        Array.from(value.draft).length <= 4000))
+  ) {
+    return {
+      kind: "activity",
+      conversation_id: value.conversation_id,
+      account_id: value.account_id,
+      state: value.state,
+      expires: value.expires,
+      ...(value.draft === undefined ? {} : { draft: value.draft }),
+    };
+  }
   if (
     value.kind === "bot_commands" &&
     typeof value.conversation_id === "string"

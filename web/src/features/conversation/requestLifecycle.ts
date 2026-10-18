@@ -9,31 +9,46 @@ interface Submission {
   command: Omit<PendingCommand, "id">;
   frame: Omit<ClientFrame, "id">;
   complete: Completion;
+  parallel?: boolean;
 }
 
-/** One in-flight operation per socket; failed operations are never replayed. */
+/** Commands stay exclusive; up to 16 ordinary messages may await acknowledgement. */
 export function createRequestLifecycle(
   transmit: (frame: ClientFrame) => void,
   pendingChanged: (pending: boolean) => void,
 ) {
   let serial = 0;
-  let active: { request: PendingCommand; complete: Completion } | null = null;
+  const active = new Map<
+    number,
+    { request: PendingCommand; complete: Completion; parallel: boolean }
+  >();
+  const exclusive = () => [...active.values()].some((item) => !item.parallel);
+  const available = (parallel: boolean) =>
+    parallel ? !exclusive() && active.size < 16 : active.size === 0;
   function finish(data: Acknowledgement) {
-    if (!active || data.id !== active.request.id) return;
-    const current = active;
-    active = null;
-    pendingChanged(false);
+    const current = active.get(data.id);
+    if (!current) return;
+    active.delete(data.id);
+    pendingChanged(exclusive());
     current.complete(data, current.request);
   }
   return {
     get pending() {
-      return active !== null;
+      return active.size > 0;
     },
-    submit({ command, frame, complete }: Submission): boolean {
-      if (active) return false;
+    canSubmitMessage() {
+      return available(true);
+    },
+    submit({
+      command,
+      frame,
+      complete,
+      parallel = false,
+    }: Submission): boolean {
+      if (!available(parallel)) return false;
       const id = ++serial;
-      active = { request: { ...command, id }, complete };
-      pendingChanged(true);
+      active.set(id, { request: { ...command, id }, complete, parallel });
+      pendingChanged(exclusive());
       try {
         transmit({ ...frame, id });
       } catch (error: unknown) {
@@ -50,10 +65,10 @@ export function createRequestLifecycle(
     },
     receive: finish,
     disconnect: () => {
-      if (active)
+      for (const id of [...active.keys()])
         finish({
           kind: "error",
-          id: active.request.id,
+          id,
           text: "Connection lost before confirmation. Check history before sending again.",
         });
     },

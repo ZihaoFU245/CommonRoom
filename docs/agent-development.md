@@ -124,3 +124,23 @@ owner/admin control catalogue, separately from the server
 commands given to the model, and sends `commands_changed` after configuration
 changes. Discovery requires no operator configuration grant. See
 [Bots](bots.md#command-discovery) for limits, lifecycle and browser visibility.
+
+## Latency behavior
+
+SimpleBot consumes socket baselines without fetching `/me` again. Ordinary
+conversation notifications and periodic recovery still request a fresh directory.
+For a known retained baseline with unchanged oldest sequence, the worker compares
+the content-revision delta with a revision-pinned count of appended messages.
+Each insertion increments revision once; every non-append mutation also advances
+revision. Equal positive deltas prove an append-only interval, avoiding a full
+rescan. Mixed edits, retention movement, restart, large backlogs and conflicts
+fall back to retained-state reconciliation. Sequence gaps alone never establish
+append-only behavior. Reconciliation reuses up to 1,000 new rows for admission.
+Input revalidation and current server authorization remain in place.
+
+Native command catalogues are prefetched with four background reads and cached
+for up to 64 conversations by authenticated credential, server instance and policy revision.
+Missing policy metadata keeps the legacy live-read behavior. Model preparation
+still overlaps catalogue, history and workspace reads. Working activity begins
+before validation/preparation; ordinary streamed answer text can appear as a
+provisional draft while final messages retain durable outbox publication.

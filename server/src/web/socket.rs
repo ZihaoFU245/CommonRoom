@@ -118,6 +118,7 @@ pub(crate) async fn connection(
 ) {
     let bot = super::auth::bearer(&headers).is_some();
     let mut changes = app.changes.subscribe();
+    let mut activities = app.bot_runtimes.activities.subscribe();
     let presence_app = app.clone();
     let presence_user = user.clone();
     if !matches!(
@@ -201,6 +202,18 @@ pub(crate) async fn connection(
                         _=>break,
                     }
                 } else if !snapshot(&app, &mut socket, bot, &headers).await { break; }
+            },
+            activity = activities.recv() => {
+                let Ok(activity) = activity else { continue; };
+                if bot { continue; }
+                let Ok(current) = presence.authenticate(&headers).await else { break; };
+                let read_app = app.clone();
+                let id = activity["conversation_id"].as_str().unwrap_or_default().to_owned();
+                let allowed = tokio::task::spawn_blocking(move || {
+                    let engine = read_app.engine_read()?;
+                    Ok::<_, String>(engine.bot_target(&current, &id, crate::engine::authorization::Action::Read).is_ok())
+                }).await;
+                if matches!(allowed, Ok(Ok(true))) && !send(&mut socket, Message::Text(activity.to_string().into())).await { break; }
             },
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else { break; };

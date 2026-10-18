@@ -157,7 +157,6 @@ export function Composer({
                 : "Read-only conversation · Enter a command"
           }
           value={draft}
-          disabled={pending}
           onInput={(event) => edit(event.currentTarget.value)}
           onKeyDown={keydown}
           onSelect={selectCaret}

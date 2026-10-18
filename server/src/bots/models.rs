@@ -25,6 +25,8 @@ pub struct Snapshot {
     pub kind: &'static str,
     pub account: Account,
     pub credential: serde_json::Value,
+    pub policy_revision: u64,
+    pub server_instance: String,
     pub conversations: Vec<Conversation>,
 }
 #[derive(Serialize)]

@@ -61,7 +61,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mut
 - `features/conversation/historyCache.ts` bounds each window to 1,000 messages/approximately 4 MiB and the shared browser history cache to 5,000 messages/16 MiB/32 views. Oldest views are evicted.
 - `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move.
 - `hooks/useReadTracking.ts` owns visible-message acknowledgements, scroll placement, and jump-to-unread.
-- `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns the shared single-request lifecycle and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
+- `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns exclusive commands, bounded overlapping ordinary sends and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
 - `hooks/useLocalConsole.ts` owns the tab-local command ledger and clearing. It never persists command output.
 - `hooks/useFonts.ts` and `useComposerResize.ts` own presentation preferences and input sizing.
 - `CollapsibleMessage.tsx` caps long rendered message bodies at a 256px top preview with small borderless Show more / Show less controls and directional SVG arrows, including fenced code and plain text. `useMessageExpansionMotion.ts` starts the height animation before changing expansion state. `messageExpansion.ts` gives very long messages 420ms, spending 80% of that time revealing the visible viewport portion before completing the offscreen height; short expansions and collapses use 300ms. Collapse pins the visible footer so text compacts from above while following messages stay fixed; manual input releases that anchor. Virtual timeline anchoring yields while a panel carries `data-message-resizing`, keeping its measurements current. Reduced motion changes height without animating. Natural-content ResizeObserver measurements handle delayed Markdown/media and width changes. MessageList retains expansion within the current conversation window across virtual row remounts, clearing it on edits, eviction or conversation switches. Editors remain fully visible.
@@ -146,3 +146,11 @@ from animation timing, without a per-animation-frame measurement loop.
 If rollback recovery cannot reload or validate authoritative metadata, engine
 access fails closed with a restart diagnostic; partially mutated memory is not
 reused by HTTP, socket or console callers.
+
+Bot command completion uses a session-local 32-conversation/512 KiB cache and
+four background reads, prioritizing the selected conversation. Policy/account/
+server-instance changes replace the cache. Server discovery preserves eligible
+metadata during routine refresh, but explicit worker invalidation clears it.
+Transient bot activity may include provisional plain text; it travels through a
+bounded broadcast and is reauthorized for each browser recipient, independently
+of persistent chat and its unread/history synchronization.

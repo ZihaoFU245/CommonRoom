@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Snapshot, Acknowledgement } from "../api/protocol.ts";
+import type {
+  Snapshot,
+  Acknowledgement,
+  BotActivity,
+} from "../api/protocol.ts";
 import { parseFrame } from "../api/protocol.ts";
 import { api, isUnauthorized } from "../api/client.ts";
 import {
@@ -18,6 +22,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
   const [botCommandVersions, setBotCommandVersions] = useState(
     new Map<string, number>(),
   );
+  const [botActivities, setBotActivities] = useState<BotActivity[]>([]);
   const currentState = useRef(initial);
   const [status, setStatus] = useState<"connecting" | "online" | "offline">(
     "connecting",
@@ -73,6 +78,22 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         if (stopped || socket.current !== ws) return;
         const data = parseFrame(String(event.data));
         if (!data) return;
+        if (data.kind === "activity") {
+          setBotActivities((items) =>
+            [
+              ...items.filter(
+                (item) =>
+                  item.expires > Date.now() / 1000 &&
+                  !(
+                    item.account_id === data.account_id &&
+                    item.conversation_id === data.conversation_id
+                  ),
+              ),
+              ...(data.state === "working" ? [data] : []),
+            ].slice(-128),
+          );
+          return;
+        }
         if (data.kind === "bot_commands") {
           setBotCommandVersions((previous) =>
             new Map(previous).set(
@@ -89,6 +110,9 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
           ]);
           setBotCommandVersions(
             (previous) => new Map([...previous].filter(([id]) => ids.has(id))),
+          );
+          setBotActivities((items) =>
+            items.filter((item) => ids.has(item.conversation_id)),
           );
           sync.receive(boundSnapshot(data), baseline);
           baseline = false;
@@ -110,6 +134,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       ws.onclose = () => {
         if (stopped) return;
         setStatus("offline");
+        setBotActivities([]);
         callbacks.current.onDisconnect();
         api
           .session()
@@ -138,5 +163,12 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
     };
   }, []);
 
-  return { state, currentState, status, socket, botCommandVersions };
+  return {
+    state,
+    currentState,
+    status,
+    socket,
+    botCommandVersions,
+    botActivities,
+  };
 }

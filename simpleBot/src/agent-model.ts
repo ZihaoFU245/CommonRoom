@@ -13,13 +13,66 @@ import { NativeTools } from "./agent-tools.ts";
 export class ModelContext {
   private readonly host: AgentState;
   private readonly tools: NativeTools;
+  private warming = false;
+  private readonly catalogues = new Map<
+    string,
+    { authority: string; commands: Promise<BotCommand[]> }
+  >();
   constructor(host: AgentState) {
     this.host = host;
     this.tools = new NativeTools(host);
   }
+  warmCatalogues(): void {
+    if (this.warming || this.host.snapshot?.policy_revision === undefined)
+      return;
+    this.warming = true;
+    const ids = this.host.snapshot.conversations
+      .slice(0, 64)
+      .map((item) => item.id);
+    const warm = async () => {
+      while (ids.length && !this.host.stopped) {
+        const id = ids.shift();
+        if (id) await this.serverCommands(id).catch(() => {});
+      }
+    };
+    Promise.all([warm(), warm(), warm(), warm()])
+      .finally(() => {
+        this.warming = false;
+      })
+      .catch(() => {});
+  }
   private async serverCommands(conversationId: string): Promise<BotCommand[]> {
     if (!this.host.snapshot?.conversations.some((c) => c.id === conversationId))
       return [];
+    const snapshot = this.host.snapshot;
+    const authority =
+      snapshot?.policy_revision === undefined
+        ? undefined
+        : JSON.stringify([
+            snapshot.account.id,
+            snapshot.server_instance,
+            snapshot.credential,
+            snapshot.policy_revision,
+          ]);
+    const cached = this.catalogues.get(conversationId);
+    if (authority !== undefined && cached?.authority === authority)
+      return cached.commands;
+    const commands = this.fetchServerCommands(conversationId);
+    if (authority !== undefined) {
+      this.catalogues.delete(conversationId);
+      this.catalogues.set(conversationId, { authority, commands });
+      if (this.catalogues.size > 64)
+        this.catalogues.delete(this.catalogues.keys().next().value!);
+      commands.catch(() => {
+        if (this.catalogues.get(conversationId)?.commands === commands)
+          this.catalogues.delete(conversationId);
+      });
+    }
+    return commands;
+  }
+  private async fetchServerCommands(
+    conversationId: string,
+  ): Promise<BotCommand[]> {
     try {
       // The server catalogue is the entire command ACL. Every advertised command
       // is offered, and the server rechecks grants, scope and targets on each
@@ -133,7 +186,7 @@ export class ModelContext {
     );
     // Independent reads overlap, but all settle before publishing preparation
     // or throwing, so failed catalogue reads cannot leave history work racing
-    // the next attempt. The catalogue is still fetched live for every tick.
+    // the next attempt. Catalogue reads are shared until the authenticated policy revision changes.
     const [catalogue, retained, workspace] = await Promise.allSettled([
       this.serverCommands(conversation.id),
       session.prepare(

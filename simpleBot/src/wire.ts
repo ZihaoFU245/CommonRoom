@@ -59,6 +59,8 @@ export interface Snapshot {
   account: { id: string; username: string };
   conversations: Conversation[];
   credential: CredentialContext;
+  policy_revision?: number;
+  server_instance?: string;
 }
 
 export interface Reply {
@@ -136,6 +138,7 @@ export type ServerFrame =
       state: "working" | "idle";
       account_id: string;
       expires: number;
+      draft?: string;
     }
   | { kind: "config_ack"; id: string | null }
   | { kind: "error"; id: string | null; error: ApiErrorBody };
@@ -147,7 +150,12 @@ export type ClientFrame =
   | { kind: "commands_ready" }
   | { kind: "commands_response"; id: string; commands: BotCommand[] }
   | { kind: "commands_changed" }
-  | { kind: "activity"; conversation_id: string; state: ActivityState };
+  | {
+      kind: "activity";
+      conversation_id: string;
+      state: ActivityState;
+      draft?: string;
+    };
 
 export interface BotCommand {
   name: string;
@@ -208,6 +216,9 @@ export function isSnapshot(value: unknown): value is Snapshot {
     !record(value.account) ||
     typeof value.account.id !== "string" ||
     typeof value.account.username !== "string" ||
+    (value.policy_revision !== undefined && !natural(value.policy_revision)) ||
+    (value.server_instance !== undefined &&
+      typeof value.server_instance !== "string") ||
     !record(value.credential) ||
     typeof value.credential.id !== "string" ||
     !(value.credential.expires === null || natural(value.credential.expires)) ||
@@ -286,7 +297,10 @@ export function parseServerFrame(value: unknown): ServerFrame | null {
         typeof value.conversation_id === "string" &&
         typeof value.account_id === "string" &&
         (value.state === "working" || value.state === "idle") &&
-        natural(value.expires);
+        natural(value.expires) &&
+        (value.draft === undefined ||
+          (typeof value.draft === "string" &&
+            Array.from(value.draft).length <= 4000));
       break;
     case "config_ack":
       valid = nullableString(value.id);

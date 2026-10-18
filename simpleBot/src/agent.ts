@@ -16,6 +16,7 @@ import type { Snapshot, HistoryResponse, BotCommand, Message } from "./wire.ts";
 export class Agent extends AgentState {
   private syncing = false;
   private dirty = false;
+  private pendingSnapshot: Snapshot | undefined;
   private drainRequested = false;
   private readonly loop: AgentLoop;
   private readonly controls: Controls;
@@ -83,6 +84,7 @@ export class Agent extends AgentState {
       );
     }
     this.snapshot = snapshot;
+    this.pendingSnapshot = snapshot;
     // Await the catch-up so callers (and tests) can observe a settled state.
     await this.requestSync(true, settleWork);
   }
@@ -111,7 +113,9 @@ export class Agent extends AgentState {
     try {
       do {
         this.dirty = false;
-        const rerun = await this.input.syncOnce();
+        const snapshot = this.pendingSnapshot;
+        this.pendingSnapshot = undefined;
+        const rerun = await this.input.syncOnce(snapshot);
         this.dirty ||= rerun;
       } while (this.dirty && !this.stopped);
     } finally {

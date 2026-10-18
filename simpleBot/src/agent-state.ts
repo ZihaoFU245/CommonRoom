@@ -19,6 +19,7 @@ export interface AgentOptions {
   log: Logger;
   presence(): string[];
   socketReady(): boolean;
+  setPreview?(conversationId: string, text: string): void;
   setActivity(conversationId: string, state: "working" | "idle"): void;
 }
 

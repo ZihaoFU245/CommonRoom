@@ -50,6 +50,7 @@ struct Activity {
     kind: String,
     conversation_id: String,
     state: String,
+    draft: Option<String>,
 }
 async fn value(
     app: &App,
@@ -174,11 +175,14 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                             let result = tokio::task::spawn_blocking(move || {
                                 if count > 30 { return Err(Error::new(Code::RateLimited, "Control budget exhausted.")); }
                                 if activity.kind != "activity" || !["working", "idle"].contains(&activity.state.as_str()) { return Err(Error::new(Code::InvalidRequest, "Invalid activity.")); }
+                                if activity.draft.as_ref().is_some_and(|text| text.len() > 16000 || text.chars().count() > 4000) { return Err(Error::new(Code::InvalidRequest, "Draft exceeds its limit.")); }
                                 let engine = activity_app.engine_read().map_err(Error::storage)?;
                                 let user = activity_context.user(&engine)?;
                                 activity_context.permits(&engine, "activity", Some(&activity.conversation_id))?;
                                 engine.bot_target(&user, &activity.conversation_id, Action::Send)?;
-                                let _ = activity_app.bot_runtimes.activities.send(json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30}));
+                                let mut frame = json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30});
+                                if let Some(draft) = activity.draft { frame["draft"] = json!(draft); }
+                                let _ = activity_app.bot_runtimes.activities.send(frame);
                                 Ok(())
                             }).await.map_err(Error::storage).and_then(|r| r);
                             (None, result)

@@ -101,7 +101,11 @@ Each conversation has stable `id`, current display/routing label `view`,
 metadata is `null`; healthy conversations still appear. Workers must defer that
 conversation's baseline until metadata recovers, rather than treating it as zero.
 The directory contains only readable conversations. An empty member list can
-mean member-list access is absent. The snapshot carries no message tails,
+mean member-list access is absent. The optional `policy_revision` is the current authorization policy revision;
+workers may share native command catalogue reads until it or the credential
+changes. `server_instance` changes on server restart and also invalidates that
+cache. Snapshots without `policy_revision` require live catalogue reads.
+The snapshot carries no message tails,
 command catalogue or browser settings.
 
 Use the **conversation ID** in every operation. IDs are opaque strings of 1–128 ASCII letters, digits, dots, underscores, colons or hyphens;
@@ -202,7 +206,14 @@ Incoming text frames accept command discovery controls described below and
 access and the `activity` operation; readers of that conversation receive the
 state, stable `account_id`, and an `expires` timestamp 30 seconds ahead. It is
 transient, not persisted or replayed; refresh working state before expiry and
-send idle on completion. Accepted activity frames receive `config_ack` with
+send idle on completion. Browsers with current conversation read access also
+receive these signals. An optional `draft` string (at most 4,000 Unicode characters
+and 16,000 UTF-8 bytes) carries provisional plain text. Browsers label it as a
+generating draft, expire it after 30 seconds and remove it on idle/disconnection.
+It never enters history, unread counts, Markdown rendering or retry receipts.
+Workers must discover `ActivityRequest.properties.draft` in the schema before
+sending it to older servers. SimpleBot throttles updates to at most two per second
+and streams ordinary content only; tool arguments and reasoning are never shown. Accepted activity frames receive `config_ack` with
 `id:null`. Activity is available to bot API sockets. Presence frames contain the
 account-authorized online directory; conversation-restricted tokens omit this
 account-wide directory. Chat
@@ -271,11 +282,14 @@ worker derives this list from its actual handlers, configuration and credential
 capabilities without a model call. Command metadata does not authorize execution.
 Send `{kind:"commands_changed"}` when settings change the catalogue; the server
 invalidates old requests/cache and queries the current conversations again.
-Directory and permission changes also trigger discovery. Chat sends and history
-revisions do not. Registration/responses/changes receive the existing control
+Directory and permission changes refresh discovery in the background, preserving
+eligible catalogues and outstanding requests. Current credentials, conversation
+access and operator visibility are still checked on every metadata read. Explicit
+`commands_changed` cancels pending requests and removes the old catalogue before
+rediscovery. Chat sends and history revisions do not trigger discovery. Registration/responses/changes receive the existing control
 `config_ack` frame; errors retain the request ID when available.
 
-Each request has a ten-second deadline, at most eight in flight, and at most 256
+Each request has a sixty-second deadline, at most eight in flight, and at most 256
 conversations per runtime. Each catalogue admits at most 64 command nodes total
 and 32 KiB serialized JSON. Commands may contain `subcommands` arrays, up to three
 levels including the root. Root names match `/[a-z0-9_-]{1,32}`; child names match
@@ -286,6 +300,9 @@ UTF-8 bytes with no control characters. Description must be nonempty. A runtime
 caches at most 256 KiB of catalogue JSON. Malformed, unsolicited, expired,
 cancelled and wrong-socket responses are rejected. Responses to issued requests
 do not consume the unsolicited control-frame budget.
+
+Timed-out requests are retried up to three attempts per conversation; routine
+metadata changes do not continually cancel a slow response.
 
 Caches live only with the authenticated socket. Reads recheck credential
 expiry/revocation, current bot grants, and conversation visibility. Disconnect
@@ -305,7 +322,12 @@ read/send/member-list access and includes only active participating bots with
 current read/send credentials and grants. The browser socket emits
 `{kind:"bot_commands",conversation_id}` when that cache changes. Selecting a
 conversation, resuming focus, or receiving an invalidation refreshes this cache;
-typing never queries the bot. `@Bot /mo` completes to `@Bot /model ` in rooms
+typing never queries the bot. The browser prefetches up to 32 conversations with
+four simultaneous requests, prioritizing the selected conversation. Its in-memory
+cache holds at most 32 conversations/512 KiB, survives selection changes and
+transient refresh failures, and is discarded on logout, account/server-instance
+or policy changes. Membership changes hide incompatible entries immediately;
+authoritative access denials remove them. `@Bot /mo` completes to `@Bot /model ` in rooms
 and DMs, retaining the explicit mention prefix. Bare slash commands remain
 CommonRoom commands. Metadata contains no browser-executable code or action.
 

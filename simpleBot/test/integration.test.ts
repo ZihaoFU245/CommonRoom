@@ -13,6 +13,7 @@ import {
   isBotCommandDirectory,
   parseFrame,
   type Message,
+  type BotActivity,
 } from "../../web/src/api/protocol.ts";
 import { botCommandSuggestions } from "../../web/src/features/conversation/botCommands.ts";
 const root = resolve(import.meta.dirname, "../..");
@@ -45,6 +46,7 @@ interface BrowserClient {
   replies: Map<number, { kind: string; text: string }>;
   serial: number;
   invalidations: number;
+  activities: BotActivity[];
 }
 
 test(
@@ -384,6 +386,7 @@ test(
           replies: new Map(),
           serial: 0,
           invalidations: 0,
+          activities: [],
         };
         clients.push(client);
         socket.onmessage = (event) => {
@@ -394,6 +397,7 @@ test(
               client.replies.set(frame.id, frame);
           }
           if (frame.kind === "bot_commands") client.invalidations++;
+          if (frame.kind === "activity") client.activities.push(frame);
           const messages =
             frame.kind === "conversation"
               ? frame.messages
@@ -504,6 +508,47 @@ test(
         ["/metrics", "/help", "/ping"],
         "ordinary members do not receive private bot controls",
       );
+      // Provisional text travels independently of durable messages and catalogue RPCs.
+      const endpoint = api.socket();
+      const progress = new WebSocket(endpoint.url, {
+        headers: endpoint.headers,
+      } as unknown as string[]);
+      try {
+        await until(() => progress.readyState === 1, "progress socket");
+        progress.send(
+          JSON.stringify({
+            kind: "activity",
+            conversation_id: conversationId,
+            state: "working",
+            draft: "provisional answer",
+          }),
+        );
+        await until(
+          () =>
+            alice.activities.some(
+              (item) => item.draft === "provisional answer",
+            ),
+          "browser provisional progress",
+        );
+        assert.ok(
+          !(
+            await api.history({ conversation_id: conversationId })
+          ).messages.some((message) => message.text === "provisional answer"),
+        );
+        progress.send(
+          JSON.stringify({
+            kind: "activity",
+            conversation_id: conversationId,
+            state: "idle",
+          }),
+        );
+        await until(
+          () => alice.activities.at(-1)?.state === "idle",
+          "progress cleared",
+        );
+      } finally {
+        progress.close();
+      }
       await say(bob, "@helper /ping");
       await until(
         async () =>

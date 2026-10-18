@@ -29,6 +29,7 @@ export interface BotSocketOptions {
   events: SocketEvents;
   /** Older v1 servers only accept configuration frames. Check once per connection. */
   supportsActivity(): Promise<boolean>;
+  supportsPreview?(): boolean;
   log(level: "debug" | "info" | "warn" | "error", message: string): void;
 }
 
@@ -90,6 +91,24 @@ export class BotSocket {
     )
       return;
     this.send({ kind: "activity", conversation_id: conversationId, state });
+  }
+
+  preview(conversationId: string, draft: string): void {
+    // Provisional text yields to durable/control traffic on a slow connection.
+    if ((this.socket?.bufferedAmount ?? 0) > 65536) return;
+    if (
+      !this.activityEnabled ||
+      !this.activityAllowed ||
+      !this.options.supportsPreview?.() ||
+      (this.activityScope !== null && !this.activityScope.has(conversationId))
+    )
+      return;
+    this.send({
+      kind: "activity",
+      conversation_id: conversationId,
+      state: "working",
+      draft,
+    });
   }
 
   respondCommands(

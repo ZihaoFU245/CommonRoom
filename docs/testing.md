@@ -525,3 +525,11 @@ revocation checks, prepared-send races and fail-closed rollback reload failures.
 older socket baselines after newer HTTP data and accept a restarted instance.
 The motion fixture passes all 20 scenarios in wide and compact modes, including
 1,000-message windows, rapid changes, edits, paging and reduced motion.
+
+Latency regressions cover delayed catalogue replacement, bounded/prefetched
+browser metadata, stale-result rejection, transient failures versus authoritative
+access denial, overlapping message acknowledgements and exclusive commands.
+SimpleBot tests assert socket-baseline reuse, append-only request counts, mixed
+edit fallback, policy-bound catalogue reuse and provisional output before durable
+publication. The actual worker integration verifies draft activity reaches browser
+sessions without entering history and clears on idle.

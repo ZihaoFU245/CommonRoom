@@ -32,7 +32,8 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
 - `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"conversation",view,id,messages,unread}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
-- `{kind:"bot_commands",conversation_id}`: invalidate cached bot command metadata for this readable conversation; refetch only the active conversation.
+- `{kind:"bot_commands",conversation_id}`: invalidate cached bot command metadata for this readable conversation; refresh cached metadata for prefetched conversations in the background.
+- `{kind:"activity",conversation_id,account_id,state,expires,draft?}`: transient bot progress for current readers. `state` is working/idle; optional plain-text draft is provisional, bounded to 4,000 characters, expires after 30 seconds, and is never inserted into history.
 - `{kind:"presence",online}`: authorized online account names; preserves existing message data.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
@@ -77,7 +78,13 @@ The initial WebSocket snapshot and HTTP resync are baselines and do not trigger 
 
 History requests carry an abort signal and are accepted only for the current view and stable resource ID. Each page represents a coherent content revision; live updates may already be newer. Range-preserving retries stop after three attempts and report a refresh status rather than looping indefinitely. Live tails merge into the current window by ID; cleanup/reactions/gaps refresh the visible page around its anchor, never the complete retained history. Pure appends while browsing older pages advance metadata without moving the window. Read-only updates preserve message-array references to avoid re-rendering the transcript.
 
-Command output is bounded to the last 200 entries in tab memory, scoped to the originating view. Refresh removes it. `/clear` changes visible local history only. Unacknowledged requests are never resent automatically: after a disconnect, preserve the draft and ask the user to inspect history before resending.
+Command output is bounded to the last 200 entries in tab memory, scoped to the originating view. Refresh removes it. `/clear` changes visible local history only. Ordinary sends clear the composer immediately and appear in a separate pending
+list. Up to 16 message acknowledgements may overlap; commands remain exclusive.
+Typing and completion stay available while requests are pending. Failed sends
+retain their text and an Edit and resend action; uncertain disconnected sends
+explicitly require inspecting history. No unacknowledged request is automatically
+resent. Acknowledgements correlate by socket request ID and cannot clear a newer
+draft or reply selection.
 
 `online` lists active accounts with at least one authenticated WebSocket. Presence is
 transient, counts multiple tabs/devices, updates on connect/disconnect, and resets

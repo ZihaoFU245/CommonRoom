@@ -394,6 +394,7 @@ export class AgentLoop {
       );
     const valid = () => !signal.aborted && current();
     try {
+      if (!root.autonomous) this.host.beginActivity(id);
       await store.save();
       const inputs = pending.length
         ? pending
@@ -513,6 +514,17 @@ export class AgentLoop {
         tickInputs,
       );
       request.signal = signal;
+      let draft = "";
+      let previewAt = -Infinity;
+      request.onDelta = (text) => {
+        if (!valid() || !this.host.options.setPreview) return;
+        draft = Array.from(draft + text)
+          .slice(0, 4000)
+          .join("");
+        if (performance.now() - previewAt < 500) return;
+        previewAt = performance.now();
+        this.host.options.setPreview(id, draft);
+      };
       if (!source.task.autonomous) this.host.beginActivity(id);
       log(
         "debug",

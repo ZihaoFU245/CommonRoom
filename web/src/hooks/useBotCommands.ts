@@ -1,52 +1,56 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import type { BotCommands } from "../api/protocol.ts";
+import { BotCommandCache } from "../features/conversation/botCommandCache.ts";
 const EMPTY: BotCommands[] = [];
 
-/** Read the server's cached metadata on selection/invalidation, never on typing. */
+/** Warm nearby catalogues and refresh in the background; typing is always local. */
 export function useBotCommands(
   conversationId: string | undefined,
-  revision: number,
-  policyRevision: number,
-  members: string,
+  versions: ReadonlyMap<string, number>,
+  authority: string,
+  conversations: ReadonlyMap<string, string>,
   online: boolean,
 ) {
-  const [directory, setDirectory] = useState<{
-    id: string;
-    bots: BotCommands[];
-  } | null>(null);
+  const [, render] = useState(0);
+  const cache = useMemo(
+    () =>
+      new BotCommandCache(api.botCommands, () => render((value) => value + 1)),
+    // A changed account, server instance or policy must never reuse private metadata.
+    [authority],
+  );
+  useEffect(() => () => cache.stop(), [cache]);
   useEffect(() => {
-    setDirectory(null);
-    if (!conversationId || !online) return;
-    let stopped = false;
-    let request: AbortController | undefined;
-    const refresh = () => {
-      request?.abort();
-      const controller = new AbortController();
-      request = controller;
-      api
-        .botCommands(conversationId, controller.signal)
-        .then((result) => {
-          if (
-            !stopped &&
-            !controller.signal.aborted &&
-            result.conversation_id === conversationId
-          )
-            setDirectory({ id: conversationId, bots: result.bots });
-        })
-        .catch(() => {
-          if (!stopped && !controller.signal.aborted) setDirectory(null);
-        });
+    cache.retain(new Set(conversations.keys()));
+    if (!online) return;
+    const refresh = (force: boolean) => {
+      const ids = [
+        ...new Set([
+          ...(conversationId ? [conversationId] : []),
+          ...conversations.keys(),
+        ]),
+      ].slice(0, 32);
+      for (const id of ids) {
+        const members = conversations.get(id);
+        if (members !== undefined)
+          cache.refresh(
+            id,
+            members,
+            versions.get(id) ?? 0,
+            force,
+            id === conversationId,
+          );
+      }
     };
-    refresh();
-    window.addEventListener("focus", refresh);
-    return () => {
-      stopped = true;
-      request?.abort();
-      window.removeEventListener("focus", refresh);
-    };
-  }, [conversationId, revision, policyRevision, members, online]);
-  return online && directory !== null && directory.id === conversationId
-    ? directory.bots
+    refresh(false);
+    const focus = () => refresh(true);
+    window.addEventListener("focus", focus);
+    return () => window.removeEventListener("focus", focus);
+  }, [cache, conversationId, versions, conversations, online]);
+  const members = conversationId
+    ? conversations.get(conversationId)
+    : undefined;
+  return conversationId && members !== undefined
+    ? (cache.get(conversationId, members) ?? EMPTY)
     : EMPTY;
 }
