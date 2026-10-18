@@ -198,3 +198,39 @@ test("deleting and replacing entries updates budgets without evicting unrelated 
   assert.equal(cache.size, 6);
   assert.ok(cache.has("2"));
 });
+
+test("cached previews apply known retention, edits and retractions before HTTP", async () => {
+  const { previewPage } =
+    await import("../src/features/conversation/historyCache.ts");
+  const message = (sequence, text = "old") => ({
+    id: String(sequence),
+    sequence,
+    text,
+  });
+  const page = {
+    view: "team",
+    id: "stable",
+    revision: 1,
+    messages: [message(1), message(2), message(3), message(4)],
+    through: 4,
+    oldest: 1,
+    has_before: false,
+    has_after: false,
+  };
+  const visible = previewPage(page, { revision: 2, oldest: 2, through: 4 }, [
+    message(2, "edited"),
+    message(4),
+  ]);
+  assert.deepEqual(
+    visible.messages.map((m) => [m.sequence, m.text]),
+    [
+      [2, "edited"],
+      [4, "old"],
+    ],
+  );
+  assert.equal(
+    page.messages.length,
+    4,
+    "preview must not mutate the cached revision",
+  );
+});

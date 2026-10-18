@@ -160,3 +160,28 @@ Socket open uses the server's baseline without a redundant HTTP snapshot build.
 
 Reconnect checks `/api/session` for credential validity and obtains chat state from
 the WebSocket baseline. Focus resynchronization continues to use `/api/me`.
+
+## Responsive history and reconnects
+
+A selected conversation paints its authorized cached window immediately while
+refreshing stale revisions in the background. Known retention edges and the
+current snapshot tail remove expired/retracted rows and replace edited rows in
+that preview before HTTP completes. Complete snapshot tails (matching both
+retained sequence edges) need no redundant history request. Cached previews are
+still subject to current conversation identity and read visibility.
+
+Up to 32 conversation scroll positions retain a stable message sequence and
+pixel offset. Returning to a conversation restores that anchor, while new
+conversations keep the normal unread/bottom entry behavior. Retention or resource
+replacement invalidates unavailable anchors. Explicit unread jumps still work.
+
+Paging starts in the scrolling direction using a lookahead based on observed
+request latency and scroll velocity, bounded to one to three viewport heights.
+Only one history request is active at a time; existing window and global cache
+budgets still apply. Composer sizing coalesces draft measurements once per frame
+and caches styles until width, font or root-style changes.
+
+After a disconnect, the session check and reconnect delay run concurrently.
+Current 401 responses cancel retry; stale checks cannot log out a replacement
+socket. Returning online or focusing a closed connection retries immediately,
+without overlapping a socket that is already connecting.

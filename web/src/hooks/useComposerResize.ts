@@ -19,7 +19,7 @@ export function useComposerResize(
     maximumComposerHeight,
     Math.max(minimumComposerHeight, composerHeight, contentHeight),
   );
-  const measure = useRef<(() => void) | null>(null);
+  const measure = useRef<((refreshStyle?: boolean) => void) | null>(null);
   useLayoutEffect(() => {
     const element = input.current;
     if (!element) return;
@@ -30,40 +30,65 @@ export function useComposerResize(
     mirror.style.cssText =
       "position:fixed;left:-10000px;top:0;height:0;min-height:0;max-height:none;visibility:hidden;pointer-events:none;overflow:hidden;";
     document.body.appendChild(mirror);
-    measure.current = () => {
-      const style = getComputedStyle(element);
-      mirror.style.width = `${element.getBoundingClientRect().width}px`;
-      mirror.style.font = style.font;
-      mirror.style.fontFamily = style.fontFamily;
-      mirror.style.fontSize = style.fontSize;
-      mirror.style.fontWeight = style.fontWeight;
-      mirror.style.lineHeight = style.lineHeight;
-      mirror.style.letterSpacing = style.letterSpacing;
-      mirror.style.padding = style.padding;
-      mirror.style.border = style.border;
-      mirror.style.boxSizing = style.boxSizing;
-      mirror.style.wordBreak = style.wordBreak;
-      mirror.style.overflowWrap = style.overflowWrap;
-      mirror.wrap = element.wrap;
+    let frame = 0;
+    let styleDirty = true;
+    const measureNow = () => {
+      if (styleDirty) {
+        const style = getComputedStyle(element);
+        mirror.style.width = `${element.getBoundingClientRect().width}px`;
+        for (const property of [
+          "font",
+          "fontFamily",
+          "fontSize",
+          "fontWeight",
+          "lineHeight",
+          "letterSpacing",
+          "padding",
+          "border",
+          "boxSizing",
+          "wordBreak",
+          "overflowWrap",
+        ] as const)
+          mirror.style[property] = style[property];
+        mirror.wrap = element.wrap;
+        styleDirty = false;
+      }
       mirror.value = element.value;
       setContentHeight(mirror.scrollHeight);
     };
-    measure.current();
+    measure.current = (refreshStyle = false) => {
+      styleDirty ||= refreshStyle;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        measureNow();
+      });
+    };
+    measureNow();
     let width = element.clientWidth;
     const observer = new ResizeObserver(() => {
       if (width !== element.clientWidth) {
         width = element.clientWidth;
-        measure.current?.();
+        measure.current?.(true);
       }
     });
     observer.observe(element);
     const resize = () => {
       setViewportHeight(window.innerHeight);
-      measure.current?.();
+      measure.current?.(true);
     };
+    const styles = new MutationObserver(() => measure.current?.(true));
+    styles.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
+    document.fonts?.addEventListener("loadingdone", resize);
     window.addEventListener("resize", resize);
     return () => {
+      cancelAnimationFrame(frame);
       observer.disconnect();
+      styles.disconnect();
+      document.fonts?.removeEventListener("loadingdone", resize);
       window.removeEventListener("resize", resize);
       measure.current = null;
       mirror.remove();
@@ -71,7 +96,10 @@ export function useComposerResize(
   }, [input]);
   useLayoutEffect(() => {
     measure.current?.();
-  }, [draft, chatFontSize]);
+  }, [draft]);
+  useLayoutEffect(() => {
+    measure.current?.(true);
+  }, [chatFontSize]);
   useEffect(() => {
     if (!draft) setComposerHeight(minimumComposerHeight);
   }, [draft, minimumComposerHeight]);

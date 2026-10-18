@@ -7,6 +7,7 @@ import { api } from "../api/client.ts";
 import { visibleReadPosition } from "../features/conversation/unread.ts";
 interface Context {
   selected: string;
+  conversationId?: string | undefined;
   unread: Unread | undefined;
   messages: Message[];
   historyReady: boolean;
@@ -23,6 +24,7 @@ interface Context {
 }
 export function useReadTracking({
   selected,
+  conversationId,
   unread,
   messages,
   historyReady,
@@ -39,6 +41,26 @@ export function useReadTracking({
 }: Context) {
   const [unreadBoundary, setUnreadBoundary] = useState<number | null>(null);
   const enteredView = useRef<string | null>(null);
+  const positions = useRef(
+    new Map<string, { bottom: boolean; sequence?: number; offset: number }>(),
+  );
+  const identity = conversationId ?? selected;
+  const restoreAttempt = useRef<string | null>(null);
+  const rememberPosition = useEvent(() => {
+    if (enteredView.current !== identity) return;
+    const position = virtualTimeline.current?.position?.();
+    const sequence = position?.sequence ?? virtualTimeline.current?.anchor();
+    positions.current.delete(identity);
+    positions.current.set(identity, {
+      bottom: atBottom.current === true,
+      ...(sequence === undefined ? {} : { sequence }),
+      offset: position?.offset ?? 0,
+    });
+    if (positions.current.size > 32) {
+      const oldest = positions.current.keys().next().value;
+      if (oldest !== undefined) positions.current.delete(oldest);
+    }
+  });
   const readSent = useRef(new Map<string, number>());
   const readBusy = useRef(false);
   const readTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -50,9 +72,47 @@ export function useReadTracking({
       viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
   }
   useLayoutEffect(() => {
-    if (enteredView.current !== selected && (!unread || historyReady)) {
-      enteredView.current = selected;
-      const first = unread?.first;
+    if (enteredView.current !== identity && (!unread || historyReady)) {
+      const saved = positions.current.get(identity);
+      if (
+        saved?.sequence !== undefined &&
+        unread &&
+        (saved.sequence < unread.oldest || saved.sequence > unread.through)
+      )
+        positions.current.delete(identity);
+      const position = positions.current.get(identity);
+      if (position && !position.bottom && position.sequence !== undefined) {
+        let sequence = position.sequence;
+        if (!messages.some((message) => message.sequence === sequence)) {
+          const attempt = `${identity}:${sequence}`;
+          const covers =
+            messages.length > 0 &&
+            (messages[0]?.sequence ?? Infinity) <= sequence &&
+            (messages.at(-1)?.sequence ?? -Infinity) >= sequence;
+          if (!covers && restoreAttempt.current !== attempt) {
+            restoreAttempt.current = attempt;
+            loadSequence(sequence);
+            return;
+          }
+          // A retracted anchor must not cause an endless around-page loop.
+          const nearest =
+            messages.find((message) => message.sequence >= sequence) ??
+            messages.at(-1);
+          if (nearest) sequence = nearest.sequence;
+          else positions.current.delete(identity);
+        }
+        if (messages.length) {
+          restoreAttempt.current = null;
+          enteredView.current = identity;
+          atBottom.current = false;
+          virtualTimeline.current?.scrollToSequence(sequence, position.offset);
+          setUnreadBoundary(unread?.first ?? null);
+          return;
+        }
+      }
+      restoreAttempt.current = null;
+      enteredView.current = identity;
+      const first = position?.bottom ? undefined : unread?.first;
       if (first && !messages.some((message) => message.sequence === first)) {
         loadSequence(first);
         enteredView.current = null;
@@ -67,10 +127,11 @@ export function useReadTracking({
         scrollToBottom();
         atBottom.current = true;
       }
-    } else if (enteredView.current === selected && atBottom.current) {
+    } else if (enteredView.current === identity && atBottom.current) {
       scrollToBottom();
     }
-  }, [messages, selected, historyReady, output, cleared]);
+    rememberPosition();
+  }, [messages, selected, identity, historyReady, output, cleared]);
   function acknowledgeVisible() {
     if (readTimer.current !== undefined) return;
     readTimer.current = setTimeout(() => {
@@ -147,9 +208,11 @@ export function useReadTracking({
   return {
     unreadBoundary,
     acknowledgeVisible,
+    rememberPosition,
     jumpToUnread,
     resetEntry: () => {
       enteredView.current = null;
+      positions.current.delete(identity);
     },
   };
 }

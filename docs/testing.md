@@ -533,3 +533,9 @@ SimpleBot tests assert socket-baseline reuse, append-only request counts, mixed
 edit fallback, policy-bound catalogue reuse and provisional output before durable
 publication. The actual worker integration verifies draft activity reaches browser
 sessions without entering history and clears on idle.
+
+UI responsiveness regressions hold history responses pending while switching
+between cached conversations, reject inaccessible/replaced identities, and verify
+that complete snapshot tails skip HTTP. Additional checks cover retention/tail
+preview reconciliation, stable sequence/pixel scroll restoration, adaptive paging
+bounds, parallel reconnect validation, current revocation and stale-check races.

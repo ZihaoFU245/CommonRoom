@@ -9,7 +9,8 @@ import {
 } from "../features/conversation/virtualTimeline.ts";
 export interface VirtualTimelineHandle {
   anchor: () => number | undefined;
-  scrollToSequence: (sequence: number) => void;
+  position?: () => { sequence: number; offset: number } | undefined;
+  scrollToSequence: (sequence: number, offset?: number) => void;
 }
 export function useVirtualTimeline(
   entries: TimelineEntry[],
@@ -52,14 +53,28 @@ export function useVirtualTimeline(
           .find((entry) => entry.kind === "message");
         return entry?.kind === "message" ? entry.message.sequence : undefined;
       },
-      scrollToSequence: (sequence) => {
+      position: () => {
+        const top = container.current?.scrollTop ?? 0;
+        const index = entries.findIndex(
+          (entry, index) =>
+            index >= indexAt(offsets, top) && entry.kind === "message",
+        );
+        const entry = entries[index];
+        return entry?.kind === "message"
+          ? {
+              sequence: entry.message.sequence,
+              offset: (offsets[index] ?? 0) - top,
+            }
+          : undefined;
+      },
+      scrollToSequence: (sequence, offset = 0) => {
         const index = entries.findIndex(
           (entry) =>
             entry.kind === "message" && entry.message.sequence === sequence,
         );
         const element = container.current;
         if (index >= 0 && element) {
-          element.scrollTop = offsets[index] ?? 0;
+          element.scrollTop = (offsets[index] ?? 0) - offset;
           updateViewport(element.scrollTop, element.clientHeight);
         }
       },

@@ -1,4 +1,4 @@
-import type { History, Message, Snapshot } from "../../api/protocol.ts";
+import type { History, Message, Snapshot, Unread } from "../../api/protocol.ts";
 export const ROOM_CACHE_LIMIT = 1000;
 const TOTAL_CACHE_LIMIT = 5000;
 const BYTE_LIMIT = 16 * 1024 * 1024;
@@ -71,6 +71,35 @@ export class HistoryCache {
     }
   }
 }
+/** Keep cached windows visible while applying authoritative retention/tail facts. */
+export function previewPage(
+  page: CachedHistory,
+  unread: Unread,
+  tail: Message[],
+): CachedHistory {
+  if (page.revision === unread.revision) return page;
+  const latest = new Map(tail.map((message) => [message.id, message]));
+  const first = tail[0]?.sequence;
+  const coversTail =
+    first !== undefined && tail.at(-1)?.sequence === unread.through;
+  return {
+    ...page,
+    messages: page.messages
+      .filter(
+        (message) =>
+          message.sequence >= unread.oldest &&
+          message.sequence <= unread.through &&
+          !(
+            coversTail &&
+            first !== undefined &&
+            message.sequence >= first &&
+            !latest.has(message.id)
+          ),
+      )
+      .map((message) => latest.get(message.id) ?? message),
+  };
+}
+
 export function mergePage(
   current: CachedHistory,
   page: History,

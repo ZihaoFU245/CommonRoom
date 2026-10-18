@@ -9,9 +9,11 @@ import type {
 } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api, ApiError } from "../api/client.ts";
+import { HistoryLookahead } from "../features/conversation/historyLookahead.ts";
 import { ingest } from "../features/conversation/console.ts";
 import {
   mergePage,
+  previewPage,
   HistoryCache,
 } from "../features/conversation/historyCache.ts";
 import type { CachedHistory } from "../features/conversation/historyCache.ts";
@@ -27,6 +29,7 @@ export function useHistory(
   atBottom: RefObject<boolean>,
 ) {
   const cache = useRef(new HistoryCache());
+  const lookahead = useRef(new HistoryLookahead());
   const [loaded, setLoaded] = useState<CachedHistory | null>(null);
   const [historyError, setHistoryError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -38,30 +41,55 @@ export function useHistory(
   const active = useRef(selected);
   active.current = selected;
   const current = useRef(loaded);
-  current.current = loaded;
   const request = useRef<AbortController | null>(null);
   const paused = useRef(false);
   const lastRange = useRef<{
     range: HistoryRange;
     direction?: "older" | "newer";
   }>({ range: {} });
-  // Reuse ledger work across composer/status renders while keeping live tails
-  // available independently of paging success.
-  useMemo(
-    () =>
-      ingest(
-        state,
-        ledger.current,
-        loaded?.view === selected ? loaded.messages : [],
-      ),
-    [state.rooms, state.direct, loaded?.messages, loaded?.view, selected],
-  );
   const unread = state.unread[selected];
   const id =
     state.private_access[selected]?.id ??
     state.rooms.find((room) => room.name === selected)?.id;
-  const historyReady =
-    !!unread && loaded?.view === selected && loaded.id === id;
+  const completeTail = useMemo<CachedHistory | null>(() => {
+    if (!unread || !id) return null;
+    const complete =
+      tail.length === 0
+        ? unread.through === 0
+        : tail[0]?.sequence === unread.oldest &&
+          tail.at(-1)?.sequence === unread.through;
+    return complete
+      ? {
+          view: selected,
+          id,
+          messages: tail,
+          revision: unread.revision,
+          through: unread.through,
+          oldest: unread.oldest,
+          has_before: false,
+          has_after: false,
+        }
+      : null;
+  }, [selected, id, tail, unread?.revision, unread?.oldest, unread?.through]);
+  const cached = cache.current.get(selected);
+  const candidate =
+    loaded?.view === selected && loaded.id === id
+      ? loaded
+      : cached && cached.id === id && unread
+        ? cached
+        : completeTail;
+  const visible = useMemo(
+    () => (candidate && unread ? previewPage(candidate, unread, tail) : null),
+    [candidate, unread?.revision, unread?.oldest, unread?.through, tail],
+  );
+  // Cached content is available on the selection render, before effects or HTTP.
+  current.current = visible;
+  const historyReady = !!unread && visible !== null;
+  // Selection must ingest the immediately visible cached window as well.
+  useMemo(
+    () => ingest(state, ledger.current, visible?.messages ?? []),
+    [state.rooms, state.direct, visible?.messages],
+  );
   function commit(page: CachedHistory) {
     const metadata = currentState.current.unread[page.view];
     if (metadata)
@@ -90,7 +118,9 @@ export function useHistory(
       let page;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          const started = performance.now();
           page = await api.history(view, controller.signal, range);
+          lookahead.current.sample(performance.now() - started);
           if (page.view !== view)
             throw new Error(
               "History response belongs to another conversation.",
@@ -150,6 +180,14 @@ export function useHistory(
       if (!controller.signal.aborted) {
         if (error instanceof ApiError && error.status === 409)
           paused.current = true;
+        if (
+          error instanceof ApiError &&
+          [401, 403, 404].includes(error.status)
+        ) {
+          cache.current.delete(view);
+          current.current = null;
+          setLoaded(null);
+        }
         setHistoryError(errorMessage(error));
       }
     } finally {
@@ -161,6 +199,7 @@ export function useHistory(
   }
   useEffect(() => {
     paused.current = false;
+    lookahead.current.reset();
     setJump(undefined);
     setHistoryError("");
     request.current?.abort();
@@ -185,13 +224,12 @@ export function useHistory(
       setLoading(false);
       return;
     }
-    const cached = cache.current.get(selected);
     if (
       target === undefined &&
-      cached?.id === id &&
-      cached.revision === unread.revision
+      visible?.id === id &&
+      visible.revision === unread.revision
     ) {
-      commit(cached);
+      commit(visible);
       return;
     }
     const previous = current.current;
@@ -238,33 +276,29 @@ export function useHistory(
   }, [selected, id, unread?.revision, state.policy_revision, retry, target]);
   const messages = useMemo(
     () =>
-      loaded?.view === selected && loaded.id === id
-        ? loaded.has_after
-          ? loaded.messages
+      visible !== null
+        ? visible.has_after
+          ? visible.messages
           : [
-              ...loaded.messages,
+              ...visible.messages,
               ...tail.filter(
                 (message) =>
-                  message.sequence > (loaded.messages.at(-1)?.sequence ?? 0),
+                  message.sequence > (visible.messages.at(-1)?.sequence ?? 0),
               ),
             ].slice(-1000)
         : tail,
-    [loaded, selected, id, tail],
+    [visible, tail],
   );
   return {
     unread,
+    lookahead: lookahead.current,
     historyReady,
     messages,
     historyError,
     loading,
-    refreshing:
-      loading &&
-      target === undefined &&
-      loaded?.view === selected &&
-      loaded.id === id &&
-      loaded.revision !== unread?.revision,
-    hasBefore: loaded?.view === selected && loaded.has_before,
-    hasAfter: loaded?.view === selected && loaded.has_after,
+    refreshing: loading && target === undefined && visible !== null,
+    hasBefore: visible?.has_before ?? false,
+    hasAfter: visible?.has_after ?? false,
     retryHistory: () => {
       const { range, direction } = lastRange.current;
       fetchPage(range, direction).catch((error: unknown) =>

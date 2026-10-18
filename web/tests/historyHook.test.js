@@ -257,3 +257,167 @@ test("busy history preserves explicit paging, bounds retries and keeps live tail
     for (const slot of harness.slots) slot?.cleanup?.();
   }
 });
+
+test("returning to a cached conversation paints history before a delayed refresh", async () => {
+  const original = api.history;
+  const state = {
+    rooms: [
+      { name: "a", id: "a-id", messages: [] },
+      { name: "b", id: "b-id", messages: [] },
+    ],
+    direct: [],
+    private_access: {},
+    unread: {
+      a: { revision: 1, through: 10, oldest: 1 },
+      b: { revision: 1, through: 20, oldest: 1 },
+    },
+    policy_revision: 0,
+  };
+  const snapshot = { current: state },
+    ledger = { current: { sequence: 0, messages: new Map() } },
+    timeline = { current: { anchor: () => 5 } },
+    bottom = { current: false };
+  const harness = { slots: [], index: 0, effects: [], dirty: true };
+  let selected = "a",
+    result,
+    resolve;
+  api.history = async (view) => ({
+    view,
+    revision: 1,
+    messages: [
+      {
+        id: view,
+        sequence: view === "a" ? 5 : 20,
+        text: view,
+        from: "alice",
+        time: 1,
+        mentions: [],
+        reactions: {},
+        reply: null,
+      },
+    ],
+    has_before: true,
+    has_after: true,
+  });
+  function render(flush = true) {
+    active = harness;
+    harness.index = 0;
+    harness.effects = [];
+    harness.dirty = false;
+    result = useHistory(
+      state,
+      selected,
+      [],
+      snapshot,
+      ledger,
+      timeline,
+      bottom,
+    );
+    if (flush) for (const effect of harness.effects) effect();
+  }
+  async function settle() {
+    for (let i = 0; i < 10; i++) {
+      if (harness.dirty) render();
+      await new Promise((r) => setImmediate(r));
+      if (!harness.dirty) return;
+    }
+    assert.fail("did not settle");
+  }
+  try {
+    await settle();
+    selected = "b";
+    harness.dirty = true;
+    await settle();
+    state.unread.a = { ...state.unread.a, revision: 2 };
+    api.history = (view) =>
+      new Promise((done) => {
+        resolve = () =>
+          done({
+            view,
+            revision: 2,
+            messages: [
+              {
+                id: "updated",
+                sequence: 5,
+                text: "edited",
+                from: "alice",
+                time: 1,
+                mentions: [],
+                reactions: {},
+                reply: null,
+              },
+            ],
+            has_before: true,
+            has_after: true,
+          });
+      });
+    selected = "a";
+    render(false);
+    assert.equal(
+      result.messages[0].text,
+      "a",
+      "cache is visible before effects run",
+    );
+    for (const effect of harness.effects) effect();
+    await settle();
+    assert.equal(result.messages[0].text, "a");
+    assert.equal(result.refreshing, true);
+    resolve();
+    await settle();
+    assert.equal(result.messages[0].text, "edited");
+    state.rooms = state.rooms.filter((room) => room.id !== "a-id");
+    delete state.unread.a;
+    harness.dirty = true;
+    await settle();
+    assert.deepEqual(result.messages, []);
+    assert.equal(result.historyReady, false);
+  } finally {
+    api.history = original;
+    for (const slot of harness.slots) slot?.cleanup?.();
+  }
+});
+
+test("a complete snapshot tail renders immediately without a redundant HTTP page", () => {
+  const original = api.history;
+  api.history = () => {
+    assert.fail("complete snapshot must not fetch history");
+  };
+  const tail = [
+    {
+      id: "m1",
+      sequence: 10,
+      text: "hello",
+      from: "alice",
+      time: 1,
+      mentions: [],
+      reactions: {},
+      reply: null,
+    },
+  ];
+  const state = {
+    rooms: [{ name: "team", id: "stable", messages: tail }],
+    direct: [],
+    private_access: {},
+    unread: { team: { revision: 1, through: 10, oldest: 10 } },
+    policy_revision: 0,
+  };
+  const harness = { slots: [], index: 0, effects: [], dirty: true };
+  try {
+    active = harness;
+    const result = useHistory(
+      state,
+      "team",
+      tail,
+      { current: state },
+      { current: { sequence: 0, messages: new Map() } },
+      { current: null },
+      { current: true },
+    );
+    assert.equal(result.historyReady, true);
+    assert.equal(result.messages[0].text, "hello");
+    for (const effect of harness.effects) effect();
+  } finally {
+    api.history = original;
+    for (const slot of harness.slots) slot?.cleanup?.();
+  }
+});

@@ -303,6 +303,7 @@ export function Chat({
     historyReady,
     messages,
     historyError,
+    lookahead,
     retryHistory,
     loading,
     refreshing,
@@ -321,9 +322,10 @@ export function Chat({
     virtualTimeline,
     atBottom,
   );
-  const { unreadBoundary, acknowledgeVisible, jumpToUnread, resetEntry } =
+  const { unreadBoundary, acknowledgeVisible, rememberPosition, jumpToUnread } =
     useReadTracking({
       selected,
+      conversationId: room?.id ?? state.private_access[selected]?.id,
       unread,
       messages,
       historyReady,
@@ -364,11 +366,26 @@ export function Chat({
     if (element)
       atBottom.current =
         element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+    rememberPosition();
     acknowledgeVisible();
-    if (element && !loading && historyReady) {
-      if (element.scrollTop < 240 && hasBefore) loadOlder();
+    const prediction = element
+      ? lookahead.observe(
+          element.scrollTop,
+          element.clientHeight,
+          performance.now(),
+        )
+      : null;
+    if (element && prediction && !loading && historyReady) {
+      if (
+        prediction.direction < 0 &&
+        element.scrollTop < prediction.distance &&
+        hasBefore
+      )
+        loadOlder();
       else if (
-        element.scrollHeight - element.scrollTop - element.clientHeight < 240 &&
+        prediction.direction > 0 &&
+        element.scrollHeight - element.scrollTop - element.clientHeight <
+          prediction.distance &&
         hasAfter
       )
         loadNewer();
@@ -398,7 +415,7 @@ export function Chat({
     append("Error", errorMessage(error), true);
   }
   function choose(name: string) {
-    resetEntry();
+    rememberPosition();
     setSelected(name);
     if (window.matchMedia("(max-width: 700px)").matches) setMenu(false);
     input.current?.focus();

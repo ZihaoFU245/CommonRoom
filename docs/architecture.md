@@ -154,3 +154,11 @@ metadata during routine refresh, but explicit worker invalidation clears it.
 Transient bot activity may include provisional plain text; it travels through a
 bounded broadcast and is reauthorized for each browser recipient, independently
 of persistent chat and its unread/history synchronization.
+
+History selection reads its bounded cache synchronously, reconciles known tail/
+retention facts for display, and refreshes in the background. A complete snapshot
+tail is already a coherent history page. Read tracking keeps 32 stable-identity
+scroll anchors with pixel offsets; the virtual timeline exposes capture/restore
+operations. `historyLookahead.ts` predicts a bounded paging margin from scrolling
+velocity and measured HTTP latency. Composer sizing shares one animation-frame
+measurement and reuses computed styles until layout/font changes.

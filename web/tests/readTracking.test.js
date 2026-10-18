@@ -69,7 +69,6 @@ test("continuous snapshots retain one read timer and acknowledge the latest visi
     globalThis.setTimeout = originals.setTimeout;
     globalThis.clearTimeout = originals.clearTimeout;
     api.read = originals.read;
-    delete globalThis.readTestHooks;
   });
   const timers = new Map();
   let nextTimer = 0;
@@ -131,4 +130,100 @@ test("continuous snapshots retain one read timer and acknowledge the latest visi
   await Promise.resolve();
   await Promise.resolve();
   assert.deepEqual(reads, [["team", 21]]);
+});
+
+test("conversation positions restore sequence and pixel offset by stable identity", (t) => {
+  index = 0;
+  slots.length = 0;
+  effects.length = 0;
+  const originals = {
+    window: globalThis.window,
+    document: globalThis.document,
+  };
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.document = {
+    hidden: false,
+    hasFocus: () => false,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  t.after(() => {
+    for (const slot of slots) slot?.cleanup?.();
+    Object.assign(globalThis, originals);
+  });
+  const calls = [];
+  let sequence = 20,
+    offset = -13;
+  const bottom = { current: true };
+  const context = {
+    selected: "a",
+    conversationId: "a-id",
+    unread: { first: null, oldest: 1, through: 100 },
+    messages: [{ sequence: 20 }],
+    historyReady: true,
+    output: [],
+    cleared: {},
+    resetCleared() {},
+    settingsOpen: false,
+    menu: false,
+    status: "online",
+    loadSequence() {
+      assert.fail("cached position should not need HTTP");
+    },
+    virtualTimeline: {
+      current: {
+        position: () => ({ sequence, offset }),
+        anchor: () => sequence,
+        scrollToSequence: (...args) => calls.push(args),
+      },
+    },
+    atBottom: bottom,
+    historyElement: {
+      current: { scrollTop: 0, scrollHeight: 1000, clientHeight: 200 },
+    },
+  };
+  function render() {
+    index = 0;
+    effects.length = 0;
+    const result = useReadTracking(context);
+    for (const effect of effects) effect();
+    return result;
+  }
+  let result = render();
+  bottom.current = false;
+  result.rememberPosition();
+  context.selected = "b";
+  context.conversationId = "b-id";
+  context.messages = [{ sequence: 30 }];
+  sequence = 30;
+  offset = 0;
+  render();
+  context.selected = "a";
+  context.conversationId = "a-id";
+  context.messages = [{ sequence: 20 }];
+  render();
+  assert.deepEqual(calls, [[20, -13]]);
+  assert.equal(bottom.current, false);
+  calls.length = 0;
+  context.selected = "b";
+  context.conversationId = "b-id";
+  context.messages = [{ sequence: 30 }];
+  render();
+  context.selected = "a";
+  context.conversationId = "a-id";
+  context.messages = [{ sequence: 19 }, { sequence: 21 }];
+  render();
+  assert.deepEqual(
+    calls,
+    [[21, -13]],
+    "a retracted anchor uses its retained neighbor without repeated paging",
+  );
+  calls.length = 0;
+  context.conversationId = "replacement-id";
+  render();
+  assert.deepEqual(
+    calls,
+    [],
+    "a recreated conversation must not inherit the old position",
+  );
 });

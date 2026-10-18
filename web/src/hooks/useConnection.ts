@@ -55,7 +55,13 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       olderSnapshot,
     );
     const resume = () => {
-      if (!document.hidden) sync.refresh().catch(handleSyncError);
+      if (document.hidden) return;
+      if (socket.current?.readyState === WebSocket.CLOSED) {
+        clearTimeout(retry);
+        connect();
+      } else if (socket.current?.readyState === WebSocket.OPEN) {
+        sync.refresh().catch(handleSyncError);
+      }
     };
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("focus", resume);
@@ -132,21 +138,16 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         }
       };
       ws.onclose = () => {
-        if (stopped) return;
+        if (stopped || socket.current !== ws) return;
         setStatus("offline");
         setBotActivities([]);
         callbacks.current.onDisconnect();
-        api
-          .session()
-          .catch(handleSyncError)
-          .then(() => {
-            if (!stopped)
-              retry = setTimeout(
-                connect,
-                Math.min(1000 * 2 ** attempts++, 15000),
-              );
-          })
-          .catch(handleSyncError);
+        // Authentication and the backoff run together; a slow health check must
+        // not add another network round trip before the socket can reconnect.
+        retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 15000));
+        api.session().catch((error: unknown) => {
+          if (!stopped && socket.current === ws) handleSyncError(error);
+        });
       };
       ws.onerror = () => ws.close();
     }
