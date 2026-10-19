@@ -2,7 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import { attachmentKind, documentSource, previewLimit } from "../api/media.ts";
-import type { CompletedMedia } from "../api/media.ts";
+import type { CompletedMedia, AttachmentKind } from "../api/media.ts";
 
 export function Attachment({
   id,
@@ -13,7 +13,7 @@ export function Attachment({
 }: {
   id: string;
   href: string;
-  kind: string;
+  kind: AttachmentKind;
   children: ComponentChildren;
   renderHtml?: (source: string) => ComponentChildren;
 }) {

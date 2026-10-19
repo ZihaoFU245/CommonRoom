@@ -203,7 +203,10 @@ Allocation/completion/publication require `w:media.upload` plus read/send rights
 The client sends the file directly to `upload.url` with the returned headers and
 without chat cookies. The browser sets Content-Length from the selected file;
 it must match the allocated size. Completion verifies storage and is idempotent;
-a 120-second browser timeout covers multiple bounded storage operations. The
+a 100-second server budget sits below the 120-second browser timeout.
+Storage failures/busy completion return 503, invalid uploads return 400. The PUT
+URL admits a request for five minutes; the client transfer timeout is separately
+15 minutes. The
 client resolves the returned permanent path against the application origin and
 keeps a separate attachment preview/card, then generates Markdown only when
 sending through the ordinary message path.

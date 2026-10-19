@@ -58,7 +58,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v14 restart and v9/v10/v11/v12/v13 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v15 restart and v9/v10/v11/v12/v13/v14 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -161,7 +161,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v14 restart and v9/v10/v11/v12/v13 migration and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v15 restart and v9/v10/v11/v12/v13/v14 migration and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -552,3 +552,11 @@ Explicit `CHAT_S3_*` variables override these defaults; `RUSTFS_ACCESS_KEY` and
 only chat and the UI. Start RustFS manually in another terminal with
 `./auto/start-s3.sh`; stopping debug does not stop that independently started service.
 Create the private bucket and CORS policy as described in [Media uploads](media-uploads.md).
+
+Media availability regressions hold local S3 requests open while checking that
+ordinary chat reads still pass with a one-permit API budget and another file's
+completion proceeds concurrently. Transport tests cover invalid/missing objects
+versus 503 failures, zero-size guards, per-key batch deletion errors, in-flight
+probe sharing without stale health caching, and filename encoding. V14-to-v15
+migration/rollback, covering quota/partial expiry query plans, orphan triggers,
+canonical SQL state, and write-free plain-text reconciliation use scratch data.

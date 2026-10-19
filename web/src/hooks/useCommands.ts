@@ -285,10 +285,19 @@ export function useCommands({
       );
       return;
     }
+    const attachmentMarkdown = attachment
+      ? mediaMarkdown(attachment.media, document.baseURI)
+      : null;
+    if (attachment && !attachmentMarkdown) {
+      append(
+        plainText,
+        "Invalid attachment address. Remove the attachment and upload it again.",
+        true,
+      );
+      return;
+    }
     const text = attachment
-      ? [mediaMarkdown(attachment.media, document.baseURI), plainText]
-          .filter(Boolean)
-          .join("\n\n")
+      ? [attachmentMarkdown, plainText].filter(Boolean).join("\n\n")
       : plainText;
     if (
       !text ||

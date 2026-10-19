@@ -2,12 +2,12 @@
 
 ## Database compatibility
 
-Validated v9/v10/v11/v12/v13 databases upgrade transactionally to v14. V9 first gains native
+Validated v9/v10/v11/v12/v13/v14 databases upgrade transactionally to v15. V9 first gains native
 command receipts. V11 adds a reverse index of author, recipient, reply-author and
 mention names, maintained by message insert/update/delete operations, plus a
 reaction-user index. Existing retained history is indexed once during migration.
 Failed migration rolls back all schema/version changes. Back up before upgrading;
-older binaries cannot open v14.
+older binaries cannot open v15.
 
 V12 moves the bounded audit log to append-only `audit_entries` records and adds a
 reply-target index. Migration copies embedded audit entries before removing them
@@ -15,7 +15,7 @@ from the policy state row; retention prunes only records beyond the latest 1,000
 
 V13 adds media metadata and message references with cascading deletion.
 
-Empty databases initialize as v14. Existing v14 databases reopen without migration.
+Empty databases initialize as v15. Existing v15 databases reopen without migration.
 History, message receipts, accounts, sessions and read cursors are preserved.
 
 The removed `x:group.su.assign` permission is accepted only in existing stored
@@ -24,7 +24,7 @@ with `/revoke user scope x:group.su.assign`; new grants of this name are rejecte
 Su group assignment still requires su authority, including authorized `/sudo`.
 That permission-catalog change itself requires no data rewrite.
 
-Schemas other than v9/v10/v11/v12/v13/v14 and existing unversioned databases are rejected before
+Schemas other than v9/v10/v11/v12/v13/v14/v15 and existing unversioned databases are rejected before
 changing journal settings, schema, state or version. Do not lower `user_version`
 manually on a working database.
 
@@ -59,7 +59,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v14 and upgrades v9/v10/v11/v12/v13. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v15 and upgrades v9/v10/v11/v12/v13/v14. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -156,7 +156,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v14 and the minimal reference worker.
+independently of server SQLite schema v15 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -164,7 +164,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v14.
+keys; unsupported versions are rejected. This does not change server schema v15.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -234,3 +234,9 @@ JSON's defaulted `media_revocations` map. Existing room user/admin assignments g
 default uploads at policy compilation. Restrictions commit with audit/revision
 updates, survive renames and owner transfers, and are removed on account/room
 deletion. This additive JSON field requires no SQL schema change.
+
+V15 adds media cleanup partial/covering indexes, `staging_attempt`, and a
+reference-removal trigger. A v14 upgrade backfills orphan timestamps once inside
+the migration transaction; cleanup no longer scans every live object to find
+orphans. Existing media JSON remains compatible, but ready/expiry/deletion
+columns are authoritative when loading. Downgrading after migration is unsupported.

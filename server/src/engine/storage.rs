@@ -40,10 +40,10 @@ impl Engine {
             && version != 12
             && version != 13
             && version != 14
+            && version != 15
         {
             return Err(
-                "Unsupported database schema; only v9/v10/v11/v12 migration and v13/v14 are supported."
-                    .into(),
+                "Unsupported database schema; only v9-v14 migration and v15 are supported.".into(),
             );
         }
         if version == 0 {
@@ -90,7 +90,10 @@ impl Engine {
                 .execute_batch(media::SCHEMA)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=14;")
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=15;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -151,7 +154,10 @@ impl Engine {
                 .execute_batch(media::SCHEMA)
                 .map_err(|e| e.to_string())?;
             migration
-                .execute_batch("PRAGMA user_version=14;")
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch("PRAGMA user_version=15;")
                 .map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -161,7 +167,10 @@ impl Engine {
                 .execute_batch(media::SCHEMA)
                 .map_err(|e| e.to_string())?;
             migration
-                .execute_batch("PRAGMA user_version=14;")
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch("PRAGMA user_version=15;")
                 .map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -175,7 +184,24 @@ impl Engine {
                 UPDATE media SET expires=created+604800,json=json_set(json,'$.max_age',604800,'$.expires',created+604800) WHERE ready=1;
                 UPDATE media SET published=created WHERE EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id);
                 CREATE INDEX media_expiry ON media(deleted,deleting,expires,unreferenced);
-                PRAGMA user_version=14;").map_err(|e| e.to_string())?;
+                ALTER TABLE media ADD COLUMN staging_attempt INTEGER NOT NULL DEFAULT 0;").map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration.execute_batch("UPDATE media SET unreferenced=unixepoch() WHERE unreferenced IS NULL AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id); PRAGMA user_version=15;").map_err(|e| e.to_string())?;
+            migration.commit().map_err(|e| e.to_string())?;
+        }
+        if version == 14 {
+            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(
+                    "ALTER TABLE media ADD COLUMN staging_attempt INTEGER NOT NULL DEFAULT 0;",
+                )
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration.execute_batch("UPDATE media SET unreferenced=unixepoch() WHERE unreferenced IS NULL AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id); PRAGMA user_version=15;").map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
         data.sessions.retain(|_, session| session.expires > now());

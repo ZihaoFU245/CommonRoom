@@ -66,7 +66,7 @@ impl Default for MediaConfig {
 impl MediaConfig {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.max_size == 0
-            || self.max_size > 5 * 1024 * 1024 * 1024
+            || self.max_size > 5_000_000_000
             || (self.max_age != -1 && !(1..=315360000).contains(&self.max_age))
             || !(3600..=604800).contains(&self.pending_ttl)
             || !(1..=86400).contains(&self.cleanup_interval)
@@ -76,7 +76,7 @@ impl MediaConfig {
             || !(1..=1024).contains(&self.pending_limit)
             || !(1..=10000).contains(&self.allocations_per_minute)
         {
-            return Err("Invalid media configuration: positive bounded sizes/quotas, max_age -1 or 1..315360000 seconds, pending_ttl 3600..604800, cleanup_interval 1..86400, cleanup_batch/pending_limit 1..1024, allocations_per_minute 1..10000 required.".into());
+            return Err("Invalid media configuration: max_size 1..5000000000 bytes, positive bounded quotas, max_age -1 or 1..315360000 seconds, pending_ttl 3600..604800, cleanup_interval 1..86400, cleanup_batch/pending_limit 1..1024, allocations_per_minute 1..10000 required.".into());
         }
         Ok(())
     }

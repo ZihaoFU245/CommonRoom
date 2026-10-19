@@ -256,7 +256,6 @@ impl Engine {
                     .ok_or("User not found.")?
                     .id
                     .clone();
-                self.require_target_command(actor, &scope, parts[0])?;
                 self.require(actor, &scope, Action::PolicyWrite)?;
                 let mut requested = Rights::default();
                 if !(parts[0] == "/revoke" && parts[3] == "x:group.su.assign") {

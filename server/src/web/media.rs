@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Upload {
     conversation_id: String,
@@ -29,23 +29,49 @@ fn unavailable() -> ApiError {
     error(StatusCode::SERVICE_UNAVAILABLE, "Media worker unavailable.")
 }
 
+// Each blocking job owns its API permit. No permit survives into S3 I/O or locks.
+async fn authenticated<T: Send + 'static>(
+    app: &App,
+    headers: &HeaderMap,
+    work: impl FnOnce(&App, &str) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let worker = app.clone();
+    let credentials = headers.clone();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let user = auth::authenticate(&worker, &credentials)?;
+        work(&worker, &user)
+    })
+    .await
+    .map_err(|_| unavailable())?
+}
+fn media_json(app: &App, media: &crate::engine::media::Media) -> Json<serde_json::Value> {
+    Json(
+        json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename}),
+    )
+}
+fn storage_failure(failure: crate::media::StorageError) -> ApiError {
+    let status = match failure {
+        crate::media::StorageError::Invalid(_) => StatusCode::BAD_REQUEST,
+        crate::media::StorageError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    error(status, failure.message())
+}
+
 pub(crate) async fn config(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        auth::authenticate(&app, &headers)?;
+    authenticated(&app, &headers, |app, _| {
         Ok(Json(
             json!({"enabled":app.media.is_some(),"max_size":app.config.media.max_size}),
         ))
     })
     .await
-    .map_err(|_| unavailable())?
 }
 
 pub(crate) async fn allocate(
@@ -55,58 +81,46 @@ pub(crate) async fn allocate(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
-    let _permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let worker = app.clone();
-    let credentials = headers.clone();
-    let request = input.clone();
-    let (conversation, uploader) = tokio::task::spawn_blocking(move || {
-        let user = auth::authenticate(&worker, &credentials)?;
-        let mut engine = worker.engine_api()?;
+    let (conversation, uploader, input) = authenticated(&app, &headers, move |app, user| {
+        let mut engine = app.engine_api()?;
         let conversation = engine
-            .resolve_media_conversation(&user, &request.conversation_id)
+            .resolve_media_conversation(user, &input.conversation_id)
             .map_err(|e| failed(&e))?;
         engine
-            .validate_media_allocation(&user, &conversation, &request.filename, request.size)
+            .validate_media_allocation(user, &conversation, &input.filename, input.size)
             .map_err(|e| failed(&e))?;
         let uploader = engine
             .data
             .users
-            .get(&user)
+            .get(user)
             .ok_or_else(|| failed("Account unavailable."))?
             .id
             .clone();
-        Ok::<_, ApiError>((conversation, uploader))
+        Ok((conversation, uploader, input))
     })
-    .await
-    .map_err(|_| unavailable())??;
-    // No reservation or upload URL is issued when storage cannot be reached.
+    .await?;
+    // Live probe deliberately preserves rejection before reserving offline uploads.
     storage
         .check_reachable()
         .await
-        .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
-    let media = tokio::task::spawn_blocking(move || {
-        let user = auth::authenticate(&app, &headers)?;
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let media = authenticated(&app, &headers, move |app, user| {
         let engine = app.engine_read_api()?;
-        if engine
-            .data
-            .users
-            .get(&user)
-            .is_none_or(|u| u.id != uploader)
-        {
+        if engine.data.users.get(user).is_none_or(|u| u.id != uploader) {
             return Err(failed("Account changed; retry upload."));
         }
         engine
-            .allocate_media(&user, &conversation, &input.filename, input.size)
+            .allocate_media(user, &conversation, &input.filename, input.size)
             .map_err(|e| failed(&e))
     })
-    .await
-    .map_err(|_| unavailable())??;
+    .await?;
     let url = storage
         .upload_url(&media.id, media.size)
         .await
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign upload URL."))?;
+        .map_err(|cause| {
+            tracing::warn!(media_id = %media.id, error = %cause, "Upload signing failed");
+            error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign upload URL.")
+        })?;
     Ok(Json(
         json!({"media_id":media.id,"upload":{"method":"PUT","url":url,"headers":{"Content-Type":"application/octet-stream"},"expires_in":300}}),
     ))
@@ -119,59 +133,62 @@ pub(crate) async fn complete(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
-    let _permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let _gate = storage.gate.lock().await;
-    let worker = app.clone();
-    let credentials = headers.clone();
-    let mut media = tokio::task::spawn_blocking(move || {
-        let user = auth::authenticate(&worker, &credentials)?;
-        worker
-            .engine_read_api()?
-            .media_owner(&user, &id)
+    // Authenticate before taking an object lock; recheck after it is acquired.
+    let media_id = id.clone();
+    authenticated(&app, &headers, move |app, user| {
+        app.engine_read_api()?
+            .media_owner(user, &media_id)
             .map_err(|e| failed(&e))
     })
-    .await
-    .map_err(|_| unavailable())??;
+    .await?;
+    let _lock = storage
+        .lock_media(&id)
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let mut media = authenticated(&app, &headers, move |app, user| {
+        app.engine_read_api()?
+            .media_owner(user, &id)
+            .map_err(|e| failed(&e))
+    })
+    .await?;
     if !media.ready {
-        storage.finalize(&mut media).await.map_err(|e| failed(&e))?;
-        let worker = app.clone();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(100),
+            storage.finalize(&mut media),
+        )
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Media verification timed out; retry completion.",
+            )
+        })?
+        .map_err(storage_failure)?;
         let verified = media.clone();
-        tokio::task::spawn_blocking(move || {
-            let user = auth::authenticate(&worker, &headers)?;
-            worker
-                .engine_read_api()?
-                .finish_media(&user, &verified)
+        authenticated(&app, &headers, move |app, user| {
+            app.engine_read_api()?
+                .finish_media(user, &verified)
                 .map_err(|e| failed(&e))
         })
-        .await
-        .map_err(|_| unavailable())??;
+        .await?;
     }
-    Ok(Json(
-        json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename}),
-    ))
+    Ok(media_json(&app, &media))
 }
 
-/// Read metadata only on demand; never probes storage or scans the file again.
 pub(crate) async fn info(
     State(app): State<App>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let user = auth::authenticate(&app, &headers)?;
-        let media = app.engine_read_api()?.readable_media(&user, &id)
+    authenticated(&app, &headers, move |app, user| {
+        let media = app
+            .engine_read_api()?
+            .readable_media(user, &id)
             .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))?;
-        Ok(Json(json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename})))
-    }).await.map_err(|_| unavailable())?
+        Ok(media_json(app, &media))
+    })
+    .await
 }
-
 #[derive(Default, Deserialize)]
 pub(crate) struct Download {
     #[serde(default)]
@@ -185,32 +202,25 @@ pub(crate) async fn download(
 ) -> Result<Redirect, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
-    let _permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let worker = app.clone();
-    let credentials = headers.clone();
-    let media = tokio::task::spawn_blocking(move || {
-        let user = auth::authenticate(&worker, &credentials)?;
-        worker
-            .engine_read_api()?
-            .readable_media(&user, &id)
+    let media = authenticated(&app, &headers, move |app, user| {
+        app.engine_read_api()?
+            .readable_media(user, &id)
             .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))
     })
-    .await
-    .map_err(|_| unavailable())??;
+    .await?;
     let url = storage
         .download_url(&media, options.download)
         .await
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign download URL."))?;
-    tokio::task::spawn_blocking(move || {
-        let user = auth::authenticate(&app, &headers)?;
+        .map_err(|cause| {
+            tracing::warn!(media_id = %media.id, error = %cause, "Download signing failed");
+            error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign download URL.")
+        })?;
+    authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
-            .readable_media(&user, &media.id)
+            .readable_media(user, &media.id)
             .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))
     })
-    .await
-    .map_err(|_| unavailable())??;
+    .await?;
     Ok(Redirect::temporary(&url))
 }
 
@@ -219,62 +229,121 @@ pub(crate) fn start_cleanup(app: App) {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(
             app.config.media.cleanup_interval,
         ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            if let Err(message) = cleanup(&app).await {
-                tracing::warn!(%message, "Media cleanup deferred");
+            match tokio::time::timeout(std::time::Duration::from_secs(20), cleanup(&app)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(message)) => tracing::warn!(%message, "Media cleanup deferred"),
+                Err(_) => tracing::warn!("Media cleanup time budget reached; retry next tick"),
             }
         }
     });
 }
 
+async fn cleanup_db<T: Send + 'static>(
+    app: &App,
+    work: impl FnOnce(&App) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let permit = app.io_permit()?;
+    let worker = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work(&worker)
+    })
+    .await
+    .map_err(|_| "Cleanup worker unavailable.")?
+}
+async fn delete_media(app: App, media: crate::engine::media::Media) -> Result<(), String> {
+    let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
+    let _lock = storage.lock_media(&media.id)?;
+    // Deduplicate legacy keys; v14+ ready objects never have a legacy copy.
+    let mut keys =
+        std::collections::BTreeSet::from([format!("uploads/{}", media.id), media.final_key()]);
+    let legacy = format!("media/{}", media.id);
+    if media.object_key.is_empty() || media.object_key == legacy {
+        keys.insert(legacy);
+    }
+    if !media.object_key.is_empty() {
+        keys.insert(media.object_key.clone());
+    }
+    storage.delete_keys(&keys).await?;
+    cleanup_db(&app, move |app| {
+        let engine = app.engine_read()?;
+        engine.media_staging_cleaned(&media.id)?;
+        engine.remove_media_record(&media.id)
+    })
+    .await
+}
 async fn cleanup(app: &App) -> Result<(), String> {
-    let Some(storage) = &app.media else {
+    if app.media.is_none() {
         return Ok(());
-    };
-    let _gate = storage.gate.lock().await;
-    let worker = app.clone();
-    let expired = tokio::task::spawn_blocking(move || worker.engine_read()?.expired_media())
-        .await
-        .map_err(|_| "Cleanup worker unavailable.")??;
-    for media in expired {
-        let deletion = async {
-            storage.delete(&format!("uploads/{}", media.id)).await?;
-            storage.delete(&media.final_key()).await?;
-            // A v13 crash could leave a final copy before its legacy key was saved.
-            storage.delete(&format!("media/{}", media.id)).await?;
-            if !media.object_key.is_empty() && media.object_key != media.final_key() {
-                storage.delete(&media.object_key).await?;
+    }
+    let start = std::time::Instant::now();
+    let attempted_before = crate::engine::media::timestamp();
+    let mut deleted = 0;
+    let mut failed = 0;
+    loop {
+        let rows = cleanup_db(app, move |app| {
+            app.engine_read()?.expired_media_before(attempted_before)
+        })
+        .await?;
+        let count = rows.len();
+        let mut jobs = tokio::task::JoinSet::new();
+        for media in rows {
+            let worker = app.clone();
+            jobs.spawn(delete_media(worker, media));
+            if jobs.len() == 4 {
+                match jobs.join_next().await {
+                    Some(Ok(Ok(()))) => deleted += 1,
+                    _ => failed += 1,
+                }
             }
-            Ok::<_, String>(())
         }
-        .await;
-        if deletion.is_err() {
-            tracing::warn!("Media deletion deferred");
-            continue;
+        while let Some(result) = jobs.join_next().await {
+            if matches!(result, Ok(Ok(()))) {
+                deleted += 1;
+            } else {
+                failed += 1;
+            }
         }
-        let worker = app.clone();
-        tokio::task::spawn_blocking(move || worker.engine_read()?.remove_media_record(&media.id))
-            .await
-            .map_err(|_| "Cleanup worker unavailable.")??;
+        if count < app.config.media.cleanup_batch {
+            break;
+        }
     }
-    let worker = app.clone();
-    let ids = tokio::task::spawn_blocking(move || worker.engine_read()?.media_staging_cleanup())
-        .await
-        .map_err(|_| "Cleanup worker unavailable.")??;
-    for id in ids {
-        if storage.delete(&format!("uploads/{id}")).await.is_err() {
-            tracing::warn!("Staging deletion deferred");
-            continue;
+    loop {
+        let ids = cleanup_db(app, move |app| {
+            app.engine_read()?.media_staging_cleanup(attempted_before)
+        })
+        .await?;
+        let count = ids.len();
+        for id in ids {
+            let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
+            let Ok(_lock) = storage.lock_media(&id) else {
+                continue;
+            };
+            if storage.delete(&format!("uploads/{id}")).await.is_err() {
+                failed += 1;
+                continue;
+            }
+            cleanup_db(app, move |app| {
+                app.engine_read()?.media_staging_cleaned(&id)
+            })
+            .await?;
         }
-        let worker = app.clone();
-        tokio::task::spawn_blocking(move || worker.engine_read()?.media_staging_cleaned(&id))
-            .await
-            .map_err(|_| "Cleanup worker unavailable.")??;
+        if count < app.config.media.cleanup_batch {
+            break;
+        }
     }
+    tracing::info!(
+        deleted,
+        failed,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Media cleanup finished"
+    );
     Ok(())
 }
 
@@ -284,17 +353,11 @@ pub(crate) async fn abandon(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let user = auth::authenticate(&app, &headers)?;
+    authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
-            .abandon_media(&user, &id)
+            .abandon_media(user, &id)
             .map_err(|e| failed(&e))?;
         Ok(Json(json!({"ok":true})))
     })
     .await
-    .map_err(|_| unavailable())?
 }

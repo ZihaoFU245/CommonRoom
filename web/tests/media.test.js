@@ -218,3 +218,56 @@ test("document previews bound streaming bytes, reject invalid UTF-8, and release
     "<html>preview</html>",
   );
 });
+
+test("attachment paths share validation, malformed origins fail without throwing, and progress is bounded", async (t) => {
+  assert.equal(
+    mediaMarkdown(
+      { ...media, path: "https://evil.test/file" },
+      "https://chat.example.com/",
+    ),
+    null,
+  );
+  assert.equal(mediaMarkdown(media, "not a base URL"), null);
+  assert.equal(
+    isCompletedMedia({
+      ...media,
+      media_id: "00000000-0000-0000-0000-000000000000",
+    }),
+    false,
+  );
+  assert.equal(
+    isUploadTicket({ ...ticket, upload: { ...ticket.upload, expires_in: -1 } }),
+    false,
+  );
+  const original = globalThis.XMLHttpRequest;
+  const originalPerformance = globalThis.performance;
+  globalThis.performance = { now: () => 0 };
+  let xhr;
+  t.after(() => {
+    globalThis.XMLHttpRequest = original;
+    globalThis.performance = originalPerformance;
+  });
+  globalThis.XMLHttpRequest = class {
+    upload = {};
+    constructor() {
+      xhr = this;
+    }
+    open() {}
+    setRequestHeader() {}
+    send() {}
+  };
+  const values = [];
+  const pending = uploadFile(
+    ticket,
+    new File(["test"], "test"),
+    new AbortController().signal,
+    (value) => values.push(value),
+  );
+  for (let loaded = 1; loaded <= 100; loaded++)
+    xhr.upload.onprogress({ lengthComputable: true, loaded, total: 100 });
+  assert.deepEqual(values, [1, 100]);
+  assert.equal(xhr.timeout, 15 * 60 * 1000);
+  xhr.status = 200;
+  xhr.onload();
+  await pending;
+});

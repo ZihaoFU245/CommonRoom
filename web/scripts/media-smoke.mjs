@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -196,6 +196,11 @@ try {
     await once(setup, "exit");
     assert.equal(setup.exitCode, 0, setup.output);
   }
+  await mkdir(env.CHAT_DATA, { recursive: true });
+  await writeFile(
+    join(env.CHAT_DATA, "config.json"),
+    JSON.stringify({ media: { cleanup_interval: 1, cleanup_batch: 2 } }),
+  );
   const chat = launch(join(root, "target/debug/chat"), [], env);
   await until(
     () =>
@@ -426,6 +431,28 @@ try {
     recoveredTicket.status,
     200,
     "Rejected uploads did not consume pending slots",
+  );
+  const abandoned = await recoveredTicket.json();
+  assert.equal(
+    (
+      await request(
+        `/api/media/uploads/${abandoned.media_id}/abandon`,
+        alice,
+        {},
+      )
+    ).status,
+    200,
+  );
+  await until(() => /deleted=1\b/u.test(chat.output), "RustFS batched cleanup");
+  assert.equal(
+    (
+      await request(
+        `/api/media/uploads/${abandoned.media_id}/complete`,
+        alice,
+        {},
+      )
+    ).status,
+    400,
   );
   console.log(
     "Media smoke passed: RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, storage outage rejection, and recovery.",

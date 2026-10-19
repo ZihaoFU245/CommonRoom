@@ -38,6 +38,10 @@ impl Media {
         format!("media/{class}/{}", self.id)
     }
 }
+enum MediaAccess {
+    Read,
+    Upload,
+}
 impl Engine {
     pub(crate) fn resolve_media_conversation(
         &mut self,
@@ -98,21 +102,20 @@ impl Engine {
             .filter(|g| size <= g.max_size.unwrap_or(self.media_config.max_size))
             .map(|g| g.max_age.unwrap_or(self.media_config.max_age))
             .collect();
-        let private_default = matches!(scope, Scope::Private(pair) if pair.split_once(':').is_some_and(|(a,b)| a==id || b==id))
+        let private_member = matches!(scope, Scope::Private(pair) if pair.split_once(':').is_some_and(|(a,b)| a==id || b==id))
             && self
                 .authorization
                 .groups
                 .get(id)
                 .is_some_and(|groups| !groups.is_empty());
-        let room_default = self
+        let room_member = self
             .authorization
             .media_defaults
             .get(id)
-            .is_some_and(|scopes| scopes.contains(scope))
+            .is_some_and(|scopes| scopes.contains(scope));
+        let implicit_default = (room_member || private_member)
             && limits.and_then(|m| m.get(scope)).is_none_or(Vec::is_empty);
-        let private_default =
-            private_default && limits.and_then(|m| m.get(scope)).is_none_or(Vec::is_empty);
-        if room_default || private_default || self.is_su(Some(user)) {
+        if implicit_default || self.is_su(Some(user)) {
             ages.push(self.media_config.max_age);
         }
         ages.into_iter()
@@ -150,23 +153,17 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) fn media_scope(&self, user: &str, id: &str, write: bool) -> Result<(), String> {
+    fn media_scope(&self, user: &str, id: &str, access: MediaAccess) -> Result<Scope, String> {
         if !self.active(user) {
             return Err("Account unavailable.".into());
         }
-        let scope = if self.data.rooms.values().any(|room| room.id == id) {
-            Scope::Room(id.into())
-        } else if self.data.private.values().any(|chat| chat.id == id) {
-            Scope::Private(id.into())
-        } else {
-            return Err("Conversation not found.".into());
-        };
+        let scope = self.media_conversation_scope(id)?;
         self.require(Some(user), &scope, Action::Read)?;
-        if write {
+        if matches!(access, MediaAccess::Upload) {
             self.require(Some(user), &scope, Action::Send)?;
             self.require(Some(user), &scope, Action::MediaUpload)?;
         }
-        Ok(())
+        Ok(scope)
     }
 
     pub(crate) fn validate_media_allocation(
@@ -176,13 +173,8 @@ impl Engine {
         filename: &str,
         size: u64,
     ) -> Result<i64, String> {
-        self.media_scope(user, conversation, true)?;
-        let max_age = self.media_allowance(
-            user,
-            &self.media_conversation_scope(conversation)?,
-            size,
-            None,
-        )?;
+        let scope = self.media_scope(user, conversation, MediaAccess::Upload)?;
+        let max_age = self.media_allowance(user, &scope, size, None)?;
         if filename.is_empty()
             || filename.chars().count() > 200
             || filename.chars().any(char::is_control)
@@ -225,7 +217,7 @@ impl Engine {
     }
 
     pub(crate) fn media_owner(&self, user: &str, id: &str) -> Result<Media, String> {
-        let media = self.stored_media(id)?;
+        let (media, attached) = self.stored_media_with_reference(id)?;
         if self
             .data
             .users
@@ -234,18 +226,12 @@ impl Engine {
         {
             return Err("Upload not found.".into());
         }
-        self.media_scope(user, &media.conversation, true)?;
-        self.media_allowance(
-            user,
-            &self.media_conversation_scope(&media.conversation)?,
-            media.size,
-            Some(media.max_age),
-        )?;
+        let scope = self.media_scope(user, &media.conversation, MediaAccess::Upload)?;
+        self.media_allowance(user, &scope, media.size, Some(media.max_age))?;
         if media.deleting
             || media.deleted
             || media.expires.is_some_and(|t| t <= now())
-            || (!self.media_attached(id)?
-                && now().saturating_sub(media.created) >= self.media_config.pending_ttl)
+            || (!attached && now().saturating_sub(media.created) >= self.media_config.pending_ttl)
         {
             return Err("Upload expired.".into());
         }
@@ -261,13 +247,13 @@ impl Engine {
     }
 
     pub(crate) fn readable_media(&self, user: &str, id: &str) -> Result<Media, String> {
-        let media = self.stored_media(id)?;
-        self.media_scope(user, &media.conversation, false)?;
+        let (media, attached) = self.stored_media_with_reference(id)?;
+        self.media_scope(user, &media.conversation, MediaAccess::Read)?;
         if !media.ready
             || media.deleting
             || media.deleted
             || media.expires.is_some_and(|t| t <= now())
-            || !self.media_attached(id)?
+            || !attached
         {
             return Err("Attachment not found.".into());
         }

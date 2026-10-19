@@ -107,6 +107,7 @@ export function useMediaUploads(
       const value = {
         media,
         preview:
+          file.size <= 4 * 1024 * 1024 &&
           media.content_type.startsWith("image/") &&
           media.content_type !== "image/svg+xml"
             ? URL.createObjectURL(file)

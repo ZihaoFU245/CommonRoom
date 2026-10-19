@@ -342,7 +342,11 @@ fn v13_media_migration_is_atomic_and_preserves_legacy_keys() {
         let media = ready(&e, "alice", &room);
         e.execute(Some("alice"), Some("room"), &link(&media))
             .unwrap();
-        e.db.lock().unwrap().execute_batch("DROP INDEX media_expiry;
+        e.db.lock().unwrap().execute_batch("DROP TRIGGER media_reference_removed;
+            DROP INDEX media_quota; DROP INDEX media_due_retry; DROP INDEX media_due_expiry;
+            DROP INDEX media_due_orphan; DROP INDEX media_staging_due; DROP INDEX media_tombstone;
+            ALTER TABLE media DROP COLUMN staging_attempt;
+            DROP INDEX IF EXISTS media_expiry;
             ALTER TABLE media DROP COLUMN expires; ALTER TABLE media DROP COLUMN published;
             ALTER TABLE media DROP COLUMN deleting; ALTER TABLE media DROP COLUMN deleted;
             ALTER TABLE media DROP COLUMN cleanup_attempt;
@@ -557,4 +561,80 @@ fn failed_room_media_revocation_and_restore_leave_compiled_authority_unchanged()
             .execute_batch("DROP TRIGGER fail_media_policy;")
             .unwrap();
     }
+}
+
+#[test]
+fn v14_media_upgrade_is_atomic_and_installs_cleanup_indexes() {
+    for fail in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let e = Engine::open(&path).unwrap();
+        e.db.lock()
+            .unwrap()
+            .execute_batch(
+                "DROP TRIGGER media_reference_removed;
+            DROP INDEX media_quota; DROP INDEX media_due_retry; DROP INDEX media_due_expiry;
+            DROP INDEX media_due_orphan; DROP INDEX media_staging_due; DROP INDEX media_tombstone;
+            ALTER TABLE media DROP COLUMN staging_attempt; PRAGMA user_version=14;",
+            )
+            .unwrap();
+        if fail {
+            e.db.lock()
+                .unwrap()
+                .execute_batch("CREATE TABLE media_quota(dummy);")
+                .unwrap();
+        }
+        drop(e);
+        if fail {
+            assert!(Engine::open(&path).is_err());
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                14
+            );
+            assert!(db.prepare("SELECT staging_attempt FROM media").is_err());
+        } else {
+            let e = Engine::open(&path).unwrap();
+            let db = e.db.lock().unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                15
+            );
+            let quota: String = db.query_row("EXPLAIN QUERY PLAN SELECT SUM(size),SUM(deleted=0 AND published IS NULL),SUM(created>0) FROM media WHERE uploader='user'", [], |row| row.get(3)).unwrap();
+            assert!(quota.contains("COVERING INDEX media_quota"), "{quota}");
+            let expiry: String = db.query_row("EXPLAIN QUERY PLAN SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=1 ORDER BY expires,created LIMIT 32",[],|row|row.get(3)).unwrap();
+            assert!(expiry.contains("media_due_expiry"), "{expiry}");
+        }
+    }
+}
+
+#[test]
+fn media_reference_removal_tracks_orphans_and_columns_override_legacy_json() {
+    let mut e = engine();
+    let room = e.data.rooms["lobby"].id.clone();
+    let media = ready(&e, "alice", &room);
+    e.execute(Some("alice"), Some("lobby"), &link(&media))
+        .unwrap();
+    e.abandon_media("alice", &media.id).unwrap(); // Idempotent no-op after publication.
+    assert!(e.readable_media("bob", &media.id).is_ok());
+    let message = e.history("alice", "lobby").unwrap().messages[0].id.clone();
+    e.execute(Some("alice"), Some("lobby"), &format!("/retract {message}"))
+        .unwrap();
+    let unreferenced: Option<u64> =
+        e.db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT unreferenced FROM media WHERE id=?1",
+                [&media.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+    assert!(unreferenced.is_some());
+    e.abandon_media("alice", &media.id).unwrap();
+    assert!(!e.stored_media(&media.id).unwrap().deleting);
+    e.db.lock().unwrap().execute("UPDATE media SET deleting=1,json=json_set(json,'$.deleting',json('false'),'$.ready',json('false')) WHERE id=?1",[&media.id]).unwrap();
+    let restored = e.stored_media(&media.id).unwrap();
+    assert!(restored.deleting && restored.ready);
 }

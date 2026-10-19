@@ -322,7 +322,7 @@ fn registrations_and_credentials_survive_current_schema_restart() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        14
+        15
     );
 }
 

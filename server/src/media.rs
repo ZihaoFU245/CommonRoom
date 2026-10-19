@@ -1,17 +1,53 @@
 //! S3 transport only. Authorization and SQL belong to the engine.
 mod types;
 use s3::{Bucket, Region, creds::Credentials};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, Weak},
+    time::Duration,
+};
 
 pub(crate) struct MediaStorage {
     pub bucket: Box<Bucket>,
     pub public: Box<Bucket>,
     pub public_origin: String,
-    // Serialize finalization and cleanup so a ready object's key is never replaced.
-    pub gate: tokio::sync::Mutex<()>,
+    // Locks exist only while requests are active; unrelated objects never serialize.
+    locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    jobs: tokio::sync::Semaphore,
+    probe_gate: tokio::sync::Mutex<()>,
+    probe_result: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum StorageError {
+    Invalid(&'static str),
+    Unavailable(&'static str),
+}
+impl StorageError {
+    pub(crate) fn message(&self) -> &'static str {
+        match self {
+            Self::Invalid(message) | Self::Unavailable(message) => message,
+        }
+    }
 }
 
 impl MediaStorage {
+    pub(crate) fn lock_media(&self, id: &str) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        let mut locks = self.locks.lock().map_err(|_| "Media locks unavailable.")?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = locks.get(id).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(id.into(), Arc::downgrade(&lock));
+            lock
+        });
+        lock.try_lock_owned()
+            .map_err(|_| "This attachment is busy; retry shortly.".into())
+    }
+    fn work(&self) -> Result<tokio::sync::SemaphorePermit<'_>, StorageError> {
+        self.jobs
+            .try_acquire()
+            .map_err(|_| StorageError::Unavailable("Media storage busy; retry shortly."))
+    }
     pub fn from_config(
         production: bool,
         saved: Option<&crate::config::S3Config>,
@@ -88,7 +124,10 @@ impl MediaStorage {
             bucket,
             public,
             public_origin,
-            gate: tokio::sync::Mutex::new(()),
+            locks: Mutex::new(HashMap::new()),
+            jobs: tokio::sync::Semaphore::new(8),
+            probe_gate: tokio::sync::Mutex::new(()),
+            probe_result: Mutex::new(None),
         })))
     }
 
@@ -96,15 +135,35 @@ impl MediaStorage {
     /// A missing object (404), or a denied missing-object HEAD (403), still
     /// proves the S3 endpoint is reachable. PUT authorization is enforced by S3.
     pub async fn check_reachable(&self) -> Result<(), String> {
+        let requested = std::time::Instant::now();
+        let _probe = self.probe_gate.lock().await;
+        if let Some((finished, result)) = &*self
+            .probe_result
+            .lock()
+            .map_err(|_| "Storage health unavailable.")?
+            && *finished >= requested
+        {
+            return result.clone();
+        }
+        let _job = self.work().map_err(|e| e.message().to_string())?;
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             self.bucket.head_object("uploads/.availability"),
         )
         .await;
-        match result {
+        let result = match result {
             Ok(Ok((_, 200 | 403 | 404))) => Ok(()),
-            _ => Err("Upload rejected: media storage is unavailable. Try again later.".into()),
-        }
+            _ => {
+                tracing::warn!("S3 reachability probe failed");
+                Err("Upload rejected: media storage is unavailable. Try again later.".into())
+            }
+        };
+        *self
+            .probe_result
+            .lock()
+            .map_err(|_| "Storage health unavailable.")? =
+            Some((std::time::Instant::now(), result.clone()));
+        result
     }
 
     pub async fn upload_url(&self, id: &str, size: u64) -> Result<String, s3::error::S3Error> {
@@ -121,45 +180,93 @@ impl MediaStorage {
             .await
     }
 
-    pub async fn finalize(&self, media: &mut crate::engine::media::Media) -> Result<(), String> {
+    pub async fn finalize(
+        &self,
+        media: &mut crate::engine::media::Media,
+    ) -> Result<(), StorageError> {
+        use StorageError::{Invalid, Unavailable};
+        if media.size == 0 {
+            return Err(Invalid("Invalid upload size."));
+        }
+        let _job = self.work()?;
+        let start = std::time::Instant::now();
         let source = format!("uploads/{}", media.id);
         let destination = media.final_key();
+        let failure = |operation: &'static str, cause: s3::error::S3Error| {
+            tracing::warn!(media_id = %media.id, operation, error = %cause, "S3 completion failed");
+            Unavailable("Media storage unavailable; retry completion.")
+        };
         let (head, status) = self
             .bucket
             .head_object(&source)
             .await
-            .map_err(|_| "Cannot inspect upload; retry completion.")?;
-        let expected = i64::try_from(media.size).map_err(|_| "Invalid size.")?;
-        if status != 200 || head.content_length != Some(expected) {
-            return Err("Uploaded file size does not match the request.".into());
+            .map_err(|e| failure("head", e))?;
+        if status == 404 {
+            return Err(Invalid("Uploaded file not found."));
+        }
+        if status != 200 {
+            return Err(Unavailable("Cannot inspect upload; retry completion."));
+        }
+        if head.content_length.and_then(|n| u64::try_from(n).ok()) != Some(media.size) {
+            return Err(Invalid("Uploaded file size does not match the request."));
         }
         let status = self
             .bucket
             .copy_object_internal(&source, &destination)
             .await
-            .map_err(|_| "Cannot finalize upload; retry completion.")?;
+            .map_err(|e| failure("copy", e))?;
         if status != 200 {
-            return Err("Cannot finalize upload; retry completion.".into());
+            return Err(Unavailable("Cannot finalize upload; retry completion."));
         }
-        let (head, status) = self
+        let end = media.size.min(4096) - 1;
+        let expected_prefix =
+            usize::try_from(end + 1).map_err(|_| Invalid("Invalid upload size."))?;
+        // Use the same pooled client, but inspect headers and bound streaming
+        // before buffering. A provider ignoring Range must not buffer a huge file.
+        let url = self
             .bucket
-            .head_object(&destination)
+            .presign_get(&destination, 60, None)
             .await
-            .map_err(|_| "Cannot verify final file.")?;
-        if status != 200 || head.content_length != Some(expected) {
-            return Err("Final file size does not match the request.".into());
+            .map_err(|e| failure("range signing", e))?;
+        let mut response = self.bucket.http_client().get(url).header("Range",format!("bytes=0-{end}"))
+            .timeout(Duration::from_secs(30)).send().await.map_err(|cause| {
+                tracing::warn!(media_id = %media.id, error = %cause.without_url(), "S3 range request failed");
+                Unavailable("Cannot inspect final file; retry completion.")
+            })?;
+        let total = match response.status().as_u16() {
+            206 => response
+                .headers()
+                .get("content-range")
+                .and_then(|header| header.to_str().ok())
+                .and_then(|value| value.strip_prefix(&format!("bytes 0-{end}/")))
+                .and_then(|size| size.parse::<u64>().ok()),
+            200 if media.size <= 4096 => response.content_length(),
+            _ => {
+                return Err(Unavailable(
+                    "Storage must support byte ranges; retry completion.",
+                ));
+            }
+        };
+        if total != Some(media.size) {
+            return Err(Invalid("Final file size does not match the request."));
         }
-        let prefix = self
-            .bucket
-            .get_object_range(&destination, 0, Some(media.size.min(4096) - 1))
-            .await
-            .map_err(|_| "Cannot verify final file type.")?;
-        if !matches!(prefix.status_code(), 200 | 206) {
-            return Err("Cannot verify final file type.".into());
+        let mut prefix = Vec::with_capacity(expected_prefix);
+        while let Some(chunk) = response.chunk().await.map_err(|cause| {
+            tracing::warn!(media_id = %media.id, error = %cause.without_url(), "S3 prefix read failed");
+            Unavailable("Cannot read final file; retry completion.")
+        })? {
+            if prefix.len().saturating_add(chunk.len()) > expected_prefix {
+                return Err(Unavailable("Storage returned more bytes than the requested range."));
+            }
+            prefix.extend_from_slice(&chunk);
         }
-        media.content_type = types::content_type(prefix.as_slice()).into();
+        if prefix.len() != expected_prefix {
+            return Err(Invalid("Final file size does not match the request."));
+        }
+        media.content_type = types::content_type(&prefix).into();
         media.object_key = destination;
         media.ready = true;
+        tracing::debug!(media_id = %media.id, elapsed_ms = start.elapsed().as_millis(), s3_calls = 3, "S3 completion verified");
         Ok(())
     }
 
@@ -206,12 +313,53 @@ impl MediaStorage {
             .await
     }
 
+    pub async fn delete_keys(
+        &self,
+        keys: &std::collections::BTreeSet<String>,
+    ) -> Result<(), String> {
+        let objects = keys
+            .iter()
+            .cloned()
+            .map(s3::serde_types::ObjectIdentifier::new)
+            .collect::<Vec<_>>();
+        let result = {
+            let _job = self.work().map_err(|e| e.message().to_string())?;
+            self.bucket.delete_objects(objects).await
+        };
+        match result {
+            Ok(result)
+                if result.errors.is_empty()
+                    && keys
+                        .iter()
+                        .all(|key| result.deleted.iter().any(|deleted| &deleted.key == key)) =>
+            {
+                Ok(())
+            }
+            Err(s3::error::S3Error::HttpFailWithBody(405 | 501, _)) => {
+                for key in keys {
+                    self.delete(key).await?;
+                }
+                Ok(())
+            }
+            Ok(result) => {
+                tracing::warn!(
+                    errors = result.errors.len(),
+                    "S3 batch deletion incomplete; retaining quota"
+                );
+                Err("Storage deletion incomplete.".into())
+            }
+            Err(cause) => {
+                tracing::warn!(error = %cause, "S3 batch deletion failed");
+                Err("Storage deletion failed.".into())
+            }
+        }
+    }
     pub async fn delete(&self, key: &str) -> Result<(), String> {
-        let response = self
-            .bucket
-            .delete_object(key)
-            .await
-            .map_err(|_| "Storage deletion failed.")?;
+        let _job = self.work().map_err(|e| e.message().to_string())?;
+        let response = self.bucket.delete_object(key).await.map_err(|cause| {
+            tracing::warn!(key, error = %cause, "S3 deletion failed");
+            "Storage deletion failed."
+        })?;
         if !matches!(response.status_code(), 200 | 204 | 404) {
             return Err("Storage deletion failed.".into());
         }
@@ -292,9 +440,171 @@ fn s3_bucket(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::{Engine, media::Media};
+
+    pub(crate) fn test_storage(endpoint: &str) -> Arc<MediaStorage> {
+        let credentials = Credentials::new(Some("test"), Some("secret"), None, None, None).unwrap();
+        let bucket = s3_bucket("private", "us-east-1", endpoint.into(), true, credentials).unwrap();
+        Arc::new(MediaStorage {
+            public: bucket.clone(),
+            bucket,
+            public_origin: endpoint.into(),
+            locks: Mutex::new(HashMap::new()),
+            jobs: tokio::sync::Semaphore::new(8),
+            probe_gate: tokio::sync::Mutex::new(()),
+            probe_result: Mutex::new(None),
+        })
+    }
+    #[test]
+    fn object_locks_and_storage_capacity_are_independent_and_bounded() {
+        let storage = test_storage("http://127.0.0.1:1");
+        let first = storage.lock_media("first").unwrap();
+        assert!(storage.lock_media("first").is_err());
+        assert!(storage.lock_media("second").is_ok());
+        let permits: Vec<_> = (0..8).map(|_| storage.work().unwrap()).collect();
+        assert!(storage.work().is_err());
+        drop(permits);
+        drop(first);
+        assert!(storage.lock_media("first").is_ok());
+        assert!(storage.work().is_ok());
+        assert!(storage.locks.lock().unwrap().len() <= 1);
+    }
+    #[tokio::test]
+    async fn completion_classifies_storage_failure_and_invalid_size_without_underflow() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (status, expected_invalid) in [(200, true), (404, true), (503, false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let storage = test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut input = [0; 4096];
+                let count = socket.read(&mut input).await.unwrap();
+                assert!(count > 0);
+                socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: 4\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            });
+            let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+            engine
+                .provision("alice", "hash".into(), true, false)
+                .unwrap();
+            engine
+                .execute(Some("alice"), None, "/new room files")
+                .unwrap();
+            let mut media = engine
+                .allocate_media("alice", &engine.data.rooms["files"].id, "file", 1)
+                .unwrap();
+            let error = storage.finalize(&mut media).await.unwrap_err();
+            assert_eq!(matches!(error, StorageError::Invalid(_)), expected_invalid);
+            server.await.unwrap();
+            media.size = 0;
+            assert!(matches!(
+                storage.finalize(&mut media).await,
+                Err(StorageError::Invalid(_))
+            ));
+        }
+    }
+    #[tokio::test]
+    async fn signed_download_filename_preserves_quotes_spaces_unicode_and_plus() {
+        let storage = test_storage("http://127.0.0.1:1");
+        let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+        engine
+            .provision("alice", "hash".into(), true, false)
+            .unwrap();
+        engine
+            .execute(Some("alice"), None, "/new room files")
+            .unwrap();
+        let media = engine
+            .allocate_media(
+                "alice",
+                &engine.data.rooms["files"].id,
+                "hello \"你好+\".txt",
+                1,
+            )
+            .unwrap();
+        let url = url::Url::parse(&storage.download_url(&media, true).await.unwrap()).unwrap();
+        let query: HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(
+            query["response-content-disposition"],
+            "attachment; filename=\"download\"; filename*=UTF-8''hello%20%22%E4%BD%A0%E5%A5%BD%2B%22.txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_delete_checks_each_key_including_partial_failures() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (xml, success) in [
+            (
+                "<DeleteResult><Deleted><Key>one</Key></Deleted><Deleted><Key>two</Key></Deleted></DeleteResult>",
+                true,
+            ),
+            (
+                "<DeleteResult><Deleted><Key>one</Key></Deleted><Error><Key>two</Key><Code>AccessDenied</Code><Message>Denied</Message></Error></DeleteResult>",
+                false,
+            ),
+            ("<DeleteResult/>", false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let storage = test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+            let response = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .and_then(|value| value.parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{xml}",xml.len()).as_bytes()).await.unwrap();
+            });
+            assert_eq!(
+                storage
+                    .delete_keys(&std::collections::BTreeSet::from([
+                        "one".into(),
+                        "two".into()
+                    ]))
+                    .await
+                    .is_ok(),
+                success
+            );
+            response.await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn overlapping_probes_share_work_but_later_requests_probe_again() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let storage = test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 404 Missing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let (one, two) = tokio::join!(storage.check_reachable(), storage.check_reachable());
+        assert!(one.is_ok() && two.is_ok());
+        server.await.unwrap();
+        assert!(storage.check_reachable().await.is_err());
+    }
 
     #[tokio::test]
     async fn reachability_accepts_private_bucket_responses_but_rejects_outages() {
@@ -326,7 +636,10 @@ mod tests {
                 public: bucket.clone(),
                 bucket,
                 public_origin: format!("http://{address}"),
-                gate: tokio::sync::Mutex::new(()),
+                locks: Mutex::new(HashMap::new()),
+                jobs: tokio::sync::Semaphore::new(8),
+                probe_gate: tokio::sync::Mutex::new(()),
+                probe_result: Mutex::new(None),
             };
             assert_eq!(storage.check_reachable().await.is_ok(), status != 503);
             response.await.unwrap();
@@ -384,7 +697,10 @@ mod tests {
                 public: bucket.clone(),
                 bucket,
                 public_origin: endpoint.into(),
-                gate: tokio::sync::Mutex::new(()),
+                locks: Mutex::new(HashMap::new()),
+                jobs: tokio::sync::Semaphore::new(8),
+                probe_gate: tokio::sync::Mutex::new(()),
+                probe_result: Mutex::new(None),
             };
             let signed = storage.upload_url("test-object", 123).await.unwrap();
             let url = url::Url::parse(&signed).unwrap();
@@ -421,7 +737,10 @@ mod tests {
             public: bucket.clone(),
             bucket,
             public_origin: configured.public_origin.clone(),
-            gate: tokio::sync::Mutex::new(()),
+            locks: Mutex::new(HashMap::new()),
+            jobs: tokio::sync::Semaphore::new(8),
+            probe_gate: tokio::sync::Mutex::new(()),
+            probe_result: Mutex::new(None),
         };
         let cors = s3::serde_types::CorsConfiguration::new(vec![s3::serde_types::CorsRule::new(
             Some(vec!["content-type".into()]),

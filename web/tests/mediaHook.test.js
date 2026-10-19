@@ -250,4 +250,33 @@ test("verified attachments stay separate from text and release only on acknowled
   await Promise.resolve();
   hook = render("server-c");
   assert.equal(hook.enabled, true);
+  api.mediaConfig = async () => ({ enabled: true, max_size: 6 * 1024 * 1024 });
+  api.allocateMedia = async () => ({
+    media_id: id,
+    upload: {
+      method: "PUT",
+      url: "https://storage.test/upload",
+      headers: { "Content-Type": "application/octet-stream" },
+      expires_in: 300,
+    },
+  });
+  api.completeMedia = async () => ({
+    media_id: id,
+    path: `/api/media/${id}/file`,
+    filename: "large.png",
+    content_type: "image/png",
+    size: 5 * 1024 * 1024,
+  });
+  render("server-d");
+  await Promise.resolve();
+  hook = render("server-d");
+  await hook.start(new File([new Uint8Array(5 * 1024 * 1024)], "large.png"));
+  hook = render("server-d");
+  assert.ok(hook.attachment);
+  assert.equal(
+    hook.attachment.preview,
+    null,
+    "Large images do not allocate a decoded composer preview",
+  );
+  hook.cancel();
 });

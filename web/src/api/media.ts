@@ -30,7 +30,10 @@ export function isUploadTicket(value: unknown): value is UploadTicket {
     typeof upload.url !== "string" ||
     !record(upload.headers) ||
     upload.headers["Content-Type"] !== "application/octet-stream" ||
-    typeof upload.expires_in !== "number"
+    typeof upload.expires_in !== "number" ||
+    !Number.isSafeInteger(upload.expires_in) ||
+    upload.expires_in <= 0 ||
+    upload.expires_in > 604800
   )
     return false;
   try {
@@ -44,14 +47,20 @@ export function isUploadTicket(value: unknown): value is UploadTicket {
     return false;
   }
 }
+export function mediaPath(path: unknown): { id: string; path: string } | null {
+  if (typeof path !== "string") return null;
+  const match =
+    /^\/(?:[a-z0-9_-]+\/)*api\/media\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/file$/iu.exec(
+      path,
+    );
+  return match?.[1] ? { id: match[1], path } : null;
+}
 export function isCompletedMedia(value: unknown): value is CompletedMedia {
   return (
     record(value) &&
     typeof value.media_id === "string" &&
     typeof value.path === "string" &&
-    /^\/(?:[a-z0-9_-]+\/)*api\/media\/[a-f0-9-]{36}\/file$/iu.test(
-      value.path,
-    ) &&
+    mediaPath(value.path)?.id === value.media_id &&
     typeof value.filename === "string" &&
     typeof value.content_type === "string" &&
     typeof value.size === "number" &&
@@ -59,10 +68,21 @@ export function isCompletedMedia(value: unknown): value is CompletedMedia {
     value.size > 0
   );
 }
-export function mediaMarkdown(media: CompletedMedia, base: string): string {
-  const url = new URL(media.path, base);
-  if (url.origin !== new URL(base).origin)
-    throw new Error("Invalid attachment origin.");
+export function mediaMarkdown(
+  media: CompletedMedia,
+  base: string,
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(media.path, base);
+    if (
+      url.origin !== new URL(base).origin ||
+      mediaPath(media.path)?.id !== media.media_id
+    )
+      return null;
+  } catch {
+    return null;
+  }
   const label = media.filename.replace(/[\\[\]<>\r\n]/gu, "_");
   const kind = attachmentKind(media.content_type);
   const image = media.content_type.startsWith("image/") && kind !== "svg";
@@ -84,12 +104,24 @@ export function uploadFile(
       else resolve();
     };
     xhr.open("PUT", ticket.upload.url);
-    xhr.timeout = 300000;
+    // URL expiry limits when PUT may start, not the transfer's duration.
+    xhr.timeout = 15 * 60 * 1000;
     xhr.withCredentials = false;
     xhr.setRequestHeader("Content-Type", ticket.upload.headers["Content-Type"]);
+    let previousPercent = -1;
+    let previousTime = 0;
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable)
-        progress(Math.round((event.loaded * 100) / event.total));
+      if (!event.lengthComputable || event.total <= 0) return;
+      const percent = Math.round((event.loaded * 100) / event.total);
+      const time = performance.now();
+      if (
+        percent === previousPercent ||
+        (previousPercent >= 0 && percent < 100 && time - previousTime < 100)
+      )
+        return;
+      previousPercent = percent;
+      previousTime = time;
+      progress(percent);
     };
     xhr.onload = () =>
       finish(
@@ -103,7 +135,12 @@ export function uploadFile(
           "Storage upload failed. Check the connection and storage CORS settings.",
         ),
       );
-    xhr.ontimeout = () => finish(new Error("Storage upload timed out."));
+    xhr.ontimeout = () =>
+      finish(
+        new Error(
+          "Storage upload timed out after 15 minutes. Retry on a faster connection.",
+        ),
+      );
     xhr.onabort = () =>
       finish(new DOMException("Upload cancelled.", "AbortError"));
     signal.addEventListener("abort", abort, { once: true });
@@ -135,21 +172,24 @@ export function attachmentKind(type: string): AttachmentKind | null {
 }
 // A Markdown title is a display hint only; verify server metadata before loading.
 export function attachmentLink(href: string, title: string, base: string) {
-  const kind = /^(?:media:)(audio|video|html|svg)$/u.exec(title)?.[1];
+  const hint = title.startsWith("media:") ? title.slice(6) : "";
+  const kind: AttachmentKind | null =
+    hint === "audio" || hint === "video" || hint === "html" || hint === "svg"
+      ? hint
+      : null;
   if (!kind) return null;
   try {
     const url = new URL(href, base);
     const root = new URL(base);
-    const expected = new URL("api/media/", root);
-    const id = url.pathname.slice(expected.pathname.length, -5);
-    return url.origin === root.origin &&
+    const parsed = mediaPath(url.pathname);
+    return parsed &&
+      url.origin === root.origin &&
       !url.username &&
       !url.password &&
       !url.search &&
       !url.hash &&
-      url.pathname === `${expected.pathname}${id}/file` &&
-      /^[a-f0-9-]{36}$/iu.test(id)
-      ? { id, kind, path: url.pathname }
+      url.pathname === new URL(`api/media/${parsed.id}/file`, root).pathname
+      ? { ...parsed, kind }
       : null;
   } catch {
     return null;

@@ -69,7 +69,7 @@ DOM markup. Preview source is released when the virtual row unmounts. Older
 uploads retain their stored classification; re-upload to use new formats.
 
 The copy prevents a reused upload URL overwriting a published attachment.
-Completion and cleanup serialize storage mutation; engine locks are released
+Completion and cleanup serialize mutation of the same object; engine locks are released
 before network I/O. Current identity/grants are rechecked after verification.
 
 The composer holds a separate attachment card/preview with Remove, while text
@@ -262,7 +262,7 @@ bucket origin automatically. Attachment previews also require
 set `X-Content-Type-Options: nosniff`. Keep the bucket private and avoid public
 caching or listing. Serve storage from a separate origin without chat cookies.
 
-SQLite is v14; validated v9-v13 data upgrades transactionally. V13 media gains
+SQLite is v15; validated v9-v15 data upgrades transactionally. V13 media gains
 persisted expiry/publication/deletion state; existing referenced media receives
 seven-day expiry from its original creation time, preserving object keys. Back up
 the stopped database and corresponding bucket snapshot together.
@@ -289,3 +289,35 @@ storage server errors return HTTP 503: “Upload rejected: media storage is
 unavailable. Try again later.” Authorization is rechecked after that I/O. The
 probe needs no listing/write permission; missing-object 403/404 responses prove
 reachability, while S3 still enforces actual PUT permissions and size constraints.
+
+## Availability and bounded work
+
+Media holds the shared API admission permit only during blocking auth/SQL work.
+S3 uses eight independent outbound slots; completion and cleanup lock only the
+same media ID. Saturation or duplicate completion returns 503 promptly, leaving
+other chat operations available. Storage failures return 503; invalid sizes or
+missing staging objects return 400. Zero sizes are rejected in the transport too.
+Completion has a 100-second server budget below the browser's 120-second deadline.
+It uses three S3 calls: staging HEAD, copy, then bounded range GET verifying the
+copied object's total size and type. A provider ignoring large-object Range is
+rejected before buffering. Diagnostics omit signed request URLs.
+
+Concurrent allocation probes share in-flight work only. Later requests always
+probe again; there is no stale health cache that allocates while storage is down.
+Downloads/previews retain no-store and live authorization rechecks.
+
+Cleanup drains batches with up to four concurrent object jobs within a 20-second
+sweep budget, skipping missed timer ticks. It batches each object's distinct
+keys with DeleteObjects, checks every returned key/error, and falls back to
+individual deletion for unsupported batch APIs (405/501). A failed or incomplete
+delete retains the row and quota. Final/staging retry timestamps prevent failed
+objects monopolizing subsequent batches. V15 adds partial due-set/tombstone
+indexes, a covering quota index, staging retry state, and reference-removal
+tracking. Mutable SQL columns are authoritative over legacy JSON state copies.
+V14 upgrades transactionally; earlier supported versions migrate directly to v15.
+
+Single PUT/copy uploads have a conservative portable 5,000,000,000-byte ceiling;
+provider/ingress limits may be lower. A PUT URL must be used within five minutes;
+that expiry does not terminate an already admitted transfer. The client uses a
+separate 15-minute transfer timeout, deduplicates progress at most 10 times per
+second, and creates local image previews only for files up to 4 MiB.

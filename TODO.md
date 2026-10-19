@@ -33,3 +33,7 @@ thumbnails and a dedicated expired-attachment placeholder are not included.
 
 See [Media uploads](docs/media-uploads.md) for configuration, policy semantics,
 local setup, supported operations and verification commands.
+
+- [x] Isolate S3 admission and per-object locking from chat API workers.
+- [x] Add indexed, bounded cleanup and atomic v14-to-v15 migration.
+- [x] Verify typed storage errors, concurrency, batch deletion and client bounds.
