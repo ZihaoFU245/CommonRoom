@@ -246,6 +246,15 @@ impl Engine {
                 self.data.rooms.remove(parts[1]).ok_or("Room not found.")?;
                 self.data.policy.assignments.retain(|a| a.scope != scope);
                 self.data.policy.grants.retain(|g| g.scope != scope);
+                if let Scope::Room(id) = &scope {
+                    for rooms in self.data.policy.media_revocations.values_mut() {
+                        rooms.remove(id);
+                    }
+                    self.data
+                        .policy
+                        .media_revocations
+                        .retain(|_, rooms| !rooms.is_empty());
+                }
                 self.audit(actor, "/rm", parts[1]);
                 Ok(format!("Deleted #{}.", parts[1]))
             }

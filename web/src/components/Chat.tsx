@@ -629,6 +629,7 @@ export function Chat({
             </div>
           )}
           <Composer
+            mediaUpload={commands.mediaUpload}
             canWrite={commands.permissions.includes("w:message.create")}
             minimumComposerHeight={minimumComposerHeight}
             actualComposerHeight={actualComposerHeight}

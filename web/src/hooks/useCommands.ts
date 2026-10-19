@@ -1,3 +1,5 @@
+import { mediaMarkdown } from "../api/media.ts";
+import { useMediaUploads } from "./useMediaUploads.ts";
 import {
   loadMarkdown,
   setMarkdown,
@@ -159,6 +161,11 @@ export function useCommands({
     availableCommands,
     send,
   });
+  const mediaUpload = useMediaUploads(
+    room?.id ??
+      (direct && peer ? `@direct:${peer}` : state.private_access[selected]?.id),
+    state.sync?.instance,
+  );
   const lifecycleRef = useRef<ReturnType<typeof createRequestLifecycle> | null>(
     null,
   );
@@ -266,7 +273,23 @@ export function useCommands({
   }
   function send(event: Event) {
     event.preventDefault();
-    const text = expandAlias(draft.trim(), aliases);
+    if (mediaUpload.busy) return;
+    const attachment = mediaUpload.attachment;
+    if (attachment && !permissions.includes("w:media.upload")) return;
+    const plainText = expandAlias(draft.trim(), aliases);
+    if (attachment && plainText.startsWith("/")) {
+      append(
+        plainText,
+        "Remove the attachment before running a command.",
+        true,
+      );
+      return;
+    }
+    const text = attachment
+      ? [mediaMarkdown(attachment.media, document.baseURI), plainText]
+          .filter(Boolean)
+          .join("\n\n")
+      : plainText;
     if (
       !text ||
       (text.startsWith("/") ? lifecycle.pending : !lifecycle.canSubmitMessage())
@@ -357,7 +380,7 @@ export function useCommands({
       consoleView,
       peer,
       replyId: replyTarget?.id ?? null,
-      markdown,
+      markdown: attachment ? true : markdown,
     });
     const kind = deletionKind(text);
     if (kind) return requestDelete(() => submitComposer(submission), kind);
@@ -367,7 +390,9 @@ export function useCommands({
     const { text, selected: view, replyId } = submission;
     const message = !text.startsWith("/");
     if (message ? !lifecycle.canSubmitMessage() : lifecycle.pending) return;
-    const outgoingKey = message ? `outgoing-${++outgoingSerial.current}` : null;
+    const attached = message ? mediaUpload.attachment : null;
+    const outgoingKey =
+      message && !attached ? `outgoing-${++outgoingSerial.current}` : null;
     const submittedVersion = draftVersion.current;
     if (outgoingKey) {
       setOutgoing((items) => [
@@ -394,8 +419,10 @@ export function useCommands({
         reply: !!replyId && !text.startsWith("/"),
       },
       frame: submissionFrame(submission),
-      parallel: message,
+      parallel: message && !attached,
       complete: (data, current) => {
+        if (attached && data.kind !== "error")
+          mediaUpload.published(attached.media.media_id);
         if (outgoingKey) {
           setOutgoing((items) =>
             data.kind === "error"
@@ -473,6 +500,10 @@ export function useCommands({
     }
   }
   return {
+    mediaUpload: {
+      ...mediaUpload,
+      enabled: mediaUpload.enabled && permissions.includes("w:media.upload"),
+    },
     markdown,
     changeMarkdown,
     aliases,

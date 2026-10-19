@@ -233,10 +233,26 @@ and private checkpoint directory; the chat server does not start it. Run one
 worker per checkpoint and use a distinct bot account when permissions differ.
 See [Agent development](agent-development.md) for the runnable reference worker.
 
-This release accepts existing v12 data, transactionally upgrades validated v9/v10/v11
-data, or initializes an empty data folder. Back up v9/v10/v11 data before upgrading;
+This draft accepts existing v14 data, transactionally upgrades validated v9/v10/v11/v12/v13
+data, or initializes an empty data folder. Back up v9/v10/v11/v12 data before upgrading;
 older schemas remain unsupported. See [Data](data.md) for backups and compatibility.
 
 Supported configuration ceilings are 256 users, 1,024 rooms and 1,000,000 retained
 messages per conversation. Values beyond these ceilings are rejected before
 configuration writes or engine retention changes; existing data is preserved.
+
+## Optional media storage (draft)
+
+See [Media uploads](media-uploads.md) for RustFS setup, `CHAT_S3_*` environment
+settings, private bucket/CORS requirements, storage ingress body limits, UI CSP
+and coordinated SQLite/object backups. Storage is disabled unless configured.
+
+`auto/debug.sh` supplies local RustFS connection defaults (`127.0.0.1:19000`,
+private bucket `commonroom-draft`, path-style addressing and development credentials).
+Explicit `CHAT_S3_*` variables override these defaults; `RUSTFS_ACCESS_KEY` and
+`RUSTFS_SECRET_KEY` also supply matching local credentials when set. It starts
+only chat and the UI. Start RustFS manually in another terminal with
+`./auto/start-s3.sh`; stopping debug does not stop that independently started service.
+Debug prepares the local private bucket and browser CORS automatically. Storage
+outages print a warning without preventing chat startup. Remote buckets remain
+operator-managed; see [Media uploads](media-uploads.md).

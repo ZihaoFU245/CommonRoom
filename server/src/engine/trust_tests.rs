@@ -168,6 +168,7 @@ fn sudo_authority_is_cleared_even_when_policy_rebuilding_fails() {
             scope: Scope::Server,
             permissions: BTreeSet::from(["x:unknown.permission".into()]),
             minimum_age: 0,
+            media: None,
         });
         Ok(())
     });
@@ -522,6 +523,7 @@ fn removed_su_assignment_permission_preserves_database_and_command_compatibility
         scope: Scope::Server,
         permissions: BTreeSet::from([legacy.into(), "w:room.create".into()]),
         minimum_age: 0,
+        media: None,
     });
     // Persist a policy with the old name, as a previous release could do.
     e.execute(None, None, "/grant bob @global /new").unwrap();
@@ -580,7 +582,7 @@ fn removed_su_assignment_permission_preserves_database_and_command_compatibility
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 14);
 }
 
 #[test]
@@ -1241,6 +1243,7 @@ fn permission_lookup_benchmark() {
             scope: Scope::Room(format!("benchmark-{n}")),
             permissions: BTreeSet::from([Action::Read.name().into()]),
             minimum_age: 0,
+            media: None,
         });
     }
     e.rebuild_authorization().unwrap();
@@ -1619,6 +1622,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "r:message.read",
         "r:member.list",
         "w:message.create",
+        "w:media.upload",
         "w:message.react",
         "w:message.retract.own",
         "w:message.edit.own",

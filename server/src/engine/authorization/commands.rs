@@ -134,6 +134,22 @@ impl Engine {
                     |(name, _)| name.clone(),
                 )
         };
+        if let Scope::Room(room_id) = &scope {
+            let revoked = self
+                .data
+                .policy
+                .media_revocations
+                .iter()
+                .filter(|(_, rooms)| rooms.contains(room_id))
+                .map(|(id, _)| format!("- `{}`: `w:media.upload` revoked", subject_name(id)))
+                .collect::<Vec<_>>();
+            if !revoked.is_empty() {
+                text.push_str(&format!(
+                    "\n\n## Room upload restrictions\n\n{}",
+                    revoked.join("\n")
+                ));
+            }
+        }
         let assignments = self
             .data
             .policy
@@ -157,7 +173,8 @@ impl Engine {
                 &assignments
             }
         ));
-        let mut grants: BTreeMap<(String, u64, bool), BTreeSet<String>> = BTreeMap::new();
+        let mut grants: BTreeMap<(String, u64, bool, Option<MediaAllowance>), BTreeSet<String>> =
+            BTreeMap::new();
         for grant in self
             .data
             .policy
@@ -170,7 +187,7 @@ impl Engine {
                 Subject::Group(group) => format!("group:{}", group.name()),
             };
             grants
-                .entry((subject, grant.minimum_age, grant.owner))
+                .entry((subject, grant.minimum_age, grant.owner, grant.media.clone()))
                 .or_default()
                 .extend(grant.permissions.iter().cloned());
         }
@@ -178,7 +195,7 @@ impl Engine {
         if grants.is_empty() {
             text.push_str("\n\nNone.");
         }
-        for ((subject, minimum_age, owner), permissions) in grants {
+        for ((subject, minimum_age, owner, media), permissions) in grants {
             text.push_str(&format!(
                 "\n\n### {subject} — {}",
                 if owner {
@@ -189,6 +206,13 @@ impl Engine {
             ));
             if owner {
                 text.push_str("\n\nGranted through room ownership.");
+            }
+            if let Some(media) = media {
+                text.push_str(&format!(
+                    "\n\nMedia: maximum {} bytes; maximum age {} seconds (-1 means permanent).",
+                    media.max_size.unwrap_or(self.media_config.max_size),
+                    media.max_age.unwrap_or(self.media_config.max_age)
+                ));
             }
             if minimum_age > 0 {
                 text.push_str(&format!("\n\nCleanup minimum age: {minimum_age} seconds."));
@@ -218,7 +242,7 @@ impl Engine {
         match parts[0] {
             "/permissions" => self.apply_permissions(context),
             "/grant" | "/revoke" if direct_grant(parts) => {
-                if !(4..=5).contains(&parts.len()) {
+                if !(4..=6).contains(&parts.len()) {
                     return Err("Usage: /grant user scope permission [minimum-age] or /revoke user scope permission".into());
                 }
                 let scope = self.policy_scope(actor, parts[2], true)?;
@@ -268,13 +292,94 @@ impl Engine {
                         ));
                     }
                 }
-                let minimum_age = parts
-                    .get(4)
-                    .map(|age| parse_age(age))
-                    .transpose()?
-                    .unwrap_or(0);
+                let media = if parts[0] == "/grant" && parts[3] == Action::MediaUpload.name() {
+                    let limits = MediaAllowance {
+                        max_size: parts
+                            .get(4)
+                            .map(|n| {
+                                n.parse::<u64>()
+                                    .map_err(|_| "Media max-size must be bytes.")
+                            })
+                            .transpose()?,
+                        max_age: parts
+                            .get(5)
+                            .map(|n| {
+                                if *n == "-1" {
+                                    Ok(-1)
+                                } else {
+                                    parse_age(n).and_then(|n| {
+                                        i64::try_from(n).map_err(|_| "Invalid media age.".into())
+                                    })
+                                }
+                            })
+                            .transpose()?,
+                    };
+                    if limits
+                        .max_size
+                        .is_some_and(|n| n == 0 || n > self.media_config.max_size)
+                        || limits
+                            .max_age
+                            .is_some_and(|n| n != -1 && !(1..=315360000).contains(&n))
+                    {
+                        return Err("Invalid media limits or size above server ceiling.".into());
+                    }
+                    if !self.is_su(actor) {
+                        let actor = actor.ok_or("Actor required.")?;
+                        let size = limits.max_size.unwrap_or(self.media_config.max_size);
+                        let age = limits.max_age.unwrap_or(self.media_config.max_age);
+                        self.media_allowance(actor, &scope, size, Some(age))?;
+                    }
+                    Some(limits)
+                } else {
+                    if parts.len() > 5 {
+                        return Err("Unexpected grant arguments.".into());
+                    }
+                    None
+                };
+                let minimum_age = if media.is_some() {
+                    0
+                } else {
+                    parts
+                        .get(4)
+                        .map(|age| parse_age(age))
+                        .transpose()?
+                        .unwrap_or(0)
+                };
                 if minimum_age > 0 && parts[3] != Action::Clean.name() {
                     return Err("Minimum age applies only to x:history.clean.".into());
+                }
+                let room_media = (parts[3] == Action::MediaUpload.name())
+                    .then_some(&scope)
+                    .and_then(|scope| {
+                        if let Scope::Room(id) = scope {
+                            Some(id.clone())
+                        } else {
+                            None
+                        }
+                    });
+                if parts.len() != 4 && parts[0] == "/revoke" {
+                    return Err("Usage: /revoke user scope permission".into());
+                }
+                if let Some(room_id) = &room_media {
+                    if self.has_group(Some(parts[1]), Group::Su) && !self.is_su(actor) {
+                        return Err("Only su can change a superuser's media policy.".into());
+                    }
+                    if parts[0] == "/grant" {
+                        if let Some(rooms) = self.data.policy.media_revocations.get_mut(&target) {
+                            rooms.remove(room_id);
+                        }
+                        self.data
+                            .policy
+                            .media_revocations
+                            .retain(|_, rooms| !rooms.is_empty());
+                    } else {
+                        self.data
+                            .policy
+                            .media_revocations
+                            .entry(target.clone())
+                            .or_default()
+                            .insert(room_id.clone());
+                    }
                 }
                 let subject = Subject::Account(target);
                 if parts[0] == "/grant" {
@@ -282,6 +387,7 @@ impl Engine {
                         g.subject == subject
                             && g.scope == scope
                             && g.minimum_age == minimum_age
+                            && g.media == media
                             && g.permissions.contains(parts[3])
                     }) {
                         self.data.policy.grants.push(Grant {
@@ -290,6 +396,7 @@ impl Engine {
                             scope,
                             permissions: BTreeSet::from([parts[3].into()]),
                             minimum_age,
+                            media,
                         });
                     }
                 } else {
@@ -306,11 +413,7 @@ impl Engine {
                         .grants
                         .retain(|g| !g.permissions.is_empty());
                 }
-                self.audit(
-                    actor,
-                    parts[0],
-                    &format!("{} {} {}", parts[1], parts[2], parts[3]),
-                );
+                self.audit(actor, parts[0], &parts[1..].join(" "));
                 let operation = if parts[0] == "/grant" {
                     "Added"
                 } else {
@@ -320,6 +423,19 @@ impl Engine {
                     "# Grant updated.\n\n{operation} `{}` for `{}` at `{label}`.\n\nOther direct and group grants still apply.",
                     parts[3], parts[1]
                 );
+                if room_media.is_some() {
+                    reply = if parts[0] == "/revoke" {
+                        format!(
+                            "# Uploads revoked.\n\n`{}` cannot upload or attach new media in `{label}`. Reading existing attachments and sending text remain unchanged. Use `/grant {} {label} w:media.upload` to restore uploads.",
+                            parts[1], parts[1]
+                        )
+                    } else {
+                        format!(
+                            "# Uploads granted.\n\nRestored `w:media.upload` for `{}` in `{label}` with the specified limits (server defaults when omitted).",
+                            parts[1]
+                        )
+                    };
+                }
                 if parts[0] == "/grant" && parts[3].starts_with('/') {
                     let requirements = crate::commands::requirements(parts[3]);
                     reply.push_str("\n\n## Command requirements\n\nThe command grant does not add action permissions.");

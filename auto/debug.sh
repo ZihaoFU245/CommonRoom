@@ -14,6 +14,25 @@ if ! command -v node >/dev/null 2>&1 || [ ! -f web/node_modules/vite/bin/vite.js
     exit 1
 fi
 
+# RustFS is started separately with auto/start-s3.sh. These development-only
+# defaults enable media in chat without changing the saved production settings.
+export CHAT_S3_ENDPOINT="${CHAT_S3_ENDPOINT:-http://127.0.0.1:19000}"
+export CHAT_S3_PUBLIC_ENDPOINT="${CHAT_S3_PUBLIC_ENDPOINT:-$CHAT_S3_ENDPOINT}"
+export CHAT_S3_BUCKET="${CHAT_S3_BUCKET:-commonroom-draft}"
+export CHAT_S3_REGION="${CHAT_S3_REGION:-us-east-1}"
+export CHAT_S3_PATH_STYLE="${CHAT_S3_PATH_STYLE:-true}"
+export CHAT_S3_ACCESS_KEY="${CHAT_S3_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-commonroom-draft}}"
+export CHAT_S3_SECRET_KEY="${CHAT_S3_SECRET_KEY:-${RUSTFS_SECRET_KEY:-commonroom-draft-local-only}}"
+
+# Prepare only the loopback development service. Remote S3 remains operator-managed.
+case "$CHAT_S3_ENDPOINT" in
+    http://127.0.0.1:*)
+        if ! ./target/debug/chat --setup-local-s3 </dev/null; then
+            printf '%s\n' 'Local S3 setup failed. Start ./auto/start-s3.sh and restart debug; uploads will be rejected until storage is ready.' >&2
+        fi
+        ;;
+esac
+
 server_pid=
 ui_pid=
 cleanup() {
@@ -40,6 +59,7 @@ ui_pid=$!
 server_pid=$!
 exec 3<&-
 printf '%s\n' 'Debug UI: http://127.0.0.1:5173 (Ctrl+C stops UI and server).'
+printf 'Media storage: %s (start RustFS separately with ./auto/start-s3.sh).\n' "$CHAT_S3_ENDPOINT"
 
 # POSIX sh has no wait -n; watch both children and propagate the first exit.
 while kill -0 "$server_pid" 2>/dev/null && kill -0 "$ui_pid" 2>/dev/null; do

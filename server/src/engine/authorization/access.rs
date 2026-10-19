@@ -142,6 +142,16 @@ impl Engine {
             }
         }
 
+        if let Scope::Room(room_id) = scope
+            && !self.is_su(actor)
+            && self
+                .authorization
+                .media_revocations
+                .get(id)
+                .is_some_and(|rooms| rooms.contains(room_id))
+        {
+            r.actions &= !Action::MediaUpload.bit();
+        }
         r
     }
     pub fn allows(&self, actor: Option<&str>, scope: &Scope, action: Action) -> bool {
@@ -391,6 +401,7 @@ impl Engine {
             scope,
             permissions,
             minimum_age: 0,
+            media: None,
         });
     }
     pub(in crate::engine) fn audit(&mut self, actor: Option<&str>, operation: &str, target: &str) {

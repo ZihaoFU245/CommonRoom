@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -69,6 +70,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
             .is_err()
     );
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -110,6 +112,7 @@ fn cookies_are_http_only_and_secure_in_production() {
     };
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -204,6 +207,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
         .unwrap()
         .to_owned();
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -270,6 +274,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
     engine.provision("disabled", hash, false, false).unwrap();
     engine.execute(None, None, "/disable disabled").unwrap();
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -311,6 +316,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
 async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -393,6 +399,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         .unwrap();
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -566,6 +573,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             }
             let (changes, _) = broadcast::channel(1);
             let app = App {
+                media: None,
                 engine: Arc::new(RwLock::new(engine)),
                 attempts: Default::default(),
                 changes,
@@ -695,6 +703,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
 fn engine_readers_overlap_and_io_admission_is_bounded() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -759,6 +768,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
     engine.login("two".into(), "alice", "hash", None).unwrap();
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,

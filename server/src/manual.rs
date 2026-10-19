@@ -303,6 +303,25 @@ Remove these direct grants with `/revoke alice support x:member.add` and `/revok
 ## Limit history cleanup
 
 Only `x:history.clean` accepts minimum-age. Use positive durations with s/m/h/d/w units.
+
+Media uploads use a separate typed constraint form:
+
+```text
+/grant bob support w:media.upload 26214400 7d
+/grant bob support w:media.upload 26214400 -1
+```
+
+The optional media arguments are maximum bytes and maximum age (s/m/h/d/w, or -1
+for permanent). Omitted values use server media defaults. Uploads additionally
+require read/send rights. A single additive grant must cover both size and age;
+room managers cannot delegate a larger allowance than they hold. Revoke all
+matching direct media grants with `/revoke bob support w:media.upload`.
+Room user/admin groups include uploads using server defaults. A room-specific
+`/revoke bob support w:media.upload` blocks uploads there, including global/direct
+upload grants (su remains fully trusted). `/grant` clears that restriction;
+explicit conversation media limits replace the implicit default. Private
+participants also have uploads by default. Revoking room uploads preserves text
+sending and attachment reading, and does not affect private uploads.
 This example permits cleanup of messages older than seven days; su must issue these grants:
 
 ```
@@ -377,7 +396,8 @@ Use `/kick` to remove membership and their direct/scoped group grants:
 /kick bob support
 ```
 
-Global grants still apply. Revocation takes effect on the next server check and updates connected clients.
+Global grants still apply, except a room media-upload restriction overrides upload
+grants in that room (su remains fully trusted). Revocation takes effect on the next server check and updates connected clients.
 Content already received by a client cannot be taken back."#;
 
 const PERMISSIONS: &str = r#"# Permissions
@@ -395,7 +415,10 @@ A grant allows one action or command in a particular scope. Without a matching g
 Running `/history` requires both its command grant and `r:message.read` on the conversation.
 HTTP history requests check read access independently of command grants.
 
-Grants add together. There are no deny rules, wildcards, or groups nested inside groups.
+Grants add together, without wildcards or groups nested inside groups. Room media
+has a narrow revocation override: `/revoke user room w:media.upload` blocks uploads
+there until `/grant` restores them, even with a global upload grant. Su remains
+fully trusted. Other permissions keep their additive behavior.
 Global grants apply globally; resource grants apply only to the resource's stable identity.
 
 ## Message ownership

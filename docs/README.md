@@ -10,6 +10,7 @@ Start with [Development](development.md), then read [Architecture](architecture.
 - [Protocol](protocol.md): HTTP/WebSocket contracts and synchronization rules.
 - [Testing](testing.md): required checks and regression coverage.
 - [Commands](commands.md): command syntax, permissions, and behavior.
+- [Media uploads (draft)](media-uploads.md): private S3 uploads, setup, limits, cleanup and verification.
 - [Data](data.md): persistence, upgrades, backups, and moving the service.
 - [Storage benchmarks](storage-benchmarks.md): mutation latency, write volume, memory, and remaining scaling costs.
 - [Deployment](deployment.md): separate server/UI builds, configuration, Nginx.
