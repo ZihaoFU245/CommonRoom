@@ -1,6 +1,6 @@
 use super::*;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     response::Redirect,
 };
@@ -153,10 +153,35 @@ pub(crate) async fn complete(
     ))
 }
 
+/// Read metadata only on demand; never probes storage or scans the file again.
+pub(crate) async fn info(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin_or_bot(&app, &headers)?;
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let user = auth::authenticate(&app, &headers)?;
+        let media = app.engine_read_api()?.readable_media(&user, &id)
+            .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))?;
+        Ok(Json(json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename})))
+    }).await.map_err(|_| unavailable())?
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct Download {
+    #[serde(default)]
+    download: bool,
+}
 pub(crate) async fn download(
     State(app): State<App>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(options): Query<Download>,
 ) -> Result<Redirect, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
@@ -175,7 +200,7 @@ pub(crate) async fn download(
     .await
     .map_err(|_| unavailable())??;
     let url = storage
-        .download_url(&media)
+        .download_url(&media, options.download)
         .await
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign download URL."))?;
     tokio::task::spawn_blocking(move || {

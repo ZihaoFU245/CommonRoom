@@ -270,8 +270,13 @@ try {
     media,
   );
   const path = media.path.replace("/commonroom", "");
+  const infoPath = `/api/media/${ticket.media_id}/info`;
+  assert.equal((await request(infoPath, alice)).status, 404);
   assert.equal((await request(path, alice)).status, 404);
   await send(`[note](${new URL(media.path, base).href})`);
+  assert.deepEqual(await (await request(infoPath, bob)).json(), media);
+  assert.equal((await request(infoPath, eve)).status, 404);
+  assert.equal((await request(infoPath, null)).status, 401);
   const response = await request(path, bob);
   assert.equal(response.status, 307);
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -285,6 +290,81 @@ try {
   ).json();
   await send(`/retract ${history.messages[0].id}`);
   assert.equal((await request(path, bob)).status, 404);
+  assert.equal((await request(infoPath, bob)).status, 404);
+  // New MIME classification must use bytes, with private range-readable objects.
+  for (const [filename, bytes, type] of [
+    ["renamed.txt", Buffer.from("RIFF1234WAVEfmt "), "audio/wav"],
+    [
+      "movie.mp4",
+      Buffer.from("000000146674797069736f6d000000006d703432", "hex"),
+      "video/mp4",
+    ],
+    [
+      "picture.avif",
+      Buffer.from("00000018667479706176696600000000617669666d696631", "hex"),
+      "image/avif",
+    ],
+    [
+      "page.html",
+      Buffer.from("<!DOCTYPE html><html><body>Preview</body></html>"),
+      "text/html",
+    ],
+    [
+      "drawing.svg",
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
+      "image/svg+xml",
+    ],
+  ]) {
+    const allocated = await (
+      await request("/api/media/uploads", alice, {
+        conversation_id: conversation,
+        filename,
+        size: bytes.length,
+      })
+    ).json();
+    assert.equal(
+      (
+        await fetch(allocated.upload.url, {
+          method: "PUT",
+          headers: allocated.upload.headers,
+          body: bytes,
+        })
+      ).status,
+      200,
+    );
+    const completed = await request(
+      `/api/media/uploads/${allocated.media_id}/complete`,
+      alice,
+      {},
+    );
+    assert.equal(completed.status, 200);
+    const verified = await completed.json();
+    assert.equal(verified.content_type, type);
+    await send(`[${filename}](${new URL(verified.path, base).href})`);
+    const redirect = await request(
+      verified.path.replace("/commonroom", ""),
+      bob,
+    );
+    const ranged = await fetch(redirect.headers.get("location"), {
+      headers: { Range: "bytes=0-3" },
+    });
+    assert.equal(ranged.status, 206);
+    assert.equal(ranged.headers.get("content-type"), type);
+    assert.equal(
+      ranged.headers.get("content-disposition").startsWith("attachment;"),
+      type === "text/html" || type === "image/svg+xml",
+    );
+    assert.deepEqual(
+      Buffer.from(await ranged.arrayBuffer()),
+      bytes.subarray(0, 4),
+    );
+    const forced = await request(
+      verified.path.replace("/commonroom", "") + "?download=true",
+      bob,
+    );
+    const asFile = await fetch(forced.headers.get("location"));
+    assert.match(asFile.headers.get("content-disposition"), /^attachment;/);
+  }
   assert.equal(
     (
       await request(

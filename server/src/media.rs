@@ -1,4 +1,5 @@
 //! S3 transport only. Authorization and SQL belong to the engine.
+mod types;
 use s3::{Bucket, Region, creds::Credentials};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -150,15 +151,13 @@ impl MediaStorage {
         }
         let prefix = self
             .bucket
-            .get_object_range(&destination, 0, Some(media.size.min(512) - 1))
+            .get_object_range(&destination, 0, Some(media.size.min(4096) - 1))
             .await
             .map_err(|_| "Cannot verify final file type.")?;
         if !matches!(prefix.status_code(), 200 | 206) {
             return Err("Cannot verify final file type.".into());
         }
-        media.content_type = image_type(prefix.as_slice())
-            .unwrap_or("application/octet-stream")
-            .into();
+        media.content_type = types::content_type(prefix.as_slice()).into();
         media.object_key = destination;
         media.ready = true;
         Ok(())
@@ -167,10 +166,17 @@ impl MediaStorage {
     pub async fn download_url(
         &self,
         media: &crate::engine::media::Media,
+        force_download: bool,
     ) -> Result<String, s3::error::S3Error> {
         let mut query = HashMap::new();
         query.insert("response-content-type".into(), media.content_type.clone());
-        let disposition = if media.content_type.starts_with("image/") {
+        let disposition = if !force_download
+            && (matches!(
+                media.content_type.as_str(),
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+            ) || media.content_type.starts_with("audio/")
+                || media.content_type.starts_with("video/"))
+        {
             "inline".into()
         } else {
             format!(
@@ -282,20 +288,6 @@ fn s3_bucket(
         b.with_request_timeout(Duration::from_secs(30))
     })
     .map_err(|_| "Invalid storage configuration.".into())
-}
-
-fn image_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(b"\xff\xd8\xff") {
-        Some("image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some("image/webp")
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -521,7 +513,7 @@ mod tests {
             )
             .unwrap();
         let readable = engine.readable_media("alice", &media.id).unwrap();
-        let download = storage.download_url(&readable).await.unwrap();
+        let download = storage.download_url(&readable, false).await.unwrap();
         let fetched = client.get(&download).send().await.unwrap();
         assert_eq!(fetched.headers().get("content-type").unwrap(), "image/png");
         assert_eq!(

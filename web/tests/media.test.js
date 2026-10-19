@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  documentSource,
+  previewLimit,
+  attachmentKind,
+  attachmentLink,
   isCompletedMedia,
   isUploadTicket,
   mediaMarkdown,
@@ -139,4 +143,78 @@ test("direct upload omits chat cookies, reports progress and aborts", async (t) 
   xhr.status = 200;
   xhr.onload();
   await success;
+});
+
+test("native attachment hints preserve Markdown and cannot target external origins", () => {
+  const base = "https://chat.example.com/commonroom/";
+  for (const [mime, kind] of [
+    ["audio/mpeg", "audio"],
+    ["video/mp4", "video"],
+    ["text/html", "html"],
+    ["image/svg+xml", "svg"],
+  ]) {
+    assert.equal(attachmentKind(mime), kind);
+    assert.equal(
+      mediaMarkdown({ ...media, content_type: mime }, base),
+      `[screen_shot_.png](https://chat.example.com/commonroom/api/media/${id}/file "media:${kind}")`,
+    );
+    assert.deepEqual(
+      attachmentLink(new URL(media.path, base).href, `media:${kind}`, base),
+      { id, kind, path: media.path },
+    );
+  }
+  assert.ok(
+    mediaMarkdown({ ...media, content_type: "image/avif" }, base).startsWith(
+      "!",
+    ),
+  );
+  for (const path of [
+    `https://evil.test/commonroom/api/media/${id}/file`,
+    `https://user:secret@chat.example.com${media.path}`,
+    `/api/media/${id}/file`,
+    `${media.path}?x=1`,
+    `${media.path}#x`,
+    `/commonroom/api/media/not-a-uuid/file`,
+  ])
+    assert.equal(attachmentLink(path, "media:video", base), null);
+  assert.equal(attachmentLink(media.path, "media:script", base), null);
+});
+
+test("document previews bound streaming bytes, reject invalid UTF-8, and release streams", async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const controller = new AbortController();
+  let cancelled = false;
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        pull(c) {
+          c.enqueue(new Uint8Array(previewLimit + 1));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    );
+  await assert.rejects(
+    documentSource("/api/media/file", controller.signal),
+    /1 MiB/,
+  );
+  assert.equal(cancelled, true);
+  globalThis.fetch = async () => new Response(new Uint8Array([0xff]));
+  await assert.rejects(
+    documentSource("/api/media/file", controller.signal),
+    /encoded data/,
+  );
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(options.credentials, "same-origin");
+    assert.equal(options.cache, "no-store");
+    return new Response("<html>preview</html>");
+  };
+  assert.equal(
+    await documentSource("/api/media/file", controller.signal),
+    "<html>preview</html>",
+  );
 });

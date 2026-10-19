@@ -64,7 +64,9 @@ export function mediaMarkdown(media: CompletedMedia, base: string): string {
   if (url.origin !== new URL(base).origin)
     throw new Error("Invalid attachment origin.");
   const label = media.filename.replace(/[\\[\]<>\r\n]/gu, "_");
-  return `${media.content_type.startsWith("image/") ? "!" : ""}[${label}](${url.href})`;
+  const kind = attachmentKind(media.content_type);
+  const image = media.content_type.startsWith("image/") && kind !== "svg";
+  return `${image ? "!" : ""}[${label}](${url.href}${kind ? ` "media:${kind}"` : ""})`;
 }
 
 export function uploadFile(
@@ -121,4 +123,69 @@ export function isMediaConfig(
     Number.isSafeInteger(value.max_size) &&
     value.max_size > 0
   );
+}
+
+export type AttachmentKind = "audio" | "video" | "html" | "svg";
+export function attachmentKind(type: string): AttachmentKind | null {
+  if (type.startsWith("audio/")) return "audio";
+  if (type.startsWith("video/")) return "video";
+  if (type === "text/html") return "html";
+  if (type === "image/svg+xml") return "svg";
+  return null;
+}
+// A Markdown title is a display hint only; verify server metadata before loading.
+export function attachmentLink(href: string, title: string, base: string) {
+  const kind = /^(?:media:)(audio|video|html|svg)$/u.exec(title)?.[1];
+  if (!kind) return null;
+  try {
+    const url = new URL(href, base);
+    const root = new URL(base);
+    const expected = new URL("api/media/", root);
+    const id = url.pathname.slice(expected.pathname.length, -5);
+    return url.origin === root.origin &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.pathname === `${expected.pathname}${id}/file` &&
+      /^[a-f0-9-]{36}$/iu.test(id)
+      ? { id, kind, path: url.pathname }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export const previewLimit = 1024 * 1024;
+// Read a bounded document only after a click; original bytes stay in S3.
+export async function documentSource(
+  path: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    cache: "no-store",
+    signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
+  });
+  if (!response.ok || !response.body)
+    throw new Error("Unable to load preview.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let size = 0;
+  let source = "";
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > previewLimit)
+        throw new Error(
+          "Preview is limited to 1 MiB. Download this file instead.",
+        );
+      source += decoder.decode(chunk.value, { stream: true });
+    }
+    return source + decoder.decode();
+  } finally {
+    await reader.cancel();
+  }
 }

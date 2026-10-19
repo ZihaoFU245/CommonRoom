@@ -70,7 +70,7 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
             .as_ref()
             .map_or("", |storage| storage.public_origin.as_str());
         let policy = format!(
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https: data: blob:; font-src 'self' data:; connect-src 'self' {websocket_origin} {media_origin}; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https: data: blob:; font-src 'self' data:; connect-src 'self' {websocket_origin} {media_origin}; media-src 'self' {media_origin}; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
         );
         let Ok(policy) = HeaderValue::from_str(&policy) else {
             return error(

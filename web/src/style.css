@@ -2118,3 +2118,32 @@ button:focus-visible {
 .composer-attachment small {
   display: block;
 }
+
+.attachment-viewer {
+  display: block;
+  margin-block: 0.5rem;
+}
+.attachment-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.attachment-viewer audio,
+.attachment-viewer video {
+  display: block;
+  max-width: 100%;
+  margin-top: 0.5rem;
+}
+.attachment-viewer video {
+  max-height: 60dvh;
+}
+.attachment-viewer [role="status"] {
+  display: block;
+  color: var(--muted);
+}
+
+.attachment-download {
+  display: block;
+  margin-top: 0.5rem;
+}

@@ -17,6 +17,7 @@ Implemented on the media branch; deployment checks remain below.
 - [x] Clean expired referenced objects, pending objects and staging copies with durable claims.
 - [x] Preserve expired-reference tombstones, transactional rollback and v13 -> v14 migration.
 - [x] Verify real RustFS upload/completion/download/reference behavior locally.
+- [x] Add AVIF, native audio/video, and optional sandboxed HTML/SVG file previews.
 - [x] Add AWS/R2/RustFS addressing/signing tests and media policy/lifecycle regression tests.
 
 Deployment checks requiring the actual environment:

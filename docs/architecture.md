@@ -174,3 +174,10 @@ guards. Finalization/cleanup are serialized, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
 attachment preview state and acknowledgement-based publication; `api/media.ts` validates responses and direct-upload transport.
 See [Media uploads](media-uploads.md).
+
+Attachment playback/previews live in the lazy `components/Attachment.tsx` chunk.
+The Markdown renderer recognizes only local media link hints; clicking Play or
+Preview validates authoritative metadata before loading bytes. Browser codecs
+handle playback; file signature classification uses a bounded 4 KiB S3 range
+without loading whole files or adding decoder libraries. HTML/SVG file previews
+reuse the existing isolated frame and opt-in policy rather than another renderer.

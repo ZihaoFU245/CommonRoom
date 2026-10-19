@@ -1,8 +1,12 @@
+import { attachmentLink } from "../api/media.ts";
 import { createElement } from "preact";
 import type { ComponentChildren } from "preact";
 import { lazy, memo, Suspense } from "preact/compat";
 import type { MarkdownNode } from "../features/conversation/markdown.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
+const Attachment = lazy(() =>
+  import("./Attachment.tsx").then((module) => ({ default: module.Attachment })),
+);
 const Math = lazy(() =>
   import("./Math.tsx")
     .then((module) => ({ default: module.Math }))
@@ -43,8 +47,39 @@ export const MarkdownContent = memo(function MarkdownContent({
             <Math source={node.math.source} display={node.math.display} />
           </Suspense>
         );
+      const attachment =
+        node.href && node.title
+          ? attachmentLink(node.href, node.title, document.baseURI)
+          : null;
+      if (attachment) {
+        const fallback = (
+          <a href={node.href} target="_blank" rel="noopener noreferrer">
+            {render(node.children)}
+          </a>
+        );
+        return (
+          <Suspense key={attachment.id + attachment.kind} fallback={fallback}>
+            <Attachment
+              id={attachment.id}
+              href={node.href ?? attachment.path}
+              kind={attachment.kind}
+              {...(renderHtml
+                ? { renderHtml: (source: string) => renderHtml(source, index) }
+                : {})}
+            >
+              {render(node.children)}
+            </Attachment>
+          </Suspense>
+        );
+      }
       return createElement(
-        node.tag,
+        node.tag === "p" &&
+          node.children.some(
+            (child) =>
+              typeof child !== "string" && child.title?.startsWith("media:"),
+          )
+          ? "div"
+          : node.tag,
         {
           key: index,
           ...(node.href

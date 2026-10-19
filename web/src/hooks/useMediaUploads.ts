@@ -106,9 +106,11 @@ export function useMediaUploads(
       if (!valid()) return;
       const value = {
         media,
-        preview: media.content_type.startsWith("image/")
-          ? URL.createObjectURL(file)
-          : null,
+        preview:
+          media.content_type.startsWith("image/") &&
+          media.content_type !== "image/svg+xml"
+            ? URL.createObjectURL(file)
+            : null,
       };
       currentAttachment.current = value;
       setAttachment(value);

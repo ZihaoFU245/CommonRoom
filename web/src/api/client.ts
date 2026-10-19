@@ -61,6 +61,13 @@ async function request<T>(
 }
 
 export const api = {
+  mediaInfo: (id: string, signal: AbortSignal) =>
+    request(
+      `media/${encodeURIComponent(id)}/info`,
+      isCompletedMedia,
+      undefined,
+      signal,
+    ),
   mediaConfig: (signal: AbortSignal) =>
     request("media/config", isMediaConfig, undefined, signal),
   allocateMedia: (

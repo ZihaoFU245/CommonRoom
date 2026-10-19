@@ -221,3 +221,11 @@ storage server errors return HTTP 503: “Upload rejected: media storage is
 unavailable. Try again later.” Authorization is rechecked after that I/O. The
 probe needs no listing/write permission; missing-object 403/404 responses prove
 reachability, while S3 still enforces actual PUT permissions and size constraints.
+
+Media attachment metadata: authenticated `GET /api/media/{id}/info` returns the
+same `{media_id,path,filename,content_type,size}` shape as upload completion.
+Only published, unexpired, readable attachments are visible (otherwise 404).
+No storage request is made. `GET /api/media/{id}/file?download=true` forces
+attachment disposition; the default permits native recognized media playback.
+Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
+are optional UI hints; the client verifies MIME with the info endpoint on click.

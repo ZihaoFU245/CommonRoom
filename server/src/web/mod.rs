@@ -115,6 +115,7 @@ pub fn router(app: App) -> Router {
         .route("/api/media/uploads/{id}/complete", post(media::complete))
         .route("/api/media/uploads/{id}/abandon", post(media::abandon))
         .route("/api/media/{id}/file", get(media::download))
+        .route("/api/media/{id}/info", get(media::info))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))

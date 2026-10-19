@@ -39,9 +39,34 @@ Allocation persists a reservation before returning a five-minute presigned PUT
 URL, signing the exact declared size and `application/octet-stream`. Clients send
 bytes directly without chat cookies. Storage success is followed by idempotent
 server completion: HEAD the staging object, copy to a server-only final key,
-verify size again and classify a bounded prefix. PNG/JPEG/GIF/WebP render inline;
-other formats download as `application/octet-stream` with attachment disposition.
+verify size again and classify at most 4 KiB of the file. Raster images
+(PNG/JPEG/GIF/WebP/AVIF) render inline. Recognized MP4/WebM/Ogg video and
+MP3/AAC/M4A/Ogg/WebM/WAV/FLAC audio use native browser players. The container's
+codec must still be supported by the receiving browser; unsupported files retain
+a download link. No decoding, transcoding, thumbnail generation or new decoder
+dependency is involved. Unknown signatures remain application/octet-stream.
 This is signature classification, not a full decode or malware scan.
+
+Audio/video and HTML/SVG use ordinary Markdown links with a display-hint title
+(e.g. `"media:video"`). Only exact same-origin, base-path-correct media links can
+activate attachment controls. Hints never authorize access or determine the
+trusted MIME: Play/Preview requests authenticated `/api/media/UUID/info`, which
+checks publication, expiry and current conversation read permission without S3 I/O.
+The timeline performs no metadata/file requests before that click.
+
+Players have controls, no autoplay attribute and `preload="none"`; the source is
+attached and playback requested only after Play. The app refreshes a failed S3
+redirect through the authenticated file endpoint, preserving playback position;
+repeated failures before successful playback stop with Retry/download controls.
+Seeking uses S3 range requests. `?download=true` requests attachment disposition
+for the original file instead of inline playback.
+
+HTML and SVG remain attachment downloads and are never navigated as inline
+application documents. Preview fetches at most 1 MiB of UTF-8 text on demand and
+reuses Show text/Render HTML, the browser-local Allow HTML setting, the same
+sandbox and network-denying CSP. The main app never inserts uploaded HTML/SVG as
+DOM markup. Preview source is released when the virtual row unmounts. Older
+uploads retain their stored classification; re-upload to use new formats.
 
 The copy prevents a reused upload URL overwriting a published attachment.
 Completion and cleanup serialize storage mutation; engine locks are released
@@ -230,7 +255,7 @@ on `uploads/*` and `media/*`; clients get no listing/deletion/final-key writes.
 ## Deployment and verification
 
 Configure exact frontend CORS origins. Add the storage public origin to UI Nginx
-`connect-src`; with virtual-host addressing include the bucket host (for example
+`connect-src` and `media-src`; with virtual-host addressing include the bucket host (for example
 `https://BUCKET.s3.us-east-1.amazonaws.com`). Backend CSP derives the actual
 bucket origin automatically. Attachment previews also require
 `blob:` in `img-src` (included in the supplied Nginx/backend headers). Storage must
