@@ -2,6 +2,7 @@ pub(crate) mod auth;
 mod bot_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
+pub(crate) mod media;
 pub(crate) mod security;
 pub(crate) mod snapshots;
 pub(crate) mod socket;
@@ -36,6 +37,7 @@ pub enum Change {
 
 #[derive(Clone)]
 pub struct App {
+    pub media: Option<Arc<crate::media::MediaStorage>>,
     pub engine: Arc<RwLock<Engine>>,
     pub attempts: Arc<Mutex<HashMap<SocketAddr, (Instant, u32)>>>,
     pub changes: broadcast::Sender<Change>,
@@ -108,6 +110,12 @@ pub(crate) fn error(code: StatusCode, message: &str) -> ApiError {
 pub fn router(app: App) -> Router {
     let routes = Router::new()
         .merge(crate::bots::routes())
+        .route("/api/media/config", get(media::config))
+        .route("/api/media/uploads", post(media::allocate))
+        .route("/api/media/uploads/{id}/complete", post(media::complete))
+        .route("/api/media/uploads/{id}/abandon", post(media::abandon))
+        .route("/api/media/{id}/file", get(media::download))
+        .route("/api/media/{id}/info", get(media::info))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))

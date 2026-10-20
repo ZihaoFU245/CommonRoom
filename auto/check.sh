@@ -7,6 +7,8 @@ cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 node --check web/scripts/smoke.mjs
+node --check web/scripts/media-smoke.mjs
+sh -n auto/start-s3.sh
 # The separately maintained demo is optional in a server-only checkout.
 if [ -d simpleBot ]; then
     node web/node_modules/@typescript/native/bin/tsc -p simpleBot/tsconfig.json

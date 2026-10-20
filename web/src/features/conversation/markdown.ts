@@ -52,6 +52,7 @@ export type MarkdownNode =
       tag: string;
       children: MarkdownNode[];
       href?: string;
+      title?: string;
       start?: string;
       math?: { source: string; display: boolean };
       image?: { src: string; alt: string };
@@ -76,6 +77,8 @@ export function markdownTokens(tokens: Token[]): MarkdownNode[] {
           if (/^https?:\/\//iu.test(href) || /^mailto:/iu.test(href))
             node.href = href;
           else node.tag = "span";
+          const title = token.attrGet("title");
+          if (title) node.title = String(title);
         }
         if (node.tag === "ol") {
           const start = token.attrGet("start");

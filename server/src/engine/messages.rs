@@ -57,6 +57,12 @@ impl Engine {
         }
     }
     fn push_room_message(&mut self, name: &str, mut message: Message) -> Result<(), String> {
+        self.authorize_media_text(
+            Some(&message.from),
+            &self.room_scope(name)?,
+            &message.text,
+            "",
+        )?;
         let room = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
         message.mentions.retain(|name| room.members.contains(name));
         if room.messages.len() == self.max_messages {
@@ -192,6 +198,12 @@ impl Engine {
         let Scope::Private(id) = self.private_scope(key) else {
             return Err("Invalid private scope.".into());
         };
+        self.authorize_media_text(
+            Some(&message.from),
+            &Scope::Private(id.clone()),
+            &message.text,
+            "",
+        )?;
         message.private_id.clone_from(&id);
         let chat = self
             .data
@@ -380,6 +392,7 @@ impl Engine {
                     return Err("Messages support at most 4000 characters.".into());
                 }
                 if parts[0] == "/edit" {
+                    self.authorize_media_text(actor, &scope, value, &original.text)?;
                     let actor_id = self.principal_id(actor).ok_or("Account unavailable.")?;
                     if original.author_id != actor_id
                         && !self.allows(actor, &scope, Action::EditAny)

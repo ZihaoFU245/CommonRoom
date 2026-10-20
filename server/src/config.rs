@@ -12,6 +12,74 @@ pub struct Config {
     pub max_users: usize,
     pub max_rooms: usize,
     pub max_messages: usize,
+    pub media: MediaConfig,
+    pub s3: Option<S3Config>,
+}
+/// Provider-neutral connection settings. Credentials are environment-only.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct S3Config {
+    pub endpoint: String,
+    pub public_endpoint: Option<String>,
+    pub bucket: String,
+    pub region: String,
+    pub path_style: bool,
+}
+impl Default for S3Config {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            public_endpoint: None,
+            bucket: String::new(),
+            region: "us-east-1".into(),
+            path_style: true,
+        }
+    }
+}
+/// Admission and retention policy, independent of the S3 provider.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    pub max_size: u64,
+    pub max_age: i64,
+    pub pending_ttl: u64,
+    pub cleanup_interval: u64,
+    pub cleanup_batch: usize,
+    pub user_quota: u64,
+    pub pending_limit: u64,
+    pub allocations_per_minute: u64,
+}
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            max_size: 25 * 1024 * 1024,
+            max_age: 7 * 86400,
+            pending_ttl: 86400,
+            cleanup_interval: 300,
+            cleanup_batch: 32,
+            user_quota: 1024 * 1024 * 1024,
+            pending_limit: 8,
+            allocations_per_minute: 30,
+        }
+    }
+}
+impl MediaConfig {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.max_size == 0
+            || self.max_size > 5_000_000_000
+            || (self.max_age != -1 && !(1..=315360000).contains(&self.max_age))
+            || !(3600..=604800).contains(&self.pending_ttl)
+            || !(1..=86400).contains(&self.cleanup_interval)
+            || !(1..=1024).contains(&self.cleanup_batch)
+            || self.user_quota < self.max_size
+            || self.user_quota > 1_000_000_000_000_000
+            || !(1..=1024).contains(&self.pending_limit)
+            || !(1..=10000).contains(&self.allocations_per_minute)
+        {
+            return Err("Invalid media configuration: max_size 1..5000000000 bytes, positive bounded quotas, max_age -1 or 1..315360000 seconds, pending_ttl 3600..604800, cleanup_interval 1..86400, cleanup_batch/pending_limit 1..1024, allocations_per_minute 1..10000 required.".into());
+        }
+        Ok(())
+    }
 }
 impl Default for Config {
     fn default() -> Self {
@@ -24,6 +92,8 @@ impl Default for Config {
             max_users: 64,
             max_rooms: 64,
             max_messages: 1000,
+            media: MediaConfig::default(),
+            s3: None,
             origins: vec![
                 "http://localhost:5173".into(),
                 "http://127.0.0.1:5173".into(),
@@ -89,6 +159,10 @@ impl Config {
             max_users: saved.as_ref().map_or(64, |c| c.max_users),
             max_rooms: saved.as_ref().map_or(64, |c| c.max_rooms),
             max_messages: saved.as_ref().map_or(1000, |c| c.max_messages),
+            s3: saved.as_ref().and_then(|c| c.s3.clone()),
+            media: saved
+                .as_ref()
+                .map_or_else(MediaConfig::default, |c| c.media.clone()),
             base_url: normalize_base_url(
                 &std::env::var("CHAT_BASE_URL")
                     .ok()
@@ -118,6 +192,7 @@ impl Config {
             axum::http::HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| "set_real_ip_from must be a valid HTTP header name or null.")?;
         }
+        config.media.validate()?;
         validate_limits(config.max_users, config.max_rooms, config.max_messages)?;
         config
             .bind
@@ -202,6 +277,8 @@ mod tests {
             max_users: 8,
             max_rooms: 12,
             max_messages: 7,
+            media: MediaConfig::default(),
+            s3: None,
         };
         std::fs::write(
             source.path().join("config.json"),
@@ -269,5 +346,36 @@ mod tests {
         std::fs::write(&path, r#"{"set_real_ip_from":null}"#).unwrap();
         assert!(Config::load(dir.path()).unwrap().set_real_ip_from.is_none());
         assert!(Config::load(dir.path()).unwrap().set_real_ip_from.is_none());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Test assertions.
+mod media_config_tests {
+    use super::*;
+    #[test]
+    fn invalid_media_policy_does_not_rewrite_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        for media in [
+            serde_json::json!({"max_age":0}),
+            serde_json::json!({"max_age":-2}),
+            serde_json::json!({"max_size":0}),
+            serde_json::json!({"pending_ttl":60}),
+            serde_json::json!({"cleanup_interval":0}),
+            serde_json::json!({"cleanup_batch":0}),
+            serde_json::json!({"pending_limit":0}),
+            serde_json::json!({"allocations_per_minute":0}),
+            serde_json::json!({"user_quota":1}),
+        ] {
+            let raw = serde_json::json!({"media":media}).to_string();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, &raw).unwrap();
+            assert!(Config::load(dir.path()).is_err());
+            assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+        }
+        let valid:Config=serde_json::from_value(serde_json::json!({"media":{"max_age":-1},"s3":{"endpoint":"https://account.r2.cloudflarestorage.com","bucket":"private","region":"auto","path_style":true}})).unwrap();
+        valid.media.validate().unwrap();
+        let restored: Config = serde_json::from_str(&valid.display().unwrap()).unwrap();
+        assert_eq!(restored.s3.unwrap().region, "auto");
     }
 }

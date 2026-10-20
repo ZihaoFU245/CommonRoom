@@ -4,6 +4,7 @@ mod config;
 mod console;
 mod engine;
 mod manual;
+mod media;
 mod web;
 
 use config::Config;
@@ -27,6 +28,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "chat=info,tower_http=info".into()),
         )
         .init();
+    // Explicit development setup exits before opening any chat data.
+    if std::env::args().nth(1).as_deref() == Some("--setup-local-s3") {
+        media::setup_local_s3().await?;
+        return Ok(());
+    }
     let data_dir = std::env::var("CHAT_DATA").unwrap_or_else(|_| "data".into());
     std::fs::create_dir_all(&data_dir)?;
     #[cfg(unix)]
@@ -37,11 +43,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::open(&Path::new(&data_dir).join("chat.sqlite"))?;
     let config = Config::load(Path::new(&data_dir))?;
     engine.set_limits(config.max_users, config.max_rooms, config.max_messages)?;
+    engine.media_config = config.media.clone();
     if engine.data.users.is_empty() {
         tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
     }
+    let media = media::MediaStorage::from_config(config.production, config.s3.as_ref())?;
+    if media.as_ref().is_some_and(|storage| {
+        config
+            .origins
+            .iter()
+            .any(|origin| *origin == storage.public_origin)
+    }) {
+        return Err("Media storage must use a separate origin from the chat application.".into());
+    }
     let (changes, _) = broadcast::channel(16);
     let app = App {
+        media,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Arc::new(Mutex::new(HashMap::new())),
         changes,
@@ -55,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let listener = tokio::net::TcpListener::bind(&app.config.bind).await?;
     console::start(app.clone());
+    web::media::start_cleanup(app.clone());
     tracing::info!(address = %listener.local_addr()?, production = app.config.production, "Chat server ready");
     axum::serve(
         listener,

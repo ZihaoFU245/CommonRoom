@@ -35,6 +35,7 @@ fn fixture() -> (App, String) {
     let (changes, _) = tokio::sync::broadcast::channel(16);
     (
         App {
+            media: None,
             engine: Arc::new(RwLock::new(engine)),
             attempts: Default::default(),
             changes,

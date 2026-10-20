@@ -185,3 +185,50 @@ After a disconnect, the session check and reconnect delay run concurrently.
 Current 401 responses cancel retry; stale checks cannot log out a replacement
 socket. Returning online or focusing a closed connection retries immediately,
 without overlapping a socket that is already connecting.
+
+## Media uploads (draft)
+
+All paths use `base_url`; requests use existing cookies and browser origin checks.
+Allocation/completion/publication require `w:media.upload` plus read/send rights.
+`conversation_id` may also be `@direct:username` to establish a first private pair.
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `GET /api/media/config` | Authenticated same-origin request | `{enabled,max_size}` |
+| `POST /api/media/uploads` | `{conversation_id,filename,size}` | `{media_id,upload:{method:"PUT",url,headers,expires_in}}` |
+| `POST /api/media/uploads/{id}/complete` | `{}` | `{media_id,path,filename,content_type,size}` |
+| `POST /api/media/uploads/{id}/abandon` | `{}` | `{ok:true}`; marks an owned unpublished upload for cleanup |
+| `GET /api/media/{id}/file` | Session plus current conversation read permission | 307 redirect to a 60-second signed GET; `no-store` |
+
+The client sends the file directly to `upload.url` with the returned headers and
+without chat cookies. The browser sets Content-Length from the selected file;
+it must match the allocated size. Completion verifies storage and is idempotent;
+a 100-second server budget sits below the 120-second browser timeout.
+Storage failures/busy completion return 503, invalid uploads return 400. The PUT
+URL admits a request for five minutes; the client transfer timeout is separately
+15 minutes. The
+client resolves the returned permanent path against the application origin and
+keeps a separate attachment preview/card, then generates Markdown only when
+sending through the ordinary message path.
+No upload automatically publishes a message. Managed references are derived from
+canonical media paths in message text and persisted atomically; no new frame field
+is required. Unbound uploads cannot be downloaded. Configuration/storage-worker
+failures return 503; invalid allocations/completions return 400; unavailable media
+returns 404; invalid sessions return 401; untrusted origins return 403.
+See [Media uploads](media-uploads.md) for limits and privacy behavior.
+
+Storage outages do not hide configured upload controls. Allocation authenticates
+and validates the request, then performs a signed object HEAD with a three-second
+timeout before reserving pending quota or issuing a URL. Connection failures and
+storage server errors return HTTP 503: “Upload rejected: media storage is
+unavailable. Try again later.” Authorization is rechecked after that I/O. The
+probe needs no listing/write permission; missing-object 403/404 responses prove
+reachability, while S3 still enforces actual PUT permissions and size constraints.
+
+Media attachment metadata: authenticated `GET /api/media/{id}/info` returns the
+same `{media_id,path,filename,content_type,size}` shape as upload completion.
+Only published, unexpired, readable attachments are visible (otherwise 404).
+No storage request is made. `GET /api/media/{id}/file?download=true` forces
+attachment disposition; the default permits native recognized media playback.
+Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
+are optional UI hints; the client verifies MIME with the info endpoint on click.

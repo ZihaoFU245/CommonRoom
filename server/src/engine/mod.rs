@@ -10,6 +10,10 @@ mod bots;
 mod dispatch;
 mod helpers;
 mod history;
+pub(crate) mod media;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod media_tests;
 mod messages;
 mod models;
 mod queries;
@@ -49,6 +53,7 @@ pub struct Engine {
     max_users: usize,
     max_rooms: usize,
     max_messages: usize,
+    pub(crate) media_config: crate::config::MediaConfig,
     db: std::sync::Arc<std::sync::Mutex<Connection>>,
     pub(crate) history_store: std::sync::Arc<history::HistoryStore>,
     pending_deletes: Vec<(String, u64)>,

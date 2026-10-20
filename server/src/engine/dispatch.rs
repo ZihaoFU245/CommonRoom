@@ -253,6 +253,7 @@ impl Engine {
                 }
                 if self.data.policy.assignments != before.policy.assignments
                     || self.data.policy.grants != before.policy.grants
+                    || self.data.policy.media_revocations != before.policy.media_revocations
                 {
                     self.data.policy.revision = before.policy.revision.wrapping_add(1);
                 }

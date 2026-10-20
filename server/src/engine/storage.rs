@@ -1,5 +1,6 @@
 use super::*;
 mod command_receipts;
+mod media;
 
 impl Engine {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -32,10 +33,17 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0 && version != 9 && version != 10 && version != 11 && version != 12 {
+        if version != 0
+            && version != 9
+            && version != 10
+            && version != 11
+            && version != 12
+            && version != 13
+            && version != 14
+            && version != 15
+        {
             return Err(
-                "Unsupported database schema; only v9/v10/v11 migration and v12 are supported."
-                    .into(),
+                "Unsupported database schema; only v9-v14 migration and v15 are supported.".into(),
             );
         }
         if version == 0 {
@@ -79,7 +87,13 @@ impl Engine {
                 .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=12;")
+                .execute_batch(media::SCHEMA)
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=15;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -137,8 +151,57 @@ impl Engine {
             write_audit(&migration, &data)?;
             write_state(&migration, &data)?;
             migration
-                .execute_batch("PRAGMA user_version=12;")
+                .execute_batch(media::SCHEMA)
                 .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch("PRAGMA user_version=15;")
+                .map_err(|e| e.to_string())?;
+            migration.commit().map_err(|e| e.to_string())?;
+        }
+        if version == 12 {
+            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::SCHEMA)
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch("PRAGMA user_version=15;")
+                .map_err(|e| e.to_string())?;
+            migration.commit().map_err(|e| e.to_string())?;
+        }
+        if version == 13 {
+            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            migration.execute_batch("ALTER TABLE media ADD COLUMN expires INTEGER;
+                ALTER TABLE media ADD COLUMN published INTEGER;
+                ALTER TABLE media ADD COLUMN deleting INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE media ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE media ADD COLUMN cleanup_attempt INTEGER NOT NULL DEFAULT 0;
+                UPDATE media SET expires=created+604800,json=json_set(json,'$.max_age',604800,'$.expires',created+604800) WHERE ready=1;
+                UPDATE media SET published=created WHERE EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id);
+                CREATE INDEX media_expiry ON media(deleted,deleting,expires,unreferenced);
+                ALTER TABLE media ADD COLUMN staging_attempt INTEGER NOT NULL DEFAULT 0;").map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration.execute_batch("UPDATE media SET unreferenced=unixepoch() WHERE unreferenced IS NULL AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id); PRAGMA user_version=15;").map_err(|e| e.to_string())?;
+            migration.commit().map_err(|e| e.to_string())?;
+        }
+        if version == 14 {
+            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(
+                    "ALTER TABLE media ADD COLUMN staging_attempt INTEGER NOT NULL DEFAULT 0;",
+                )
+                .map_err(|e| e.to_string())?;
+            migration
+                .execute_batch(media::INDEXES)
+                .map_err(|e| e.to_string())?;
+            migration.execute_batch("UPDATE media SET unreferenced=unixepoch() WHERE unreferenced IS NULL AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id); PRAGMA user_version=15;").map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
         data.sessions.retain(|_, session| session.expires > now());
@@ -165,6 +228,7 @@ impl Engine {
             max_users: 64,
             max_rooms: 64,
             max_messages: 1000,
+            media_config: crate::config::MediaConfig::default(),
             history_store: std::sync::Arc::new(super::history::HistoryStore::open(
                 &location, memory,
             )?),
@@ -469,6 +533,7 @@ fn put_message(db: &Connection, key: &str, message: &Message) -> Result<(), Stri
     };
     let json = serde_json::to_string(&record).map_err(|e| e.to_string())?;
     db.execute("INSERT INTO messages VALUES(?1,?2,?3) ON CONFLICT(conversation,sequence) DO UPDATE SET json=excluded.json WHERE json!=excluded.json", params![key,message.sequence,json]).map_err(|e| e.to_string())?;
+    media::reconcile(db, key, message)?;
     Ok(())
 }
 fn reconcile_reactions(db: &Connection, key: &str, message: &Message) -> Result<(), String> {
@@ -525,6 +590,7 @@ fn write_state(db: &Connection, data: &Data) -> Result<(), String> {
             revision: data.policy.revision,
             assignments: data.policy.assignments.clone(),
             grants: data.policy.grants.clone(),
+            media_revocations: data.policy.media_revocations.clone(),
             ..Default::default()
         },
         bots: data.bots.clone(),
@@ -1082,6 +1148,7 @@ fn write_delta(db: &Connection, data: &Data, before: &Data) -> Result<(), String
     if data.policy.revision != before.policy.revision
         || data.policy.assignments != before.policy.assignments
         || data.policy.grants != before.policy.grants
+        || data.policy.media_revocations != before.policy.media_revocations
         || data.bots != before.bots
     {
         write_state(db, data)?;

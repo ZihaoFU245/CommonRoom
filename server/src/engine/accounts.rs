@@ -319,6 +319,7 @@ impl Engine {
             .id
             .clone();
         self.audit(actor, "/rm user", name);
+        self.data.policy.media_revocations.remove(&deleted_id);
         self.data.policy.assignments.retain(|a| {
             a.account_id != deleted_id
                 && a.scope != authorization::Scope::Account(deleted_id.clone())

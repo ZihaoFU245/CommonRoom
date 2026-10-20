@@ -1,7 +1,19 @@
+import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
 import { useEffect, useRef } from "preact/hooks";
 interface Props {
+  mediaUpload?: {
+    enabled: boolean;
+    maxSize: number;
+    attachment: Attachment | null;
+    busy: boolean;
+    status: string;
+    error: string;
+    start: (file: File) => Promise<void>;
+    cancel: () => void;
+    retry: (() => Promise<void>) | undefined;
+  };
   minimumComposerHeight: number;
   actualComposerHeight: number;
   hints: Hint[];
@@ -24,6 +36,7 @@ interface Props {
   selectCaret: () => void;
 }
 export function Composer({
+  mediaUpload,
   minimumComposerHeight,
   actualComposerHeight,
   hints,
@@ -131,55 +144,128 @@ export function Composer({
           </button>
         </div>
       )}
-      <form class="composer" onSubmit={send}>
-        {consoleView && (
-          <span class="prompt" aria-hidden="true">
-            ›
-          </span>
-        )}
-        <textarea
-          name="message"
-          ref={input}
-          dir="auto"
-          rows={1}
-          style={{ height: `${actualComposerHeight}px` }}
-          aria-label="Message or command"
-          aria-autocomplete="list"
-          aria-controls={hints.length ? "command-hints" : undefined}
-          aria-activedescendant={
-            hints.length ? `hint-${activeHint}` : undefined
-          }
-          placeholder={
-            consoleView
-              ? "Command"
-              : canWrite
-                ? "Message or command"
-                : "Read-only conversation · Enter a command"
-          }
-          value={draft}
-          onInput={(event) => edit(event.currentTarget.value)}
-          onKeyDown={keydown}
-          onSelect={selectCaret}
-          onClick={selectCaret}
-          onKeyUp={selectCaret}
-        />
-        <button
-          class="send-button"
-          disabled={
-            pending ||
-            !draft.trim() ||
-            (!canWrite && !draft.trim().startsWith("/"))
-          }
-          aria-label="Send message"
-        >
-          {pending ? (
-            "…"
-          ) : (
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 20V4m-6 6 6-6 6 6" />
-            </svg>
+      {mediaUpload && (mediaUpload.status || mediaUpload.error) && (
+        <div class="media-upload-status" role="status">
+          <span>{mediaUpload.error || mediaUpload.status}</span>
+          {mediaUpload.busy && (
+            <button type="button" onClick={mediaUpload.cancel}>
+              Cancel upload
+            </button>
           )}
-        </button>
+          {mediaUpload.retry && (
+            <button
+              type="button"
+              onClick={() => {
+                mediaUpload.retry?.().catch(() => undefined);
+              }}
+            >
+              Retry upload
+            </button>
+          )}
+        </div>
+      )}
+      {mediaUpload?.attachment && (
+        <div class="composer-attachment">
+          {mediaUpload.attachment.preview && (
+            <img
+              src={mediaUpload.attachment.preview}
+              alt={mediaUpload.attachment.media.filename}
+            />
+          )}
+          <span>
+            {mediaUpload.attachment.media.filename}
+            <small>
+              {mediaUpload.attachment.media.size.toLocaleString()} bytes
+            </small>
+          </span>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={mediaUpload.cancel}
+            aria-label="Remove attachment"
+          >
+            Remove
+          </button>
+        </div>
+      )}
+      <form class="composer" onSubmit={send}>
+        <div class="composer-input">
+          {mediaUpload?.enabled && !consoleView && canWrite && (
+            <label
+              class="attach-button"
+              title={`Attach a file (up to ${mediaUpload.maxSize.toLocaleString()} bytes)`}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <input
+                type="file"
+                aria-label="Attach a file"
+                disabled={
+                  pending ||
+                  mediaUpload.busy ||
+                  !!mediaUpload.attachment ||
+                  draft.trim().startsWith("/")
+                }
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file) mediaUpload.start(file).catch(() => undefined);
+                }}
+              />
+            </label>
+          )}
+          {consoleView && (
+            <span class="prompt" aria-hidden="true">
+              ›
+            </span>
+          )}
+          <textarea
+            name="message"
+            ref={input}
+            dir="auto"
+            rows={1}
+            style={{ height: `${actualComposerHeight}px` }}
+            aria-label="Message or command"
+            aria-autocomplete="list"
+            aria-controls={hints.length ? "command-hints" : undefined}
+            aria-activedescendant={
+              hints.length ? `hint-${activeHint}` : undefined
+            }
+            placeholder={
+              consoleView
+                ? "Command"
+                : canWrite
+                  ? "Message or command"
+                  : "Read-only conversation · Enter a command"
+            }
+            value={draft}
+            onInput={(event) => edit(event.currentTarget.value)}
+            onKeyDown={keydown}
+            onSelect={selectCaret}
+            onClick={selectCaret}
+            onKeyUp={selectCaret}
+          />
+          <button
+            class="send-button"
+            disabled={
+              pending ||
+              mediaUpload?.busy ||
+              (!!mediaUpload?.attachment && !mediaUpload.enabled) ||
+              (!draft.trim() && !mediaUpload?.attachment) ||
+              (!canWrite && !draft.trim().startsWith("/"))
+            }
+            aria-label="Send message"
+          >
+            {pending ? (
+              "…"
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20V4m-6 6 6-6 6 6" />
+              </svg>
+            )}
+          </button>
+        </div>
       </form>
     </div>
   );

@@ -31,8 +31,10 @@ running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 `auto/debug.sh` runs the existing debug binary and previews `web/dist-debug/`
 at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild.
-`auto/clean.sh` removes server/UI build artifacts and Vite caches, preserving
-data, dependencies, and lockfiles.
+`auto/clean.sh` removes server/UI build artifacts, Vite caches, and
+`tmp/rustfs-local/` (including local buckets, logs and temporary files).
+Stop debug and RustFS first. It preserves `tmp/rustfs`, other `tmp/` files,
+chat data, dependencies, and lockfiles.
 
 The standalone `pnpm --dir web build` runs TypeScript, ESLint, and formatting
 checks before Vite. Vite's transpilation is not a substitute for type checking.
@@ -58,7 +60,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v12 restart and v9/v10/v11 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v15 restart and v9/v10/v11/v12/v13/v14 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -161,7 +163,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v12 restart and v9/v10/v11 migration and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v15 restart and v9/v10/v11/v12/v13/v14 migration and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -539,3 +541,24 @@ between cached conversations, reject inaccessible/replaced identities, and verif
 that complete snapshot tails skip HTTP. Additional checks cover retention/tail
 preview reconciliation, stable sequence/pixel scroll restoration, adaptive paging
 bounds, parallel reconnect validation, current revocation and stale-check races.
+
+Media-specific engine/web regressions run in the normal suites. For real RustFS
+HTTP/WebSocket upload checks, run `rtk proxy node web/scripts/media-smoke.mjs`
+after building the debug server; see [Media uploads](media-uploads.md). Its binary and
+temporary data live under ignored `tmp/`.
+
+`auto/debug.sh` supplies local RustFS connection defaults (`127.0.0.1:19000`,
+private bucket `commonroom-draft`, path-style addressing and development credentials).
+Explicit `CHAT_S3_*` variables override these defaults; `RUSTFS_ACCESS_KEY` and
+`RUSTFS_SECRET_KEY` also supply matching local credentials when set. It starts
+only chat and the UI. Start RustFS manually in another terminal with
+`./auto/start-s3.sh`; stopping debug does not stop that independently started service.
+Create the private bucket and CORS policy as described in [Media uploads](media-uploads.md).
+
+Media availability regressions hold local S3 requests open while checking that
+ordinary chat reads still pass with a one-permit API budget and another file's
+completion proceeds concurrently. Transport tests cover invalid/missing objects
+versus 503 failures, zero-size guards, per-key batch deletion errors, in-flight
+probe sharing without stale health caching, and filename encoding. V14-to-v15
+migration/rollback, covering quota/partial expiry query plans, orphan triggers,
+canonical SQL state, and write-free plain-text reconciliation use scratch data.

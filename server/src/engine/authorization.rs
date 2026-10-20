@@ -1,4 +1,4 @@
-//! Scoped, allow-only grants. Persist names; compile masks outside message state.
+//! Scoped additive grants with room-specific media restrictions.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,6 +24,7 @@ actions! {
     Config => "r:server.config",
     PolicyRead => "r:policy.read",
     Send => "w:message.create",
+    MediaUpload => "w:media.upload",
     React => "w:message.react",
     EditOwn => "w:message.edit.own",
     EditAny => "w:message.edit.any",
@@ -105,6 +106,13 @@ pub struct Grant {
     pub scope: Scope,
     pub permissions: BTreeSet<String>,
     pub minimum_age: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaAllowance>,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MediaAllowance {
+    pub max_size: Option<u64>,
+    pub max_age: Option<i64>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Audit {
@@ -120,6 +128,8 @@ pub struct Policy {
     pub revision: u64,
     pub assignments: Vec<Assignment>,
     pub grants: Vec<Grant>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub media_revocations: BTreeMap<String, BTreeSet<String>>,
     pub audit: VecDeque<Audit>,
 }
 #[derive(Clone, Copy, Default)]
@@ -232,6 +242,7 @@ fn member_rights() -> Rights {
             Action::Read,
             Action::Members,
             Action::Send,
+            Action::MediaUpload,
             Action::React,
             Action::EditOwn,
             Action::RetractOwn,
@@ -368,16 +379,27 @@ fn describe_rights(rights: Rights) -> String {
 pub(super) struct CompiledPolicy {
     pub(super) revision: u64,
     scopes: HashMap<String, HashMap<Scope, Rights>>,
-    groups: HashMap<String, BTreeSet<Group>>,
+    pub(super) groups: HashMap<String, BTreeSet<Group>>,
+    pub(super) media_defaults: HashMap<String, BTreeSet<Scope>>,
+    pub(super) media_revocations: BTreeMap<String, BTreeSet<String>>,
+    pub(super) media: HashMap<String, HashMap<Scope, Vec<MediaAllowance>>>,
     conditional: HashMap<String, HashMap<Scope, Vec<(Rights, u64)>>>,
 }
 impl CompiledPolicy {
     pub(super) fn compile(data: &Data) -> Result<Self, String> {
         let mut result = Self {
             revision: data.policy.revision,
+            media_revocations: data.policy.media_revocations.clone(),
             ..Self::default()
         };
         for a in &data.policy.assignments {
+            if matches!(a.scope, Scope::Room(_)) && matches!(a.group, Group::User | Group::Admin) {
+                result
+                    .media_defaults
+                    .entry(a.account_id.clone())
+                    .or_default()
+                    .insert(a.scope.clone());
+            }
             if a.group == Group::Su && a.scope != Scope::Server {
                 return Err("su assignments must have global scope.".into());
             }
@@ -397,6 +419,18 @@ impl CompiledPolicy {
             }
         }
         for grant in &data.policy.grants {
+            if let Some(limits) = &grant.media
+                && (!grant.permissions.contains(Action::MediaUpload.name())
+                    || grant.minimum_age != 0
+                    || limits
+                        .max_size
+                        .is_some_and(|n| n == 0 || n > 5 * 1024 * 1024 * 1024)
+                    || limits
+                        .max_age
+                        .is_some_and(|n| n != -1 && !(1..=315360000).contains(&n)))
+            {
+                return Err("Invalid media grant constraints.".into());
+            }
             let mut mask = Rights::default();
             for p in &grant.permissions {
                 // Previously advertised but never enforced. Preserve old
@@ -416,6 +450,15 @@ impl CompiledPolicy {
                     .collect(),
             };
             for id in ids {
+                if mask.has(Action::MediaUpload) && grant.minimum_age == 0 {
+                    result
+                        .media
+                        .entry(id.clone())
+                        .or_default()
+                        .entry(grant.scope.clone())
+                        .or_default()
+                        .push(grant.media.clone().unwrap_or_default());
+                }
                 if grant.minimum_age == 0 {
                     result
                         .scopes

@@ -1,8 +1,37 @@
 # Deployment
 
-## Build and run
+This guide takes a release build to a public HTTPS site: artifacts, first start,
+configuration, a reverse proxy, and optional S3-compatible media storage.
 
-To build manually:
+Related docs: [Development](development.md) for the local loop, and
+[Media uploads](media-uploads.md) for upload permissions, limits, and cleanup
+internals. [Data](data.md) covers persistence and backups; [Bots](bots.md) and
+[Agent development](agent-development.md) cover machine clients.
+
+## Contents
+
+- [Build](#build)
+- [Install and first start](#install-and-first-start)
+- [Configuration](#configuration)
+- [Run as a service](#run-as-a-service)
+- [Nginx](#nginx)
+- [Cloudflare in front](#cloudflare-in-front)
+- [Object storage](#object-storage)
+- [External agent workers](#external-agent-workers)
+- [Upgrades and backups](#upgrades-and-backups)
+- [Post-deploy checks](#post-deploy-checks)
+- [Troubleshooting](#troubleshooting)
+
+## Build
+
+A release consists of two artifacts:
+
+| Artifact | Contains | Installed as |
+| --- | --- | --- |
+| `chat` | Rust server binary | `/srv/commonroom/chat` |
+| `ui.tar.xz` | `web/dist/` | `/srv/commonroom/dist/` |
+
+Build both from the repository:
 
 ```sh
 rtk pnpm --dir web install
@@ -13,84 +42,77 @@ rtk proxy cp target/release/chat ./chat
 rtk proxy tar -cJf ui.tar.xz -C web dist
 ```
 
-Builds can also use `rtk proxy ./auto/build.sh` (release by default). All shell
-scripts live in `auto/` and work from any current directory. The build script
-installs dependencies and builds without running source checks or tests; run
-`rtk proxy ./auto/check.sh` separately. It generates missing lockfiles on its
-first run and uses frozen/locked dependencies subsequently. Release builds
-produce `./chat` and `./ui.tar.xz`; the archive contains the `dist/` folder from
-`web/dist/`. Extract it with `tar -xJf ui.tar.xz -C /srv/commonroom` (create that
-directory first), then point Nginx at `/srv/commonroom/dist/`. Node and pnpm are
-not needed on the destination server. Deploy the binary and UI independently,
-keeping their protocol versions compatible.
+`rtk proxy ./auto/build.sh` is the one-shot release build: it installs dependencies and
+produces `./chat` and `./ui.tar.xz`. It skips source checks and tests, so run
+`auto/check.sh` separately. On first use it generates missing lockfiles; later builds
+use frozen/locked dependencies.
 
-Rust builds have no frontend dependency: `rtk cargo build --release --locked`
-works without web assets or Node. Debug builds (`./auto/build.sh debug`) produce
-`target/debug/chat` and `web/dist-debug/`; serve that UI directory with Nginx or
-use Vite at http://localhost:5173 during development. `auto/debug.sh` runs the
-existing server binary and serves `web/dist-debug/` with Vite preview at
-http://127.0.0.1:5173, proxying API/WebSocket requests to `127.0.0.1:3000`.
-It preserves the stdin console and stops both processes on Ctrl + C or when
-either exits. This assumes root hosting and the default backend port;
-use Nginx for custom listener/base-path or production settings.
-`auto/clean.sh` removes `target/`, `web/dist/`, `web/dist-debug/`, Vite caches,
-`./chat`, and `./ui.tar.xz`, preserving `data/`, dependencies, and lockfiles.
-
-First production start:
+To build only the server, without Node or web assets:
 
 ```sh
-rtk proxy env CHAT_ORIGIN=https://chat.example.com ./chat
+rtk cargo build --release --locked
 ```
 
-Put the server behind Nginx; [deploy/nginx.conf](../deploy/nginx.conf) is a
-location-only include for `/commonroom/`. Place it inside your existing HTTPS
-`server {}` block (under `http {}`). Nginx does not allow `location` directly
-inside `http`. Your existing server supplies TLS certificates and HTTP-to-HTTPS
-redirection. Match `base_url` to the location prefix. The example preserves
-the prefix when forwarding; do not add a trailing slash to `proxy_pass`.
-Nginx serves `/commonroom/` and its static files directly from the extracted
-`dist/` folder. It proxies `/commonroom/api/` and the exact `/commonroom/ws`
-endpoint to Rust. Unknown static files return 404. Keep the trailing-slash
-redirect so relative asset and API URLs resolve correctly. For root hosting,
-set `base_url` to `/`, change the locations to `/api/`, `/ws`, and `/`, and
-remove the `/commonroom` redirect.
-The UI renders Markdown images/GIFs using validated absolute HTTP/HTTPS or
-base64 raster URLs, lazy loading and `no-referrer`. Keep `img-src` for those
-images and `font-src 'self' data:` for KaTeX fonts that Vite may inline.
-All HTML previews require a per-message Render HTML click and use
-`markdown-frame.html`, generated into both UI builds. Deploy that file with the
-assets. The exact Nginx location in the example must precede/generalize correctly
-with your base path: it applies a separate CSP permitting inline scripts/styles
-only inside the sandboxed preview, plus `frame-ancestors 'self'`. Do not apply the
-main app's `frame-ancestors 'none'` / strict script policy to this file. Keep the
-main app's `script-src 'self'`, `style-src 'self'`, `frame-src 'self'` and
-`frame-ancestors 'none'`; do not add unsafe-inline to the main app.
+Debug builds (`rtk proxy ./auto/build.sh debug`) produce `target/debug/chat` and
+`web/dist-debug/`. `rtk proxy ./auto/debug.sh` serves the Vite preview on
+`127.0.0.1:5173`, proxies `/api` and `/ws` to `127.0.0.1:3000`, and stops both
+processes together. Debug builds are not for deployment.
 
-Frame URLs carry a content version; `public, max-age=31536000, immutable` avoids
-repeated network fetches when virtual rows remount. The shell has no external
-bundle requests, needs no public CORS headers and receives message HTML only via
-a one-shot postMessage, never a URL. Its leading meta CSP and iframe sandbox also
-apply without Nginx; a main-document meta policy restricts frames to self.
-Previews permit inline code and data media/fonts but deny network fetches, external
-scripts/styles, forms, nested frames, popups, parent access and top navigation.
-Frames are frontend static assets; no backend preview/proxy route is added.
-Validate with `rtk proxy nginx -t` before reloading Nginx.
+The binary and UI can ship independently when their protocol versions match; a release
+build pairs them. Static files come from Nginx, so the server does not need Node or
+pnpm installed.
 
-Release binaries require HTTPS, check request origins, set secure HttpOnly
-cookies scoped to `base_url`, send HSTS and CSP on backend responses, and require
-`X-Forwarded-Proto: https` except for direct bearer-authenticated bot requests from `trust` under `/api/bot/v1/`. Nginx supplies the security headers
-for static UI responses. The frontend redirects HTTP to HTTPS and uses
-`wss:` in production. The proxy must overwrite forwarded headers. Production
-requests must arrive from the exact socket-peer IP configured in `trust`;
-forwarded headers cannot override that check. Keep the backend listener private
-and restrict remote proxy deployments to the configured source IP. The Rust
-backend deliberately does not terminate TLS.
+## Install and first start
 
-The proxy upgrade headers follow the [official Nginx WebSocket guidance](https://nginx.org/en/docs/http/websocket.html).
+Create the install directory and extract the UI archive there:
 
-Settings are saved as key-value pairs in `data/config.json`. Edit this file
-while the service is stopped, then restart to apply changes. Example for Nginx
-on the same machine:
+```sh
+mkdir -p /srv/commonroom
+tar -xJf ui.tar.xz -C /srv/commonroom
+```
+
+Resulting layout:
+
+```text
+/srv/commonroom/
+  chat
+  dist/
+  data/          # created on first start
+```
+
+The first production start must know the public origin, because release builds enforce
+HTTPS and origin checks:
+
+```sh
+CHAT_ORIGIN=https://chat.example.com ./chat
+```
+
+Later starts need no variables: `./chat`. `CHAT_ORIGIN` must be an HTTPS origin with no
+path or trailing slash.
+
+The listener defaults to `127.0.0.1:3000` and serves only `/api/` and `/ws`. Data lives
+in `./data` unless `CHAT_DATA` says otherwise. The directory is created on first start,
+set to mode `0700` on Unix, and holds `config.json` and `chat.sqlite`. Only one process
+may use a data folder at a time.
+
+Release binaries always run with production security (HTTPS origins, secure cookies,
+forwarded-header checks). Reusing an existing development data folder therefore requires
+`CHAT_ORIGIN` once; the value is then saved.
+
+Logs go to stdout. To keep the interactive console while logging to a file:
+
+```sh
+./chat > chat.log 2>&1
+```
+
+Closing stdin leaves the web server running. `Ctrl+C` or `SIGTERM` stops it gracefully
+and checkpoints SQLite. No account exists on first start: create the first admin from
+the console with `/new user NAME PASSWORD admin` (see [Commands](commands.md)).
+
+## Configuration
+
+Settings are a JSON object in `data/config.json`. Stop the server before editing; values
+are read at startup.
 
 ```json
 {
@@ -99,66 +121,6 @@ on the same machine:
   "trust": "127.0.0.1",
   "set_real_ip_from": "X-Forwarded-For",
   "base_url": "/commonroom/",
-  "max_users": 64,
-  "max_rooms": 64,
-  "max_messages": 1000,
-  "origins": ["https://domain.com"]
-}
-```
-
-`bind` is the backend HTTP listener: it serves `/api/` endpoints and WebSockets
-at `/ws` on the same port (3000 by default), with no static UI routes.
-`base_url` prefixes backend paths at runtime: `/commonroom/api/login` and
-`/commonroom/ws`. Serve the UI under the same prefix through Nginx; relative
-URLs let the same UI build work at `/` or `/commonroom/`. `base_url` defaults
-to `/` and accepts path segments containing letters, digits, `-`, and `_`; a trailing
-slash is added automatically. It is a path, not a full URL. Nginx
-exposes HTTPS and WSS on port 443, serves UI files, and forwards API/WebSocket
-requests to this listener.
-`trust` is a single proxy IP address, defaulting to `127.0.0.1`; use the load
-balancer's actual source IP for a remote proxy, and bind to a reachable private
-address. Trust is enforced in production. Existing config files without
-`trust` receive the default automatically. Release builds always enforce
-production mode; debug builds use the saved `production` setting.
-`set_real_ip_from` names the header used for the client IP in login throttling.
-It defaults to `"X-Forwarded-For"`, including for existing configuration files,
-matching the example's `proxy_set_header X-Forwarded-For $remote_addr`.
-Only the socket-peer IP configured in `trust` may supply this header, in either
-production or development. The value must contain exactly one IPv4 or IPv6
-address; missing, malformed, duplicate, or comma-separated values fall back to
-the socket-peer IP. IPv4-mapped IPv6 addresses share the same throttle bucket
-as their IPv4 form. Set it to `null` to disable header-based client IPs, or use
-another header name such as `"X-Real-IP"` and configure Nginx to overwrite it.
-This setting names a header, unlike Nginx's `set_real_ip_from` directive, which
-names trusted proxy addresses. Changes require a restart.
-
-Nginx must overwrite the chosen header with a verified address. Do not use
-`$proxy_add_x_forwarded_for`: this server deliberately rejects address chains.
-If Nginx sits behind Cloudflare or another proxy, `$remote_addr` identifies that
-proxy unless Nginx's real-IP module is configured to trust that upstream and
-resolve the actual client. Only trust your actual upstream proxies.
-Login allows 10 attempts per client IP per minute; users sharing an IP still
-share that budget.
-
-`max_users` and `max_rooms` are positive integers, each defaulting to 64.
-They limit new account and room creation through both web commands and stdin.
-Disabled accounts count toward `max_users`. Lowering a limit preserves existing
-accounts and rooms while preventing new creation until the count is below it.
-`max_messages` is a positive integer, defaulting to 1000 for each room and each
-private conversation. Each new message evicts the oldest when that conversation
-is full, keeping the newest messages. A busy private conversation does not
-evict another person's history. Lowering this limit trims and saves both room
-and private histories at startup. v7 keeps retention in SQLite separately from the fixed memory cache budgets. Message sends use targeted transactions; retention is pruned through the indexed conversation/sequence key. Cache pages are created lazily, with at most 1,000 entries per conversation and 10,000/32 MiB accounted globally. Raising `max_messages` increases disk retention, not those memory budgets. Read positions use a separate
-SQLite table with indexed, monotonic updates and do not rewrite message data.
-Restart after editing these values.
-
-```json
-{
-  "production": true,
-  "bind": "127.0.0.1:3000",
-  "trust": "127.0.0.1",
-  "set_real_ip_from": "X-Forwarded-For",
-  "base_url": "/",
   "origins": ["https://chat.example.com"],
   "max_users": 64,
   "max_rooms": 64,
@@ -166,77 +128,593 @@ Restart after editing these values.
 }
 ```
 
-Set the public hostname to your actual domain. Enable HTTPS redirects at
-Cloudflare (Always Use HTTPS) and keep WebSockets enabled. The backend checks
-`X-Forwarded-Proto: https`, which Nginx supplies on its proxied requests.
-Set backend `trust` to Nginx's actual socket-peer IP, and keep the Rust listener
-private. The tunnel origin uses HTTPS so Nginx supplies the correct scheme.
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `production` | `false` | Production security. Release binaries enforce it regardless. |
+| `bind` | `127.0.0.1:3000` | HTTP listener for `/api/` and `/ws`; static files are not served here. |
+| `trust` | `127.0.0.1` | The single proxy IP allowed to connect. Enforced in production. |
+| `set_real_ip_from` | `"X-Forwarded-For"` | Header carrying the real client IP for login throttling; `null` disables it. |
+| `base_url` | `"/"` | Path prefix for the API, WebSocket, and UI URLs. |
+| `origins` | local dev origins (`localhost:5173`, `localhost:3000`) | Browser origins accepted for login, logout, read acks, and WebSocket auth. |
+| `max_users` | `64` | Accounts, including disabled ones. |
+| `max_rooms` | `64` | Rooms. |
+| `max_messages` | `1000` | Retained messages per room and per private conversation; the oldest are evicted. |
 
-Cloudflare Tunnel preserves request paths. For `/commonroom/`, set that
-`base_url` and forward the path unchanged. Do not cache `/api/*` or `/ws`
-(or their base-path equivalents) using custom Cloudflare cache rules.
-The app reconnects if a tunnel restart interrupts an existing WebSocket.
+`bind` is plain HTTP; terminate TLS at the proxy and keep the listener off public
+interfaces.
 
-Protocol compatibility is verified with production HTTP/WebSocket checks;
-a real public tunnel still needs an end-to-end check on your own hostname.
-See Cloudflare's [routing documentation](https://developers.cloudflare.com/tunnel/concepts/routing/),
-[WebSocket support](https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/),
-and [forwarded headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/).
+`base_url` is a path, not a URL. `/commonroom/` produces `/commonroom/api/...`,
+`/commonroom/ws`, and asset URLs under that prefix. Path segments may contain letters,
+digits, `-`, and `_`; a missing trailing slash is added.
 
-`origins` checks the browser Origin header for login, logout, read acknowledgements, and WebSockets.
-It contains scheme + host + optional port, never a path; for
-`https://domain.com/commonroom/`, the origin is `https://domain.com`.
-Production uses one HTTPS origin. `trust` checks the proxy IP separately.
+`trust` must be the proxy's exact IP as seen on the socket; forwarded headers cannot
+override it. Configs written before the field existed use `127.0.0.1`.
 
-Subsequent starts need only:
+`set_real_ip_from` names the header that carries the client IP. It is a header name, not
+the Nginx directive of the same name. It accepts exactly one IPv4 or IPv6 address (a
+malformed value, duplicate, or comma list falls back to the socket peer). IPv4-mapped
+IPv6 addresses share one throttle bucket. The value is read at startup, so restart after
+changing it.
 
-```sh
-rtk proxy ./chat
-```
+`origins` entries are scheme, host, and optional port, never a path: use
+`https://chat.example.com`, not `https://chat.example.com/commonroom/`. Production
+requires HTTPS. To change the production origin later, start once with the new
+`CHAT_ORIGIN`; it is saved. The storage public origin must not be listed here; the server
+refuses to start if one matches.
 
-Environment settings:
+Limits are positive integers. Lowering an account or room limit preserves existing data
+but blocks new creation until usage is below it. Lowering `max_messages` also trims
+retained history at the next start. The in-memory caches stay fixed at 1,000 entries per
+conversation and 10,000 entries / 32 MiB globally, regardless of `max_messages`. Hard
+ceilings are 256 users, 1,024 rooms, and 1,000,000 retained messages; larger values are
+rejected at startup.
+
+### Environment variables
 
 | Variable | Purpose |
 | --- | --- |
-| `CHAT_DATA` | Data-folder location; defaults to `./data` relative to the working directory |
-| `CHAT_ORIGIN` | Public HTTPS origin, no path or trailing slash; required on first production start and saved |
-| `CHAT_BIND` | Listener; defaults to `127.0.0.1:3000`, saved when overridden |
-| `CHAT_TRUST` | Trusted proxy IP; defaults to `127.0.0.1`, saved when overridden |
-| `CHAT_BASE_URL` | Hosting path; defaults to `/`, saved when overridden |
-| `CHAT_PRODUCTION=1` | Exercise production security in a debug binary |
-| `RUST_LOG` | Log filter; defaults to `chat=info,tower_http=info` |
+| `CHAT_DATA` | Data folder. Default `./data`. |
+| `CHAT_ORIGIN` | Public HTTPS origin, e.g. `https://chat.example.com`. Required on the first production start and saved. |
+| `CHAT_BIND` | Listener address. Saved when overridden. |
+| `CHAT_TRUST` | Proxy IP. Saved when overridden. |
+| `CHAT_BASE_URL` | Path prefix. Saved when overridden. |
+| `CHAT_PRODUCTION` | `1` enables production security in a debug build. Release builds are always production. |
+| `RUST_LOG` | Log filter. Default `chat=info,tower_http=info`. |
+| `CHAT_S3_*` | Object storage; see [Object storage](#object-storage). |
 
-Changing `CHAT_BIND`, `CHAT_TRUST`, `CHAT_BASE_URL`, or `CHAT_ORIGIN` persists the change.
-Environment overrides take precedence over saved values. Production settings
-cannot be silently downgraded by running a debug binary. A release binary
-always enforces production security, including when upgrading a development
-data folder; provide `CHAT_ORIGIN` the first time you upgrade it.
+Environment values override saved settings. `bind`, `trust`, `base_url`, and `origin`
+are written back to `config.json`. Release builds cannot be downgraded to
+non-production, and pointing a fresh release build at old development data requires
+`CHAT_ORIGIN` once.
 
-Logs go to stdout. To redirect them while preserving the stdin console:
+Login throttling allows 10 attempts per client IP per minute. When a proxy hides client
+IPs, see [Cloudflare in front](#cloudflare-in-front).
 
-```sh
-rtk proxy ./chat > chat.log 2>&1
+## Run as a service
+
+Example systemd unit; run the binary as its own unprivileged user, with the working
+directory set to the install root so `data/` resolves there:
+
+```ini
+[Unit]
+Description=Chat server
+After=network.target
+
+[Service]
+Type=simple
+User=chat
+Group=chat
+WorkingDirectory=/srv/commonroom
+EnvironmentFile=/etc/chat.env
+ExecStart=/srv/commonroom/chat
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Closing stdin leaves the web service running. Ctrl + C or SIGTERM stops it
-gracefully and checkpoints SQLite. No default account or password is shipped.
+`/etc/chat.env`, owned by root with mode `0600`:
 
-Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/v1/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.
+```sh
+CHAT_ORIGIN=https://chat.example.com
+CHAT_DATA=/srv/commonroom/data
+# CHAT_S3_ACCESS_KEY=...
+# CHAT_S3_SECRET_KEY=...
+```
 
-## Deploying an external agent
+Create the environment file before enabling the unit. Under systemd stdin is `/dev/null`,
+so the console is unavailable: provision accounts and bot tokens during an interactive
+run, or after stopping the service, start the binary once with the same `CHAT_DATA` to
+use the console. `systemctl stop` sends `SIGTERM`, which performs the graceful shutdown.
 
-Use `/api/bot/v1/` for agent integrations; the existing `/api/` Nginx location
-already proxies these HTTP and WebSocket routes, including the configured base
-path. Keep `Authorization` and `Idempotency-Key` headers intact. The external
-worker needs its own runtime/dependencies, process supervisor, secret injection
-and private checkpoint directory; the chat server does not start it. Run one
-worker per checkpoint and use a distinct bot account when permissions differ.
-See [Agent development](agent-development.md) for the runnable reference worker.
+## Nginx
 
-This release accepts existing v12 data, transactionally upgrades validated v9/v10/v11
-data, or initializes an empty data folder. Back up v9/v10/v11 data before upgrading;
-older schemas remain unsupported. See [Data](data.md) for backups and compatibility.
+`deploy/nginx.conf` is a location-only include for the UI paths. Put it inside an
+existing HTTPS `server {}` block in `http {}`; that block owns certificates and the
+HTTP-to-HTTPS redirect. Nginx does not allow `location` directly in `http`.
 
-Supported configuration ceilings are 256 users, 1,024 rooms and 1,000,000 retained
-messages per conversation. Values beyond these ceilings are rejected before
-configuration writes or engine retention changes; existing data is preserved.
+```nginx
+server {
+    listen 443 ssl;
+    server_name chat.example.com;
+
+    # TLS configuration...
+
+    include /etc/nginx/snippets/commonroom.conf;
+}
+```
+
+The sample assumes `/commonroom/` and assets in `/srv/commonroom/dist/`. If `base_url`
+changes, update the location prefixes to match; if the install root changes, update the
+`alias` paths.
+
+### Paths and routing
+
+- `/commonroom` redirects with 308 to `/commonroom/`, so relative asset URLs resolve.
+- `proxy_pass` has no trailing slash, preserving the `/commonroom/` prefix the server
+  expects.
+- Only `/api/` and the exact `/ws` path reach the Rust listener; everything else is
+  static. Unknown files return 404 rather than falling back to `index.html`.
+- The API limit is `client_max_body_size 8k` because uploads bypass the server. The
+  completion call may take up to `proxy_read_timeout 130s` while it talks to storage.
+- WebSocket reads and sends time out after 90s, and buffering is off.
+
+For root hosting (UI at `https://chat.example.com/`): set `base_url` to `"/"`, use
+locations `/api/`, `/ws`, and `/`, and remove the prefix redirect. Keep `/api/` and
+`/ws` more specific than `/`.
+
+### Forwarded headers and trust
+
+The release server rejects requests without `X-Forwarded-Proto: https`, except direct
+bot calls from the trusted socket IP. The proxy must set all three headers on every
+proxied path:
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-For $remote_addr;
+```
+
+Use `$remote_addr`, not `$proxy_add_x_forwarded_for`: appending keeps a client-supplied
+value first, which the server cannot distinguish from a real proxy. If another trusted
+proxy sits in front of Nginx, configure `ngx_http_realip_module` there and keep `trust`
+pointing only at the socket peer Nginx actually sees.
+
+Set `trust` to Nginx's address (loopback when Nginx is local), bind the Rust listener to
+a private interface, and never expose it directly; it does not terminate TLS. A trusted
+same-machine bot may call `/api/bot/v1/` over plain HTTP because its socket IP is the
+authorization, but browsers always need the forwarded HTTPS signal.
+
+### Headers and previews
+
+Backend responses carry HSTS, CSP, and secure, HttpOnly cookies scoped to `base_url`.
+Nginx must supply the same protection for static files, which is why the sample adds
+`Strict-Transport-Security`, `X-Content-Type-Options`, `Referrer-Policy`, and a CSP to
+the asset location.
+
+Keep the main document CSP strict: `script-src 'self'`, `style-src 'self'`,
+`frame-src 'self'`, `frame-ancestors 'none'`, and no `unsafe-inline`. `img-src` must
+allow remote and `data:` images for message content, and `font-src 'self' data:` is
+needed by KaTeX. The UI also redirects HTTP to HTTPS and uses `wss://` on production
+pages.
+
+`markdown-frame.html` renders one message's Markdown HTML inside a sandboxed frame. It
+is generated into both UI builds and must be deployed with the assets. It needs its own
+location, placed before the general asset prefix:
+
+- CSP allows inline scripts and styles only in that sandboxed document and sets
+  `frame-ancestors 'self'`; do not apply the main app's `frame-ancestors 'none'` or
+  script policy to it.
+- Frame URLs are versioned, so it is cached `public, max-age=31536000, immutable`.
+- It keeps a `default-src 'none'` baseline, allows only `data:` images, media, and
+  fonts, and blocks connections and nested frames. Content arrives by one-shot
+  `postMessage` with its own meta CSP and sandbox, so it still works without these
+  headers, but the Nginx copy must not weaken them.
+
+If storage is enabled, the static CSP must also name the storage origin; see [Storage
+headers and CSP](#storage-headers-and-csp). Validate changes with `nginx -t` before
+reloading.
+
+## Cloudflare in front
+
+Cloudflare terminates public TLS and forwards to Nginx through the tunnel; the Rust
+listener stays private.
+
+- Enable **Always Use HTTPS** for the hostname, and leave WebSockets enabled.
+- Route the public hostname to Nginx over HTTPS. A tunnel preserves the request path, so
+  keep `base_url` at `/commonroom/` and forward it unchanged.
+- Do not cache `/api/*` or `/ws` (or their base-path equivalents). Signed media URLs are
+  short-lived and private; a shared cache in front of the API or storage is not
+  supported.
+- Keep `trust` equal to Nginx's socket peer, and keep Nginx overwriting
+  `X-Forwarded-For` with `$remote_addr`. The server still requires
+  `X-Forwarded-Proto: https`, which Nginx sets from `$scheme`.
+- With Cloudflare in front, `$remote_addr` at Nginx is a Cloudflare edge address.
+  Configure `ngx_http_realip_module` with Cloudflare's published ranges only if
+  per-client login throttling and logging matter; otherwise every user shares one IP for
+  the 10-attempts-per-minute limit. Never trust ranges you do not control.
+- WebSocket clients reconnect after a tunnel restart and resynchronize instead of
+  replaying missed events.
+
+Run an end-to-end check on the public hostname, not only on the origin: HTTPS redirect,
+WebSocket upgrade, and login. References: [Tunnel routing][cf-routing], [Tunnel
+FAQ][cf-faq], [HTTP headers][cf-headers].
+
+[cf-routing]: https://developers.cloudflare.com/tunnel/concepts/routing/
+[cf-faq]: https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/
+[cf-headers]: https://developers.cloudflare.com/fundamentals/reference/http-headers/
+
+## Object storage
+
+Media uploads are optional. Without storage configuration the site still runs but
+uploads are unavailable. When configured, the browser uploads straight to a private,
+S3-compatible bucket with short-lived presigned URLs; the chat server keeps metadata,
+permissions, quotas, and cleanup. It never streams file bytes, so the server needs
+reliable access to the bucket and the browser needs a reachable public endpoint.
+
+AWS S3, Cloudflare R2, and self-hosted RustFS use the same adapter. Provider accounts are
+not covered by the local test suite (only local RustFS is exercised), so verify a real
+upload after any provider change. Permissions, limits, and the upload protocol are in
+[Media uploads](media-uploads.md).
+
+### How it fits
+
+1. The browser asks the chat API for an upload slot.
+2. The server reserves quota and returns a five-minute presigned `PUT` for
+   `uploads/<id>`.
+3. The browser uploads the exact declared size with
+   `Content-Type: application/octet-stream`.
+4. On completion the server checks the staging object, copies it to
+   `media/<class>/<id>`, verifies size and type, and adds the message.
+5. Reads redirect to a presigned `GET` valid for at most 60 seconds. No public bucket
+   access or listing is used.
+
+The server makes three storage calls per completion and runs up to 8 outbound storage
+operations at once. Keep the API proxy timeout at 130s or more.
+
+### Common setup
+
+1. Create a private bucket. Do not enable public access, website hosting, or directory
+   listing.
+2. Create credentials that can `GetObject`, `PutObject`, and `DeleteObject` on
+   `uploads/*` and `media/*` in that bucket. Chat needs no bucket administration
+   permission at runtime; bucket creation, CORS, and lifecycle rules are operator work.
+3. Configure bucket CORS for browser uploads ([Bucket CORS](#bucket-cors)).
+4. Set `s3.endpoint` (the server's route to storage). Set `public_endpoint` (the
+   browser's route) only when it differs; it defaults to `endpoint`. In production the
+   public endpoint must be HTTPS.
+5. Give the server the access key and secret through the environment.
+6. Add the public endpoint's origin to the UI's CSP ([Storage headers and
+   CSP](#storage-headers-and-csp)).
+7. Upload a file through the UI and verify it renders, downloads, and can be retracted.
+
+The storage origin must differ from every value in `origins`; the server exits at startup
+with `Media storage must use a separate origin from the chat application.` This keeps
+chat cookies away from media responses and makes CSP scoping possible.
+
+### Storage settings
+
+Add an `s3` block to `data/config.json` (stop the server first):
+
+```json
+{
+  "s3": {
+    "endpoint": "https://s3.us-east-1.amazonaws.com",
+    "public_endpoint": null,
+    "bucket": "commonroom-media",
+    "region": "us-east-1",
+    "path_style": false
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `endpoint` | Server-to-storage origin, e.g. `http://127.0.0.1:19000` for local RustFS. |
+| `public_endpoint` | Browser-to-storage origin. Defaults to `endpoint`; HTTPS required in production. |
+| `bucket` | Bucket name; no `/`, `?`, or `#`. |
+| `region` | SigV4 region. Default `us-east-1`; R2 uses `auto`. |
+| `path_style` | `true` puts the bucket in the URL path; `false` uses virtual-host style. Defaults to `true` when no saved setting exists, otherwise the saved value. |
+
+Both endpoints must be origins: scheme and host, optional port, no credentials, query,
+fragment, or path (except `/`). They must point at the same bucket. `public_endpoint`
+must be HTTPS in production, and the server derives the bucket's public origin from it
+for CSP headers.
+
+| Variable | Meaning |
+| --- | --- |
+| `CHAT_S3_ACCESS_KEY` | Access key. Required when storage is enabled. |
+| `CHAT_S3_SECRET_KEY` | Secret key. Required when storage is enabled. |
+| `CHAT_S3_SESSION_TOKEN` | Optional temporary-credential token. |
+| `CHAT_S3_ENDPOINT` | Overrides `s3.endpoint`. Setting it enables storage even without an `s3` block. |
+| `CHAT_S3_PUBLIC_ENDPOINT` | Overrides `s3.public_endpoint`. |
+| `CHAT_S3_BUCKET` | Overrides `s3.bucket`. |
+| `CHAT_S3_REGION` | Overrides `s3.region`. |
+| `CHAT_S3_PATH_STYLE` | `true` or `false`; overrides `s3.path_style`. |
+
+Credentials are read only from the environment; instance and task roles and metadata
+services are not used. `CHAT_S3_*` values override saved configuration for that process.
+Media limits and retention (`media.max_size`, default 25 MiB; `media.max_age`, default 7
+days; quotas) are separate from storage settings; see
+[Media uploads](media-uploads.md).
+
+For systemd, put `CHAT_S3_*` values in `/etc/chat.env`, not on a shell that only runs
+`systemctl`.
+
+### Bucket CORS
+
+Browser uploads use presigned `PUT`, so the bucket must allow the UI origin. This is the
+`PutBucketCors` rule set. Enter the same values in the R2 dashboard, or set the same rule
+through the RustFS console or any S3 client:
+
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://chat.example.com"],
+      "AllowedMethods": ["PUT", "GET", "HEAD"],
+      "AllowedHeaders": ["content-type"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 300
+    }
+  ]
+}
+```
+
+Use the exact scheme, host, and port of the UI; a wildcard origin is not appropriate for
+a private bucket. Completion is server-side and does not need CORS. R2 can take up to 30
+seconds to propagate CORS changes.
+
+### Provider comparison
+
+| | AWS S3 | Cloudflare R2 | RustFS |
+| --- | --- | --- | --- |
+| `endpoint` | `https://s3.<region>.amazonaws.com` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` | internal origin, e.g. `http://127.0.0.1:19000` |
+| `public_endpoint` | `https://<bucket>.s3.<region>.amazonaws.com` | same as `endpoint` (presigned URLs cannot use custom domains) | public HTTPS origin, e.g. `https://media.example.com` |
+| `region` | bucket region | `auto` | `us-east-1` unless configured |
+| `path_style` | `false` | `true` | `true` |
+| Credentials | IAM access key | R2 API token | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` |
+| Lifecycle | S3 rules | prefix-based rules | where supported |
+
+### Provider setup
+
+#### AWS S3
+
+1. Create a bucket in the target region with Block Public Access on and default
+   encryption (SSE-S3) enabled. Do not require extra headers such as SSE-C; presigned
+   URLs sign only `content-type` and `content-length`.
+2. Create an IAM principal for the server with this policy, scoped to the bucket:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+         "Resource": [
+           "arn:aws:s3:::commonroom-media/uploads/*",
+           "arn:aws:s3:::commonroom-media/media/*"
+         ]
+       }
+     ]
+   }
+   ```
+
+   `CopyObject` needs `GetObject` on the source and `PutObject` on the destination, both
+   included above; `ListBucket` is not needed. A bucket policy that denies requests
+   missing extra headers also breaks uploads.
+3. Apply the CORS rule from [Bucket CORS](#bucket-cors).
+4. Set `path_style` to `false`, `region` to the bucket region, and leave
+   `public_endpoint` unset so it derives
+   `https://<bucket>.s3.<region>.amazonaws.com`.
+5. Export `CHAT_S3_ACCESS_KEY` and `CHAT_S3_SECRET_KEY` to the service.
+6. Optionally add lifecycle rules for `uploads/` and `media/<N>d/` prefixes; see
+   [Lifecycle rules](#lifecycle-rules).
+7. Add `https://<bucket>.s3.<region>.amazonaws.com` to the UI CSP, then verify an
+   upload.
+
+#### Cloudflare R2
+
+1. Create a private R2 bucket. Do not enable public access or an `r2.dev` domain.
+2. Create an R2 API token with **Object Read & Write**, scoped to that bucket, and note
+   the Access Key ID and Secret Access Key.
+3. Configure:
+   - `endpoint`: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
+   - `public_endpoint`: the same value. Presigned URLs work only on the S3 API host;
+     custom domains cannot be used for them.
+   - `region`: `auto`
+   - `path_style`: `true`
+4. Apply the CORS policy from [Bucket CORS](#bucket-cors): UI origin, `PUT`, `GET`,
+   `HEAD`, and `content-type`.
+5. Add lifecycle rules per prefix if desired; R2 applies them asynchronously. Rules are
+   prefix- and day-based, and object tags are not supported (chat does not use them).
+6. Add `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` to the UI CSP and verify an
+   upload and download.
+7. Do not put a shared cache or CDN in front of the signed URL path.
+
+Switching providers later means new credentials, CORS, lifecycle rules, and object
+copies; objects do not move themselves.
+
+#### RustFS
+
+RustFS is an S3-compatible server you host yourself; use it when media must stay on your
+infrastructure. The repository's `auto/start-s3.sh` starts a development instance; the
+same binary runs in production with different paths and credentials.
+
+1. Install the `rustfs` binary (or container) and give it a dedicated data directory,
+   for example `/srv/rustfs/data`, owned by an unprivileged service user.
+2. Start it bound to loopback, with credentials from the environment:
+
+   ```sh
+   RUSTFS_ACCESS_KEY=... RUSTFS_SECRET_KEY=... \
+     rustfs server --address 127.0.0.1:19000 \
+     --console-address 127.0.0.1:19001 /srv/rustfs/data
+   ```
+
+   Keep the console private, or disable it (`RUSTFS_CONSOLE_ENABLE=false`) when it is
+   not needed. Never expose either port directly to the internet.
+3. Terminate TLS for browsers on a separate hostname, for example
+   `https://media.example.com`, and proxy it to `127.0.0.1:19000` with the original
+   `Host`, path, and query string intact; presigned URLs sign them. Allow request bodies
+   at least as large as `media.max_size`:
+
+   ```nginx
+   server {
+       listen 443 ssl;
+       server_name media.example.com;
+
+       location / {
+           proxy_pass http://127.0.0.1:19000;
+           proxy_set_header Host $host;
+           client_max_body_size 30m;
+           add_header X-Content-Type-Options nosniff always;
+       }
+   }
+   ```
+
+   Do not enable a shared proxy cache here, and do not attach chat cookies to this host.
+4. Create the private bucket and apply the CORS rule from [Bucket
+   CORS](#bucket-cors) through the RustFS console or any S3 client. The server does not
+   create or configure production buckets; its `--setup-local-s3` helper only accepts
+   `http://127.0.0.1` and path-style access.
+5. Configure chat with the internal endpoint, the public endpoint, path style, and the
+   same credentials:
+
+   ```json
+   {
+     "s3": {
+       "endpoint": "http://127.0.0.1:19000",
+       "public_endpoint": "https://media.example.com",
+       "bucket": "commonroom-media",
+       "region": "us-east-1",
+       "path_style": true
+     }
+   }
+   ```
+
+   Export `CHAT_S3_ACCESS_KEY` and `CHAT_S3_SECRET_KEY` with the values RustFS was
+   started with.
+6. Add `https://media.example.com` to the UI CSP.
+7. Back up the RustFS data directory together with SQLite. Both must describe the same
+   point in time: stop chat and RustFS, or snapshot the volume, before copying.
+
+The internal HTTP endpoint is loopback-only and is not the URL browsers see; production
+requires the public endpoint to be HTTPS.
+
+### Lifecycle rules
+
+Chat deletes expired and retracted objects itself, exactly, with retries. A bucket
+lifecycle rule is a backstop for objects that outlive their metadata because a process
+died mid-cleanup; it is asynchronous and rounds to days. Rules key off the prefix, not
+object tags (R2 has no tags).
+
+The final key encodes the grant class:
+
+| Prefix | Contents |
+| --- | --- |
+| `uploads/` | Staging objects; cleanup deletes them once they are older than the pending TTL (default 24h). |
+| `media/1d/`, `media/7d/`, ... | Whole-day grant lifetimes, `media/<N>d/`. |
+| `media/<N>s/` | Sub-day lifetimes such as `media/3600s/`. |
+| `media/permanent/` | Grants with no expiry (`-1`). |
+
+Reasonable rules: expire `uploads/` after 1 day, `media/1d/` after 1 day, and
+`media/7d/` after 7 days. Add one rule per whole-day class you actually use, never
+expire a class sooner than the grant period it represents, and leave
+`media/permanent/` alone. On versioned buckets also expire noncurrent versions, or
+objects never disappear. Use a dedicated prefix (or bucket) per deployment.
+
+### Storage headers and CSP
+
+The HTML document is served by Nginx, so its CSP must name the storage origin; the
+server's CSP additions only cover API responses.
+
+Edit the sample's single `add_header Content-Security-Policy` line in the asset
+location: append the public storage origin to both `connect-src 'self' wss://$http_host`
+and `media-src 'self'`. `img-src` already allows `https:` and `blob:` for previews, so
+images need no change. For AWS S3 the origin is
+`https://<bucket>.s3.<region>.amazonaws.com`; for R2 it is
+`https://<ACCOUNT_ID>.r2.cloudflarestorage.com`; for RustFS it is your
+`public_endpoint`.
+
+Storage responses should be private and uncached, and must not be served from the chat
+origin. Keep `X-Content-Type-Options: nosniff` on them (the sample RustFS proxy sets it),
+never add chat cookies, and do not put a public CDN in front of presigned URLs. Keep the
+bucket private: downloads use short-lived signed URLs tied to current access, and
+retracting a message stops new URLs.
+
+### Verify uploads
+
+After configuring any provider:
+
+- Sign in as a user who can upload in a room (or receives a grant), send an image, and
+  confirm it renders inline and downloads.
+- Retract it and confirm the message disappears; the worker deletes the object on its
+  next pass.
+- Upload a file just under and just over `media.max_size`, and confirm the failure is
+  the size limit, not a storage error.
+- Watch the log: storage outages warn and fail uploads with `Upload rejected: media
+  storage is unavailable. Try again later.` while the rest of the site keeps working.
+- Restart once and confirm the same bucket and configuration are picked up.
+
+For a local RustFS instance, `rtk proxy node web/scripts/media-smoke.mjs` exercises
+signing, CORS, upload, download, retraction, and a non-root base path. It needs
+`tmp/rustfs`. Provider credentials, CORS, ingress limits, and lifecycle rules still need
+a real bucket check; the local suite does not run against AWS or R2.
+
+### Backups
+
+Stop chat (and RustFS, if self-hosted) before copying, or snapshot consistently. Back up
+the SQLite database and the bucket together: a database restored without its objects has
+broken messages, and objects restored without the database have no permissions or
+references. Do not copy `data/` while the server is running.
+
+## External agent workers
+
+Agents use the bot HTTP/WebSocket API under `/api/bot/v1/`, which the existing `/api/`
+location already proxies. Keep `Authorization` and `Idempotency-Key` headers intact, and
+give each worker its own runtime directory, supervisor, secrets, and checkpoint store;
+run one worker per checkpoint. Use a distinct bot account when its permissions differ
+from other workers. The minimal worker and checkpoint contract are in
+[Agent development](agent-development.md); scoped provisioning and retry guarantees are
+in [Bots](bots.md).
+
+## Upgrades and backups
+
+The server accepts schema v15 and upgrades v9 through v14 transactionally. Older schemas
+are unsupported, and a v15 database cannot be opened by an older binary. Back up before
+upgrading, keeping the database and object store consistent ([Data](data.md)).
+
+Stop the old process before starting the new one; only one process may use a data
+folder. Replace the binary and UI assets, then start the new version and run the
+[post-deploy checks](#post-deploy-checks).
+
+Hard ceilings remain 256 users, 1,024 rooms, and 1,000,000 retained messages; plan
+storage and backups around them.
+
+## Post-deploy checks
+
+- `http://` redirects to `https://`, and HSTS is present on the page and API responses.
+- Login works, the session cookie is `Secure` and `HttpOnly`, and its path matches
+  `base_url`.
+- The UI loads assets and `markdown-frame.html` under the configured prefix; a message
+  with Markdown renders without CSP errors.
+- The WebSocket connects with `wss://` and reconnects after a server restart.
+- If storage is enabled, an upload renders and downloads, and no file bytes pass through
+  the chat origin.
+- Configuration survives a restart: the values in `data/config.json` match the running
+  setup.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Uploads fail with `Upload rejected: media storage is unavailable. Try again later.` | The server's `endpoint` is reachable, its TLS and DNS are valid, and the credentials can `GetObject` on `uploads/*`. The upload probe uses `uploads/.availability` and accepts 200, 403, or 404. |
+| Browser reports a CORS error on the upload `PUT` | CORS `AllowedOrigins` matches the UI origin exactly, `PUT` is allowed, and `content-type` is in `AllowedHeaders`. On R2, allow up to 30 seconds for propagation. |
+| `403 SignatureDoesNotMatch` on upload or download | A proxy rewrote the signed host, path, or query, or `public_endpoint` differs from the URL users open. Preserve `Host` and the raw request target. |
+| Upload completion is rejected | The `PUT` did not finish or sent a different size; check that the storage proxy body limit is at least `media.max_size` (default 25 MiB) and that any provider ingress limit allows it. |
+| Browser console reports a CSP violation for media | Add the public storage origin to `connect-src` and `media-src` in the Nginx asset location; backend headers do not apply to static files. |
+| Logins are throttled for everyone at once | The server sees one client IP (a proxy or Cloudflare edge). Configure real-IP handling on Nginx and keep `trust` on the actual socket peer. The limit is 10 attempts per IP per minute. |
+| Login or API calls fail with a forwarded-header or origin error | `X-Forwarded-Proto` must be `https` (except direct bot calls from `trust`), and `origins` must match the browser origin without a path. |
+| Assets or the WebSocket 404 after changing `base_url` | Update both the Nginx locations and `base_url`; they must agree, including the trailing slash. |

@@ -344,7 +344,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            12
+            15
         );
         engine
             .db

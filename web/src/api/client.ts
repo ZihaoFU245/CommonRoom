@@ -1,3 +1,4 @@
+import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
 import {
   isSnapshot,
   isHistory,
@@ -28,14 +29,15 @@ async function request<T>(
   validate: (value: unknown) => value is T,
   body?: unknown,
   signal?: AbortSignal,
+  timeoutMs = 15000,
 ): Promise<T> {
   const response = await fetch(new URL(`api/${path}`, document.baseURI), {
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     cache: "no-store",
     signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
-      : AbortSignal.timeout(15000),
+      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+      : AbortSignal.timeout(timeoutMs),
     ...(body === undefined
       ? {}
       : {
@@ -59,6 +61,37 @@ async function request<T>(
 }
 
 export const api = {
+  mediaInfo: (id: string, signal: AbortSignal) =>
+    request(
+      `media/${encodeURIComponent(id)}/info`,
+      isCompletedMedia,
+      undefined,
+      signal,
+    ),
+  mediaConfig: (signal: AbortSignal) =>
+    request("media/config", isMediaConfig, undefined, signal),
+  allocateMedia: (
+    conversationId: string,
+    filename: string,
+    size: number,
+    signal: AbortSignal,
+  ) =>
+    request(
+      "media/uploads",
+      isUploadTicket,
+      { conversation_id: conversationId, filename, size },
+      signal,
+    ),
+  abandonMedia: (id: string) =>
+    request(`media/uploads/${encodeURIComponent(id)}/abandon`, isOk, {}),
+  completeMedia: (id: string, signal: AbortSignal) =>
+    request(
+      `media/uploads/${encodeURIComponent(id)}/complete`,
+      isCompletedMedia,
+      {},
+      signal,
+      120000,
+    ),
   botCommands: (conversationId: string, signal: AbortSignal) =>
     request(
       `bot-commands?${new URLSearchParams({ conversation_id: conversationId })}`,

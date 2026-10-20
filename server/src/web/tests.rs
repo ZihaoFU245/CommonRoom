@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -69,6 +70,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
             .is_err()
     );
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -110,6 +112,7 @@ fn cookies_are_http_only_and_secure_in_production() {
     };
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -204,6 +207,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
         .unwrap()
         .to_owned();
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -270,6 +274,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
     engine.provision("disabled", hash, false, false).unwrap();
     engine.execute(None, None, "/disable disabled").unwrap();
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -311,6 +316,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
 async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -393,6 +399,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         .unwrap();
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -566,6 +573,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             }
             let (changes, _) = broadcast::channel(1);
             let app = App {
+                media: None,
                 engine: Arc::new(RwLock::new(engine)),
                 attempts: Default::default(),
                 changes,
@@ -695,6 +703,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
 fn engine_readers_overlap_and_io_admission_is_bounded() {
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(
             Engine::open(std::path::Path::new(":memory:")).unwrap(),
         )),
@@ -759,6 +768,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
     engine.login("two".into(), "alice", "hash", None).unwrap();
     let (changes, _) = broadcast::channel(1);
     let app = App {
+        media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
@@ -897,4 +907,96 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
     assert!(snapshot["rooms"].as_array().unwrap().is_empty());
     app.engine().unwrap().logout("two").unwrap();
     assert!(snapshots::value(&app, &headers, false).is_err());
+}
+
+#[tokio::test]
+async fn stalled_media_io_does_not_occupy_api_jobs_or_serialize_other_files() {
+    use axum::{body::Body, http::Request};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let storage =
+        crate::media::tests::test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .login("fixture".into(), "alice", "hash", None)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/new room files")
+        .unwrap();
+    let room = engine.data.rooms["files"].id.clone();
+    let first = engine.allocate_media("alice", &room, "first", 1).unwrap();
+    let second = engine.allocate_media("alice", &room, "second", 1).unwrap();
+    let (changes, _) = broadcast::channel(1);
+    let app = App {
+        media: Some(storage),
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+    };
+    let post = |id: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/media/uploads/{id}/complete"))
+            .header(header::ORIGIN, "http://localhost:5173")
+            .header(header::COOKIE, "chat_session=fixture")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let router = router(app.clone());
+    let one = tokio::spawn(router.clone().oneshot(post(&first.id)));
+    let (mut first_socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+    let mut buffer = [0; 4096];
+    assert!(first_socket.read(&mut buffer).await.unwrap() > 0);
+    assert_eq!(app.io_jobs.available_permits(), 1);
+    let ordinary = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/me")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::COOKIE, "chat_session=fixture")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary.status(), StatusCode::OK);
+    let two = tokio::spawn(router.clone().oneshot(post(&second.id)));
+    let (mut second_socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(second_socket.read(&mut buffer).await.unwrap() > 0);
+    let duplicate = router.oneshot(post(&first.id)).await.unwrap();
+    assert_eq!(duplicate.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let failed = b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    first_socket.write_all(failed).await.unwrap();
+    second_socket
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    assert_eq!(
+        one.await.unwrap().unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        two.await.unwrap().unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
 }

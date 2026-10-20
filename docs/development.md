@@ -39,14 +39,19 @@ Vite preview at http://127.0.0.1:5173, proxying `/api` and `/ws` to
 `127.0.0.1:3000`. The server's stdin console remains available. Ctrl + C or
 either process exiting stops both. This uses the default root hosting and
 backend port; use Nginx for other saved listener/base-path or production settings.
+For local media, run `auto/start-s3.sh` in another terminal first. Debug uses
+matching local S3 settings, creates the private development bucket if needed,
+and applies browser CORS; RustFS stays managed by its own terminal.
 It does not rebuild. Rebuild the relevant artifact after changing web assets or Rust code. Release
 packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat` and
 `./ui.tar.xz` (containing `dist/`).
 
 All shell scripts live in `auto/` and locate the repository root themselves.
 Run `rtk proxy ./auto/clean.sh` to remove `target/`, both UI bundles, Vite
-caches, `./chat`, and `./ui.tar.xz`. Stop running debug processes first.
-Cleaning preserves `data/`, installed dependencies, and lockfiles.
+caches, `./chat`, `./ui.tar.xz`, and RustFS runtime files in `tmp/rustfs-local/`
+(including local buckets). Stop running debug and RustFS processes first.
+Cleaning preserves `tmp/rustfs`, other `tmp/` files, `data/`, installed
+dependencies, and lockfiles.
 Both build modes skip source checks and tests. Run `rtk proxy ./auto/check.sh`
 separately before deploying.
 
@@ -102,3 +107,11 @@ SimpleBot's optional shell capability is enabled only by
 grants Deno binary execution before worker startup; direct invocations must supply the matching runtime
 permissions. The tool starts in the workspace and leaves filesystem, environment
 and network policy to the deployment. See [SimpleBot](../simpleBot/README.md#optional-shell-and-binary-execution).
+
+`auto/debug.sh` supplies local RustFS connection defaults (`127.0.0.1:19000`,
+private bucket `commonroom-draft`, path-style addressing and development credentials).
+Explicit `CHAT_S3_*` variables override these defaults; `RUSTFS_ACCESS_KEY` and
+`RUSTFS_SECRET_KEY` also supply matching local credentials when set. It starts
+only chat and the UI. Start RustFS manually in another terminal with
+`./auto/start-s3.sh`; stopping debug does not stop that independently started service.
+Create the private bucket and CORS policy as described in [Media uploads](media-uploads.md).

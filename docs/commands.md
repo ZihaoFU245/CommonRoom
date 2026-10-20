@@ -277,3 +277,12 @@ turn, or the bot can stay silent. This changes worker behavior within existing
 server grants. Set `autonomous` to `"false"` to restore mention-only room input.
 `model.maxToolCalls` defaults to 32 (range 1–128); explicitly update older saved
 limits with `@SimpleBot /config set model.maxToolCalls "32"`.
+
+Media grants also accept `/grant user scope w:media.upload [max-bytes] [max-age]`.
+Age uses s/m/h/d/w, or -1 for permanent retention. See [Media uploads](media-uploads.md)
+for default room/private uploads, delegation limits and independent S3 configuration.
+
+Room members can upload by default. Owners can block a member's uploads with
+`/revoke user room w:media.upload`, and restore them with `/grant user room
+w:media.upload`. This room restriction overrides upload grants there (except su),
+while leaving text and read permissions unchanged.

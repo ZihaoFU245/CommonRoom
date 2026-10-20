@@ -20,11 +20,11 @@ The three predefined groups are fixed grant bundles, not authorization bypasses:
 | --- | --- |
 | `user` at server scope | Account directory, own password and rename, private sends, general commands |
 | `admin` at server scope | User grants, room/account creation, enable/disable/rm room accounts, admin group assignment, config inspection |
-| `user` at room scope | Discover/read/join the room, member list, send/reply/react, retract own messages, corresponding commands |
+| `user` at room scope | Discover/read/join the room, member list, send/reply/react, upload media, retract own messages, corresponding commands |
 | `admin` at room scope | Room user grants plus room management and grant inspection |
 | `su` at server scope | Every action and command at every scope, including other users' private history and retraction |
 
-Private participants receive the user content bundle within their own pair while
+Private participants receive the user content bundle, including uploads, within their own pair while
 they have a server group assignment. Other accounts need explicit read grants;
 `su` has these globally. Superusers see other private pairs as `@private:a:b` views
 in their conversation list. They can inspect, react, reply, send, clean, and retract
@@ -100,7 +100,7 @@ The permission catalog has individual actions in three families:
 
 - `r`: `room.discover`, `message.read`, `message.metadata`, `member.list`,
   `account.list`, `server.config`, `policy.read`.
-- `w`: `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
+- `w`: `media.upload`, `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
   `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`.
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.rename`,
@@ -116,8 +116,11 @@ and `/man ownership` for the built-in manuals. `/grant user group [room]` assign
 a group; `/grant user scope permission [minimum-age]` adds an individual grant.
 `/revoke` has the corresponding forms.
 
-Grants are additive: there are no deny rules or recursive groups. `/revoke`
-removes direct grants; it does not subtract permissions supplied by a group.
+Grants are additive, without recursive groups. Normally `/revoke` removes direct
+grants without subtracting group permissions. Room uploads have one narrow
+exception: `/revoke user room w:media.upload` records a room restriction overriding
+all upload grants there, except su authority. `/grant` restores that user's room
+uploads. Other actions retain their additive semantics.
 
 The evaluator checks the command in its invocation context and on each resolved
 target, then checks the target action. Selecting one room does not authorize an explicit target
@@ -246,3 +249,20 @@ cannot grant it even when holding it. Ordinary participants retain edit-own.
 Session-bearing GET endpoints require a configured Origin or, when browsers omit
 Origin, `Sec-Fetch-Site: same-origin`. Same-site sibling requests are rejected.
 Bearer-authenticated reads retain their credential checks without requiring Origin.
+
+## Media grants
+
+Room user/admin groups include `w:media.upload` by default, separately from text
+send rights. A room owner can use `/revoke user room w:media.upload` to block that
+user's uploads and new media references while preserving text/read access. It
+overrides explicit/global upload grants in that room, except su authority, and
+persists across restarts, renames and group reassignments. `/grant` restores access.
+Private participants also have uploads by default. `/grant user scope
+w:media.upload [max-bytes] [max-age]` allows typed media limits (age units s/m/h/d/w,
+or -1). Omitted limits use server defaults. A request must fit one additive grant's
+size/age pair and the server size ceiling. Explicit room limits replace the default
+room allowance. Room delegation cannot exceed the
+actor's own media allowance. Allocation, completion and newly added message
+references recheck current media/read/send rights. Downloads require current read
+rights and an unexpired retained reference, independently of upload grants.
+See [Media uploads](media-uploads.md).
