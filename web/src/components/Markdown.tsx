@@ -58,11 +58,17 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
       </Suspense>
     );
   };
+  const attachmentContext = {
+    messageKey: props.messageKey,
+    consentText: props.text,
+    allowHtml: props.allowHtml,
+  };
   const plain = (
     <MarkdownContent
       nodes={nodes}
       mentions={props.mentions}
       renderHtml={renderHtml}
+      attachmentContext={attachmentContext}
     />
   );
   return props.latex ? (
@@ -72,6 +78,7 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
         mentions={props.mentions}
         fragments={parts.fragments}
         renderHtml={renderHtml}
+        attachmentContext={attachmentContext}
       />
     </Suspense>
   ) : (

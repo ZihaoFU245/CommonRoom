@@ -15,10 +15,13 @@ const MarkdownFrame = lazy(() =>
       ),
     })),
 );
-export function HtmlMarkdownGate(
-  props: HtmlCoverProps & { fallback: ComponentChildren },
-) {
-  const { text, fallback } = props;
+export function HtmlPreview({
+  text,
+  fallback,
+}: {
+  text: string;
+  fallback: ComponentChildren;
+}) {
   const [attempt, retry] = useState(0);
   const [result, setResult] = useState<{
     text: string;
@@ -53,14 +56,22 @@ export function HtmlMarkdownGate(
     ) : (
       <p role="status">Loading HTML preview…</p>
     );
-    return <HtmlCover {...props}>{status}</HtmlCover>;
+    return status;
   }
   if (!current.preview) return fallback;
   return (
+    <Suspense fallback={<p role="status">Loading HTML preview…</p>}>
+      <MarkdownFrame key={text} source={current.preview.source} />
+    </Suspense>
+  );
+}
+
+export function HtmlMarkdownGate(
+  props: HtmlCoverProps & { fallback: ComponentChildren },
+) {
+  return (
     <HtmlCover {...props}>
-      <Suspense fallback={<p role="status">Loading HTML preview…</p>}>
-        <MarkdownFrame key={text} source={current.preview.source} />
-      </Suspense>
+      <HtmlPreview text={props.text} fallback={props.fallback} />
     </HtmlCover>
   );
 }

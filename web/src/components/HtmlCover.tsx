@@ -10,7 +10,10 @@ export interface HtmlCoverProps {
   choiceKey?: string;
   consentText?: string;
   children?: ComponentChildren;
-  label?: string;
+  label?: ComponentChildren;
+  allowRender?: boolean;
+  textStatus?: ComponentChildren;
+  onModeChange?: (mode: HtmlGateMode) => void;
 }
 export function HtmlCover({
   text,
@@ -19,10 +22,19 @@ export function HtmlCover({
   label = "HTML content",
   choiceKey = messageKey,
   consentText = text,
+  allowRender = true,
+  textStatus,
+  onModeChange,
 }: HtmlCoverProps) {
   const gates = useContext(HtmlGateContext);
   const choice = gates?.choices.get(choiceKey);
-  const mode = choice?.text === consentText ? choice.mode : null;
+  const selected = choice?.text === consentText ? choice.mode : null;
+  const mode = selected === "render" && !allowRender ? null : selected;
+  const modeChanged = useRef(onModeChange);
+  modeChanged.current = onModeChange;
+  useEffect(() => {
+    modeChanged.current?.(mode);
+  }, [mode]);
   const panel = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const scrollFrame = useRef(0);
@@ -140,19 +152,21 @@ export function HtmlCover({
           >
             Show text
           </button>
-          <button
-            type="button"
-            class="primary"
-            aria-expanded={mode === "render"}
-            onClick={() => select("render")}
-          >
-            Render HTML
-          </button>
+          {allowRender && (
+            <button
+              type="button"
+              class="primary"
+              aria-expanded={mode === "render"}
+              onClick={() => select("render")}
+            >
+              Render HTML
+            </button>
+          )}
         </div>
       </div>
       <div ref={panel} class="html-gate-panel">
         <div ref={content} class="html-gate-content">
-          {mode === "text" && <HtmlSource text={text} />}
+          {mode === "text" && (textStatus ?? <HtmlSource text={text} />)}
           {mode === "render" && (
             <div class="html-gate-preview">
               {children ?? <p role="status">Loading HTML preview…</p>}

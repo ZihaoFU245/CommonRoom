@@ -1966,6 +1966,8 @@ button:focus-visible {
 }
 
 .html-gate-controls > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
   margin-right: auto;
   color: var(--muted);
 }

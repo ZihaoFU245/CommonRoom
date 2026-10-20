@@ -1,3 +1,4 @@
+import type { AttachmentContext } from "./Attachment.tsx";
 import { attachmentLink } from "../api/media.ts";
 import { createElement } from "preact";
 import type { ComponentChildren } from "preact";
@@ -18,10 +19,12 @@ export const MarkdownContent = memo(function MarkdownContent({
   nodes,
   mentions,
   renderHtml,
+  attachmentContext,
 }: {
   nodes: MarkdownNode[];
   mentions: string[];
   renderHtml?: (source: string, index: number) => ComponentChildren;
+  attachmentContext?: AttachmentContext;
 }) {
   function render(nodes: MarkdownNode[], code = false): ComponentChildren {
     return nodes.map((node, index) => {
@@ -63,9 +66,7 @@ export const MarkdownContent = memo(function MarkdownContent({
               id={attachment.id}
               href={node.href ?? attachment.path}
               kind={attachment.kind}
-              {...(renderHtml
-                ? { renderHtml: (source: string) => renderHtml(source, index) }
-                : {})}
+              {...(attachmentContext ? { context: attachmentContext } : {})}
             >
               {render(node.children)}
             </Attachment>

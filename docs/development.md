@@ -48,8 +48,10 @@ packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat` and
 
 All shell scripts live in `auto/` and locate the repository root themselves.
 Run `rtk proxy ./auto/clean.sh` to remove `target/`, both UI bundles, Vite
-caches, `./chat`, and `./ui.tar.xz`. Stop running debug processes first.
-Cleaning preserves `data/`, installed dependencies, and lockfiles.
+caches, `./chat`, `./ui.tar.xz`, and RustFS runtime files in `tmp/rustfs-local/`
+(including local buckets). Stop running debug and RustFS processes first.
+Cleaning preserves `tmp/rustfs`, other `tmp/` files, `data/`, installed
+dependencies, and lockfiles.
 Both build modes skip source checks and tests. Run `rtk proxy ./auto/check.sh`
 separately before deploying.
 

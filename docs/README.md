@@ -13,4 +13,4 @@ Start with [Development](development.md), then read [Architecture](architecture.
 - [Media uploads (draft)](media-uploads.md): private S3 uploads, setup, limits, cleanup and verification.
 - [Data](data.md): persistence, upgrades, backups, and moving the service.
 - [Storage benchmarks](storage-benchmarks.md): mutation latency, write volume, memory, and remaining scaling costs.
-- [Deployment](deployment.md): separate server/UI builds, configuration, Nginx.
+- [Deployment](deployment.md): release builds, configuration, Nginx, Cloudflare Tunnel, and object storage (AWS S3, Cloudflare R2, self-hosted RustFS).

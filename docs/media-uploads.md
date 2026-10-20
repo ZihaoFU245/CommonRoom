@@ -50,21 +50,26 @@ This is signature classification, not a full decode or malware scan.
 Audio/video and HTML/SVG use ordinary Markdown links with a display-hint title
 (e.g. `"media:video"`). Only exact same-origin, base-path-correct media links can
 activate attachment controls. Hints never authorize access or determine the
-trusted MIME: Play/Preview requests authenticated `/api/media/UUID/info`, which
-checks publication, expiry and current conversation read permission without S3 I/O.
-The timeline performs no metadata/file requests before that click.
+trusted MIME. Document preview requests `/api/media/UUID/info`, which checks
+publication, expiry and current conversation read permission without S3 I/O.
+Audio/video use the authenticated file endpoint directly; its verified MIME and
+current authorization checks apply before redirecting to storage.
 
-Players have controls, no autoplay attribute and `preload="none"`; the source is
-attached and playback requested only after Play. The app refreshes a failed S3
+Native audio/video controls appear immediately with no extra Play button, no
+autoplay attribute and `preload="none"`. The browser defers file loading until
+its Play control is used; no preliminary metadata request is needed. Preload is
+a browser hint rather than an access restriction. The app refreshes a failed S3
 redirect through the authenticated file endpoint, preserving playback position;
 repeated failures before successful playback stop with Retry/download controls.
 Seeking uses S3 range requests. `?download=true` requests attachment disposition
 for the original file instead of inline playback.
 
 HTML and SVG remain attachment downloads and are never navigated as inline
-application documents. Preview fetches at most 1 MiB of UTF-8 text on demand and
-reuses Show text/Render HTML, the browser-local Allow HTML setting, the same
-sandbox and network-denying CSP. The main app never inserts uploaded HTML/SVG as
+application documents. Each file shows its name beside Show text/Render HTML;
+either action fetches at most 1 MiB of UTF-8 text and opens the chosen view in
+one click. Switching views reuses the source. The download link stays below the
+preview. Rendering respects the browser-local Allow HTML setting and uses the
+same sandbox and network-denying CSP. The main app never inserts uploaded HTML/SVG as
 DOM markup. Preview source is released when the virtual row unmounts. Older
 uploads retain their stored classification; re-upload to use new formats.
 
@@ -208,7 +213,10 @@ rtk proxy ./auto/start-s3.sh
 ```
 
 The S3 API binds `127.0.0.1:19000`, console `127.0.0.1:19001`. Runtime cwd,
-data/log/temp files stay in ignored `tmp/rustfs-local/`. The launcher clears
+data/log/temp files stay in ignored `tmp/rustfs-local/`. After stopping RustFS,
+`auto/clean.sh` removes that runtime directory, including all local buckets;
+it preserves the manually installed `tmp/rustfs` binary and other `tmp/` files.
+The launcher clears
 inherited output-path settings and confines filesystem writes using macOS
 `sandbox-exec` or Linux `bubblewrap` (install it first). It fails if confinement
 cannot be established and rejects symlink runtime roots. It starts only RustFS.
@@ -261,6 +269,9 @@ bucket origin automatically. Attachment previews also require
 `blob:` in `img-src` (included in the supplied Nginx/backend headers). Storage must
 set `X-Content-Type-Options: nosniff`. Keep the bucket private and avoid public
 caching or listing. Serve storage from a separate origin without chat cookies.
+
+Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
+self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
 SQLite is v15; validated v9-v15 data upgrades transactionally. V13 media gains
 persisted expiry/publication/deletion state; existing referenced media receives

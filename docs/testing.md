@@ -31,8 +31,10 @@ running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 `auto/debug.sh` runs the existing debug binary and previews `web/dist-debug/`
 at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild.
-`auto/clean.sh` removes server/UI build artifacts and Vite caches, preserving
-data, dependencies, and lockfiles.
+`auto/clean.sh` removes server/UI build artifacts, Vite caches, and
+`tmp/rustfs-local/` (including local buckets, logs and temporary files).
+Stop debug and RustFS first. It preserves `tmp/rustfs`, other `tmp/` files,
+chat data, dependencies, and lockfiles.
 
 The standalone `pnpm --dir web build` runs TypeScript, ESLint, and formatting
 checks before Vite. Vite's transpilation is not a substitute for type checking.
