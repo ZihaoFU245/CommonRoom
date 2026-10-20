@@ -1,3 +1,4 @@
+import mediaWorkerUrl from "virtual:media-worker-url";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { Snapshot } from "./api/protocol.ts";
@@ -18,6 +19,17 @@ if (import.meta.env.PROD && location.protocol !== "https:") {
     `https://${location.host}${location.pathname}${location.search}${location.hash}`,
   );
 } else {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker
+      .register(new URL(mediaWorkerUrl, document.baseURI), {
+        type: "module",
+        scope: new URL("./", document.baseURI).pathname,
+        updateViaCache: "none",
+      })
+      .catch(() => {
+        /* Browsers without worker storage use ordinary downloads. */
+      });
+  }
   const root = document.getElementById("app");
   if (!root) throw new Error("Missing application root.");
   render(<App />, root);

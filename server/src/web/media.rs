@@ -225,21 +225,32 @@ pub(crate) async fn download(
 }
 
 pub(crate) fn start_cleanup(app: App) {
+    if app.media.is_none() {
+        return;
+    }
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-            app.config.media.cleanup_interval,
-        ));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let normal = std::time::Duration::from_secs(app.config.media.cleanup_interval);
+        let retry = normal.min(std::time::Duration::from_secs(60));
+        let mut delay = std::time::Duration::ZERO;
         loop {
-            interval.tick().await;
+            tokio::time::sleep(delay).await;
             if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            match tokio::time::timeout(std::time::Duration::from_secs(20), cleanup(&app)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(message)) => tracing::warn!(%message, "Media cleanup deferred"),
-                Err(_) => tracing::warn!("Media cleanup time budget reached; retry next tick"),
-            }
+            delay = match tokio::time::timeout(std::time::Duration::from_secs(20), cleanup(&app))
+                .await
+            {
+                Ok(Ok(true)) => normal,
+                Ok(Ok(false)) => retry,
+                Ok(Err(message)) => {
+                    tracing::warn!(%message, "Media cleanup deferred");
+                    retry
+                }
+                Err(_) => {
+                    tracing::warn!("Media cleanup time budget reached; continuing shortly");
+                    retry
+                }
+            };
         }
     });
 }
@@ -273,14 +284,20 @@ async fn delete_media(app: App, media: crate::engine::media::Media) -> Result<()
     storage.delete_keys(&keys).await?;
     cleanup_db(&app, move |app| {
         let engine = app.engine_read()?;
-        engine.media_staging_cleaned(&media.id)?;
+        // A PUT admitted before URL expiry can finish after an early cleanup.
+        // Keep staging recovery due until the pending grace period has elapsed.
+        if media.created.saturating_add(app.config.media.pending_ttl)
+            <= crate::engine::media::timestamp()
+        {
+            engine.media_staging_cleaned(&media.id)?;
+        }
         engine.remove_media_record(&media.id)
     })
     .await
 }
-async fn cleanup(app: &App) -> Result<(), String> {
+async fn cleanup(app: &App) -> Result<bool, String> {
     if app.media.is_none() {
-        return Ok(());
+        return Ok(true);
     }
     let start = std::time::Instant::now();
     let attempted_before = crate::engine::media::timestamp();
@@ -323,6 +340,7 @@ async fn cleanup(app: &App) -> Result<(), String> {
         for id in ids {
             let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
             let Ok(_lock) = storage.lock_media(&id) else {
+                failed += 1;
                 continue;
             };
             if storage.delete(&format!("uploads/{id}")).await.is_err() {
@@ -344,7 +362,7 @@ async fn cleanup(app: &App) -> Result<(), String> {
         elapsed_ms = start.elapsed().as_millis(),
         "Media cleanup finished"
     );
-    Ok(())
+    Ok(failed == 0)
 }
 
 pub(crate) async fn abandon(

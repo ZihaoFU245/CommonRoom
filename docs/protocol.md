@@ -232,3 +232,9 @@ No storage request is made. `GET /api/media/{id}/file?download=true` forces
 attachment disposition; the default permits native recognized media playback.
 Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
 are optional UI hints; the client verifies MIME with the info endpoint on click.
+
+Browser media bytes are explicitly persisted by the application-scoped media worker
+under canonical file URLs (playback/download queries share content). Each cached
+read still calls the authenticated `/info` endpoint; no S3 GET is needed on a hit.
+Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
+for bounds, partial-range caching and fallback behavior.

@@ -94,6 +94,15 @@ pub(super) fn reconcile(
 }
 
 impl Engine {
+    // Called before accepting uploads on restart. SQLite references are authoritative;
+    // recent uploads from a previous process no longer have a live reservation.
+    pub(crate) fn prepare_media_cleanup(&self) -> Result<(), String> {
+        self.db.lock().map_err(|_| "Storage unavailable.")?.execute(
+            "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id)",
+            [],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
     pub(crate) fn store_media_allocation(&self, media: &Media) -> Result<(), String> {
         let mut db = self.db.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.savepoint().map_err(|e| e.to_string())?;
@@ -209,7 +218,7 @@ impl Engine {
             let mut query = tx.prepare("SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (
                 SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)
                 UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)
-                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND unreferenced<=?2 AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
+                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
             ) ORDER BY cleanup_attempt,created LIMIT ?3").map_err(|e| e.to_string())?;
             query
                 .query_map(

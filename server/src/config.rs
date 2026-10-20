@@ -55,7 +55,7 @@ impl Default for MediaConfig {
             max_size: 25 * 1024 * 1024,
             max_age: 7 * 86400,
             pending_ttl: 86400,
-            cleanup_interval: 300,
+            cleanup_interval: 86400,
             cleanup_batch: 32,
             user_quota: 1024 * 1024 * 1024,
             pending_limit: 8,

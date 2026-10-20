@@ -638,3 +638,66 @@ fn media_reference_removal_tracks_orphans_and_columns_override_legacy_json() {
     let restored = e.stored_media(&media.id).unwrap();
     assert!(restored.deleting && restored.ready);
 }
+
+#[test]
+fn restart_cleanup_preserves_shared_references_and_releases_quota_only_after_delete() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("alice", "hash".into(), true, false).unwrap();
+    e.execute(Some("alice"), None, "/new room files").unwrap();
+    let room = e.data.rooms["files"].id.clone();
+    let live = ready(&e, "alice", &room);
+    let orphan = ready(&e, "alice", &room);
+    let pending = e.allocate_media("alice", &room, "pending", 8).unwrap();
+    e.execute(Some("alice"), Some("files"), &link(&live))
+        .unwrap();
+    e.execute(Some("alice"), Some("files"), &link(&live))
+        .unwrap();
+    let first = room_messages(&e, "files")[0].id.clone();
+    e.execute(Some("alice"), Some("files"), &format!("/retract {first}"))
+        .unwrap();
+    drop(e);
+    let mut e = Engine::open(&path).unwrap();
+    e.media_config.user_quota = 24;
+    e.prepare_media_cleanup().unwrap();
+    let claimed = e.expired_media().unwrap();
+    assert_eq!(claimed.len(), 2);
+    assert!(claimed.iter().any(|m| m.id == orphan.id));
+    assert!(claimed.iter().any(|m| m.id == pending.id));
+    assert!(e.readable_media("alice", &live.id).is_ok());
+    // Failed storage deletion leaves both the claim and all byte reservations.
+    assert!(e.allocate_media("alice", &room, "blocked", 1).is_err());
+    e.prepare_media_cleanup().unwrap();
+    assert_eq!(e.expired_media().unwrap().len(), 2);
+    e.remove_media_record(&orphan.id).unwrap();
+    assert!(e.allocate_media("alice", &room, "reclaimed", 8).is_ok());
+    // New, unsent uploads in this process keep their normal pending grace.
+    assert!(!e.expired_media().unwrap().iter().any(|m| m.id == live.id));
+    let last = room_messages(&e, "files")[0].id.clone();
+    e.execute(
+        Some("alice"),
+        Some("files"),
+        &format!("/edit {last} removed"),
+    )
+    .unwrap();
+    assert!(e.expired_media().unwrap().iter().any(|m| m.id == live.id));
+    // Tombstones must keep staging recovery alive for a late in-flight PUT.
+    assert!(
+        !e.media_staging_cleanup(now().saturating_add(1))
+            .unwrap()
+            .contains(&orphan.id)
+    );
+    e.db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE media SET created=?2 WHERE id=?1",
+            params![orphan.id, now() - e.media_config.pending_ttl - 1],
+        )
+        .unwrap();
+    assert!(
+        e.media_staging_cleanup(now().saturating_add(1))
+            .unwrap()
+            .contains(&orphan.id)
+    );
+}

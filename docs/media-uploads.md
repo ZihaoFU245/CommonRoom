@@ -100,7 +100,16 @@ an already-expired reference while editing surrounding text is allowed.
 
 Downloads require current read access, an unexpired verified object and a retained
 message reference. Chat redirects to a signed GET valid for at most 60 seconds,
-capped by remaining media life. Redirects/storage responses use `no-store`.
+capped by remaining media life. Redirects/storage responses use `no-store`. A scoped `media-cache.js` service worker
+persists immutable bytes under the stable application media URL. Every reuse first
+checks `/info` with the current session (no S3 I/O), so expiry, retraction and lost
+access still stop reads. Reloads, preview/download switches and playback retry URLs
+reuse those bytes. Full cached objects serve byte ranges locally; partial playback
+responses are cached by exact range. The cache holds at most 128 entries/256 MiB;
+larger responses stream normally, and browser eviction or disabled storage can
+require another download. Cache Storage retains local downloaded copies across
+sessions; it contains no credentials and never supplies an offline authorization
+fallback. Clear site data to erase these local copies.
 A downloaded copy cannot be revoked; an issued URL can remain usable until expiry.
 
 ## Configuration
@@ -121,7 +130,7 @@ non-secret settings in `data/config.json` while stopped, then restart:
     "max_size": 26214400,
     "max_age": 604800,
     "pending_ttl": 86400,
-    "cleanup_interval": 300,
+    "cleanup_interval": 86400,
     "cleanup_batch": 32,
     "user_quota": 1073741824,
     "pending_limit": 8,
@@ -189,11 +198,22 @@ Do not configure storage retention shorter than the corresponding chat allowance
 For versioned buckets, also remove noncurrent versions; delete markers alone do
 not reclaim bytes. Use a dedicated bucket/prefix for this application.
 
+On each server start, before accepting uploads, SQLite marks every tracked object
+without any retained message reference for deletion, including unfinished uploads
+from the previous process. Shared attachments survive while any message still
+references them. This uses authoritative `message_media` rows rather than scanning
+S3, and needs no bucket-list permission. Unknown objects created outside the tracked
+upload protocol remain the operator's responsibility.
+
+Cleanup starts immediately and repeats every 24 hours by default. An explicit saved
+`cleanup_interval` is preserved. Published attachments become eligible as soon as
+their last reference disappears; new unsent uploads retain the pending grace period.
 Cleanup's configurable timer handles expired published objects even while messages
 still reference them, abandoned/pending uploads and unreferenced files. It claims
 deletion in SQLite before storage I/O. Failed deletion retries without releasing
 quota; oldest-attempt ordering prevents one failing object starving other work.
-Expired reference tombstones survive while messages retain them. Staging copies
+Expired reference tombstones survive while messages retain them. Early deletion leaves staging recovery pending until the upload's grace period
+ends, catching PUTs that finish after a restart or cancellation. Staging copies
 are swept after the pending timeout, well beyond URL expiry. Configure staging
 lifecycle as a backstop for very late in-flight PUTs or process crashes.
 
@@ -315,10 +335,12 @@ rejected before buffering. Diagnostics omit signed request URLs.
 
 Concurrent allocation probes share in-flight work only. Later requests always
 probe again; there is no stale health cache that allocates while storage is down.
-Downloads/previews retain no-store and live authorization rechecks.
+Downloads/previews retain no-store on the network and live authorization rechecks;
+the browser worker explicitly stores immutable bytes locally.
 
 Cleanup drains batches with up to four concurrent object jobs within a 20-second
-sweep budget, skipping missed timer ticks. It batches each object's distinct
+sweep budget. Failures or exhausted budgets retry within 60 seconds (or the configured
+interval when shorter), so a startup backlog does not wait another day. It batches each object's distinct
 keys with DeleteObjects, checks every returned key/error, and falls back to
 individual deletion for unsupported batch APIs (405/501). A failed or incomplete
 delete retains the row and quota. Final/staging retry timestamps prevent failed

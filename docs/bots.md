@@ -478,3 +478,9 @@ alongside current-conversation usage/cache counters and reporting coverage;
 missing telemetry is unknown, not zero. Short command
 catalogues, duplicate suppression and bounded tool loops reduce unnecessary
 calls without embedding any model runtime in the chat server.
+
+Browser discovery failures retry with 30-second exponential rests capped at five
+minutes. Empty successful catalogues stay cached until an invalidation or a focus
+refresh after five minutes; populated focus refreshes rest for one minute.
+WebSocket catalogue notifications and changed conversation membership can refresh
+immediately. Typing and ordinary renders never bypass failed-request backoff.

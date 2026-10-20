@@ -79,7 +79,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mut
 - The frame allows inline CSS/JavaScript and data images/media/fonts, but blocks fetches, external resources, nested frames, base URLs and form actions. The app's leading `frame-src 'self'` meta policy also applies without Nginx; the frame carries its own leading CSP meta. Production headers add frame-ancestor restrictions and preserve a strict script/style policy on the main app. Full HTML code remains untrusted and never runs with the chat's origin.
 
 
-Server snapshots are authoritative for membership, scoped permissions and commands, peer directories, and messages. The legacy wire `admin` flag is informational; UI controls use effective grants. Browser storage contains presentation/notification preferences and browser-local command aliases. Stable event callbacks and memoized message lists keep draft edits from sorting and rendering the transcript again. Keep pure helpers independent of browser APIs where possible.
+Server snapshots are authoritative for membership, scoped permissions and commands, peer directories, and messages. The legacy wire `admin` flag is informational; UI controls use effective grants. Browser storage contains presentation/notification preferences, browser-local command aliases, and a bounded cache of downloaded immutable media bytes. Stable event callbacks and memoized message lists keep draft edits from sorting and rendering the transcript again. Keep pure helpers independent of browser APIs where possible.
 
 ## Scaling and extension
 
@@ -148,7 +148,10 @@ access fails closed with a restart diagnostic; partially mutated memory is not
 reused by HTTP, socket or console callers.
 
 Bot command completion uses a session-local 32-conversation/512 KiB cache and
-four background reads, prioritizing the selected conversation. Policy/account/
+four background reads, prioritizing the selected conversation. Failed discovery
+backs off from 30 seconds to five minutes; focus refreshes rest for one minute
+(five minutes for empty catalogues). Explicit catalogue notifications and membership
+changes bypass those rests. Policy/account/
 server-instance changes replace the cache. Server discovery preserves eligible
 metadata during routine refresh, but explicit worker invalidation clears it.
 Transient bot activity may include provisional plain text; it travels through a
@@ -173,6 +176,12 @@ provides the S3 transport through rust-s3. Storage network calls run outside eng
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
 attachment preview state and acknowledgement-based publication; `api/media.ts` validates responses and direct-upload transport.
+Startup claims unreferenced tracked uploads before serving requests; cleanup sweeps
+immediately and daily by default, with short retries for incomplete work. Quota
+remains reserved until confirmed storage deletion. `mediaWorker.ts` intercepts only
+application media file GETs and uses `features/conversation/mediaCache.ts` for a
+128-entry/256 MiB persistent byte cache with live metadata authorization and range
+support. Other API/static requests follow their normal network paths.
 See [Media uploads](media-uploads.md).
 
 Attachment playback/previews live in the lazy `components/Attachment.tsx` chunk.

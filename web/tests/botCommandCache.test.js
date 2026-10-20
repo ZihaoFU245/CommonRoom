@@ -21,7 +21,13 @@ function fixture() {
   );
   return { cache, requests };
 }
-test("slow refresh and transient errors keep cached completions, denials remove them", async () => {
+test("slow refresh and transient errors keep cached completions, denials remove them", async (t) => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  t.after(() => {
+    Date.now = originalNow;
+  });
   const { cache, requests } = fixture();
   cache.refresh("room", "members", 0);
   requests[0].resolve({ conversation_id: "room", bots });
@@ -32,6 +38,7 @@ test("slow refresh and transient errors keep cached completions, denials remove 
   await settle();
   assert.deepEqual(cache.get("room", "members"), bots);
   assert.equal(cache.get("room", "new members"), undefined);
+  now += 30_000;
   cache.refresh("room", "members", 1);
   requests[2].reject(new ApiError(403, "revoked"));
   await settle();
@@ -74,5 +81,39 @@ test("selecting a cold conversation jumps ahead of background prefetch", async (
   requests[0].resolve({ conversation_id: "0", bots });
   await settle();
   assert.equal(requests[4].id, "9");
+  cache.stop();
+});
+
+test("offline errors back off and empty results resist focus storms while notifications refresh immediately", async (t) => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  t.after(() => {
+    Date.now = originalNow;
+  });
+  const { cache, requests } = fixture();
+  cache.refresh("room", "members", 0);
+  requests[0].reject(new Error("offline"));
+  await settle();
+  for (let i = 0; i < 20; i++) cache.refresh("room", "members", 0, true);
+  assert.equal(requests.length, 1);
+  now += 30_000;
+  cache.refresh("room", "members", 0);
+  requests[1].reject(new Error("still offline"));
+  await settle();
+  now += 30_000;
+  cache.refresh("room", "members", 0, true);
+  assert.equal(requests.length, 2);
+  now += 30_000;
+  cache.refresh("room", "members", 0);
+  requests[2].resolve({ conversation_id: "room", bots: [] });
+  await settle();
+  for (let i = 0; i < 20; i++) cache.refresh("room", "members", 0, true);
+  assert.equal(requests.length, 3);
+  cache.refresh("room", "members", 1);
+  assert.equal(requests.length, 4);
+  requests[3].resolve({ conversation_id: "room", bots });
+  await settle();
+  assert.deepEqual(cache.get("room", "members"), bots);
   cache.stop();
 });

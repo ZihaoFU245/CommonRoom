@@ -133,9 +133,46 @@ function markdownFrame(): Plugin {
   };
 }
 
+// The stable root URL permits an application-scoped service worker under any
+// deployment base path. Vite emits its imports with the rest of the bundle.
+function mediaWorker(): Plugin {
+  const id = "virtual:media-worker-url";
+  let development = false;
+  return {
+    name: "media-worker",
+    configResolved(config) {
+      development = config.command === "serve";
+    },
+    resolveId(source) {
+      return source === id ? "\0" + id : null;
+    },
+    load(source) {
+      if (source !== "\0" + id) return null;
+      if (development) return 'export default "/media-cache.js";';
+      const reference = this.emitFile({
+        type: "chunk",
+        fileName: "media-cache.js",
+        id: fileURLToPath(new URL("./src/mediaWorker.ts", import.meta.url)),
+      });
+      return `export default import.meta.ROLLUP_FILE_URL_${reference};`;
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split("?")[0] !== "/media-cache.js") {
+          next();
+          return;
+        }
+        response.setHeader("Content-Type", "text/javascript");
+        response.setHeader("Cache-Control", "no-cache");
+        response.end('import "/src/mediaWorker.ts";');
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: "./",
-  plugins: [preact(), markdownRendererUrl(), markdownFrame()],
+  plugins: [preact(), markdownRendererUrl(), markdownFrame(), mediaWorker()],
   server: {
     port: 5173,
     strictPort: true,

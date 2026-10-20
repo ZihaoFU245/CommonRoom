@@ -56,6 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) {
         return Err("Media storage must use a separate origin from the chat application.".into());
     }
+    if media.is_some() {
+        engine.prepare_media_cleanup()?;
+    }
     let (changes, _) = broadcast::channel(16);
     let app = App {
         media,

@@ -43,9 +43,19 @@ export function useBotCommands(
       }
     };
     refresh(false);
-    const focus = () => refresh(true);
+    // Retry failed discovery at rest intervals; empty catalogues stay cached until
+    // the server announces commands_ready/changed or the window regains focus.
+    const retry = window.setInterval(() => {
+      if (!document.hidden) refresh(false);
+    }, 30_000);
+    const focus = () => {
+      if (!document.hidden) refresh(true);
+    };
     window.addEventListener("focus", focus);
-    return () => window.removeEventListener("focus", focus);
+    return () => {
+      window.clearInterval(retry);
+      window.removeEventListener("focus", focus);
+    };
   }, [cache, conversationId, versions, conversations, online]);
   const members = conversationId
     ? conversations.get(conversationId)

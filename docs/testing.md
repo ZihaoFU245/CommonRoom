@@ -562,3 +562,10 @@ versus 503 failures, zero-size guards, per-key batch deletion errors, in-flight
 probe sharing without stale health caching, and filename encoding. V14-to-v15
 migration/rollback, covering quota/partial expiry query plans, orphan triggers,
 canonical SQL state, and write-free plain-text reconciliation use scratch data.
+
+Media cache regressions cover reload reuse, live denial of cached bytes, canonical
+playback/download URLs, native byte ranges, legacy CORS range headers, scoped worker
+matching and disabled-storage fallback. Media engine tests cover restart claims,
+shared references, last-reference removal, quota retention on failed deletion and
+late staging recovery. Bot cache tests cover repeated renders/focus during offline
+backoff, exponential rests, empty results and immediate notification refresh.

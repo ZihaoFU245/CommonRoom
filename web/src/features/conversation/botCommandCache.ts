@@ -7,6 +7,12 @@ interface Entry {
   bots: BotCommands[];
   bytes: number;
 }
+interface Retry {
+  members: string;
+  version: number;
+  after: number;
+  failures: number;
+}
 interface Request {
   id: string;
   members: string;
@@ -19,6 +25,7 @@ export class BotCommandCache {
   private readonly entries = new Map<string, Entry>();
   private readonly requests = new Map<string, Request>();
   private readonly queue: Request[] = [];
+  private readonly retries = new Map<string, Retry>();
   private running = 0;
   private stopped = false;
   private readonly fetch: (
@@ -46,6 +53,8 @@ export class BotCommandCache {
   retain(ids: Set<string>) {
     for (const id of this.entries.keys())
       if (!ids.has(id)) this.entries.delete(id);
+    for (const id of this.retries.keys())
+      if (!ids.has(id)) this.retries.delete(id);
     for (const [id, request] of this.requests)
       if (!ids.has(id)) {
         request.controller.abort();
@@ -60,8 +69,17 @@ export class BotCommandCache {
     priority = false,
   ) {
     if (this.stopped) return;
+    const retry = this.retries.get(id);
+    // Failed/offline discovery must rest even if snapshots or focus events repeat.
+    // A changed membership or an explicit catalogue notification can retry at once.
     const entry = this.entries.get(id);
     if (!force && entry?.members === members && entry.version === version)
+      return;
+    if (
+      retry?.members === members &&
+      Date.now() < retry.after &&
+      retry.version === version
+    )
       return;
     const previous = this.requests.get(id);
     if (previous?.members === members && previous.version === version) {
@@ -89,6 +107,7 @@ export class BotCommandCache {
     this.requests.clear();
     this.queue.length = 0;
     this.entries.clear();
+    this.retries.clear();
   }
   private pump() {
     while (!this.stopped && this.running < 4 && this.queue.length) {
@@ -104,6 +123,18 @@ export class BotCommandCache {
             result.conversation_id !== request.id
           )
             return;
+          this.retries.delete(request.id);
+          this.retries.set(request.id, {
+            members: request.members,
+            version: request.version,
+            after: Date.now() + (result.bots.length ? 60_000 : 300_000),
+            failures: 0,
+          });
+          while (this.retries.size > 32) {
+            const oldest = this.retries.keys().next().value;
+            if (oldest === undefined) break;
+            this.retries.delete(oldest);
+          }
           this.entries.delete(request.id);
           this.entries.set(request.id, {
             members: request.members,
@@ -130,6 +161,22 @@ export class BotCommandCache {
             this.requests.get(request.id) !== request
           )
             return;
+          const previous = this.retries.get(request.id);
+          const failures = (previous?.failures ?? 0) + 1;
+          this.retries.delete(request.id);
+          this.retries.set(request.id, {
+            members: request.members,
+            version: request.version,
+            after:
+              Date.now() +
+              Math.min(30_000 * 2 ** Math.min(failures - 1, 4), 300_000),
+            failures,
+          });
+          while (this.retries.size > 32) {
+            const oldest = this.retries.keys().next().value;
+            if (oldest === undefined) break;
+            this.retries.delete(oldest);
+          }
           // Network failures preserve suggestions. Authoritative access denials do not.
           if (
             error instanceof ApiError &&

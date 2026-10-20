@@ -605,7 +605,15 @@ requires the public endpoint to be HTTPS.
 
 ### Lifecycle rules
 
-Chat deletes expired and retracted objects itself, exactly, with retries. A bucket
+Chat sweeps expired and unreferenced tracked objects at startup and every 24 hours
+by default, with short retries for failed/incomplete sweeps. Saved
+`media.cleanup_interval` overrides remain in effect. Serve `media-cache.js` from
+the UI base path with JavaScript MIME and revalidation (`no-cache`, as in the supplied
+Nginx include); the worker scope must cover that application's API paths. The UI
+worker caches downloaded immutable bytes privately and checks current `/info`
+authorization before reuse. Keep its `connect-src` policy able to reach storage.
+
+Chat deletes expired and retracted objects itself with retries. A bucket
 lifecycle rule is a backstop for objects that outlive their metadata because a process
 died mid-cleanup; it is asynchronous and rounds to days. Rules key off the prefix, not
 object tags (R2 has no tags).

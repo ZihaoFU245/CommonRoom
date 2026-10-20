@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ const sockets = [];
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 async function until(predicate, label) {
   const deadline = Date.now() + 30000;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
     await pause(25);
   }
@@ -201,7 +201,7 @@ try {
     join(env.CHAT_DATA, "config.json"),
     JSON.stringify({ media: { cleanup_interval: 1, cleanup_batch: 2 } }),
   );
-  const chat = launch(join(root, "target/debug/chat"), [], env);
+  let chat = launch(join(root, "target/debug/chat"), [], env);
   await until(
     () =>
       chat.failure ||
@@ -296,6 +296,11 @@ try {
   await send(`/retract ${history.messages[0].id}`);
   assert.equal((await request(path, bob)).status, 404);
   assert.equal((await request(infoPath, bob)).status, 404);
+  await until(
+    async () => (await fetch(response.headers.get("location"))).status === 404,
+    "last-reference storage deletion",
+  );
+  let retainedMedia;
   // New MIME classification must use bytes, with private range-readable objects.
   for (const [filename, bytes, type] of [
     ["renamed.txt", Buffer.from("RIFF1234WAVEfmt "), "audio/wav"],
@@ -344,6 +349,7 @@ try {
     );
     assert.equal(completed.status, 200);
     const verified = await completed.json();
+    retainedMedia = verified;
     assert.equal(verified.content_type, type);
     await send(`[${filename}](${new URL(verified.path, base).href})`);
     const redirect = await request(
@@ -380,6 +386,51 @@ try {
       )
     ).status,
     403,
+  );
+  // Restart with the daily interval: recent verified-but-unsent bytes must be
+  // claimed on startup, while referenced objects and sessions remain usable.
+  const orphanTicket = await (
+    await request("/api/media/uploads", alice, {
+      conversation_id: conversation,
+      filename: "orphan.txt",
+      size: 4,
+    })
+  ).json();
+  assert.equal(
+    (
+      await fetch(orphanTicket.upload.url, {
+        method: "PUT",
+        headers: orphanTicket.upload.headers,
+        body: "lost",
+      })
+    ).status,
+    200,
+  );
+  const orphanComplete = `/api/media/uploads/${orphanTicket.media_id}/complete`;
+  assert.equal((await request(orphanComplete, alice, {})).status, 200);
+  const exited = once(chat, "exit");
+  chat.kill("SIGTERM");
+  await exited;
+  const saved = JSON.parse(
+    await readFile(join(env.CHAT_DATA, "config.json"), "utf8"),
+  );
+  saved.media.cleanup_interval = 86400;
+  await writeFile(join(env.CHAT_DATA, "config.json"), JSON.stringify(saved));
+  chat = launch(join(root, "target/debug/chat"), [], env);
+  await until(
+    () => chat.exitCode !== null || chat.output.includes("Chat server ready"),
+    "restarted chat",
+  );
+  assert.equal(chat.exitCode, null, chat.output);
+  base = `http://127.0.0.1:${chat.output.match(/address=127\.0\.0\.1:(\d+)/)[1]}/commonroom`;
+  await until(
+    () => /deleted=[1-9]\d*\b/u.test(chat.output),
+    "startup orphan cleanup with daily timer",
+  );
+  assert.equal((await request(orphanComplete, alice, {})).status, 400);
+  assert.equal(
+    (await request(`/api/media/${retainedMedia.media_id}/info`, bob)).status,
+    200,
   );
   const stopped = once(rustfs, "exit");
   rustfs.kill("SIGTERM");
@@ -443,7 +494,6 @@ try {
     ).status,
     200,
   );
-  await until(() => /deleted=1\b/u.test(chat.output), "RustFS batched cleanup");
   assert.equal(
     (
       await request(
@@ -455,7 +505,7 @@ try {
     400,
   );
   console.log(
-    "Media smoke passed: RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, storage outage rejection, and recovery.",
+    "Media smoke passed: RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
   );
 } finally {
   for (const ws of sockets) ws.terminate();
