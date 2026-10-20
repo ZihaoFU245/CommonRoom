@@ -1,16 +1,17 @@
 import type { LocalOutput } from "../api/protocol.ts";
-import { helpSections, commandText } from "../features/conversation/console.ts";
-import { Manual } from "./Manual.tsx";
+import { outputMarkdown } from "../features/conversation/manual.ts";
+import { lazy, Suspense } from "preact/compat";
+import { useMemo } from "preact/hooks";
+
+const Manual = lazy(() =>
+  import("./Manual.tsx").then((module) => ({ default: module.Manual })),
+);
 
 export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
-  const command = commandText(entry.command);
-  const help = command === "/help" && !entry.error && entry.result;
-  const manual =
-    ["/man", "/permissions", "/grant", "/revoke"].includes(
-      command.split(/\s+/u)[0] ?? "",
-    ) &&
-    !entry.error &&
-    entry.result;
+  const text = useMemo(
+    () => outputMarkdown(entry),
+    [entry.command, entry.result, entry.error, entry.room],
+  );
   return (
     <article
       class={`console-output ${entry.error ? "error" : ""}`}
@@ -20,27 +21,9 @@ export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
         <span aria-hidden="true">›</span>
         <code>{entry.command}</code>
       </div>
-      {help ? (
-        <div class="help-sections">
-          {helpSections(help).map((group) => (
-            <section key={group.title}>
-              <h2>{group.title}</h2>
-              <ul class="help-list" aria-label={`${group.title} commands`}>
-                {group.commands.map(({ usage, description }) => (
-                  <li key={usage}>
-                    <code>{usage}</code>
-                    <span>{description}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
-      ) : manual ? (
-        <Manual text={manual} />
-      ) : (
-        <pre>{entry.result ?? "…"}</pre>
-      )}
+      <Suspense fallback={<pre>{entry.result ?? "…"}</pre>}>
+        <Manual text={text} />
+      </Suspense>
     </article>
   );
 }

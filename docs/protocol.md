@@ -26,7 +26,7 @@ the peer address. The allowance is 10 login attempts per IP per minute.
 The web sends `{id:number, room:string|null, text:string, markdown?:boolean}`.
 The optional `markdown` flag defaults to false and applies only to newly created
 messages, including `/tell` and `/reply`. `/markdown on|off` is handled locally
-in the browser. Browser aliases expand locally before sending; `/alias` is never sent to the server. Web `/rm` and `/retract` commands wait for local confirmation. Private views send
+in the browser. Browser aliases expand locally before sending; `/alias` is never sent to the server. Web `/user delete`, `/room delete`, and `/retract` commands wait for local confirmation. Private views send
 `@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
@@ -43,7 +43,7 @@ The canonical frontend declarations and runtime guards are in `web/src/api/proto
 It requires `/sudo` and `x:command.sudo` at global scope and elevates only the
 wrapped command. Snapshots retain the caller's actual groups and permissions.
 Password commands recheck sudo authorization after asynchronous hashing.
-The acknowledgement contains the wrapped command's result or error. `/sudo /join room`
+The acknowledgement contains the wrapped command's result or error. `/sudo /room join room`
 saves the caller's membership and room user grants and broadcasts updated snapshots.
 
 Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
@@ -108,8 +108,16 @@ Clients route messages by this ID, so authorized inspectors can reply without
 changing a private conversation’s participants.
 
 `/man [command|topic]` returns read-only manual text as a local notice. The text
-uses headings, bullet lists, fenced examples, and inline code. The web renders
-these as structured documentation using text nodes; HTML and links are not interpreted.
+uses Markdown headings, lists, tables, fenced examples, and inline code. Every
+command reply shares a lazy Markdown renderer built from validated text nodes.
+HTML remains literal, images are disabled, and only safe HTTP/HTTPS/mail links
+are clickable. Structured JSON, history and credential wire text is preserved;
+the browser formats metadata as per-user key/value lists and configuration,
+history and credentials in fenced code blocks. User getters include effective
+media defaults and inherit only media limits across scopes. `@all` in the key
+position requests all metadata keys; in the user position it selects all users
+in the selected scope. Explicit room scope arguments require `#name`. Plain acknowledgements and errors
+are escaped to preserve literal user input.
 Stdin displays the same readable source. Both group
 assignments and individual permission updates use `/grant` and `/revoke`.
 Policy commands use `@global` for the global scope; `@server` is accepted as a
@@ -195,7 +203,7 @@ Allocation/completion/publication require `w:media.upload` plus read/send rights
 | Endpoint | Request | Response |
 | --- | --- | --- |
 | `GET /api/media/config` | Authenticated same-origin request | `{enabled,max_size}` |
-| `POST /api/media/uploads` | `{conversation_id,filename,size}` | `{media_id,upload:{method:"PUT",url,headers,expires_in}}` |
+| `POST /api/media/uploads` | `{conversation_id,filename,size,hints?}` | `{media_id,upload:{method:"PUT",url,headers,expires_in}}` |
 | `POST /api/media/uploads/{id}/complete` | `{}` | `{media_id,path,filename,content_type,size}` |
 | `POST /api/media/uploads/{id}/abandon` | `{}` | `{ok:true}`; marks an owned unpublished upload for cleanup |
 | `GET /api/media/{id}/file` | Session plus current conversation read permission | 307 redirect to a 60-second signed GET; `no-store` |
@@ -238,3 +246,28 @@ under canonical file URLs (playback/download queries share content). Each cached
 read still calls the authenticated `/info` endpoint; no S3 GET is needed on a hit.
 Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
 for bounds, partial-range caching and fallback behavior.
+
+## Object commands and upload hints
+
+The command catalogue advertises `/user` and `/room` families. See [Commands](commands.md)
+for scoped listing, metadata and lifecycle syntax. `/user get` returns a local JSON
+notice keyed by username; metadata is absent from broadcast snapshots. Bulk writes
+and grant changes return one acknowledgement only after an atomic commit.
+
+Upload hints are an optional object with keys `filename`, `content-type`, `label`,
+and `client`, with 1–256 printable ASCII bytes per value and no surrounding spaces.
+Allocation rejects unknown/invalid hints before storage I/O. Accepted fields become
+signed `x-amz-meta-client-*` headers in the upload ticket. Clients send every returned
+header and never attach chat credentials. Final CopyObject replaces metadata with
+these validated hints. All hints remain untrusted and have no authorization or
+MIME/size/retention effects. Unicode hint values must be percent encoded.
+
+
+`/clean age scope [--dry-run]` requires an explicit room/private/global scope.
+Preview runs under the read-only command path, with identical authorization and
+age constraints but no audit, revision or database writes. Execution reports
+Markdown counts of deleted messages and removed attachment references; S3 cleanup
+and quota release follow confirmed asynchronous storage deletion.
+All `/user set` writes (including bulk, removals and media metadata) require su.
+Admins retain metadata inspection through `r:account.metadata`; write flags and
+room policy management do not override the su-only mutation rule.

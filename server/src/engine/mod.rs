@@ -7,6 +7,7 @@ mod benchmarks;
 mod bot_api;
 #[path = "../bots/commands.rs"]
 mod bots;
+mod cleanup;
 mod dispatch;
 mod helpers;
 mod history;
@@ -74,3 +75,5 @@ impl Engine {
         Ok(())
     }
 }
+
+mod objects;

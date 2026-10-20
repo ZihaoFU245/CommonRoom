@@ -180,7 +180,7 @@ try {
         "RustFS startup failed. See the local binary/configuration.",
       );
     ready = await fetch(env.CHAT_S3_ENDPOINT).then(
-      () => true,
+      (response) => response.status !== 503,
       () => false,
     );
     if (!ready) await pause(100);
@@ -212,7 +212,7 @@ try {
   assert.equal(chat.exitCode, null, chat.output);
   base = `http://127.0.0.1:${chat.output.match(/address=127\.0\.0\.1:(\d+)/)[1]}/commonroom`;
   chat.stdin.write(
-    "/new user alice smoke-test-only admin\n/new user bob smoke-test-only user\n/new user eve smoke-test-only user\n/new room files\n/add alice files\n/add bob files\n",
+    "/user new alice smoke-test-only admin\n/user new bob smoke-test-only user\n/user new eve smoke-test-only user\n/room new files\n/room add alice #files\n/room add bob #files\n",
   );
   await until(
     () => chat.output.includes("bob added to #files"),
@@ -242,18 +242,29 @@ try {
     conversation_id: conversation,
     filename: "note.txt",
     size: 4,
+    hints: {
+      filename: "note.txt",
+      "content-type": "text/html",
+      label: "smoke-inspection",
+    },
   });
   assert.equal(allocation.status, 200);
   const ticket = await allocation.json();
+  assert.equal(
+    ticket.upload.headers["x-amz-meta-client-label"],
+    "smoke-inspection",
+  );
   const preflight = await fetch(ticket.upload.url, {
     method: "OPTIONS",
     headers: {
       Origin: origin,
       "Access-Control-Request-Method": "PUT",
-      "Access-Control-Request-Headers": "content-type",
+      "Access-Control-Request-Headers": Object.keys(ticket.upload.headers).join(
+        ",",
+      ),
     },
   });
-  assert.ok(preflight.ok);
+  assert.ok(preflight.ok, `${preflight.status}: ${await preflight.text()}`);
   assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
   assert.equal(
     (
@@ -287,6 +298,15 @@ try {
   assert.equal(response.headers.get("cache-control"), "no-store");
   const downloaded = await fetch(response.headers.get("location"));
   assert.equal(await downloaded.text(), "test");
+  assert.equal(
+    downloaded.headers.get("x-amz-meta-client-label"),
+    "smoke-inspection",
+  );
+  assert.equal(
+    downloaded.headers.get("x-amz-meta-client-content-type"),
+    "text/html",
+  );
+  assert.equal(media.content_type, "application/octet-stream");
   assert.match(downloaded.headers.get("content-disposition"), /^attachment;/);
   assert.equal((await request(path, eve)).status, 404);
   assert.equal((await request(path, null)).status, 401);

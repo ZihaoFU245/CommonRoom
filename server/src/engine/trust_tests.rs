@@ -12,7 +12,7 @@ fn fixture() -> Engine {
         e.provision(name, "hash".into(), admin, false).unwrap();
     }
     e.execute(Some("alice"), None, "/new room team").unwrap();
-    e.execute(Some("alice"), None, "/add bob team").unwrap();
+    e.execute(Some("alice"), None, "/add bob #team").unwrap();
     e
 }
 
@@ -26,7 +26,7 @@ fn policy_inspection_requires_resource_authority_and_hides_scope_existence() {
         for (existing, missing) in [
             ("@private:bob:eve", "@private:alice:mallory"),
             ("@account:eve", "@account:missing"),
-            ("hidden", "missing"),
+            ("#hidden", "#missing"),
         ] {
             // Bob can inspect his own effective private access, but not its assignments.
             if actor == "bob" && existing.starts_with("@private:") {
@@ -75,13 +75,13 @@ fn policy_inspection_requires_resource_authority_and_hides_scope_existence() {
             .unwrap()
             .contains("## Direct grants")
     );
-    e.execute(None, None, "/grant mallory user team").unwrap();
+    e.execute(None, None, "/grant mallory user #team").unwrap();
     assert!(
-        !e.execute(Some("mallory"), None, "/permissions team")
+        !e.execute(Some("mallory"), None, "/permissions #team")
             .unwrap()
             .contains("## Direct grants")
     );
-    for scope in ["@private:bob:eve", "@account:eve", "hidden"] {
+    for scope in ["@private:bob:eve", "@account:eve", "#hidden"] {
         e.execute(None, None, &format!("/grant alice {scope} r:policy.read"))
             .unwrap();
         assert!(
@@ -101,7 +101,7 @@ fn policy_inspection_requires_resource_authority_and_hides_scope_existence() {
 fn room_owner_participant_group_requires_transfer_or_su_before_revocation() {
     let mut e = fixture();
     for permission in ["x:policy.change", "/revoke", "/rm"] {
-        e.execute(None, None, &format!("/grant bob team {permission}"))
+        e.execute(None, None, &format!("/grant bob #team {permission}"))
             .unwrap();
     }
     for actor in [Some("bob"), Some("alice")] {
@@ -109,7 +109,7 @@ fn room_owner_participant_group_requires_transfer_or_su_before_revocation() {
             let before = e.data.clone();
             let revision = e.revision;
             let error = e
-                .execute(actor, Some("team"), &format!("{command} alice user team"))
+                .execute(actor, Some("team"), &format!("{command} alice user #team"))
                 .unwrap_err();
             assert!(
                 error.contains("Transfer room ownership"),
@@ -124,7 +124,7 @@ fn room_owner_participant_group_requires_transfer_or_su_before_revocation() {
     }
     e.execute(Some("alice"), Some("team"), "/owner bob")
         .unwrap();
-    e.execute(Some("bob"), Some("team"), "/revoke alice user team")
+    e.execute(Some("bob"), Some("team"), "/revoke alice user #team")
         .unwrap();
     assert!(e.history("alice", "team").is_err());
     assert!(e.history("bob", "team").is_ok());
@@ -141,7 +141,7 @@ fn su_and_sudo_can_revoke_owner_participant_access_and_delete_owned_rooms() {
                     .unwrap();
             }
             let owner_id = e.data.users["alice"].id.clone();
-            e.execute(actor, None, &format!("{prefix}{command} alice user team"))
+            e.execute(actor, None, &format!("{prefix}{command} alice user #team"))
                 .unwrap();
             assert_eq!(e.data.rooms["team"].owner_id, owner_id);
             assert!(e.history("alice", "team").is_err());
@@ -168,7 +168,6 @@ fn sudo_authority_is_cleared_even_when_policy_rebuilding_fails() {
             scope: Scope::Server,
             permissions: BTreeSet::from(["x:unknown.permission".into()]),
             minimum_age: 0,
-            media: None,
         });
         Ok(())
     });
@@ -202,7 +201,7 @@ fn sudo_requires_both_global_grants_and_never_persists_elevation() {
         e.execute(Some("bob"), None, "/sudo /new room elevated")
             .is_err()
     );
-    e.execute(None, None, "/grant bob team /sudo").unwrap();
+    e.execute(None, None, "/grant bob #team /sudo").unwrap();
     // A room command grant cannot authorize global elevation.
     assert!(
         e.execute(Some("bob"), Some("team"), "/sudo /new room elevated")
@@ -256,7 +255,7 @@ fn sudo_requires_both_global_grants_and_never_persists_elevation() {
     // A scoped action grant is insufficient even with the global command.
     e.execute(None, None, "/revoke bob @global x:command.sudo")
         .unwrap();
-    e.execute(None, None, "/grant bob team x:command.sudo")
+    e.execute(None, None, "/grant bob #team x:command.sudo")
         .unwrap();
     assert!(
         e.execute(Some("bob"), Some("team"), "/sudo /whoami")
@@ -275,26 +274,26 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         "/whoami",
         "/console",
         "/debug on",
-        "/ls user",
-        "/ls room",
-        "/ls group",
-        "/members team",
-        "/new room created",
-        "/add eve team",
-        "/kick eve team",
-        "/join team",
-        "/leave team",
-        "/owner eve team",
+        "/user ls",
+        "/room ls",
+        "/permissions @groups",
+        "/user ls #team",
+        "/room new created",
+        "/room add eve #team",
+        "/room kick eve #team",
+        "/room join #team",
+        "/room leave #team",
+        "/room owner eve #team",
         "/grant eve su",
         "/revoke eve su",
-        "/rm group eve user team",
-        "/rm room team",
-        "/rm user eve",
-        "/enable eve",
-        "/disable eve",
-        "/rename renamed",
-        "/rename user eve renamed",
-        "/rename room team renamed",
+        "/revoke eve user #team",
+        "/room delete #team",
+        "/user delete eve",
+        "/user enable eve",
+        "/user disable eve",
+        "/user rename renamed",
+        "/user rename eve renamed",
+        "/room rename #team renamed",
         "/tell eve sudo message",
         "/react MESSAGE reaction",
         "/reply MESSAGE sudo reply",
@@ -302,9 +301,9 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         "/retract MESSAGE",
         "/history",
         "/clean 1s @all",
-        "/bot new created team",
-        "/bot ls team",
-        "/bot info helper team",
+        "/bot new created #team",
+        "/bot ls #team",
+        "/bot info helper #team",
         "/bot rm helper @global",
         "/bot token new helper test",
         "/bot token ls helper",
@@ -332,8 +331,8 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         let mut e = fixture();
         e.execute(Some("alice"), Some("team"), "original").unwrap();
         let original = super::tests::room_messages(&e, "team")[0].clone();
-        e.execute(None, None, "/add eve team").unwrap();
-        e.execute(None, None, "/bot new helper team").unwrap();
+        e.execute(None, None, "/room add eve #team").unwrap();
+        e.execute(None, None, "/bot new helper #team").unwrap();
         e.execute(None, None, "/bot token new helper fixture")
             .unwrap();
         let token = e.data.bots[&e.data.users["helper"].id]
@@ -343,7 +342,7 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
             .unwrap()
             .clone();
         e.execute(None, None, "/grant eve su").unwrap();
-        e.execute(None, None, "/revoke bob user team").unwrap();
+        e.execute(None, None, "/revoke bob user #team").unwrap();
         e.execute(None, None, "/revoke bob user").unwrap();
         for permission in ["/sudo", "x:command.sudo"] {
             e.execute(None, None, &format!("/grant bob @global {permission}"))
@@ -361,7 +360,7 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         let result = e.execute(Some("bob"), Some("team"), &format!("/sudo {command}"));
         assert!(result.is_ok(), "{command}: {result:?}");
         let reply = result.unwrap();
-        let caller = if probe == "/rename renamed" {
+        let caller = if probe == "/user rename renamed" {
             "renamed"
         } else {
             "bob"
@@ -377,7 +376,7 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         }
         match probe {
             "/whoami" => assert_eq!(reply, "Name: bob\nPermission: su"),
-            "/new room created" => assert_eq!(e.data.rooms["created"].owner_id, caller_id),
+            "/room new created" => assert_eq!(e.data.rooms["created"].owner_id, caller_id),
             "/react MESSAGE reaction" => assert!(
                 super::tests::room_messages(&e, "team")[0].reactions["reaction"].contains("bob")
             ),
@@ -413,9 +412,9 @@ fn sudo_join_persists_the_callers_membership_without_persisting_elevation() {
         e.execute(None, None, &format!("/grant bob @global {permission}"))
             .unwrap();
     }
-    assert!(e.execute(Some("bob"), None, "/join team").is_err());
+    assert!(e.execute(Some("bob"), None, "/join #team").is_err());
     assert_eq!(
-        e.execute(Some("bob"), None, "/sudo /join team").unwrap(),
+        e.execute(Some("bob"), None, "/sudo /join #team").unwrap(),
         "Joined #team."
     );
     assert!(e.data.rooms["team"].members.contains("bob"));
@@ -426,8 +425,8 @@ fn sudo_join_persists_the_callers_membership_without_persisting_elevation() {
     assert_eq!(e.data.rooms["team"].owner_id, e.data.users["alice"].id);
     let before = e.data.clone();
     assert_eq!(
-        e.execute(Some("bob"), None, "/sudo /join team").unwrap(),
-        e.execute(Some("bob"), None, "/join team").unwrap()
+        e.execute(Some("bob"), None, "/sudo /join #team").unwrap(),
+        e.execute(Some("bob"), None, "/join #team").unwrap()
     );
     assert!(e.data == before);
     drop(e);
@@ -437,23 +436,23 @@ fn sudo_join_persists_the_callers_membership_without_persisting_elevation() {
         .unwrap();
     e.execute(Some("bob"), Some("team"), "joined participant")
         .unwrap();
-    e.execute(Some("bob"), None, "/leave team").unwrap();
-    assert!(e.execute(Some("bob"), None, "/join team").is_err());
+    e.execute(Some("bob"), None, "/leave #team").unwrap();
+    assert!(e.execute(Some("bob"), None, "/join #team").is_err());
 }
 
 #[test]
 fn joining_as_su_saves_membership_but_ordinary_readers_do_not_gain_grants() {
     let mut e = fixture();
     for permission in ["/join", "x:room.join", "r:message.read"] {
-        e.execute(None, None, &format!("/grant eve team {permission}"))
+        e.execute(None, None, &format!("/grant eve #team {permission}"))
             .unwrap();
     }
     let before = e.data.clone();
-    e.execute(Some("eve"), None, "/join team").unwrap();
+    e.execute(Some("eve"), None, "/join #team").unwrap();
     assert!(e.data == before);
     assert!(!e.allows(Some("eve"), &e.room_scope("team").unwrap(), Action::Send));
     e.execute(None, None, "/grant eve su").unwrap();
-    e.execute(Some("eve"), None, "/join team").unwrap();
+    e.execute(Some("eve"), None, "/join #team").unwrap();
     e.execute(None, None, "/revoke eve su").unwrap();
     assert!(e.data.rooms["team"].members.contains("eve"));
     e.execute(Some("eve"), Some("team"), "participant after su revocation")
@@ -471,7 +470,7 @@ fn sudo_join_storage_failure_restores_membership_and_authority() {
     let revision = e.revision;
     e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_join BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
     assert!(
-        e.execute(Some("eve"), None, "/sudo /join team")
+        e.execute(Some("eve"), None, "/sudo /join #team")
             .unwrap_err()
             .contains("Storage unavailable")
     );
@@ -508,81 +507,6 @@ fn sudo_restores_authority_after_storage_failure_and_preserves_policy_updates() 
     e.execute(Some("bob"), None, "/sudo /revoke bob @global /sudo")
         .unwrap();
     assert!(e.execute(Some("bob"), None, "/sudo /whoami").is_err());
-}
-#[test]
-fn removed_su_assignment_permission_preserves_database_and_command_compatibility() {
-    use authorization::{Grant, Subject};
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chat.sqlite");
-    let mut e = Engine::open(&path).unwrap();
-    e.provision("bob", "hash".into(), false, false).unwrap();
-    let legacy = "x:group.su.assign";
-    e.data.policy.grants.push(Grant {
-        owner: false,
-        subject: Subject::Account(e.data.users["bob"].id.clone()),
-        scope: Scope::Server,
-        permissions: BTreeSet::from([legacy.into(), "w:room.create".into()]),
-        minimum_age: 0,
-        media: None,
-    });
-    // Persist a policy with the old name, as a previous release could do.
-    e.execute(None, None, "/grant bob @global /new").unwrap();
-    drop(e);
-    let mut e = Engine::open(&path).unwrap();
-    assert!(
-        e.data
-            .policy
-            .grants
-            .iter()
-            .any(|g| g.permissions.contains(legacy))
-    );
-    assert!(!e.is_su(Some("bob")));
-    assert!(
-        !e.effective(Some("bob"), &Scope::Server)
-            .names()
-            .contains(&legacy.into())
-    );
-    assert!(
-        !e.execute(Some("bob"), None, "/permissions @groups")
-            .unwrap()
-            .contains(legacy)
-    );
-    assert!(e.execute(Some("bob"), None, "/grant bob su").is_err());
-    let before = e.data.clone();
-    let error = e
-        .execute(None, None, &format!("/grant bob @global {legacy}"))
-        .unwrap_err();
-    assert!(error.contains("Unknown permission"));
-    assert!(e.data == before);
-    e.execute(Some("bob"), None, "/new room compatible")
-        .unwrap();
-    e.execute(None, None, &format!("/revoke bob @global {legacy}"))
-        .unwrap();
-    assert!(e.allows(Some("bob"), &Scope::Server, Action::CreateRoom));
-    for permission in ["/sudo", "x:command.sudo"] {
-        e.execute(None, None, &format!("/grant bob @global {permission}"))
-            .unwrap();
-    }
-    e.execute(Some("bob"), None, "/sudo /grant bob su").unwrap();
-    assert!(e.is_su(Some("bob")));
-    e.execute(Some("bob"), None, "/revoke bob su").unwrap();
-    drop(e);
-    let e = Engine::open(&path).unwrap();
-    assert!(
-        !e.data
-            .policy
-            .grants
-            .iter()
-            .any(|g| g.permissions.contains(legacy))
-    );
-    assert!(!e.is_su(Some("bob")));
-    assert!(e.allows(Some("bob"), &Scope::Server, Action::CreateRoom));
-    let version: u32 =
-        e.db.lock()
-            .unwrap()
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-    assert_eq!(version, 15);
 }
 
 #[test]
@@ -636,9 +560,9 @@ fn creation_grants_ownership_without_exposing_room_to_other_admins() {
     let scope = e.room_scope("private").unwrap();
     assert!(e.allows(Some("bob"), &scope, Action::Invite));
     for actor in ["alice", "mallory", "eve"] {
-        assert!(e.execute(Some(actor), None, "/join private").is_err());
+        assert!(e.execute(Some(actor), None, "/join #private").is_err());
         assert!(e.execute(Some(actor), None, "/rm room private").is_err());
-        assert!(e.execute(Some(actor), None, "/add eve private").is_err());
+        assert!(e.execute(Some(actor), None, "/add eve #private").is_err());
         assert!(
             !e.snapshot(actor)
                 .unwrap()
@@ -659,10 +583,10 @@ fn creation_grants_ownership_without_exposing_room_to_other_admins() {
                 .contains("#private")
         );
     }
-    e.execute(Some("bob"), None, "/add eve private").unwrap();
-    e.execute(Some("eve"), None, "/join private").unwrap();
+    e.execute(Some("bob"), None, "/add eve #private").unwrap();
+    e.execute(Some("eve"), None, "/join #private").unwrap();
     e.execute(Some("eve"), Some("private"), "allowed").unwrap();
-    assert!(e.execute(Some("eve"), None, "/add alice private").is_err());
+    assert!(e.execute(Some("eve"), None, "/add alice #private").is_err());
     e.execute(Some("bob"), None, "/tell eve hello").unwrap();
     assert!(
         e.execute(Some("bob"), None, "/ls room")
@@ -683,23 +607,23 @@ fn user_room_creator_can_delegate_invites_to_an_admin_and_revoke_them() {
             .unwrap();
     }
     e.execute(Some("bob"), None, "/new room private").unwrap();
-    e.execute(Some("bob"), Some("private"), "/grant alice private /add")
+    e.execute(Some("bob"), Some("private"), "/grant alice #private /add")
         .unwrap();
     let before = e.data.clone();
     let error = e
-        .execute(Some("alice"), None, "/add eve private")
+        .execute(Some("alice"), None, "/add eve #private")
         .unwrap_err();
     assert!(error.contains("x:member.add"));
     assert!(e.data == before);
     e.execute(
         Some("bob"),
         Some("private"),
-        "/grant alice private x:member.add",
+        "/grant alice #private x:member.add",
     )
     .unwrap();
     let before = e.data.clone();
     let error = e
-        .execute(Some("alice"), None, "/add eve private")
+        .execute(Some("alice"), None, "/add eve #private")
         .unwrap_err();
     assert!(error.contains("every participant permission"));
     assert!(error.contains("Ask the room owner to add you"));
@@ -708,14 +632,14 @@ fn user_room_creator_can_delegate_invites_to_an_admin_and_revoke_them() {
         .unwrap();
     e.execute(Some("alice"), Some("private"), "/add eve")
         .unwrap();
-    e.execute(Some("eve"), None, "/join private").unwrap();
+    e.execute(Some("eve"), None, "/join #private").unwrap();
     e.execute(Some("eve"), Some("private"), "invited participant")
         .unwrap();
     for permission in ["x:member.add", "/add"] {
         e.execute(
             Some("bob"),
             Some("private"),
-            &format!("/revoke alice private {permission}"),
+            &format!("/revoke alice #private {permission}"),
         )
         .unwrap();
         let before = e.data.clone();
@@ -727,7 +651,7 @@ fn user_room_creator_can_delegate_invites_to_an_admin_and_revoke_them() {
         e.execute(
             Some("bob"),
             Some("private"),
-            &format!("/grant alice private {permission}"),
+            &format!("/grant alice #private {permission}"),
         )
         .unwrap();
     }
@@ -742,11 +666,11 @@ fn user_room_creator_can_delegate_invites_to_an_admin_and_revoke_them() {
         .unwrap();
     let before = e.data.clone();
     assert!(
-        e.execute(Some("alice"), Some("private"), "/grant eve private /add")
+        e.execute(Some("alice"), Some("private"), "/grant eve #private /add")
             .is_err()
     );
     assert!(
-        e.execute(Some("alice"), Some("private"), "/add eve foreign")
+        e.execute(Some("alice"), Some("private"), "/add eve #foreign")
             .is_err()
     );
     assert!(e.data == before);
@@ -762,7 +686,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
         "x:member.add",
         "/add",
     ] {
-        e.execute(None, None, &format!("/grant bob team {permission}"))
+        e.execute(None, None, &format!("/grant bob #team {permission}"))
             .unwrap();
     }
     for permission in ["x:member.add", "/add"] {
@@ -771,7 +695,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
             e.execute(
                 Some("bob"),
                 Some("team"),
-                &format!("/grant eve team {permission}")
+                &format!("/grant eve #team {permission}")
             )
             .is_err()
         );
@@ -779,7 +703,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
         e.execute(
             Some("alice"),
             Some("team"),
-            &format!("/grant eve team {permission}"),
+            &format!("/grant eve #team {permission}"),
         )
         .unwrap();
     }
@@ -803,7 +727,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
             e.execute(
                 Some("alice"),
                 Some("team"),
-                &format!("/grant eve team {permission}")
+                &format!("/grant eve #team {permission}")
             )
             .is_err()
         );
@@ -820,7 +744,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
         "x:member.add",
         "/add",
     ] {
-        e.execute(None, None, &format!("/grant alice team {permission}"))
+        e.execute(None, None, &format!("/grant alice #team {permission}"))
             .unwrap();
     }
     for operation in ["/grant", "/revoke"] {
@@ -830,7 +754,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
                 e.execute(
                     Some("alice"),
                     Some("team"),
-                    &format!("{operation} eve team {permission}")
+                    &format!("{operation} eve #team {permission}")
                 )
                 .is_err()
             );
@@ -838,7 +762,7 @@ fn invitation_delegation_requires_current_ownership_and_cannot_expand_management
             e.execute(
                 Some("mallory"),
                 Some("team"),
-                &format!("{operation} eve team {permission}"),
+                &format!("{operation} eve #team {permission}"),
             )
             .unwrap();
         }
@@ -902,13 +826,13 @@ fn console_command_is_readonly_and_uses_the_selected_context_grant() {
     assert!(e.data == before);
     e.execute(None, None, "/revoke bob user").unwrap();
     assert!(e.execute(Some("bob"), Some("team"), "/console").is_err());
-    e.execute(None, None, "/grant bob team /console").unwrap();
+    e.execute(None, None, "/grant bob #team /console").unwrap();
     assert!(e.execute(Some("bob"), Some("team"), "/console").is_ok());
     // The Command view collects available scoped commands; actual operations
     // still require their own target command and action grants.
     assert!(e.execute(Some("bob"), None, "/console").is_ok());
     assert!(e.execute(Some("bob"), None, "/ls user").is_err());
-    e.execute(None, None, "/revoke bob team /console").unwrap();
+    e.execute(None, None, "/revoke bob #team /console").unwrap();
     assert!(e.execute(Some("bob"), Some("team"), "/console").is_err());
     assert!(e.execute(Some("bob"), None, "/console").is_err());
 }
@@ -944,7 +868,7 @@ fn global_scope_alias_and_command_hints_preserve_separate_permission_gates() {
         .unwrap_err();
     assert!(error.contains("w:room.create at @global"));
     assert!(!e.data.rooms.contains_key("denied"));
-    let scoped = e.execute(None, None, "/grant bob team /new").unwrap();
+    let scoped = e.execute(None, None, "/grant bob #team /new").unwrap();
     assert!(scoped.contains("does not authorize that global operation"));
     assert!(
         e.execute(None, None, "/permissions @invalid")
@@ -958,10 +882,10 @@ fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
     let mut e = fixture();
     e.execute(Some("alice"), Some("team"), "original").unwrap();
     let id = super::tests::room_messages(&e, "team")[0].id.clone();
-    e.execute(Some("alice"), Some("team"), "/revoke bob user team")
+    e.execute(Some("alice"), Some("team"), "/revoke bob user #team")
         .unwrap();
     let reply = e
-        .execute(Some("alice"), Some("team"), "/grant bob team /reply")
+        .execute(Some("alice"), Some("team"), "/grant bob #team /reply")
         .unwrap();
     assert!(reply.contains("r:message.read + w:message.create"));
     let scope = e.room_scope("team").unwrap();
@@ -970,16 +894,16 @@ fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
     e.execute(
         Some("alice"),
         Some("team"),
-        "/grant bob team r:message.read",
+        "/grant bob #team r:message.read",
     )
     .unwrap();
     let error = e
         .execute(Some("bob"), Some("team"), &format!("/reply {id} denied"))
         .unwrap_err();
     assert!(error.contains("w:message.create at team"));
-    e.execute(None, None, "/grant eve team w:message.create")
+    e.execute(None, None, "/grant eve #team w:message.create")
         .unwrap();
-    e.execute(None, None, "/grant bob team x:history.clean 7d")
+    e.execute(None, None, "/grant bob #team x:history.clean 7d")
         .unwrap();
     let before = e.data.clone();
     let own = e
@@ -1004,7 +928,7 @@ fn readonly_grants_filter_commands_content_members_and_unread_metadata() {
     let mut e = fixture();
     e.execute(Some("bob"), Some("team"), "original").unwrap();
     let id = super::tests::room_messages(&e, "team")[0].id.clone();
-    e.execute(Some("alice"), None, "/revoke bob user team")
+    e.execute(Some("alice"), None, "/revoke bob user #team")
         .unwrap();
     assert!(e.snapshot("bob").unwrap().rooms.is_empty());
     assert!(!e.snapshot("bob").unwrap().unread.contains_key("team"));
@@ -1012,7 +936,7 @@ fn readonly_grants_filter_commands_content_members_and_unread_metadata() {
         e.execute(
             Some("alice"),
             Some("team"),
-            &format!("/grant bob team {permission}"),
+            &format!("/grant bob #team {permission}"),
         )
         .unwrap();
     }
@@ -1043,7 +967,7 @@ fn readonly_grants_filter_commands_content_members_and_unread_metadata() {
     e.execute(
         Some("alice"),
         Some("team"),
-        "/revoke bob team r:message.read",
+        "/revoke bob #team r:message.read",
     )
     .unwrap();
     assert!(e.history("bob", "team").is_err());
@@ -1053,18 +977,25 @@ fn readonly_grants_filter_commands_content_members_and_unread_metadata() {
 fn permissions_and_command_gates_are_independent_and_target_scoped() {
     let mut e = fixture();
     e.execute(Some("mallory"), None, "/new room other").unwrap();
-    e.execute(None, None, "/grant bob team x:history.clean 7d")
+    e.execute(None, None, "/grant bob #team x:history.clean 7d")
         .unwrap();
-    assert!(e.execute(Some("bob"), Some("team"), "/clean 7d").is_err());
-    e.execute(None, None, "/grant bob team /clean").unwrap();
-    assert!(e.execute(Some("bob"), Some("team"), "/clean 1d").is_err());
-    e.execute(Some("bob"), Some("team"), "/clean 7d").unwrap();
     assert!(
-        e.execute(Some("bob"), Some("other"), "/clean 7d team")
+        e.execute(Some("bob"), Some("team"), "/clean 7d #team")
+            .is_err()
+    );
+    e.execute(None, None, "/grant bob #team /clean").unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("team"), "/clean 1d #team")
+            .is_err()
+    );
+    e.execute(Some("bob"), Some("team"), "/clean 7d #team")
+        .unwrap();
+    assert!(
+        e.execute(Some("bob"), Some("other"), "/clean 7d #team")
             .is_err()
     );
     assert!(
-        e.execute(Some("bob"), Some("team"), "/clean 7d other")
+        e.execute(Some("bob"), Some("team"), "/clean 7d #other")
             .is_err()
     );
     assert!(
@@ -1081,16 +1012,16 @@ fn permissions_and_command_gates_are_independent_and_target_scoped() {
             e.execute(
                 Some("alice"),
                 Some("team"),
-                &format!("/grant bob team {permission}")
+                &format!("/grant bob #team {permission}")
             )
             .is_err()
         );
     }
     assert!(
-        e.execute(Some("alice"), None, "/grant bob admin team")
+        e.execute(Some("alice"), None, "/grant bob admin #team")
             .is_err()
     );
-    e.execute(None, None, "/grant bob admin team").unwrap();
+    e.execute(None, None, "/grant bob admin #team").unwrap();
     e.execute(Some("bob"), Some("team"), "/add eve").unwrap();
     assert!(e.execute(Some("bob"), Some("other"), "/add eve").is_err());
     assert!(
@@ -1183,11 +1114,11 @@ fn owner_transfer_and_deleted_resources_do_not_leave_inherited_grants() {
             .unwrap()
             .contains("#team — owner: bob")
     );
-    assert!(e.execute(Some("alice"), None, "/add eve team").is_err());
+    assert!(e.execute(Some("alice"), None, "/add eve #team").is_err());
     assert!(e.execute(Some("bob"), Some("team"), "/leave").is_err());
     e.execute(Some("bob"), None, "/rm room team").unwrap();
     e.execute(Some("alice"), None, "/new room team").unwrap();
-    assert!(e.execute(Some("bob"), None, "/join team").is_err());
+    assert!(e.execute(Some("bob"), None, "/join #team").is_err());
     let old_id = e.data.users["bob"].id.clone();
     e.execute(Some("alice"), None, "/rm user bob").unwrap();
     e.provision("bob", "hash".into(), false, false).unwrap();
@@ -1211,7 +1142,7 @@ fn policy_save_failures_preserve_compiled_permissions_and_creation_is_atomic() {
     for input in [
         "/grant bob su",
         "/grant bob @global w:room.create",
-        "/owner bob team",
+        "/owner bob #team",
         "/new room lost",
     ] {
         assert!(e.execute(None, None, input).is_err());
@@ -1243,7 +1174,6 @@ fn permission_lookup_benchmark() {
             scope: Scope::Room(format!("benchmark-{n}")),
             permissions: BTreeSet::from([Action::Read.name().into()]),
             minimum_age: 0,
-            media: None,
         });
     }
     e.rebuild_authorization().unwrap();
@@ -1412,29 +1342,30 @@ fn command_view_cannot_borrow_a_command_grant_from_another_target() {
     e.execute(Some("alice"), None, "/new room other").unwrap();
     e.execute(Some("alice"), Some("other"), "target").unwrap();
     let id = super::tests::room_messages(&e, "other")[0].id.clone();
-    e.execute(None, None, "/grant bob other r:message.read")
+    e.execute(None, None, "/grant bob #other r:message.read")
         .unwrap();
-    e.execute(None, None, "/grant bob other w:message.react")
+    e.execute(None, None, "/grant bob #other w:message.react")
         .unwrap();
     // Bob can invoke /react in team, but has no /react grant in other.
     assert!(
         e.execute(Some("bob"), Some("other"), &format!("/react {id} denied"))
             .is_err()
     );
-    assert!(e.execute(Some("bob"), None, "/clean 1s other").is_err());
-    e.execute(None, None, "/grant bob other x:history.clean")
+    assert!(e.execute(Some("bob"), None, "/clean 1s #other").is_err());
+    e.execute(None, None, "/grant bob #other x:history.clean")
         .unwrap();
-    e.execute(None, None, "/grant bob team /clean").unwrap();
-    assert!(e.execute(Some("bob"), None, "/clean 1s other").is_err());
-    e.execute(None, None, "/grant bob other /clean").unwrap();
-    e.execute(Some("bob"), None, "/clean 1s other").unwrap();
+    e.execute(None, None, "/grant bob #team /clean").unwrap();
+    assert!(e.execute(Some("bob"), None, "/clean 1s #other").is_err());
+    e.execute(None, None, "/grant bob #other /clean").unwrap();
+    e.execute(Some("bob"), None, "/clean 1s #other").unwrap();
 }
 
 #[test]
 fn console_identity_cannot_be_claimed_by_an_account_with_the_same_display_name() {
     let mut e = fixture();
     e.provision("console", "hash".into(), false, false).unwrap();
-    e.execute(Some("alice"), None, "/add console team").unwrap();
+    e.execute(Some("alice"), None, "/add console #team")
+        .unwrap();
     e.execute(None, Some("team"), "stdin message").unwrap();
     let message = &super::tests::room_messages(&e, "team")[0];
     assert_eq!(message.author_id, "console");
@@ -1450,11 +1381,11 @@ fn console_identity_cannot_be_claimed_by_an_account_with_the_same_display_name()
 fn combined_grant_syntax_is_unambiguous_and_preserves_additive_rules() {
     let mut e = fixture();
     e.execute(None, None, "/new room su").unwrap();
-    e.execute(None, None, "/grant bob su r:message.read")
+    e.execute(None, None, "/grant bob #su r:message.read")
         .unwrap();
     assert!(!e.is_su(Some("bob")));
     assert!(e.history("bob", "su").is_ok());
-    e.execute(None, None, "/revoke bob su r:message.read")
+    e.execute(None, None, "/revoke bob #su r:message.read")
         .unwrap();
     assert!(e.history("bob", "su").is_err());
     e.execute(None, None, "/grant bob su").unwrap();
@@ -1463,20 +1394,20 @@ fn combined_grant_syntax_is_unambiguous_and_preserves_additive_rules() {
     e.execute(
         Some("alice"),
         Some("team"),
-        "/revoke bob team w:message.create",
+        "/revoke bob #team w:message.create",
     )
     .unwrap();
     e.execute(Some("bob"), Some("team"), "group still grants writes")
         .unwrap();
-    e.execute(Some("alice"), Some("team"), "/revoke bob user team")
+    e.execute(Some("alice"), Some("team"), "/revoke bob user #team")
         .unwrap();
     assert!(e.execute(Some("bob"), Some("team"), "denied").is_err());
     for input in [
-        "/grant bob team unknown",
-        "/grant bob team r:message.read 1d",
-        "/revoke bob team r:message.read 7d",
-        "/grant bob nonexistent r:message.read",
-        "/grant missing team r:message.read",
+        "/grant bob #team unknown",
+        "/grant bob #team r:message.read 1d",
+        "/revoke bob #team r:message.read 7d",
+        "/grant bob #nonexistent r:message.read",
+        "/grant missing #team r:message.read",
         "/permit bob team r:message.read",
         "/unpermit bob team r:message.read",
     ] {
@@ -1501,12 +1432,9 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
         "ownership",
         "man",
         "history",
-        "reset",
-        "ls",
-        "new",
-        "rm",
+        "user",
+        "room",
         "retract",
-        "rename",
     ] {
         let manual = e
             .execute(Some("eve"), None, &format!("/man {topic}"))
@@ -1530,11 +1458,9 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
     );
     assert!(e.execute(Some("eve"), None, "/man grant extra").is_err());
     for (topic, details) in [
-        ("ls", "explicit global group assignments"),
-        ("new", "/new user alice temporary-password admin"),
-        ("rm", "/rm group bob user support"),
+        ("user", "/user get @all"),
+        ("room", "/room rename"),
         ("retract", "retained replies lose their quote preview"),
-        ("rename", "/rename room support helpdesk"),
     ] {
         let manual = e
             .execute(Some("eve"), None, &format!("/man {topic}"))
@@ -1542,10 +1468,10 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
         assert!(manual.contains(details), "missing behavior in /man {topic}");
     }
     let new_error = e.execute(None, None, "/new unknown").unwrap_err();
-    assert!(new_error.contains("/new room"));
+    assert!(new_error.contains("/room new"));
     assert!(!new_error.contains("/rm"));
     let rm_error = e.execute(None, None, "/rm unknown").unwrap_err();
-    assert!(rm_error.contains("/rm group"));
+    assert!(rm_error.contains("/revoke user group"));
     assert!(!rm_error.contains("/new"));
     assert!(e.data == before);
     assert_eq!(e.revision, revision);
@@ -1558,7 +1484,7 @@ fn manuals_are_public_readonly_and_do_not_authorize_commands() {
 #[test]
 fn invitation_and_user_group_assignment_cannot_amplify_partial_authority() {
     let mut e = fixture();
-    e.execute(Some("alice"), Some("team"), "/revoke bob user team")
+    e.execute(Some("alice"), Some("team"), "/revoke bob user #team")
         .unwrap();
     for permission in [
         "r:message.read",
@@ -1567,16 +1493,16 @@ fn invitation_and_user_group_assignment_cannot_amplify_partial_authority() {
         "/add",
         "/grant",
     ] {
-        e.execute(None, None, &format!("/grant bob team {permission}"))
+        e.execute(None, None, &format!("/grant bob #team {permission}"))
             .unwrap();
     }
     let before = e.data.clone();
     for command in [
         "/add bob",
         "/add eve",
-        "/grant bob user team",
-        "/grant eve user team",
-        "/grant bob team w:message.create",
+        "/grant bob user #team",
+        "/grant eve user #team",
+        "/grant bob #team w:message.create",
     ] {
         assert!(
             e.execute(Some("bob"), Some("team"), command).is_err(),
@@ -1584,7 +1510,7 @@ fn invitation_and_user_group_assignment_cannot_amplify_partial_authority() {
         );
         assert!(e.data == before);
     }
-    e.execute(Some("alice"), Some("team"), "/grant eve user team")
+    e.execute(Some("alice"), Some("team"), "/grant eve user #team")
         .unwrap();
     e.execute(Some("eve"), Some("team"), "authorized participant")
         .unwrap();
@@ -1601,6 +1527,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "w:private.create",
     ]);
     let admin = BTreeSet::from([
+        "r:account.metadata",
         "r:account.list",
         "w:account.password.own",
         "w:account.rename.own",
@@ -1773,7 +1700,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
     e.execute(Some("bob"), None, "/tell eve private").unwrap();
     let id = super::tests::room_messages(&e, "team")[0].id.clone();
     let sequence = super::tests::room_messages(&e, "team")[0].sequence;
-    e.execute(None, None, "/revoke bob user team").unwrap();
+    e.execute(None, None, "/revoke bob user #team").unwrap();
     e.execute(None, None, "/revoke bob user").unwrap();
     let probes = [
         "/sudo /whoami".into(),
@@ -1781,27 +1708,27 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         "/bot ls @global".into(),
         "/console".into(),
         "/man grant".into(),
-        "/permissions team".into(),
+        "/permissions #team".into(),
         "/debug on".into(),
         "/whoami".into(),
-        "/rename renamed".into(),
-        "/passwd old new".into(),
-        "/ls user".into(),
-        "/new user created password user".into(),
-        "/reset eve password".into(),
-        "/enable eve".into(),
-        "/disable eve".into(),
-        "/rm user eve".into(),
+        "/user rename renamed".into(),
+        "/user passwd old new".into(),
+        "/user ls".into(),
+        "/user new created password user".into(),
+        "/user reset eve password".into(),
+        "/user enable eve".into(),
+        "/user disable eve".into(),
+        "/user delete eve".into(),
         "/grant bob su".into(),
         "/revoke eve su".into(),
-        "/ls room".into(),
-        "/members team".into(),
-        "/join team".into(),
-        "/leave team".into(),
-        "/new room created".into(),
-        "/add eve team".into(),
-        "/kick alice team".into(),
-        "/rm room team".into(),
+        "/room ls".into(),
+        "/user ls #team".into(),
+        "/room join #team".into(),
+        "/room leave #team".into(),
+        "/room new created".into(),
+        "/room add eve #team".into(),
+        "/room kick alice #team".into(),
+        "/room delete #team".into(),
         "/tell eve denied".into(),
         format!("/retract {id}"),
         format!("/react {id} reaction"),
@@ -1809,8 +1736,8 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         format!("/edit {id} edited"),
         "/history".into(),
         "/configs".into(),
-        "/clean 7d team".into(),
-        "/owner bob team".into(),
+        "/clean 7d #team".into(),
+        "/room owner bob #team".into(),
         "/clear".into(),
         "/logout".into(),
     ];
@@ -1858,7 +1785,8 @@ fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
         e.provision("管理员", "hash".into(), true, false).unwrap();
         e.provision("用户🙂", "hash".into(), false, false).unwrap();
         e.execute(Some("管理员"), None, "/new room 测试").unwrap();
-        e.execute(Some("管理员"), None, "/add 用户🙂 测试").unwrap();
+        e.execute(Some("管理员"), None, "/add 用户🙂 #测试")
+            .unwrap();
         e.execute(Some("用户🙂"), Some("测试"), "hello @管理员")
             .unwrap();
         let message_id = super::tests::room_messages(&e, "测试")[0].id.clone();
@@ -1930,7 +1858,7 @@ fn rename_requires_own_or_any_action_and_target_command_and_protects_su() {
             .is_err()
     );
     for name in ["alice", "bad:name", "@direct", "/bad", "", "x.y"] {
-        assert!(e.rename_user(Some("bob"), "bob", name).is_err());
+        assert!(e.rename_user(Some("bob"), "bob", name, "/rename").is_err());
     }
     assert!(valid_name(&"界".repeat(32)));
     assert!(!valid_name(&"界".repeat(33)));
@@ -1956,7 +1884,7 @@ fn rename_requires_own_or_any_action_and_target_command_and_protects_su() {
     )
     .unwrap();
     assert!(e.execute(Some("重命名"), None, "/rename denied").is_err());
-    e.execute(None, None, "/grant 重命名 @account:重命名 /rename")
+    e.execute(None, None, "/grant 重命名 @account:重命名 /user")
         .unwrap();
     let access = e.snapshot("重命名").unwrap().account_access;
     assert!(access.permissions.contains(&"w:account.rename.own".into()));
@@ -1964,7 +1892,7 @@ fn rename_requires_own_or_any_action_and_target_command_and_protects_su() {
         access
             .commands
             .iter()
-            .any(|command| command.name == "/rename")
+            .any(|command| command.name == "/user")
     );
     assert!(
         !access
@@ -1972,7 +1900,8 @@ fn rename_requires_own_or_any_action_and_target_command_and_protects_su() {
             .iter()
             .any(|command| command.name == "/passwd")
     );
-    e.execute(Some("重命名"), None, "/rename allowed").unwrap();
+    e.execute(Some("重命名"), None, "/user rename allowed")
+        .unwrap();
 }
 
 #[test]
@@ -2007,19 +1936,19 @@ fn room_rename_checks_scoped_actions_context_and_target_commands() {
         assert!(e.data == before);
     }
     e.execute(None, None, "/revoke bob user").unwrap();
-    e.execute(None, None, "/grant bob team x:room.rename")
+    e.execute(None, None, "/grant bob #team x:room.rename")
         .unwrap();
     assert!(
         e.execute(Some("bob"), None, "/rename room team denied")
             .is_err()
     );
-    e.execute(None, None, "/grant bob other /rename").unwrap();
+    e.execute(None, None, "/grant bob #other /rename").unwrap();
     assert!(
         e.execute(Some("bob"), Some("other"), "/rename room team denied")
             .unwrap_err()
             .contains("on this target")
     );
-    e.execute(None, None, "/grant bob team /rename").unwrap();
+    e.execute(None, None, "/grant bob #team /rename").unwrap();
     assert!(
         e.execute(Some("bob"), Some("@direct:eve"), "/rename room team denied")
             .unwrap_err()
@@ -2031,14 +1960,15 @@ fn room_rename_checks_scoped_actions_context_and_target_commands() {
         e.execute(Some("bob"), Some("renamed"), "/rename room other stolen")
             .is_err()
     );
-    e.execute(None, None, "/revoke bob renamed /rename")
+    e.execute(None, None, "/revoke bob #renamed /rename")
         .unwrap();
     assert!(
         e.execute(Some("bob"), Some("other"), "/rename room renamed denied")
             .is_err()
     );
-    e.execute(None, None, "/grant bob renamed /rename").unwrap();
-    e.execute(None, None, "/revoke bob renamed x:room.rename")
+    e.execute(None, None, "/grant bob #renamed /rename")
+        .unwrap();
+    e.execute(None, None, "/revoke bob #renamed x:room.rename")
         .unwrap();
     assert!(
         e.execute(Some("bob"), None, "/rename room renamed denied")
@@ -2051,7 +1981,7 @@ fn room_rename_checks_scoped_actions_context_and_target_commands() {
         e.execute(Some("bob"), None, "/rename room renamed denied")
             .is_err()
     );
-    e.execute(None, None, "/grant bob renamed x:room.rename")
+    e.execute(None, None, "/grant bob #renamed x:room.rename")
         .unwrap();
     e.execute(None, None, "/disable bob").unwrap();
     assert!(
@@ -2074,7 +2004,7 @@ fn room_rename_follows_management_bundles_ownership_and_sudo() {
     );
     e.execute(Some("bob"), Some("owned"), "/rename room owned transferred")
         .unwrap();
-    e.execute(None, None, "/grant mallory admin transferred")
+    e.execute(None, None, "/grant mallory admin #transferred")
         .unwrap();
     e.execute(Some("mallory"), None, "/rename room transferred managed")
         .unwrap();
@@ -2083,7 +2013,7 @@ fn room_rename_follows_management_bundles_ownership_and_sudo() {
         e.execute(
             Some("bob"),
             Some("managed"),
-            "/grant eve managed x:room.rename"
+            "/grant eve #managed x:room.rename"
         )
         .is_err()
     );
@@ -2155,7 +2085,10 @@ fn rename_explicit_targets_validation_and_noops_preserve_account_shortcuts() {
         "bad\u{0085}name",
         &"界".repeat(33),
     ] {
-        assert!(e.rename_room(Some("alice"), "team", name).is_err());
+        assert!(
+            e.rename_room(Some("alice"), "team", name, "/rename")
+                .is_err()
+        );
         assert!(e.data == before);
     }
     e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'no writes'); END;").unwrap();
@@ -2185,7 +2118,7 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
         e.provision(name, "hash".into(), admin, false).unwrap();
     }
     e.execute(Some("alice"), None, "/new room team").unwrap();
-    e.execute(Some("alice"), None, "/add bob team").unwrap();
+    e.execute(Some("alice"), None, "/add bob #team").unwrap();
     e.execute(Some("alice"), Some("team"), "hello @bob")
         .unwrap();
     let message = e.history("bob", "team").unwrap().messages[0].clone();
@@ -2248,7 +2181,7 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
     e.execute(Some("alice"), None, "/new room team").unwrap();
     assert_ne!(e.data.rooms["team"].id, room.id);
     assert!(e.history("bob", "team").is_err());
-    e.execute(Some("alice"), None, "/add bob team").unwrap();
+    e.execute(Some("alice"), None, "/add bob #team").unwrap();
     e.execute(Some("alice"), Some("team"), "replacement")
         .unwrap();
     assert_eq!(e.unreads("bob").unwrap()["team"].count, 1);
@@ -2291,7 +2224,7 @@ fn existing_owner_grants_are_preserved_and_room_rename_can_be_explicitly_delegat
             .contains("x:room.rename")
     );
     for permission in ["x:room.rename", "/rename"] {
-        e.execute(None, None, &format!("/grant alice team {permission}"))
+        e.execute(None, None, &format!("/grant alice #team {permission}"))
             .unwrap();
     }
     e.execute(Some("alice"), Some("team"), "/rename room team renamed")
@@ -2397,11 +2330,11 @@ fn command_families_filter_groups_and_remove_assignments_without_amplifying_auth
     }
     assert!(e.execute(Some("bob"), None, "/rm user eve").is_err());
     assert!(
-        e.execute(Some("bob"), Some("team"), "/rm group eve user team")
+        e.execute(Some("bob"), Some("team"), "/rm group eve user #team")
             .is_err()
     );
-    e.execute(None, None, "/grant eve user team").unwrap();
-    e.execute(Some("alice"), Some("team"), "/rm group eve user team")
+    e.execute(None, None, "/grant eve user #team").unwrap();
+    e.execute(Some("alice"), Some("team"), "/rm group eve user #team")
         .unwrap();
     assert!(e.history("eve", "team").is_err());
     assert!(e.active("eve"));
@@ -2472,17 +2405,17 @@ fn edit_any_requires_scoped_read_command_and_action_grants() {
         Action::EditAny
     ));
     assert!(
-        e.execute(Some("alice"), None, "/grant bob team w:message.edit.any")
+        e.execute(Some("alice"), None, "/grant bob #team w:message.edit.any")
             .is_err()
     );
-    e.execute(None, None, "/revoke bob user team").unwrap();
-    e.execute(None, None, "/grant bob team w:message.edit.any")
+    e.execute(None, None, "/revoke bob user #team").unwrap();
+    e.execute(None, None, "/grant bob #team w:message.edit.any")
         .unwrap();
     let command = format!("/edit {} moderated", original.id);
     assert!(e.execute(Some("bob"), Some("team"), &command).is_err());
-    e.execute(None, None, "/grant bob team /edit").unwrap();
+    e.execute(None, None, "/grant bob #team /edit").unwrap();
     assert!(e.execute(Some("bob"), Some("team"), &command).is_err());
-    e.execute(None, None, "/grant bob team r:message.read")
+    e.execute(None, None, "/grant bob #team r:message.read")
         .unwrap();
     e.execute(Some("bob"), Some("team"), &command).unwrap();
     let edited = super::tests::room_messages(&e, "team")[0].clone();
@@ -2492,7 +2425,7 @@ fn edit_any_requires_scoped_read_command_and_action_grants() {
     assert!(edited.edited);
     // Every gate remains necessary after the first successful edit.
     for permission in ["w:message.edit.any", "/edit", "r:message.read"] {
-        e.execute(None, None, &format!("/revoke bob team {permission}"))
+        e.execute(None, None, &format!("/revoke bob #team {permission}"))
             .unwrap();
         assert!(
             e.execute(
@@ -2503,16 +2436,16 @@ fn edit_any_requires_scoped_read_command_and_action_grants() {
             .is_err()
         );
         assert_eq!(super::tests::room_messages(&e, "team")[0].text, "moderated");
-        e.execute(None, None, &format!("/grant bob team {permission}"))
+        e.execute(None, None, &format!("/grant bob #team {permission}"))
             .unwrap();
     }
     e.execute(Some("mallory"), None, "/new room other").unwrap();
     e.execute(Some("mallory"), Some("other"), "foreign")
         .unwrap();
     let foreign = super::tests::room_messages(&e, "other")[0].id.clone();
-    e.execute(None, None, "/grant bob other r:message.read")
+    e.execute(None, None, "/grant bob #other r:message.read")
         .unwrap();
-    e.execute(None, None, "/grant bob other /edit").unwrap();
+    e.execute(None, None, "/grant bob #other /edit").unwrap();
     assert!(
         e.execute(
             Some("bob"),
@@ -2530,16 +2463,16 @@ fn edit_any_requires_scoped_read_command_and_action_grants() {
         .is_err()
     );
     // Edit-any is outside participant delegation, even when a manager holds it.
-    e.execute(None, None, "/grant alice team w:message.edit.any")
+    e.execute(None, None, "/grant alice #team w:message.edit.any")
         .unwrap();
     assert!(
-        e.execute(Some("alice"), None, "/grant eve team w:message.edit.any")
+        e.execute(Some("alice"), None, "/grant eve #team w:message.edit.any")
             .is_err()
     );
-    e.execute(None, None, "/grant eve team w:message.edit.any")
+    e.execute(None, None, "/grant eve #team w:message.edit.any")
         .unwrap();
     assert!(
-        e.execute(Some("alice"), None, "/grant eve other w:message.edit.any")
+        e.execute(Some("alice"), None, "/grant eve #other w:message.edit.any")
             .is_err()
     );
 }

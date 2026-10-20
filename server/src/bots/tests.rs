@@ -450,7 +450,7 @@ async fn typed_errors_distinguish_permissions_missing_records_and_failed_storage
     .1;
     app.engine()
         .unwrap()
-        .execute(None, None, "/revoke helper support /reply")
+        .execute(None, None, "/revoke helper #support /reply")
         .unwrap();
     let denied = send(
         &app,
@@ -887,7 +887,7 @@ async fn unhealthy_unread_metadata_does_not_hide_healthy_bot_conversations() {
     let (app, token) = fixture();
     app.engine()
         .unwrap()
-        .execute(None, None, "/grant helper secret r:message.read")
+        .execute(None, None, "/grant helper #secret r:message.read")
         .unwrap();
     let id = conversation(&app);
     send(

@@ -50,7 +50,7 @@ test("one pending request ignores unrelated and duplicate acknowledgements", () 
 
 test("server rejection completes once and permits the next operation", () => {
   const f = fixture();
-  f.submit("/rm room protected");
+  f.submit("/room delete #protected");
   const ack = {
     kind: "error",
     id: f.frames[0].id,
@@ -67,7 +67,7 @@ for (const text of [
   "/react m1 🙂",
   "/edit m1 updated",
   "/retract m1",
-  "/passwd secret",
+  "/user passwd secret",
 ]) {
   test(`send failures release the shared lifecycle for ${text.split(" ")[0]}`, async () => {
     for (const failure of [new Error("send failed"), "unknown failure"]) {
@@ -97,7 +97,9 @@ test("disconnect completes output and account promises without resending", async
   assert.equal(f.results.length, 1);
   assert.match(f.results[0].ack.text, /Check history/);
   assert.equal(f.frames.length, 1);
-  const result = new Promise((resolve) => f.submit("/rename alice", resolve));
+  const result = new Promise((resolve) =>
+    f.submit("/user rename alice", resolve),
+  );
   const id = f.frames[1].id;
   f.lifecycle.disconnect();
   assert.equal((await result).kind, "error");
@@ -115,22 +117,22 @@ test("completion can start a new operation after pending is cleared", () => {
 });
 
 test("confirmation captures alias expansion, sudo target and originating view", () => {
-  const aliases = { "/drop": "/rm room" };
+  const aliases = { "/drop": "/room delete" };
   const context = {
-    text: expandAlias("/sudo /drop lobby", aliases),
-    draft: "/sudo /drop lobby",
+    text: expandAlias("/sudo /drop #lobby", aliases),
+    draft: "/sudo /drop #lobby",
     selected: "lobby",
     consoleView: false,
     peer: null,
     replyId: null,
   };
   const captured = captureSubmission(context);
-  context.text = "/rm room other";
+  context.text = "/room delete #other";
   context.selected = "other";
-  aliases["/drop"] = "/rm user";
+  aliases["/drop"] = "/user delete";
   assert.deepEqual(submissionFrame(captured), {
     room: "lobby",
-    text: "/sudo /rm room lobby",
+    text: "/sudo /room delete #lobby",
   });
   assert.equal(deletionKind(captured.text), "resource");
   assert.equal(deletionKind("/sudo /retract m1"), "message");
@@ -144,7 +146,7 @@ test("confirmation captures alias expansion, sudo target and originating view", 
     complete: () => {},
   });
   assert.equal(f.frames[0].room, "lobby");
-  assert.equal(f.frames[0].text, "/sudo /rm room lobby");
+  assert.equal(f.frames[0].text, "/sudo /room delete #lobby");
 });
 
 test("private history keeps current syntax and messages/replies retain Unicode", () => {

@@ -107,7 +107,17 @@ impl Engine {
         let mut db = self.db.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.savepoint().map_err(|e| e.to_string())?;
         let (bytes, pending, recent): (u64,u64,u64) = tx.query_row("SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END),0),COALESCE(SUM(deleted=0 AND published IS NULL),0),COALESCE(SUM(created>?2),0) FROM media WHERE uploader=?1", params![media.uploader,now().saturating_sub(60)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e| e.to_string())?;
-        if bytes.saturating_add(media.size) > self.media_config.user_quota {
+        let quota = self
+            .data
+            .users
+            .values()
+            .find(|u| u.id == media.uploader)
+            .and_then(|u| u.metadata.get("@global"))
+            .and_then(|m| m.get("media.user_quota"))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(self.media_config.user_quota)
+            .min(self.media_config.user_quota);
+        if bytes.saturating_add(media.size) > quota {
             return Err(
                 "Upload byte quota reached; remove attachments or wait for cleanup.".into(),
             );

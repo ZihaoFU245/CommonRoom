@@ -32,7 +32,7 @@ Groups are convenient bundles of grants:
   another su. The server's stdin console belongs to su.
 
 Creating a room makes you its owner, with participant and room-management grants.
-New rooms are invitation-only: `/join` opens a room you already have access to.
+New rooms are invitation-only: `/room join` opens a room you already have access to.
 The owner can invite people and transfer ownership.
 
 ### Common tasks
@@ -43,19 +43,19 @@ exist; in the web UI, your grants must authorize the same actions.
 Create a room and invite Bob with normal participant access:
 
 ```text
-/new room support
-/add bob support
+/room new support
+/room add bob #support
 ```
 
 The room owner can let Alice invite others into that room:
 
 ```text
-/add alice support
-/grant alice support x:member.add
-/grant alice support /add
+/room add alice #support
+/grant alice #support x:member.add
+/grant alice #support /room
 ```
 
-Alice can then run `/add bob support`. Both grants are needed, along with room
+Alice can then run `/room add bob #support`. Both grants are needed, along with room
 participant access. Her global user or admin group does not give room access.
 
 Give Alice the su group, or remove that assignment:
@@ -69,17 +69,17 @@ Make Bob read-only in `support` by replacing his room user bundle with individua
 grants. This lets him find and open the room and read its history:
 
 ```text
-/revoke bob user support
-/grant bob support r:room.discover
-/grant bob support x:room.join
-/grant bob support r:message.read
-/grant bob support /history
+/revoke bob user #support
+/grant bob #support r:room.discover
+/grant bob #support x:room.join
+/grant bob #support r:message.read
+/grant bob #support /history
 ```
 
 Grants **add together**. Revoking one grant does not remove access supplied by
 another grant or group. Other room or global grants may still let Bob write.
-`/permissions support` shows your effective access and, for authorized managers,
-the room's grant assignments. `/kick bob support` removes Bob's room membership
+`/permissions #support` shows your effective access and, for authorized managers,
+the room's grant assignments. `/room kick bob #support` removes Bob's room membership
 and scoped grants; global grants still apply.
 
 Use a room name to limit a grant to that room. `@global` applies globally;
@@ -99,14 +99,14 @@ To delegate one-command superuser execution, su grants both permissions:
 /grant bob @global x:command.sudo
 ```
 
-Bob can then run `/sudo /new room support` or another slash command. Temporary
+Bob can then run `/sudo /room new support` or another slash command. Temporary
 elevation retains Bob's identity and leaves his group assignments unchanged.
 Read `/man sudo` for details.
 
 Use `/console` to open the Command view, and select a conversation in the sidebar
-to return. `/ls room` lists rooms and their owners plus your own readable private
+to return. `/room ls` lists rooms and their owners plus your own readable private
 conversations; it excludes other people's private pairs, even for su.
-Use `/ls user` or `/ls @admin` to list accounts, `/new user NAME PASSWORD` to create one, and `/rm user NAME` or `/rm room NAME` for removal. Browser removals ask for confirmation; `/alias A B` saves a local command-prefix mapping. See [Commands](docs/commands.md) for syntax and [Security](docs/security.md) for permissions.
+Use `/user ls` to list the current room’s members (`/user ls @global` lists accounts), `/user new NAME PASSWORD` to create one, and `/user delete NAME` or `/room delete #NAME` for removal. Browser removals ask for confirmation; `/alias A B` saves a local command-prefix mapping. See [Commands](docs/commands.md) for syntax and [Security](docs/security.md) for permissions.
 
 ## External agents
 

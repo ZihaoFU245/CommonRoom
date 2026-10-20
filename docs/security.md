@@ -19,7 +19,7 @@ The three predefined groups are fixed grant bundles, not authorization bypasses:
 | Group and assignment | Grants |
 | --- | --- |
 | `user` at server scope | Account directory, own password and rename, private sends, general commands |
-| `admin` at server scope | User grants, room/account creation, enable/disable/rm room accounts, admin group assignment, config inspection |
+| `admin` at server scope | User grants, room/account creation, account enable/disable/delete, admin group assignment, config inspection |
 | `user` at room scope | Discover/read/join the room, member list, send/reply/react, upload media, retract own messages, corresponding commands |
 | `admin` at room scope | Room user grants plus room management and grant inspection |
 | `su` at server scope | Every action and command at every scope, including other users' private history and retraction |
@@ -50,7 +50,7 @@ permissions. Both `/sudo` and `x:command.sudo` must be granted at global scope:
 ```text
 /grant bob @global /sudo
 /grant bob @global x:command.sudo
-/sudo /new room support
+/sudo /room new support
 ```
 
 Only su can grant global permissions. User and admin groups do not include sudo;
@@ -70,7 +70,7 @@ rejected. Read `/man sudo` for examples and revocation syntax.
 ## Resources and ownership
 
 Creation requires both `w:room.create` at server scope and permission to invoke
-`/new` in the current context. Creating a room atomically creates its ID, creator
+`/room` in the current context. Creating a room atomically creates its ID, creator
 ownership, participant assignment and room-management grants. New rooms are
 invitation-only. There is no public self-admission mode.
 
@@ -87,8 +87,8 @@ can revoke that assignment without transferring ownership.
 Starting a new private pair requires `w:private.create`; sending to an existing
 pair requires that pair's `w:message.create` and the invoked command grant.
 
-`/join` opens an already authorized room for ordinary accounts without adding
-membership or grants. Su accounts and `/sudo /join room` callers can admit themselves;
+`/room join` opens an already authorized room for ordinary accounts without adding
+membership or grants. Su accounts and `/sudo /room join room` callers can admit themselves;
 this saves their membership and room user assignment, preserving access after sudo
 ends. Room names, message IDs and knowledge of a private-pair key are not access
 credentials. Explicit read grants also allow a room to appear in a user's list.
@@ -118,7 +118,7 @@ a group; `/grant user scope permission [minimum-age]` adds an individual grant.
 
 Grants are additive, without recursive groups. Normally `/revoke` removes direct
 grants without subtracting group permissions. Room uploads have one narrow
-exception: `/revoke user room w:media.upload` records a room restriction overriding
+exception: `/revoke user #room w:media.upload` records a room restriction overriding
 all upload grants there, except su authority. `/grant` restores that user's room
 uploads. Other actions retain their additive semantics.
 
@@ -130,7 +130,7 @@ all targets before mutating any. HTTP history and read tracking require resource
 read access independently of slash-command grants.
 
 `/console` opens the browser's Command view after checking its command grant in
-the selected context. It gives no additional access. `/ls room` lists only the
+the selected context. It gives no additional access. `/room ls` lists only the
 signed-in account's readable private pairs, even when su or explicit grants allow
 inspection of other pairs. Inspection grants still apply to those resources.
 
@@ -143,9 +143,9 @@ policy-read grants only permit inspection of global assignments. Read access
 alone permits viewing the caller's effective access without disclosing assignments.
 Missing and inaccessible explicit policy scopes return the same error.
 Room managers can delegate only participant actions and commands they themselves
-hold. `/add` and room user
+hold. `/room add` and room user
 group assignment require authority to delegate the complete participant bundle.
-Owners may additionally grant or revoke `x:member.add` and `/add` in their own
+Owners may additionally grant or revoke `x:member.add` and `/room add` in their own
 room, provided they hold those permissions. This lets room participants invite
 others without granting policy management or other room-management powers.
 Ownership is checked by the account and room's stable IDs. Assigning a scoped
@@ -156,12 +156,12 @@ Ownership is checked by the account and room's stable IDs. Assigning a scoped
 ```text
 /grant bob su
 /revoke bob su
-/grant bob admin support
-/revoke bob admin support
+/grant bob admin #support
+/revoke bob admin #support
 /grant bob @global w:room.create
-/grant bob @global /new
-/owner bob support
-/permissions support
+/grant bob @global /room
+/room owner bob #support
+/permissions #support
 /permissions @groups
 /permissions @audit
 ```
@@ -169,33 +169,33 @@ Ownership is checked by the account and room's stable IDs. Assigning a scoped
 The first two commands require `su`. Omitting the group from `/grant bob` or
 `/revoke bob` means `admin` at server scope, for compatibility. Room group
 assignments add membership; revoking an assignment removes its grants, while the
-membership label remains until `/kick` or `/leave`.
+membership label remains until `/room kick` or `/room leave`.
 
 Make an existing participant read-only by removing the room user assignment and
 adding the exact read and command grants:
 
 ```text
-/revoke bob user support
-/grant bob support r:message.read
-/grant bob support r:room.discover
-/grant bob support x:room.join
-/grant bob support /history
+/revoke bob user #support
+/grant bob #support r:message.read
+/grant bob #support r:room.discover
+/grant bob #support x:room.join
+/grant bob #support /history
 ```
 
 `/history` is allowed in that room; sending, replying, reacting and retracting are
-not. Add `r:member.list` and `/members` separately if membership should be visible.
-Remove direct read access with `/revoke bob support r:message.read`.
+not. Add `r:member.list` and `/user ls` separately if membership should be visible.
+Remove direct read access with `/revoke bob #support r:message.read`.
 
 A superuser can delegate cleanup without other management powers:
 
 ```text
-/grant bob support x:history.clean 7d
-/grant bob support /clean
+/grant bob #support x:history.clean 7d
+/grant bob #support /clean
 ```
 
 The minimum age is a typed constraint on cleanup only. Bob can delete messages
 older than seven days in `support`, but cannot use a shorter age or clean another
-room. `/permissions support` shows effective permissions, applicable assignments,
+room. `/permissions #support` shows effective permissions, applicable assignments,
 and scoped direct grants with constraints when the requester can inspect policy.
 `/permissions @groups` lists the predefined bundles. `@audit` is restricted to `su`.
 
@@ -205,7 +205,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-The current schema is v10. New empty databases initialize transactionally; validated v9 databases upgrade transactionally, and v10 databases reopen without migrations. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+The current schema is v16. New empty databases initialize transactionally; only HEAD v15 upgrades, and v16 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -223,18 +223,18 @@ the server database; this change is access control, not end-to-end encryption.
 Account rename preserves stable account and private conversation IDs and all scoped grants. Sessions, memberships, message display authors, reply authors, recipients, reactions, mention metadata, private keys and read cursors move to the new name atomically. Historical message text and audit records retain their original contents. Own rename is included in user/admin groups; any-account rename requires explicit delegation or su.
 
 Room rename requires the separate `x:room.rename` action on the room's stable
-scope and `/rename` in the invocation context and on the target. It is included
+scope and `/user rename` in the invocation context and on the target. It is included
 in the room management bundle and newly created/transferred owner grants.
 It gives no account rename authority. Renaming preserves all scoped grants and
 room identity; reusing the old name creates a distinct resource with no inherited
 access or read cursors. Existing explicit owner grants are not rewritten: su may
-delegate `x:room.rename` and `/rename` when absent.
+delegate `x:room.rename` and `/user rename` when absent.
 
 ## Bot connections
 
 Bots are ordinary accounts, without a bot/human flag. /bot lifecycle and credential management additionally require global admin or su membership (or stdin); room admin and a direct /bot grant alone are insufficient for those operations. Worker configuration uses mention commands and the worker's verified owner/admin policy. Legacy bot.config grants remain parseable for saved-policy compatibility but no longer expose remote configuration. The global admin bundle includes x:bot.credentials for account-wide credential management. Existing protected-su account checks apply even while targets are disabled.
 
-New room bots receive explicit direct grants rather than the user bundle: discover/read/member-list/join/send/react and /help, /man, /whoami, /members, /history, /join, /reply, /react. Settings, message retraction/cleanup, private creation and administrative commands are excluded. Explicit @global creation applies these grants globally and requires the creator to hold each corresponding permission/command there. Ordinary admins with only room access cannot delegate global content access.
+New room bots receive explicit direct grants rather than the user bundle: discover/read/member-list/join/send/react and /help, /man, /whoami, /user ls, /history, /room join, /reply, /react. Settings, message retraction/cleanup, private creation and administrative commands are excluded. Explicit @global creation applies these grants globally and requires the creator to hold each corresponding permission/command there. Ordinary admins with only room access cannot delegate global content access.
 
 Credential authentication resolves stable account ID to the current active username, then uses the same command execution, history/read checks, and snapshot filtering as browser sessions. Credentials cannot specify an author or bypass grants. Only hashes of 244-bit random secrets (two UUIDv4 values) are stored. Revocation is checked on subsequent actions and WebSocket updates/heartbeats; revocation broadcasts wake connected sockets. Already-delivered content cannot be recalled. Account-wide input throttling is shared across credentials and sockets. See [Bots](bots.md).
 
@@ -253,7 +253,7 @@ Bearer-authenticated reads retain their credential checks without requiring Orig
 ## Media grants
 
 Room user/admin groups include `w:media.upload` by default, separately from text
-send rights. A room owner can use `/revoke user room w:media.upload` to block that
+send rights. A room owner can use `/revoke user #room w:media.upload` to block that
 user's uploads and new media references while preserving text/read access. It
 overrides explicit/global upload grants in that room, except su authority, and
 persists across restarts, renames and group reassignments. `/grant` restores access.
@@ -266,3 +266,12 @@ actor's own media allowance. Allocation, completion and newly added message
 references recheck current media/read/send rights. Downloads require current read
 rights and an unexpired retained reference, independently of upload grants.
 See [Media uploads](media-uploads.md).
+
+
+User metadata writes are reserved for su (including stdin and authorized sudo).
+Global admins receive `r:account.metadata` only. Room policy management permits
+room-member metadata inspection, not changes; a direct `x:account.metadata`
+flag cannot bypass the su boundary. Metadata never changes command/action grants.
+Cleanup always names its target. Private cleanup requires both `/clean` and
+`x:history.clean` on that pair. Bulk operations authorize every target before
+counting/deleting. Preview uses the same checks and writes no state or audit.

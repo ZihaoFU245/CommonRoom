@@ -7,6 +7,8 @@ pub(crate) struct Media {
     pub uploader: String,
     pub conversation: String,
     pub filename: String,
+    #[serde(default)]
+    pub hints: BTreeMap<String, String>,
     pub size: u64,
     pub content_type: String,
     pub object_key: String,
@@ -91,40 +93,21 @@ impl Engine {
         if size == 0 || size > self.media_config.max_size {
             return Err("File exceeds the configured media size limit.".into());
         }
-        let id = self
-            .principal_id(Some(user))
-            .ok_or("Account unavailable.")?;
-        let limits = self.authorization.media.get(id);
-        let grants = [Scope::Server, scope.clone()]
-            .into_iter()
-            .flat_map(|s| limits.and_then(|m| m.get(&s)).into_iter().flatten());
-        let mut ages: Vec<i64> = grants
-            .filter(|g| size <= g.max_size.unwrap_or(self.media_config.max_size))
-            .map(|g| g.max_age.unwrap_or(self.media_config.max_age))
-            .collect();
-        let private_member = matches!(scope, Scope::Private(pair) if pair.split_once(':').is_some_and(|(a,b)| a==id || b==id))
-            && self
-                .authorization
-                .groups
-                .get(id)
-                .is_some_and(|groups| !groups.is_empty());
-        let room_member = self
-            .authorization
-            .media_defaults
-            .get(id)
-            .is_some_and(|scopes| scopes.contains(scope));
-        let implicit_default = (room_member || private_member)
-            && limits.and_then(|m| m.get(scope)).is_none_or(Vec::is_empty);
-        if implicit_default || self.is_su(Some(user)) {
-            ages.push(self.media_config.max_age);
+        let max_size = self
+            .metadata_value(user, scope, "media.max_size")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(self.media_config.max_size)
+            .min(self.media_config.max_size);
+        let age = self
+            .metadata_value(user, scope, "media.max_age")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(self.media_config.max_age);
+        if size > max_size
+            || required_age.is_some_and(|required| age != -1 && (required == -1 || required > age))
+        {
+            return Err("User metadata does not allow this media size or retention.".into());
         }
-        ages.into_iter()
-            .filter(|age| {
-                required_age
-                    .is_none_or(|required| *age == -1 || (required != -1 && required <= *age))
-            })
-            .max_by_key(|age| if *age == -1 { i64::MAX } else { *age })
-            .ok_or_else(|| "Media grant does not allow this size or retention.".into())
+        Ok(age)
     }
     fn media_conversation_scope(&self, id: &str) -> Result<Scope, String> {
         if self.data.rooms.values().any(|r| r.id == id) {
@@ -183,6 +166,7 @@ impl Engine {
         }
         Ok(max_age)
     }
+    #[cfg(test)]
     pub(crate) fn allocate_media(
         &self,
         user: &str,
@@ -190,8 +174,20 @@ impl Engine {
         filename: &str,
         size: u64,
     ) -> Result<Media, String> {
+        self.allocate_media_with_hints(user, conversation, filename, size, BTreeMap::new())
+    }
+    pub(crate) fn allocate_media_with_hints(
+        &self,
+        user: &str,
+        conversation: &str,
+        filename: &str,
+        size: u64,
+        hints: BTreeMap<String, String>,
+    ) -> Result<Media, String> {
+        crate::media::hint_headers(&hints)?;
         let max_age = self.validate_media_allocation(user, conversation, filename, size)?;
         let media = Media {
+            hints,
             id: uuid::Uuid::new_v4().to_string(),
             uploader: self
                 .data

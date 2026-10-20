@@ -136,32 +136,20 @@ export function redactCommand(text: string): string {
       alias[1] +
       redactCommand(alias[2].startsWith("/") ? alias[2] : `/${alias[2]}`)
     );
+  if (/^\/user\s+passwd(?:\s|$)/u.test(text))
+    return prefix + "/user passwd •••• ••••";
   if (/^\/passwd(?:\s|$)/.test(text)) return prefix + "/passwd •••• ••••";
   return (
-    prefix + text.replace(/^(\/(?:new\s+user|reset)\s+\S+\s+)\S+/, "$1••••")
+    prefix +
+    text.replace(
+      /^(\/(?:user\s+(?:new|reset)|new\s+user|reset)\s+\S+\s+)\S+/,
+      "$1••••",
+    )
   );
 }
 export function commandText(text: string) {
   return text.trim().replace(/^\/sudo\s+/u, "");
 }
-export function helpSections(text: string) {
-  const groups: {
-    title: string;
-    commands: { usage: string; description: string }[];
-  }[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    if (/^\[.+\]$/.test(line))
-      groups.push({ title: line.slice(1, -1), commands: [] });
-    else {
-      if (!groups.length) groups.push({ title: "Commands", commands: [] });
-      const [usage = "", description] = line.split(" — ");
-      groups.at(-1)?.commands.push({ usage, description: description || "" });
-    }
-  }
-  return groups;
-}
-
 export function suggestions(
   draft: string,
   commands: Command[],
@@ -171,6 +159,7 @@ export function suggestions(
     messages?: Message[];
     aliases?: string[];
     privateScopes?: string[];
+    privateTargets?: string[];
   } = {},
 ): Hint[] {
   if (!draft.startsWith("/") || draft.includes("\n")) return [];
@@ -184,9 +173,10 @@ export function suggestions(
     return commands
       .filter((c) => c.name.startsWith(name))
       .map((c) => ({
-        label: c.usage,
+        label: c.name,
         description: describe(c),
         value: c.name + (c.usage === c.name ? "" : " "),
+        advance: true,
       }));
   }
   const spec = commands.find((c) => c.name === name);
@@ -242,18 +232,76 @@ export function suggestions(
         }));
     }
     const granted = commands.find((command) => command.name === parts[3]);
-    if (position > 3 && granted)
-      return [
-        { label: granted.usage, description: describe(granted), value: null },
-      ];
+    if (position > 3 && granted) return [];
   }
   let values: string[] = [];
   const scopes = [
-    ...rooms,
+    ...rooms.map((room) => `#${room}`),
     "@global",
     ...users.map((user) => `@account:${user}`),
     ...(context.privateScopes || []),
   ];
+  if (name === "/user") {
+    const operation = parts[1];
+    if (position === 1)
+      values = [
+        "ls",
+        "get",
+        "set",
+        "rename",
+        "new",
+        "delete",
+        "disable",
+        "enable",
+        "passwd",
+        "reset",
+      ];
+    if (position === 2 && operation === "ls")
+      values = ["@global", ...rooms.map((r) => `#${r}`)];
+    if (
+      position === 2 &&
+      ["get", "set", "rename", "delete", "disable", "enable", "reset"].includes(
+        operation || "",
+      )
+    )
+      values = ["get", "set"].includes(operation || "")
+        ? ["@all", ...users]
+        : users;
+    if (position === 3 && ["get", "set"].includes(operation || ""))
+      values = ["media.max_size", "media.max_age", "media.user_quota"];
+    if (position === 3 && operation === "get") values.unshift("@all");
+    if (position === 3 && operation === "get")
+      values = [...values, "@global", ...rooms.map((r) => `#${r}`)];
+    if (
+      (position === 5 && operation === "set") ||
+      (position === 4 && operation === "get")
+    )
+      values = ["@global", ...rooms.map((r) => `#${r}`)];
+    if (position === 4 && operation === "new") values = ["user", "admin"];
+  }
+  if (name === "/room") {
+    if (position === 1)
+      values = [
+        "ls",
+        "new",
+        "delete",
+        "rename",
+        "join",
+        "leave",
+        "add",
+        "kick",
+        "owner",
+      ];
+    if (
+      position === 2 &&
+      ["delete", "rename", "join", "leave"].includes(parts[1] || "")
+    )
+      values = rooms.map((r) => `#${r}`);
+    if (position === 2 && ["add", "kick", "owner"].includes(parts[1] || ""))
+      values = users;
+    if (position === 3 && ["add", "kick", "owner"].includes(parts[1] || ""))
+      values = rooms.map((r) => `#${r}`);
+  }
   if (name === "/bot") {
     const operation = parts[1];
     if (position === 1) values = ["new", "ls", "info", "owner", "rm", "token"];
@@ -267,7 +315,7 @@ export function suggestions(
       (position === 2 && operation === "ls") ||
       (position === 3 && ["new", "info"].includes(operation || ""))
     )
-      values = [...rooms, "@global"];
+      values = [...rooms.map((room) => `#${room}`), "@global"];
     if (position === 3 && operation === "owner") values = users;
     if (position === 3 && operation === "rm") values = ["@global"];
   }
@@ -275,8 +323,6 @@ export function suggestions(
     values = ["on", "off"];
   if (name === "/permissions" && position === 1)
     values = [...scopes, "@groups", "@audit"];
-  if (name === "/owner" && position === 1) values = users;
-  if (name === "/owner" && position === 2) values = rooms;
   if (name === "/history" && position === 1)
     values = rooms.map((room) => `#${room}`);
   if (
@@ -294,50 +340,15 @@ export function suggestions(
     values = commands
       .filter((command) => !["/alias", "/sudo"].includes(command.name))
       .map((command) => command.name);
-  if (["/new", "/rm", "/ls"].includes(name) && position === 1)
-    values =
-      name === "/new"
-        ? ["room", "user"]
-        : name === "/rm"
-          ? ["room", "user", "group"]
-          : ["room", "user", "group", "@user", "@admin", "@su"];
-  if (name === "/new" && parts[1] === "user" && position === 4)
-    values = ["user", "admin"];
-  if (name === "/rm" && position === 2)
-    values = parts[1] === "room" ? rooms : users;
-  if (name === "/rm" && parts[1] === "group" && position === 3)
-    values = ["user", "admin", "su"];
-  if (name === "/rm" && parts[1] === "group" && position === 4) values = rooms;
-  if (
-    [
-      "/tell",
-      "/grant",
-      "/revoke",
-      "/add",
-      "/kick",
-      "/reset",
-      "/disable",
-      "/enable",
-    ].includes(name) &&
-    position === 1
-  )
-    values = users;
-  if (name === "/rename" && position === 1)
-    values = [...new Set(["room", "user", ...users])];
-  if (name === "/rename" && position === 2) {
-    if (parts[1] === "room") values = rooms;
-    if (parts[1] === "user") values = users;
-  }
-  if (["/join", "/leave", "/members"].includes(name) && position === 1)
-    values = rooms;
-  if (["/add", "/kick"].includes(name) && position === 2) values = rooms;
+  if (["/tell", "/grant", "/revoke"].includes(name) && position === 1)
+    values = ["/grant", "/revoke"].includes(name) ? ["@all", ...users] : users;
   if (["/grant", "/revoke"].includes(name) && position === 2)
     values = [
       ...new Set([
         "user",
         "admin",
         "su",
-        ...rooms,
+        ...rooms.map((room) => `#${room}`),
         "@global",
         ...users.map((user) => `@account:${user}`),
         ...(context.privateScopes || []),
@@ -348,7 +359,7 @@ export function suggestions(
     position === 3 &&
     ["user", "admin", "su"].includes(parts[2] ?? "")
   )
-    values = rooms;
+    values = rooms.map((room) => `#${room}`);
   if (name === "/man" && position === 1)
     values = [
       ...new Set([
@@ -363,16 +374,23 @@ export function suggestions(
       ]),
     ];
   if (name === "/clean" && position === 2)
-    values = [...rooms, "@private", "@all"];
+    values = [
+      ...rooms.map((room) => `#${room}`),
+      "@global",
+      "@private",
+      ...(context.privateTargets ?? context.privateScopes ?? []),
+    ];
+  if (name === "/clean" && position === 3) values = ["--dry-run"];
   if (values.length)
     return values
       .filter((value) => value.startsWith(prefix))
       .map((value) => ({
         label: value,
-        description: spec.requirements
-          ? `${spec.usage} · Requires: ${spec.requirements}`
-          : spec.usage,
+        description: describe(spec),
+        advance:
+          (position === 1 && ["/user", "/room", "/bot"].includes(name)) ||
+          (name === "/bot" && position === 2 && parts[1] === "token"),
         value: [...parts.slice(0, -1), value].join(" ") + " ",
       }));
-  return [{ label: spec.usage, description: describe(spec), value: null }];
+  return [];
 }

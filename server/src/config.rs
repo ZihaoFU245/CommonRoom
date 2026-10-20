@@ -36,15 +36,61 @@ impl Default for S3Config {
         }
     }
 }
+/// Byte counts accept binary k/m/g units and retain exact integer precision.
+pub(crate) fn parse_byte_size(value: &str) -> Result<u64, String> {
+    let (digits, scale) = match value.as_bytes().last().map(u8::to_ascii_lowercase) {
+        Some(b'k') => (&value[..value.len() - 1], 1024u64),
+        Some(b'm') => (&value[..value.len() - 1], 1024u64.pow(2)),
+        Some(b'g') => (&value[..value.len() - 1], 1024u64.pow(3)),
+        _ => (value, 1),
+    };
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return Err("Use a positive byte count or integer k/m/g units, e.g. 512k, 25m, 1g.".into());
+    }
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(scale))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| "Byte size is zero or too large.".into())
+}
+pub(crate) fn format_byte_size(value: u64) -> String {
+    for (suffix, scale) in [("g", 1024u64.pow(3)), ("m", 1024u64.pow(2)), ("k", 1024)] {
+        if value > 0 && value.is_multiple_of(scale) {
+            return format!("{}{suffix}", value / scale);
+        }
+    }
+    value.to_string()
+}
+mod byte_size {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::format_byte_size(*value))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Size {
+            Text(String),
+            Bytes(u64),
+        }
+        match Size::deserialize(deserializer)? {
+            Size::Text(value) => super::parse_byte_size(&value).map_err(D::Error::custom),
+            Size::Bytes(value) => Ok(value),
+        }
+    }
+}
 /// Admission and retention policy, independent of the S3 provider.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MediaConfig {
+    #[serde(with = "byte_size")]
     pub max_size: u64,
     pub max_age: i64,
     pub pending_ttl: u64,
     pub cleanup_interval: u64,
     pub cleanup_batch: usize,
+    #[serde(with = "byte_size")]
     pub user_quota: u64,
     pub pending_limit: u64,
     pub allocations_per_minute: u64,
@@ -377,5 +423,43 @@ mod media_config_tests {
         valid.media.validate().unwrap();
         let restored: Config = serde_json::from_str(&valid.display().unwrap()).unwrap();
         assert_eq!(restored.s3.unwrap().region, "auto");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod byte_size_tests {
+    use super::*;
+    #[test]
+    fn size_units_round_trip_without_precision_loss_and_config_uses_readable_values() {
+        for (value, bytes) in [
+            ("1g", 1073741824),
+            ("25m", 26214400),
+            ("512K", 524288),
+            ("513", 513),
+        ] {
+            assert_eq!(parse_byte_size(value).unwrap(), bytes);
+            assert_eq!(parse_byte_size(&format_byte_size(bytes)).unwrap(), bytes);
+        }
+        for value in [
+            "",
+            "-1",
+            "0",
+            "1.5g",
+            "1mb",
+            "1g\n",
+            "18446744073709551615g",
+        ] {
+            assert!(parse_byte_size(value).is_err(), "{value}");
+        }
+        let mut config = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(config["media"]["max_size"], "25m");
+        assert_eq!(config["media"]["user_quota"], "1g");
+        config["media"]["max_size"] = "512k".into();
+        config["media"]["user_quota"] = "1G".into();
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        assert_eq!(parsed.media.max_size, 524288);
+        assert_eq!(parsed.media.user_quota, 1073741824);
+        parsed.media.validate().unwrap();
     }
 }

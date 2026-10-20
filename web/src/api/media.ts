@@ -3,7 +3,9 @@ export interface UploadTicket {
   upload: {
     method: "PUT";
     url: string;
-    headers: { "Content-Type": "application/octet-stream" };
+    headers: Record<string, string> & {
+      "Content-Type": "application/octet-stream";
+    };
     expires_in: number;
   };
 }
@@ -34,6 +36,20 @@ export function isUploadTicket(value: unknown): value is UploadTicket {
     !Number.isSafeInteger(upload.expires_in) ||
     upload.expires_in <= 0 ||
     upload.expires_in > 604800
+  )
+    return false;
+  if (
+    Object.entries(upload.headers).some(
+      ([key, value]) =>
+        typeof value !== "string" ||
+        (key !== "Content-Type" &&
+          (!/^x-amz-meta-client-(filename|content-type|label|client)$/u.test(
+            key,
+          ) ||
+            value.length < 1 ||
+            value.length > 256 ||
+            /[^\x20-\x7e]/u.test(value))),
+    )
   )
     return false;
   try {
@@ -107,7 +123,8 @@ export function uploadFile(
     // URL expiry limits when PUT may start, not the transfer's duration.
     xhr.timeout = 15 * 60 * 1000;
     xhr.withCredentials = false;
-    xhr.setRequestHeader("Content-Type", ticket.upload.headers["Content-Type"]);
+    for (const [name, value] of Object.entries(ticket.upload.headers))
+      xhr.setRequestHeader(name, value);
     let previousPercent = -1;
     let previousTime = 0;
     xhr.upload.onprogress = (event) => {

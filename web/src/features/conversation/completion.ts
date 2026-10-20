@@ -6,6 +6,8 @@ export const permissionNames = [
   "r:message.metadata",
   "r:member.list",
   "r:account.list",
+  "r:account.metadata",
+  "x:account.metadata",
   "r:server.config",
   "r:policy.read",
   "w:message.create",

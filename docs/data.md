@@ -2,35 +2,22 @@
 
 ## Database compatibility
 
-Validated v9/v10/v11/v12/v13/v14 databases upgrade transactionally to v15. V9 first gains native
-command receipts. V11 adds a reverse index of author, recipient, reply-author and
-mention names, maintained by message insert/update/delete operations, plus a
-reaction-user index. Existing retained history is indexed once during migration.
-Failed migration rolls back all schema/version changes. Back up before upgrading;
-older binaries cannot open v15.
+Empty databases initialize as v16. Only the immediately preceding HEAD schema
+(v15) upgrades to v16; v16 reopens directly. Pre-HEAD schemas and unversioned
+existing databases are rejected before journal, schema or data changes. Their
+upgrade paths and fixtures have been removed.
 
-V12 moves the bounded audit log to append-only `audit_entries` records and adds a
-reply-target index. Migration copies embedded audit entries before removing them
-from the policy state row; retention prunes only records beyond the latest 1,000.
+The v15-to-v16 transaction moves typed media grant limits into the matching
+account's scoped metadata, removes media fields from policy grants, and records
+the new version. Multiple explicit limits retain the most restrictive explicit size and retention
+per account/scope. Group-subject limits expand to the currently assigned accounts.
+History, credentials, cursors and ordinary grants remain intact. Explicit command
+grants also gain the corresponding `/user` and `/room` family grants, subject to
+the same target action checks. Failed writes
+roll back metadata and version together. Older binaries cannot open v16.
 
-V13 adds media metadata and message references with cascading deletion.
-
-Empty databases initialize as v15. Existing v15 databases reopen without migration.
-History, message receipts, accounts, sessions and read cursors are preserved.
-
-The removed `x:group.su.assign` permission is accepted only in existing stored
-grants and supplies no authority. Those entries are preserved and can be removed
-with `/revoke user scope x:group.su.assign`; new grants of this name are rejected.
-Su group assignment still requires su authority, including authorized `/sudo`.
-That permission-catalog change itself requires no data rewrite.
-
-Schemas other than v9/v10/v11/v12/v13/v14/v15 and existing unversioned databases are rejected before
-changing journal settings, schema, state or version. Do not lower `user_version`
-manually on a working database.
-
-Back up the entire data folder with the server stopped. Stop any reference agent
-writing its checkpoint there too. Tests use isolated temporary data and never
-modify working `data/`.
+Back up the entire data folder and object store with the server stopped. Tests
+use isolated temporary data and never modify working `data/`.
 
 ## Move to another machine
 
@@ -59,7 +46,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v15 and upgrades v9/v10/v11/v12/v13/v14. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v16 and upgrades HEAD v15 only. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -68,7 +55,7 @@ On Unix, startup restricts the data directory to its owner (`0700`). This
 folder contains private messages and active session credentials; keep
 backups private as well.
 
-Account renames use the v11 reverse name index. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors. The index is backfilled by the v11 migration.
+Account renames use the reverse name index. Account state and renamed account/private read cursor keys commit in one transaction; failed writes preserve the original name and cursors.
 
 Room renames retain the existing metadata layout. Room metadata and every name-based read cursor move
 in one transaction. Stable room IDs keep history, ownership and scoped grants
@@ -92,7 +79,7 @@ a redundant row index; cursor cleanup also has a conversation index.
 
 The current schema includes message-ID, author/sequence, time, global sequence and conversation-ID indexes.
 
-Sends/replies insert one message, prune beyond the configured per-conversation retention, and update counter/revision atomically. A reaction changes membership rows and one revision. SQL range lookups use the conversation/sequence primary key. Cached pages are keyed by stable conversation identity, revision and range, so reaction/cleanup/rename changes cannot reuse stale content.
+Sends/replies insert one message, prune beyond the configured per-conversation retention, and update counter/revision atomically. A reaction changes membership rows and one revision. SQL range lookups use the conversation/sequence primary key. Cached pages are keyed by stable conversation identity, revision and range, so reaction/cleanup/user rename changes cannot reuse stale content.
 
 Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. One writer connection and four independent read-only connections use WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages are bounded to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting; SQLite page caches and response copies are additional memory.
 
@@ -142,7 +129,7 @@ private-command markers and native command intent/results; pending uncertain
 effects are retained. Keyed pending commands are resolved/retried within the
 receipt window; legacy unkeyed or expired effects require inspection.
 
-## Command retry receipts (v10)
+## Command retry receipts
 
 `bot_command_receipts` stores account ID, request key/digest, creation time and
 serialized command outcome. The command's nested storage savepoints and this
@@ -156,7 +143,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v15 and the minimal reference worker.
+independently of server SQLite schema v16 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -164,7 +151,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v15.
+keys; unsupported versions are rejected. This does not change server schema v16.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -214,7 +201,7 @@ command receipts still enclose the complete effect; rollback reloads authoritati
 metadata/cursors only after failure rather than pre-cloning them on every request.
 Expired sessions are filtered at startup and removed from disk during login.
 
-## Media objects (v13-v14)
+## Media objects
 
 `media` stores pending/ready object metadata and stable account/conversation IDs.
 `message_media` references `(conversation,sequence)` and cascades on message
@@ -223,20 +210,24 @@ failed writes roll back both. Media metadata stays in SQLite, bytes in a private
 S3-compatible bucket. Back up and restore **both** together when uploads are enabled.
 See [Media uploads](media-uploads.md) for lifecycle, cleanup and deployment.
 
-V14 adds indexed expiry, publication, deletion/tombstone and cleanup-attempt state.
-V13 upgrades transactionally; referenced legacy objects expire seven days after
-creation and retain their existing object keys. Unreferenced uploads use finite
-pending cleanup. Typed media constraints on grants are defaulted JSON fields;
-old grants retain their original meaning. See [Media uploads](media-uploads.md).
-
 Room media-upload restrictions are stored by stable account/room IDs in policy
 JSON's defaulted `media_revocations` map. Existing room user/admin assignments gain
 default uploads at policy compilation. Restrictions commit with audit/revision
 updates, survive renames and owner transfers, and are removed on account/room
 deletion. This additive JSON field requires no SQL schema change.
 
-V15 adds media cleanup partial/covering indexes, `staging_attempt`, and a
-reference-removal trigger. A v14 upgrade backfills orphan timestamps once inside
-the migration transaction; cleanup no longer scans every live object to find
-orphans. Existing media JSON remains compatible, but ready/expiry/deletion
-columns are authoritative when loading. Downgrading after migration is unsupported.
+Media cleanup uses partial/covering indexes, retry timestamps and a reference
+removal trigger. SQL ready/expiry/deletion columns are authoritative when loading.
+
+## Account metadata
+
+Each account entity stores `metadata`, a map from `@global` or stable room ID to
+a bounded string map. Rename keeps it on the same stable identity; room deletion
+removes that room's entries, and account deletion removes the complete map.
+Metadata updates save changed accounts and audit entries atomically. Values are
+never included in public snapshots. User media limits are independent of grants;
+`/user get` and `/user set` enforce current access on every selected account.
+
+Metadata mutation now requires su at execution time. Global admin group bundles
+provide only metadata read access; stored direct write flags cannot override the
+su check. No metadata rows or existing values are rewritten for this policy change.

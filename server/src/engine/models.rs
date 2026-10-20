@@ -6,6 +6,8 @@ pub struct Account {
     pub hash: String,
     pub id: String,
     pub disabled: bool,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, BTreeMap<String, String>>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {

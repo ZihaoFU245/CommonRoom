@@ -122,6 +122,7 @@ export function useCommandComposer({
                     )
                   : room?.messages || [],
                 aliases: Object.keys(aliases),
+                privateTargets: Object.keys(state.private_access),
                 privateScopes: Object.keys(state.private_access).map((view) =>
                   view.startsWith("@direct:")
                     ? `@private:${[state.username, view.slice(8)].sort().join(":")}`

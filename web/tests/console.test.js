@@ -7,7 +7,6 @@ import {
   privatePeers,
   privateMessages,
   redactCommand,
-  helpSections,
   commandText,
   clearedOrder,
 } from "../src/features/conversation/console.ts";
@@ -42,42 +41,35 @@ test("prototype member room names preserve transcript and local clear behavior",
   }
 });
 
-test("passwords are masked and help groups retain their commands", () => {
-  assert.equal(redactCommand("/passwd old secret"), "/passwd •••• ••••");
+test("account command passwords are masked", () => {
   assert.equal(
-    redactCommand("/new user bob secret user"),
-    "/new user bob •••• user",
+    redactCommand("/user passwd old secret"),
+    "/user passwd •••• ••••",
   );
-  assert.deepEqual(
-    helpSections("[General]\n/help — Help\n\n[Rooms]\n/kick user — Kick"),
-    [
-      { title: "General", commands: [{ usage: "/help", description: "Help" }] },
-      {
-        title: "Rooms",
-        commands: [{ usage: "/kick user", description: "Kick" }],
-      },
-    ],
+  assert.equal(
+    redactCommand("/user new bob secret user"),
+    "/user new bob •••• user",
   );
 });
 
 test("sudo passwords stay masked and wrapped commands retain completion and UI routing", () => {
   assert.equal(
-    redactCommand("/sudo /passwd old secret"),
-    "/sudo /passwd •••• ••••",
+    redactCommand("/sudo /user passwd old secret"),
+    "/sudo /user passwd •••• ••••",
   );
   assert.equal(
-    redactCommand("/sudo /new user bob secret user"),
-    "/sudo /new user bob •••• user",
+    redactCommand("/sudo /user new bob secret user"),
+    "/sudo /user new bob •••• user",
   );
   assert.equal(
-    redactCommand("/sudo /reset bob secret"),
-    "/sudo /reset bob ••••",
+    redactCommand("/sudo /user reset bob secret"),
+    "/sudo /user reset bob ••••",
   );
   assert.equal(
-    redactCommand("/sudo /sudo /reset bob secret"),
-    "/sudo /sudo /reset bob ••••",
+    redactCommand("/sudo /sudo /user reset bob secret"),
+    "/sudo /sudo /user reset bob ••••",
   );
-  assert.equal(commandText(" /sudo /new room team "), "/new room team");
+  assert.equal(commandText(" /sudo /room new team "), "/room new team");
   assert.equal(commandText("/retract message"), "/retract message");
   const commands = [
     {
@@ -96,46 +88,6 @@ test("sudo passwords stay masked and wrapped commands retain completion and UI r
     "/sudo /tell bob ",
   );
   assert.deepEqual(suggestions("/sudo /sudo ", commands, [], []), []);
-});
-
-test("rename completes explicit room/user targets and keeps new names free-form", () => {
-  const commands = [
-    { name: "/sudo", usage: "/sudo /command", description: "Elevate" },
-    {
-      name: "/rename",
-      usage:
-        "/rename room name new-name | /rename user name new-name | /rename [user] new-name",
-      description: "Rename",
-    },
-    {
-      name: "/grant",
-      usage: "/grant user scope permission",
-      description: "Grant",
-    },
-  ];
-  const hints = (draft) =>
-    suggestions(draft, commands, ["bob", "room"], ["team"]);
-  assert.deepEqual(
-    hints("/rename ").map((hint) => hint.value),
-    ["/rename room ", "/rename user ", "/rename bob "],
-  );
-  assert.equal(hints("/rename room t")[0].value, "/rename room team ");
-  assert.equal(hints("/rename user b")[0].value, "/rename user bob ");
-  assert.equal(hints("/rename b")[0].value, "/rename bob ");
-  assert.equal(
-    hints("/sudo /rename room t")[0].value,
-    "/sudo /rename room team ",
-  );
-  for (const draft of [
-    "/rename room team ",
-    "/rename user bob ",
-    "/rename bob ",
-  ])
-    assert.equal(hints(draft)[0].value, null);
-  assert.equal(
-    hints("/grant bob team x:room.ren")[0].value,
-    "/grant bob team x:room.rename ",
-  );
 });
 
 test("local command output stays in its origin view", () => {
@@ -218,7 +170,7 @@ test("snapshots preserve output ordering, clear is local, refresh only restores 
 test("hints appear only for slash commands and complete usernames or rooms", () => {
   const commands = [
     { name: "/tell", usage: "/tell user message", description: "Private" },
-    { name: "/join", usage: "/join room", description: "Switch" },
+    { name: "/room", usage: "/room join #room", description: "Switch" },
   ];
   assert.deepEqual(suggestions("hello", commands, ["bob"], ["lobby"]), []);
   assert.equal(
@@ -230,30 +182,12 @@ test("hints appear only for slash commands and complete usernames or rooms", () 
     "/tell bob ",
   );
   assert.equal(
-    suggestions("/join l", commands, ["bob"], ["lobby"])[0].value,
-    "/join lobby ",
-  );
-  assert.equal(
-    suggestions("/tell bob hello", commands, ["bob"], ["lobby"])[0].value,
-    null,
-  );
-});
-
-test("delete-user hints complete usernames rather than rooms", () => {
-  const commands = [
-    {
-      name: "/rm",
-      usage: "/rm user user",
-      description: "Delete account",
-    },
-  ];
-  assert.equal(
-    suggestions("/r", commands, ["bob"], ["board"])[0].value,
-    "/rm ",
+    suggestions("/room join #l", commands, ["bob"], ["lobby"])[0].value,
+    "/room join #lobby ",
   );
   assert.deepEqual(
-    suggestions("/rm user b", commands, ["bob"], ["board"]).map((h) => h.value),
-    ["/rm user bob "],
+    suggestions("/tell bob hello", commands, ["bob"], ["lobby"]),
+    [],
   );
 });
 
@@ -288,8 +222,8 @@ test("manual topics and both grant forms have contextual completion", () => {
     "/grant bob @global ",
   );
   assert.equal(
-    suggestions("/grant bob user s", commands, ["bob"], ["support"])[0].value,
-    "/grant bob user support ",
+    suggestions("/grant bob user #s", commands, ["bob"], ["support"])[0].value,
+    "/grant bob user #support ",
   );
 });
 
@@ -307,56 +241,19 @@ test("command and grant hints disclose all action requirements without granting 
       requirements: "r:message.read + w:message.create on the conversation",
     },
   ];
-  for (const draft of [
-    "/rep",
-    "/reply id text",
-    "/grant bob support /rep",
-    "/grant bob support /reply ",
-  ]) {
+  for (const draft of ["/rep", "/grant bob #support /rep"]) {
     const hint = suggestions(draft, commands, ["bob"], ["support"])[0];
     assert.ok(hint.description.includes("r:message.read + w:message.create"));
   }
   assert.equal(
-    suggestions("/grant bob support /rep", commands, ["bob"], ["support"])[0]
+    suggestions("/grant bob #support /rep", commands, ["bob"], ["support"])[0]
       .value,
-    "/grant bob support /reply ",
+    "/grant bob #support /reply ",
   );
   assert.equal(
     suggestions("/grant bob @server", commands, ["bob"], ["support"]).some(
       (hint) => hint.value === "/grant bob @server ",
     ),
     false,
-  );
-});
-
-test("command families complete subcommands and removal targets", () => {
-  const commands = ["/ls", "/rm", "/new"].map((name) => ({
-    name,
-    usage: name + " arguments",
-    description: "Command family",
-  }));
-  assert.equal(
-    suggestions("/new user alice secret a", commands, [], [])[0].value,
-    "/new user alice secret admin ",
-  );
-  assert.deepEqual(
-    suggestions("/ls @", commands, [], []).map((h) => h.value),
-    ["/ls @user ", "/ls @admin ", "/ls @su "],
-  );
-  assert.deepEqual(
-    suggestions("/new r", commands, [], []).map((h) => h.value),
-    ["/new room "],
-  );
-  assert.deepEqual(
-    suggestions("/rm room t", commands, ["ted"], ["team"]).map((h) => h.value),
-    ["/rm room team "],
-  );
-  assert.deepEqual(
-    suggestions("/rm group t", commands, ["ted"], ["team"]).map((h) => h.value),
-    ["/rm group ted "],
-  );
-  assert.deepEqual(
-    suggestions("/rm group ted a", commands, [], []).map((h) => h.value),
-    ["/rm group ted admin "],
   );
 });

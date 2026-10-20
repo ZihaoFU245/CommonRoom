@@ -71,7 +71,7 @@ fn media_retention_revocation_and_cleanup_claims() {
     let media = ready(&e, "alice", &room);
     e.execute(Some("alice"), Some("lobby"), &link(&media))
         .unwrap();
-    e.execute(Some("alice"), Some("lobby"), "/kick bob lobby")
+    e.execute(Some("alice"), Some("lobby"), "/kick bob #lobby")
         .unwrap();
     assert!(e.readable_media("bob", &media.id).is_err());
     e.set_limits(64, 64, 1).unwrap();
@@ -134,74 +134,30 @@ fn media_quota_and_failed_attachment_writes_are_atomic() {
 }
 
 #[test]
-fn media_v12_migration_restart_and_failed_ddl_rollback() {
-    for fail in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("chat.sqlite");
-        let e = Engine::open(&path).unwrap();
-        e.db.lock()
-            .unwrap()
-            .execute_batch("DROP TABLE message_media; DROP TABLE media; PRAGMA user_version=12;")
-            .unwrap();
-        if fail {
-            e.db.lock()
-                .unwrap()
-                .execute_batch("CREATE TABLE media_uploader(dummy);")
-                .unwrap();
-        }
-        drop(e);
-        if fail {
-            assert!(Engine::open(&path).is_err());
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                12
-            );
-            assert_eq!(
-                db.query_row::<u32, _, _>(
-                    "SELECT count(*) FROM sqlite_master WHERE name='media'",
-                    [],
-                    |r| r.get(0)
-                )
-                .unwrap(),
-                0
-            );
-        } else {
-            let mut e = Engine::open(&path).unwrap();
-            e.provision("alice", "hash".into(), true, false).unwrap();
-            e.execute(Some("alice"), None, "/new room room").unwrap();
-            e.execute(None, None, "/grant alice @global w:media.upload")
-                .unwrap();
-            let media = ready(&e, "alice", &e.data.rooms["room"].id);
-            e.execute(Some("alice"), Some("room"), &link(&media))
-                .unwrap();
-            drop(e);
-            let e = Engine::open(&path).unwrap();
-            assert!(e.readable_media("alice", &media.id).is_ok());
-        }
-    }
-}
-
-#[test]
-fn media_grants_override_room_defaults_and_are_rechecked() {
+fn media_metadata_overrides_defaults_and_is_rechecked() {
     let mut e = super::tests::engine();
     let room = e.data.rooms["lobby"].id.clone();
     assert!(e.allocate_media("bob", &room, "file", 8).is_ok());
-    e.execute(None, None, "/grant bob lobby w:media.upload 16 7d")
+    e.execute(None, None, "/user set bob media.max_age 7d #lobby")
+        .unwrap();
+    e.execute(None, None, "/user set bob media.max_size 16 #lobby")
         .unwrap();
     assert!(e.allocate_media("bob", &room, "file", 17).is_err());
     let media = ready(&e, "bob", &room);
     assert_eq!(media.max_age, 604800);
     assert!(media.final_key().starts_with("media/7d/"));
-    e.execute(None, None, "/revoke bob lobby w:media.upload")
+    e.execute(None, None, "/revoke bob #lobby w:media.upload")
         .unwrap();
     assert!(e.media_owner("bob", &media.id).is_err());
     assert!(
         e.execute(Some("bob"), Some("lobby"), &link(&media))
             .is_err()
     );
-    e.execute(None, None, "/grant bob lobby w:media.upload 8 -1")
+    e.execute(None, None, "/grant bob #lobby w:media.upload")
+        .unwrap();
+    e.execute(None, None, "/user set bob media.max_size 8 #lobby")
+        .unwrap();
+    e.execute(None, None, "/user set bob media.max_age -1 #lobby")
         .unwrap();
     let permanent = ready(&e, "bob", &room);
     assert_eq!(permanent.max_age, -1);
@@ -209,8 +165,10 @@ fn media_grants_override_room_defaults_and_are_rechecked() {
     e.execute(Some("bob"), Some("lobby"), &link(&permanent))
         .unwrap();
     assert_eq!(e.stored_media(&permanent.id).unwrap().expires, None);
-    // Additive grants may broaden access, but cannot mix size and age from different grants.
-    e.execute(None, None, "/grant bob lobby w:media.upload 32 1d")
+    // Updating retention also applies to attempts to reuse existing media.
+    e.execute(None, None, "/user set bob media.max_size 32 #lobby")
+        .unwrap();
+    e.execute(None, None, "/user set bob media.max_age 1d #lobby")
         .unwrap();
     assert!(
         e.media_allowance(
@@ -227,12 +185,12 @@ fn media_grants_override_room_defaults_and_are_rechecked() {
         e.execute(
             None,
             None,
-            "/grant bob lobby w:media.upload 999999999999 7d"
+            "/user set bob media.max_size 999999999999 #lobby"
         )
         .is_err()
     );
     assert!(
-        e.execute(None, None, "/grant bob lobby w:media.upload 8 0d")
+        e.execute(None, None, "/user set bob media.max_age 0d #lobby")
             .is_err()
     );
 }
@@ -329,80 +287,49 @@ fn media_can_be_the_first_private_message() {
 }
 
 #[test]
-fn v13_media_migration_is_atomic_and_preserves_legacy_keys() {
-    for fail in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.sqlite");
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("alice", "hash".into(), true, false).unwrap();
-        e.execute(Some("alice"), None, "/new room room").unwrap();
-        e.execute(None, None, "/grant alice @global w:media.upload")
-            .unwrap();
-        let room = e.data.rooms["room"].id.clone();
-        let media = ready(&e, "alice", &room);
-        e.execute(Some("alice"), Some("room"), &link(&media))
-            .unwrap();
-        e.db.lock().unwrap().execute_batch("DROP TRIGGER media_reference_removed;
-            DROP INDEX media_quota; DROP INDEX media_due_retry; DROP INDEX media_due_expiry;
-            DROP INDEX media_due_orphan; DROP INDEX media_staging_due; DROP INDEX media_tombstone;
-            ALTER TABLE media DROP COLUMN staging_attempt;
-            DROP INDEX IF EXISTS media_expiry;
-            ALTER TABLE media DROP COLUMN expires; ALTER TABLE media DROP COLUMN published;
-            ALTER TABLE media DROP COLUMN deleting; ALTER TABLE media DROP COLUMN deleted;
-            ALTER TABLE media DROP COLUMN cleanup_attempt;
-            UPDATE media SET json=json_remove(json,'$.max_age','$.expires','$.deleted','$.deleting');
-            PRAGMA user_version=13;").unwrap();
-        if fail {
-            e.db.lock()
-                .unwrap()
-                .execute_batch("CREATE TABLE media_expiry(dummy);")
-                .unwrap();
-        }
-        drop(e);
-        if fail {
-            assert!(Engine::open(&path).is_err());
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                13
-            );
-            assert!(db.prepare("SELECT expires FROM media").is_err());
-        } else {
-            let e = Engine::open(&path).unwrap();
-            let restored = e.readable_media("alice", &media.id).unwrap();
-            assert_eq!(restored.object_key, media.object_key);
-            assert_eq!(restored.expires, Some(restored.created + 604800));
-        }
-    }
-}
-
-#[test]
-fn media_delegation_cannot_expand_size_or_age() {
+fn room_managers_cannot_change_media_metadata_but_can_revoke_uploads() {
     let mut e = super::tests::engine();
-    e.execute(None, None, "/grant alice lobby w:media.upload 16 1d")
+    e.execute(None, None, "/user set alice media.max_size 16 #lobby")
         .unwrap();
-    for grant in [
-        "/grant bob lobby w:media.upload 32 1d",
-        "/grant bob lobby w:media.upload 16 7d",
-        "/grant bob lobby w:media.upload 16 -1",
+    e.execute(None, None, "/user set alice media.max_age 1d #lobby")
+        .unwrap();
+    e.execute(None, None, "/user set bob media.max_size 8 #lobby")
+        .unwrap();
+    e.execute(None, None, "/user set bob media.max_age 1d #lobby")
+        .unwrap();
+    for command in [
+        "/user set bob media.max_size 32 #lobby",
+        "/user set bob media.max_age 7d #lobby",
+        "/user set bob media.max_age -1 #lobby",
+        "/user set bob media.max_age @unset #lobby",
+        "/user set bob media.max_size @unset #lobby",
     ] {
-        assert!(e.execute(Some("alice"), Some("lobby"), grant).is_err());
+        assert!(e.execute(Some("alice"), Some("lobby"), command).is_err());
     }
+    assert!(
+        e.execute(
+            Some("alice"),
+            Some("lobby"),
+            "/user set bob media.max_size 16 #lobby"
+        )
+        .is_err()
+    );
     e.execute(
-        Some("alice"),
+        None,
         Some("lobby"),
-        "/grant bob lobby w:media.upload 8 1d",
+        "/user set bob media.max_size 16 #lobby",
     )
     .unwrap();
     e.execute(
         Some("alice"),
         Some("lobby"),
-        "/revoke bob lobby w:media.upload",
+        "/revoke bob #lobby w:media.upload",
     )
     .unwrap();
-    let id = e.data.rooms["lobby"].id.clone();
-    assert!(e.allocate_media("bob", &id, "file", 8).is_err());
+    assert!(
+        e.allocate_media("bob", &e.data.rooms["lobby"].id, "file", 8)
+            .is_err()
+    );
 }
 
 #[test]
@@ -418,7 +345,7 @@ fn room_upload_defaults_can_be_revoked_without_removing_text_or_read_access() {
         .unwrap();
     let pending = ready(&e, "bob", &room);
     e.execute(Some("alice"), None, "/new room other").unwrap();
-    e.execute(Some("alice"), Some("other"), "/add bob other")
+    e.execute(Some("alice"), Some("other"), "/add bob #other")
         .unwrap();
     e.execute(None, None, "/grant bob @global w:media.upload")
         .unwrap();
@@ -426,7 +353,7 @@ fn room_upload_defaults_can_be_revoked_without_removing_text_or_read_access() {
     e.execute(
         Some("alice"),
         Some("lobby"),
-        "/revoke bob lobby w:media.upload",
+        "/revoke bob #lobby w:media.upload",
     )
     .unwrap();
     assert!(e.data.policy.revision > revision);
@@ -456,21 +383,21 @@ fn room_upload_defaults_can_be_revoked_without_removing_text_or_read_access() {
         e.allocate_media("bob", &e.data.rooms["other"].id, "file", 8)
             .is_ok()
     );
-    e.execute(Some("alice"), Some("lobby"), "/grant bob user lobby")
+    e.execute(Some("alice"), Some("lobby"), "/grant bob user #lobby")
         .unwrap();
     assert!(e.allocate_media("bob", &room, "file", 8).is_err());
     assert!(
         e.execute(
             Some("eve"),
             Some("lobby"),
-            "/grant bob lobby w:media.upload"
+            "/grant bob #lobby w:media.upload"
         )
         .is_err()
     );
     e.execute(
         Some("alice"),
         Some("lobby"),
-        "/grant bob lobby w:media.upload",
+        "/grant bob #lobby w:media.upload",
     )
     .unwrap();
     assert!(e.allocate_media("bob", &room, "file", 8).is_ok());
@@ -491,7 +418,7 @@ fn room_media_restrictions_survive_restart_rename_and_owner_transfer() {
     e.execute(
         Some("alice"),
         Some("room"),
-        "/revoke bob room w:media.upload",
+        "/revoke bob #room w:media.upload",
     )
     .unwrap();
     drop(e);
@@ -501,20 +428,20 @@ fn room_media_restrictions_survive_restart_rename_and_owner_transfer() {
     e.execute(Some("alice"), None, "/rename room room renamed")
         .unwrap();
     assert!(e.allocate_media("bobby", &room, "file", 8).is_err());
-    e.execute(Some("alice"), Some("renamed"), "/owner eve renamed")
+    e.execute(Some("alice"), Some("renamed"), "/owner eve #renamed")
         .unwrap();
     assert!(e.allocate_media("bobby", &room, "file", 8).is_err());
     e.execute(
         Some("eve"),
         Some("renamed"),
-        "/grant bobby renamed w:media.upload",
+        "/grant bobby #renamed w:media.upload",
     )
     .unwrap();
     assert!(e.allocate_media("bobby", &room, "file", 8).is_ok());
     e.execute(
         Some("eve"),
         Some("renamed"),
-        "/revoke bobby renamed w:media.upload",
+        "/revoke bobby #renamed w:media.upload",
     )
     .unwrap();
     e.execute(None, None, "/rm user bobby").unwrap();
@@ -526,7 +453,7 @@ fn room_media_restrictions_survive_restart_rename_and_owner_transfer() {
     e.execute(
         Some("eve"),
         Some("renamed"),
-        "/revoke bobby renamed w:media.upload",
+        "/revoke bobby #renamed w:media.upload",
     )
     .unwrap();
     e.execute(Some("eve"), None, "/rm room renamed").unwrap();
@@ -542,16 +469,16 @@ fn failed_room_media_revocation_and_restore_leave_compiled_authority_unchanged()
             e.execute(
                 Some("alice"),
                 Some("lobby"),
-                "/revoke bob lobby w:media.upload",
+                "/revoke bob #lobby w:media.upload",
             )
             .unwrap();
         }
         let before = e.data.clone();
         e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_media_policy BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         let command = if blocked {
-            "/grant bob lobby w:media.upload"
+            "/grant bob #lobby w:media.upload"
         } else {
-            "/revoke bob lobby w:media.upload"
+            "/revoke bob #lobby w:media.upload"
         };
         assert!(e.execute(Some("alice"), Some("lobby"), command).is_err());
         assert!(e.data == before);
@@ -560,53 +487,6 @@ fn failed_room_media_revocation_and_restore_leave_compiled_authority_unchanged()
             .unwrap()
             .execute_batch("DROP TRIGGER fail_media_policy;")
             .unwrap();
-    }
-}
-
-#[test]
-fn v14_media_upgrade_is_atomic_and_installs_cleanup_indexes() {
-    for fail in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.sqlite");
-        let e = Engine::open(&path).unwrap();
-        e.db.lock()
-            .unwrap()
-            .execute_batch(
-                "DROP TRIGGER media_reference_removed;
-            DROP INDEX media_quota; DROP INDEX media_due_retry; DROP INDEX media_due_expiry;
-            DROP INDEX media_due_orphan; DROP INDEX media_staging_due; DROP INDEX media_tombstone;
-            ALTER TABLE media DROP COLUMN staging_attempt; PRAGMA user_version=14;",
-            )
-            .unwrap();
-        if fail {
-            e.db.lock()
-                .unwrap()
-                .execute_batch("CREATE TABLE media_quota(dummy);")
-                .unwrap();
-        }
-        drop(e);
-        if fail {
-            assert!(Engine::open(&path).is_err());
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                14
-            );
-            assert!(db.prepare("SELECT staging_attempt FROM media").is_err());
-        } else {
-            let e = Engine::open(&path).unwrap();
-            let db = e.db.lock().unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                15
-            );
-            let quota: String = db.query_row("EXPLAIN QUERY PLAN SELECT SUM(size),SUM(deleted=0 AND published IS NULL),SUM(created>0) FROM media WHERE uploader='user'", [], |row| row.get(3)).unwrap();
-            assert!(quota.contains("COVERING INDEX media_quota"), "{quota}");
-            let expiry: String = db.query_row("EXPLAIN QUERY PLAN SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=1 ORDER BY expires,created LIMIT 32",[],|row|row.get(3)).unwrap();
-            assert!(expiry.contains("media_due_expiry"), "{expiry}");
-        }
     }
 }
 

@@ -40,7 +40,7 @@ async fn native_commands_follow_bot_grants_and_recheck_scope_and_revocation() {
         .unwrap();
     let (status, catalogue) = request(&app, Some(&token), "GET", &endpoint, json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(catalogue["commands"].as_array().unwrap().iter().any(|command| command["name"] == "/new" && command["subcommands"][0]["name"] == "room"));
+    assert!(catalogue["commands"].as_array().unwrap().iter().any(|command| command["name"] == "/room" && command["subcommands"][1]["name"] == "new"));
     let (status, result) = request(
         &app,
         Some(&token),
@@ -123,7 +123,7 @@ async fn source_context_supplies_verified_roles_and_owner_without_leaking_policy
         engine
             .provision("bob", "hash".into(), false, false)
             .unwrap();
-        engine.execute(None, None, "/add bob support").unwrap();
+        engine.execute(None, None, "/add bob #support").unwrap();
         engine.execute(None, None, "/bot owner helper bob").unwrap();
         engine
             .execute(

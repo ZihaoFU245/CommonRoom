@@ -20,6 +20,8 @@ actions! {
     Read => "r:message.read",
     Metadata => "r:message.metadata",
     Members => "r:member.list",
+    AccountMetadataRead => "r:account.metadata",
+    AccountMetadataWrite => "x:account.metadata",
     Directory => "r:account.list",
     Config => "r:server.config",
     PolicyRead => "r:policy.read",
@@ -106,13 +108,6 @@ pub struct Grant {
     pub scope: Scope,
     pub permissions: BTreeSet<String>,
     pub minimum_age: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media: Option<MediaAllowance>,
-}
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MediaAllowance {
-    pub max_size: Option<u64>,
-    pub max_age: Option<i64>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Audit {
@@ -167,6 +162,8 @@ impl Rights {
     }
 }
 const COMMANDS: &[&str] = &[
+    "/user",
+    "/room",
     "/help",
     "/whoami",
     "/rename",
@@ -248,7 +245,7 @@ fn member_rights() -> Rights {
             Action::RetractOwn,
         ],
         &[
-            "/members", "/history", "/react", "/edit", "/retract", "/reply",
+            "/user", "/room", "/members", "/history", "/react", "/edit", "/retract", "/reply",
         ],
     )
 }
@@ -268,6 +265,8 @@ fn manager_rights() -> Rights {
             Action::Transfer,
         ],
         &[
+            "/user",
+            "/room",
             "/add",
             "/kick",
             "/rm",
@@ -303,6 +302,8 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             Action::Direct,
         ],
         &[
+            "/user",
+            "/room",
             "/help",
             "/man",
             "/whoami",
@@ -322,6 +323,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
         r.add(rights(
             &[
                 Action::CreateRoom,
+                Action::AccountMetadataRead,
                 Action::CreateAccount,
                 Action::Disable,
                 Action::Enable,
@@ -380,9 +382,7 @@ pub(super) struct CompiledPolicy {
     pub(super) revision: u64,
     scopes: HashMap<String, HashMap<Scope, Rights>>,
     pub(super) groups: HashMap<String, BTreeSet<Group>>,
-    pub(super) media_defaults: HashMap<String, BTreeSet<Scope>>,
     pub(super) media_revocations: BTreeMap<String, BTreeSet<String>>,
-    pub(super) media: HashMap<String, HashMap<Scope, Vec<MediaAllowance>>>,
     conditional: HashMap<String, HashMap<Scope, Vec<(Rights, u64)>>>,
 }
 impl CompiledPolicy {
@@ -393,13 +393,6 @@ impl CompiledPolicy {
             ..Self::default()
         };
         for a in &data.policy.assignments {
-            if matches!(a.scope, Scope::Room(_)) && matches!(a.group, Group::User | Group::Admin) {
-                result
-                    .media_defaults
-                    .entry(a.account_id.clone())
-                    .or_default()
-                    .insert(a.scope.clone());
-            }
             if a.group == Group::Su && a.scope != Scope::Server {
                 return Err("su assignments must have global scope.".into());
             }
@@ -419,25 +412,8 @@ impl CompiledPolicy {
             }
         }
         for grant in &data.policy.grants {
-            if let Some(limits) = &grant.media
-                && (!grant.permissions.contains(Action::MediaUpload.name())
-                    || grant.minimum_age != 0
-                    || limits
-                        .max_size
-                        .is_some_and(|n| n == 0 || n > 5 * 1024 * 1024 * 1024)
-                    || limits
-                        .max_age
-                        .is_some_and(|n| n != -1 && !(1..=315360000).contains(&n)))
-            {
-                return Err("Invalid media grant constraints.".into());
-            }
             let mut mask = Rights::default();
             for p in &grant.permissions {
-                // Previously advertised but never enforced. Preserve old
-                // databases without accepting new grants of this name.
-                if p == "x:group.su.assign" {
-                    continue;
-                }
                 mask.insert(p)?;
             }
             let ids: Vec<_> = match &grant.subject {
@@ -450,15 +426,6 @@ impl CompiledPolicy {
                     .collect(),
             };
             for id in ids {
-                if mask.has(Action::MediaUpload) && grant.minimum_age == 0 {
-                    result
-                        .media
-                        .entry(id.clone())
-                        .or_default()
-                        .entry(grant.scope.clone())
-                        .or_default()
-                        .push(grant.media.clone().unwrap_or_default());
-                }
                 if grant.minimum_age == 0 {
                     result
                         .scopes

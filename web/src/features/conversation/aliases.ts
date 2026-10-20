@@ -1,6 +1,7 @@
 import { markdownCommand } from "../preferences/markdown.ts";
 import type { Command } from "../../api/protocol.ts";
 import { redactCommand } from "./console.ts";
+import { inlineCode } from "./manual.ts";
 
 export type Aliases = Record<string, string>;
 const aliasCommand: Command = {
@@ -32,50 +33,54 @@ export function browserCommands(
 
 export function aliasHelp(aliases: Aliases): string {
   return [
-    `[Browser]\n${markdownCommand.usage} — ${markdownCommand.description}`,
-    `${aliasCommand.usage} — ${aliasCommand.description}`,
+    `## Browser\n\n- \`${markdownCommand.usage}\` — ${markdownCommand.description}`,
+    `- \`${aliasCommand.usage}\` — ${aliasCommand.description}`,
     ...Object.entries(aliases).map(
-      ([name, target]) => `${name} — Alias for ${redactCommand(target)}`,
+      ([name, target]) =>
+        `- ${inlineCode(name)} — Alias for ${inlineCode(redactCommand(target))}`,
     ),
   ].join("\n");
 }
 
 export const aliasManual = `# /alias
 
-Map one command prefix in this browser. The server receives the expanded command.
+- Map one command prefix in this browser.
+- The server receives the expanded command.
 
 ## Usage
 
-\`\`\`
+\`\`\`text
 /alias A B
 \`\`\`
 
-A is a command name; B is a command with optional subcommands or arguments.
-Leading slashes are optional. Repeating A replaces its mapping.
+- A is a command name
+- B is a command with optional subcommands or arguments.
+- Leading slashes are optional.
+- Repeating A replaces its mapping.
 
 ## Examples
 
-\`\`\`
-/alias rooms ls room
+\`\`\`text
+/alias rooms room ls
 /rooms
-/alias drop rm room
-/drop support
-/sudo /drop support
+/alias drop room delete
+/drop #support
+/sudo /drop #support
 \`\`\`
 
-The last two examples expand to /rm room support and /sudo /rm room support.
-Expansion happens once and preserves following arguments. Aliases can replace
-existing command names; /alias, /sudo and /markdown cannot be remapped.
+- The last two examples expand to /room delete #support and /sudo /room delete #support.
+- Expansion happens once and preserves following arguments.
+- Aliases can replace existing command names; /alias, /sudo and /markdown cannot be remapped.
 
 ## Storage and permissions
 
-Mappings survive refresh and are shared by accounts in this browser profile.
-They stay in browser localStorage; clearing this site's storage removes them.
-Do not include passwords in mappings: their stored values are plain text.
-Aliases do not grant permissions. The expanded command uses the same server
-checks and removal/retract confirmations as a directly typed command.
-Use /help to see saved mappings, or Settings → Alias to add, edit, or remove them.
-This command is available in the web app only.`;
+- Mappings survive refresh and are shared by accounts in this browser profile.
+- They stay in browser localStorage; clearing this site's storage removes them.
+- Do not include passwords in mappings: their stored values are plain text.
+- Aliases do not grant permissions.
+- The expanded command uses the same server checks and removal/retract confirmations as a directly typed command.
+- Use /help to see saved mappings, or Settings → Alias to add, edit, or remove them.
+- This command is available in the web app only.`;
 
 const commandName = /^\/[^\s/]+$/u;
 function validAlias(a: string, b: unknown): b is string {
@@ -101,7 +106,7 @@ export function loadAliases(): Aliases {
 export function saveAlias(aliases: Aliases, input: string): Aliases {
   const match = input.match(/^\/alias\s+(\S+)\s+(.+)$/u);
   if (!match?.[1] || !match[2])
-    throw new Error("Usage: /alias A B (for example /alias rooms /ls room)");
+    throw new Error("Usage: /alias A B (for example /alias rooms /room ls)");
   return setAlias(aliases, match[1], match[2]);
 }
 export function setAlias(

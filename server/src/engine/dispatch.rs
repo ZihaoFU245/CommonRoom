@@ -21,6 +21,7 @@ pub fn sudo_command(input: &str) -> Result<Option<&str>, String> {
 
 pub(super) struct CommandContext<'a> {
     pub(super) actor: Option<&'a str>,
+    pub(super) command: &'a str,
     pub(super) room: Option<&'a str>,
     pub(super) input: &'a str,
     pub(super) parts: &'a [&'a str],
@@ -36,11 +37,22 @@ impl Engine {
         view: Option<&str>,
         input: &str,
     ) -> Option<Result<String, String>> {
-        let parts: Vec<_> = input.split_whitespace().collect();
+        let command = input.split_whitespace().next().unwrap_or("");
+        if let Err(error) = commands::validate_room_arguments(input) {
+            return Some(Err(error));
+        }
+        let routed = commands::route(input);
+        let parts: Vec<_> = routed.split_whitespace().collect();
+        if parts.first() == Some(&"/clean") && parts.last() != Some(&"--dry-run") {
+            return None;
+        }
         if !matches!(
             parts.first().copied(),
             Some(
-                "/permissions"
+                "/user"
+                    | "/clean"
+                    | "/room"
+                    | "/permissions"
                     | "/debug"
                     | "/help"
                     | "/man"
@@ -53,6 +65,14 @@ impl Engine {
         ) {
             return None;
         }
+        if matches!(command, "/user" | "/room")
+            && !matches!(
+                parts.as_slice(),
+                ["/user", "ls" | "get", ..] | ["/room", "ls"]
+            )
+        {
+            return None;
+        }
         Some((|| {
             if input.chars().count() > 4100 {
                 return Err("Enter a message of up to 4000 characters or a command.".into());
@@ -60,8 +80,9 @@ impl Engine {
             if actor.is_some_and(|name| !self.active(name)) {
                 return Err("Account unavailable.".into());
             }
-            self.require_command(actor, view, parts[0])?;
+            self.require_command(actor, view, command)?;
             let context = CommandContext {
+                command,
                 actor,
                 room: view.filter(|v| !v.starts_with('@')),
                 input,
@@ -71,7 +92,11 @@ impl Engine {
                 markdown: false,
                 author: actor.unwrap_or("console"),
             };
-            if parts[0] == "/permissions" {
+            if command == "/clean" {
+                self.preview_cleanup(&context)
+            } else if matches!(command, "/user" | "/room") {
+                self.query_objects(&context)
+            } else if parts[0] == "/permissions" {
                 self.apply_permissions(&context)
             } else {
                 self.apply_queries(&context)
@@ -184,15 +209,20 @@ impl Engine {
                 engine.execute_inner(actor, room, command, markdown)
             });
         }
-        let parts: Vec<_> = input.split_whitespace().collect();
+        let command = input.split_whitespace().next().unwrap_or("");
+        commands::validate_room_arguments(input)?;
+        let routed = commands::route(input);
+        let parts: Vec<_> = routed.split_whitespace().collect();
         self.load_command_message(actor, room, &parts)?;
         if parts.first() == Some(&"/bot") {
             return self.bot_command(actor, room, &parts);
         }
         if parts.first() == Some(&"/rename") {
-            self.require_command(actor, room, "/rename")?;
+            self.require_command(actor, room, command)?;
             let (name, new_name) = match parts.as_slice() {
-                [_, "room", name, new_name] => return self.rename_room(actor, name, new_name),
+                [_, "room", name, new_name] => {
+                    return self.rename_room(actor, name, new_name, command);
+                }
                 [_, "user", name, new_name] => (*name, *new_name),
                 [_, new_name] => (
                     actor.ok_or_else(|| format!("Usage: {}", commands::RENAME_USAGE))?,
@@ -201,14 +231,14 @@ impl Engine {
                 [_, name, new_name] => (*name, *new_name),
                 _ => return Err(format!("Usage: {}", commands::RENAME_USAGE)),
             };
-            return self.rename_user(actor, name, new_name);
+            return self.rename_user(actor, name, new_name, command);
         }
         if parts.first() == Some(&"/rm") && parts.get(1) == Some(&"user") {
-            require_len(&parts, 3, "/rm user name")?;
-            self.require_command(actor, room, "/rm")?;
+            require_len(&parts, 3, "/user delete who")?;
+            self.require_command(actor, room, command)?;
             let scope =
                 self.account_target(actor, parts[2], authorization::Action::DeleteAccount)?;
-            self.require_target_command(actor, &scope, "/rm")?;
+            self.require_target_command(actor, &scope, command)?;
             return self.delete_user(actor, parts[2]);
         }
         if matches!(
@@ -230,6 +260,9 @@ impl Engine {
         if let Some(change) = self.message_change(actor, room, &parts, input) {
             let result = self.apply(actor, room, input, markdown);
             return self.finish_message_change(change, result, None, std::convert::identity);
+        }
+        if parts.first() == Some(&"/clean") && parts.last() == Some(&"--dry-run") {
+            return self.apply(actor, room, input, markdown);
         }
         if matches!(parts.first().copied(), Some("/retract" | "/clean")) {
             let revision = self.revision;
@@ -310,11 +343,13 @@ impl Engine {
             return Err("Account unavailable.".into());
         }
         let author = actor.unwrap_or("console");
-        let parts: Vec<&str> = input.split_whitespace().collect();
+        let command = input.split_whitespace().next().unwrap_or("");
+        let routed = commands::route(input);
+        let parts: Vec<&str> = routed.split_whitespace().collect();
         if !input.starts_with('/') {
             return self.apply_text(actor, room, input, markdown);
         }
-        self.require_command(actor, room, parts[0])?;
+        self.require_command(actor, room, command)?;
         let view = room;
         let scope = self.command_scope(actor, room)?;
         let room = room.filter(|name| !name.starts_with('@'));
@@ -343,6 +378,7 @@ impl Engine {
             &parts
         };
         let context = CommandContext {
+            command,
             actor,
             room,
             input,
@@ -353,6 +389,7 @@ impl Engine {
             view,
         };
         match parts[0] {
+            "/user" | "/room" => self.apply_objects(&context),
             "/enable" | "/disable" => self.apply_accounts(&context),
             "/grant" | "/revoke" | "/permissions" => self.apply_policy(&context),
             "/rm" if subcommand == Some("group") => self.apply_policy(&context),

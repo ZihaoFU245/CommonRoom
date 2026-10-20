@@ -349,7 +349,7 @@ test(
       assert.ok(port);
       const base = `http://127.0.0.1:${port}/commonroom/`;
       server.stdin?.write(
-        "/new user alice alice-long-password admin\n/new user bob bob-long-password user\n/new room support\n/add alice support\n/add bob support\n/bot new helper support\n/bot token new helper worker\n",
+        "/new user alice alice-long-password admin\n/new user bob bob-long-password user\n/new room support\n/add alice #support\n/add bob #support\n/bot new helper #support\n/bot token new helper worker\n",
       );
       await until(() => /bot_[a-f0-9]{64}/u.test(logs), "bot credential");
       const token = logs.match(/bot_[a-f0-9]{64}/u)?.[0];

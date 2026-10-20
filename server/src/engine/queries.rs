@@ -580,7 +580,7 @@ impl Engine {
                 if !["user", "@user", "@admin", "@su"].contains(&parts[1]) {
                     return Err(format!("Usage: {}", commands::LS_USAGE));
                 }
-                self.require_target_command(actor, &Scope::Server, parts[0])?;
+                self.require_target_command(actor, &Scope::Server, context.command)?;
                 self.require(actor, &Scope::Server, Action::Directory)?;
                 Ok(format!(
                     "Users:\n{}",
@@ -635,7 +635,7 @@ impl Engine {
                 }
                 let name = parts
                     .get(1)
-                    .copied()
+                    .map(|v| v.trim_start_matches('#'))
                     .or(room)
                     .ok_or("Select or specify a room.")?;
                 let target = self.data.rooms.get(name).ok_or("Room not found.")?;
@@ -692,7 +692,7 @@ impl Engine {
                 } else {
                     Scope::Room(id.clone())
                 };
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 let page = self.history_store.page(&id, revision, range, view)?;
                 let text = page
                     .messages

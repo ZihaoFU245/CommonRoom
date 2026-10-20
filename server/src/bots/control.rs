@@ -21,7 +21,9 @@ use serde_json::{Value, json};
 fn supported_command(name: &str) -> bool {
     matches!(
         name,
-        "/help"
+        "/user"
+            | "/room"
+            | "/help"
             | "/man"
             | "/whoami"
             | "/ls"
@@ -60,9 +62,8 @@ fn model_commands(
         .into_iter()
         .filter(|command| supported_command(command.name))
         .map(|mut command| {
-            if command.name == "/new" {
-                command.usage = "/new room name";
-                command.description = "Create an invitation-only room";
+            if command.name == "/user" {
+                command.usage = "/user ls [scope] | get who [key] [scope] | set who key value [scope] | rename [who] name | delete who | enable who | disable who";
             }
             command
         })
@@ -72,27 +73,37 @@ fn server_command_json(command: &crate::commands::Command) -> Value {
     let mut value =
         json!({"name":command.name,"usage":command.usage,"description":command.description});
     let children: &[(&str, &str, &str)] = match command.name {
-        "/new" => &[("room", "/new room name", "Create a room when granted")],
-        "/rm" => &[
-            ("room", "/rm room name", "Remove an authorized room"),
-            ("user", "/rm user name", "Remove an authorized account"),
+        "/user" => &[
+            ("ls", "/user ls [scope]", "List users in a scope"),
+            ("get", "/user get who [key] [scope]", "Read user metadata"),
             (
-                "group",
-                "/rm group user group [room]",
-                "Revoke an authorized group assignment",
-            ),
-        ],
-        "/rename" => &[
-            (
-                "room",
-                "/rename room name new_name",
-                "Rename an authorized room",
+                "set",
+                "/user set who key value [scope]",
+                "Set user metadata",
             ),
             (
-                "user",
-                "/rename user name new_name",
+                "rename",
+                "/user rename [who] name",
                 "Rename an authorized account",
             ),
+            ("delete", "/user delete who", "Delete an authorized account"),
+            ("enable", "/user enable who", "Enable an account"),
+            ("disable", "/user disable who", "Disable an account"),
+        ],
+        "/room" => &[
+            ("ls", "/room ls", "List rooms"),
+            ("new", "/room new #name", "Create a room when granted"),
+            ("delete", "/room delete #name", "Delete an authorized room"),
+            (
+                "rename",
+                "/room rename #name new-name",
+                "Rename an authorized room",
+            ),
+            ("join", "/room join #name", "Open a room"),
+            ("leave", "/room leave [#name]", "Leave a room"),
+            ("add", "/room add user [#name]", "Invite a user"),
+            ("kick", "/room kick user [#name]", "Remove a user"),
+            ("owner", "/room owner user [#name]", "Transfer ownership"),
         ],
         _ => &[],
     };
@@ -281,6 +292,10 @@ fn execute_command(
         || !parts.first().is_some_and(|name| supported_command(name))
         || !inner.first().is_some_and(|name| supported_command(name))
         || inner.starts_with(&["/new", "user"])
+        || (inner.first() == Some(&"/user")
+            && inner
+                .get(1)
+                .is_some_and(|v| ["new", "passwd", "reset"].contains(v)))
     {
         return Err(Error::new(
             Code::InvalidRequest,

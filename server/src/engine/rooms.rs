@@ -7,9 +7,10 @@ impl Engine {
         actor: Option<&str>,
         name: &str,
         new_name: &str,
+        command: &str,
     ) -> Result<String, String> {
         let scope = self.room_scope(name)?;
-        self.require_target_command(actor, &scope, "/rename")?;
+        self.require_target_command(actor, &scope, command)?;
         self.require(actor, &scope, Action::RenameRoom)?;
         if !valid_name(new_name) {
             return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
@@ -53,9 +54,9 @@ impl Engine {
         } = *context;
         match parts[0] {
             "/new" => {
-                self.require_target_command(actor, &Scope::Server, parts[0])?;
+                self.require_target_command(actor, &Scope::Server, context.command)?;
                 self.require(actor, &Scope::Server, Action::CreateRoom)?;
-                require_len(parts, 2, "/new room name")?;
+                require_len(parts, 2, "/room new #name")?;
                 let name = parts[1];
                 if !valid_name(name) {
                     return Err("Invalid room name.".into());
@@ -86,7 +87,10 @@ impl Engine {
             }
             "/add" | "/kick" => {
                 if !(2..=3).contains(&parts.len()) {
-                    return Err("Usage: /add user [room] or /kick user [room]".into());
+                    return Err(format!(
+                        "Usage: /room {} user [#room]",
+                        parts[0].trim_start_matches('/')
+                    ));
                 }
                 let name = parts[1];
                 let id = self
@@ -97,9 +101,13 @@ impl Engine {
                     .ok_or("User not found.")?
                     .id
                     .clone();
-                let room = parts.get(2).copied().or(room).ok_or("Specify a room.")?;
+                let room = parts
+                    .get(2)
+                    .map(|v| v.trim_start_matches('#'))
+                    .or(room)
+                    .ok_or("Specify a room.")?;
                 let scope = self.room_scope(room)?;
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 self.require(
                     actor,
                     &scope,
@@ -143,18 +151,18 @@ impl Engine {
             }
             "/join" | "/leave" => {
                 if parts[0] == "/join" {
-                    require_len(parts, 2, "/join room")?;
+                    require_len(parts, 2, "/room join #room")?;
                 } else if parts.len() > 2 {
-                    return Err("Usage: /leave [room]".into());
+                    return Err("Usage: /room leave [#room]".into());
                 }
-                let user = actor.ok_or("Use /add user room from the console.")?;
+                let user = actor.ok_or("Use /room add user #room from the console.")?;
                 let name = parts
                     .get(1)
-                    .copied()
+                    .map(|v| v.trim_start_matches('#'))
                     .or(room)
                     .ok_or("Select or specify a room.")?;
                 let scope = self.room_scope(name)?;
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 if parts[0] == "/join" {
                     self.require(actor, &scope, Action::Join)?;
                     self.require(actor, &scope, Action::Read)?;
@@ -212,11 +220,15 @@ impl Engine {
             }
             "/owner" => {
                 if !(2..=3).contains(&parts.len()) {
-                    return Err("Usage: /owner user [room]".into());
+                    return Err("Usage: /room owner user [#room]".into());
                 }
-                let name = parts.get(2).copied().or(room).ok_or("Specify a room.")?;
+                let name = parts
+                    .get(2)
+                    .map(|v| v.trim_start_matches('#'))
+                    .or(room)
+                    .ok_or("Specify a room.")?;
                 let scope = self.room_scope(name)?;
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 self.require(actor, &scope, Action::Transfer)?;
                 let target_id = self
                     .data
@@ -239,14 +251,17 @@ impl Engine {
                 Ok(format!("{} owns #{name}.", parts[1]))
             }
             "/rm" => {
-                require_len(parts, 2, "/rm room name")?;
+                require_len(parts, 2, "/room delete #name")?;
                 let scope = self.room_scope(parts[1])?;
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 self.require(actor, &scope, Action::DeleteRoom)?;
                 self.data.rooms.remove(parts[1]).ok_or("Room not found.")?;
                 self.data.policy.assignments.retain(|a| a.scope != scope);
                 self.data.policy.grants.retain(|g| g.scope != scope);
                 if let Scope::Room(id) = &scope {
+                    for user in self.data.users.values_mut() {
+                        user.metadata.remove(id);
+                    }
                     for rooms in self.data.policy.media_revocations.values_mut() {
                         rooms.remove(id);
                     }

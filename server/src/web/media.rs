@@ -12,6 +12,8 @@ pub(crate) struct Upload {
     conversation_id: String,
     filename: String,
     size: u64,
+    #[serde(default)]
+    hints: std::collections::BTreeMap<String, String>,
 }
 
 fn storage(app: &App) -> Result<std::sync::Arc<crate::media::MediaStorage>, ApiError> {
@@ -81,6 +83,7 @@ pub(crate) async fn allocate(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
+    crate::media::hint_headers(&input.hints).map_err(|e| failed(&e))?;
     let (conversation, uploader, input) = authenticated(&app, &headers, move |app, user| {
         let mut engine = app.engine_api()?;
         let conversation = engine
@@ -110,19 +113,32 @@ pub(crate) async fn allocate(
             return Err(failed("Account changed; retry upload."));
         }
         engine
-            .allocate_media(user, &conversation, &input.filename, input.size)
+            .allocate_media_with_hints(
+                user,
+                &conversation,
+                &input.filename,
+                input.size,
+                input.hints,
+            )
             .map_err(|e| failed(&e))
     })
     .await?;
+    let hint_headers = crate::media::hint_headers(&media.hints).map_err(|e| failed(&e))?;
+    let mut upload_headers = media
+        .hints
+        .iter()
+        .map(|(key, value)| (format!("x-amz-meta-client-{key}"), value.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    upload_headers.insert("Content-Type".into(), "application/octet-stream".into());
     let url = storage
-        .upload_url(&media.id, media.size)
+        .upload_url_with_hints(&media.id, media.size, hint_headers)
         .await
         .map_err(|cause| {
             tracing::warn!(media_id = %media.id, error = %cause, "Upload signing failed");
             error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign upload URL.")
         })?;
     Ok(Json(
-        json!({"media_id":media.id,"upload":{"method":"PUT","url":url,"headers":{"Content-Type":"application/octet-stream"},"expires_in":300}}),
+        json!({"media_id":media.id,"upload":{"method":"PUT","url":url,"headers":upload_headers,"expires_in":300}}),
     ))
 }
 
@@ -271,16 +287,8 @@ async fn cleanup_db<T: Send + 'static>(
 async fn delete_media(app: App, media: crate::engine::media::Media) -> Result<(), String> {
     let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
     let _lock = storage.lock_media(&media.id)?;
-    // Deduplicate legacy keys; v14+ ready objects never have a legacy copy.
-    let mut keys =
+    let keys =
         std::collections::BTreeSet::from([format!("uploads/{}", media.id), media.final_key()]);
-    let legacy = format!("media/{}", media.id);
-    if media.object_key.is_empty() || media.object_key == legacy {
-        keys.insert(legacy);
-    }
-    if !media.object_key.is_empty() {
-        keys.insert(media.object_key.clone());
-    }
     storage.delete_keys(&keys).await?;
     cleanup_db(&app, move |app| {
         let engine = app.engine_read()?;

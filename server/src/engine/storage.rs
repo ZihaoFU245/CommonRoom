@@ -33,18 +33,8 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != 0
-            && version != 9
-            && version != 10
-            && version != 11
-            && version != 12
-            && version != 13
-            && version != 14
-            && version != 15
-        {
-            return Err(
-                "Unsupported database schema; only v9-v14 migration and v15 are supported.".into(),
-            );
+        if ![0, 15, 16].contains(&version) {
+            return Err("Unsupported database schema; only HEAD v15 and v16 are supported.".into());
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -93,7 +83,7 @@ impl Engine {
                 .execute_batch(media::INDEXES)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=15;")
+                .execute_batch("PRAGMA user_version=16;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -101,10 +91,11 @@ impl Engine {
             .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         let mut data: Data = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let old_state: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         drop(raw);
         load_entities(&db, &mut data)?;
         crate::bots::models::validate(&data)?;
-        let authorization = super::authorization::CompiledPolicy::compile(&data)?;
+        let mut authorization = super::authorization::CompiledPolicy::compile(&data)?;
         let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         {
             let mut query = db
@@ -127,81 +118,77 @@ impl Engine {
                     .insert(view, sequence);
             }
         }
-        // Validate all existing metadata before performing the additive v9 upgrade.
-        if matches!(version, 9..=11) {
+        if version == 15 {
             let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            if version == 9 {
-                migration
-                    .execute_batch(command_receipts::SCHEMA)
-                    .map_err(|e| e.to_string())?;
-            }
-            if version <= 10 {
-                migration
-                    .execute_batch(ACCOUNT_REFERENCE_SCHEMA)
-                    .map_err(|e| e.to_string())?;
-            }
-            migration
-                .execute_batch(AUDIT_SCHEMA)
-                .map_err(|e| e.to_string())?;
-            for entry in &mut data.policy.audit {
-                if entry.id.is_empty() {
-                    entry.id = uuid::Uuid::new_v4().to_string();
+            let before = data.clone();
+            if let Some(grants) = old_state
+                .pointer("/policy/grants")
+                .and_then(|v| v.as_array())
+            {
+                for grant in grants {
+                    let Some(media) = grant.get("media").filter(|v| v.is_object()) else {
+                        continue;
+                    };
+                    let scope: super::authorization::Scope =
+                        serde_json::from_value(grant["scope"].clone())
+                            .map_err(|e| e.to_string())?;
+                    let subject: super::authorization::Subject =
+                        serde_json::from_value(grant["subject"].clone())
+                            .map_err(|e| e.to_string())?;
+                    if matches!(scope, super::authorization::Scope::Account(_)) {
+                        continue;
+                    }
+                    let key = Self::metadata_scope_key(&scope)?.to_owned();
+                    for account in data.users.values_mut() {
+                        let applies = match &subject {
+                            super::authorization::Subject::Account(id) => &account.id == id,
+                            super::authorization::Subject::Group(group) => {
+                                data.policy.assignments.iter().any(|a| {
+                                    a.account_id == account.id
+                                        && a.group == *group
+                                        && a.scope == super::authorization::Scope::Server
+                                })
+                            }
+                        };
+                        if !applies {
+                            continue;
+                        }
+                        let values = account.metadata.entry(key.clone()).or_default();
+                        for (old, new) in
+                            [("max_size", "media.max_size"), ("max_age", "media.max_age")]
+                        {
+                            if let Some(n) = media.get(old).and_then(|v| v.as_i64()) {
+                                let existing = values.get(new).and_then(|v| v.parse::<i64>().ok());
+                                if existing.is_none_or(|old| {
+                                    (if n == -1 { i64::MAX } else { n })
+                                        < (if old == -1 { i64::MAX } else { old })
+                                }) {
+                                    values.insert(new.into(), n.to_string());
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            write_audit(&migration, &data)?;
+            for grant in &mut data.policy.grants {
+                for permission in grant.permissions.clone() {
+                    let families: &[&str] = match permission.as_str() {
+                        "/new" | "/rm" | "/rename" | "/ls" => &["/user", "/room"],
+                        "/members" | "/passwd" | "/reset" | "/enable" | "/disable" => &["/user"],
+                        "/join" | "/leave" | "/add" | "/kick" | "/owner" => &["/room"],
+                        _ => &[],
+                    };
+                    grant
+                        .permissions
+                        .extend(families.iter().map(|name| (*name).to_owned()));
+                }
+            }
+            authorization = super::authorization::CompiledPolicy::compile(&data)?;
+            write_map_delta(&migration, "account", &data.users, &before.users)?;
             write_state(&migration, &data)?;
             migration
-                .execute_batch(media::SCHEMA)
+                .execute_batch("PRAGMA user_version=16;")
                 .map_err(|e| e.to_string())?;
-            migration
-                .execute_batch(media::INDEXES)
-                .map_err(|e| e.to_string())?;
-            migration
-                .execute_batch("PRAGMA user_version=15;")
-                .map_err(|e| e.to_string())?;
-            migration.commit().map_err(|e| e.to_string())?;
-        }
-        if version == 12 {
-            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            migration
-                .execute_batch(media::SCHEMA)
-                .map_err(|e| e.to_string())?;
-            migration
-                .execute_batch(media::INDEXES)
-                .map_err(|e| e.to_string())?;
-            migration
-                .execute_batch("PRAGMA user_version=15;")
-                .map_err(|e| e.to_string())?;
-            migration.commit().map_err(|e| e.to_string())?;
-        }
-        if version == 13 {
-            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            migration.execute_batch("ALTER TABLE media ADD COLUMN expires INTEGER;
-                ALTER TABLE media ADD COLUMN published INTEGER;
-                ALTER TABLE media ADD COLUMN deleting INTEGER NOT NULL DEFAULT 0;
-                ALTER TABLE media ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
-                ALTER TABLE media ADD COLUMN cleanup_attempt INTEGER NOT NULL DEFAULT 0;
-                UPDATE media SET expires=created+604800,json=json_set(json,'$.max_age',604800,'$.expires',created+604800) WHERE ready=1;
-                UPDATE media SET published=created WHERE EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id);
-                CREATE INDEX media_expiry ON media(deleted,deleting,expires,unreferenced);
-                ALTER TABLE media ADD COLUMN staging_attempt INTEGER NOT NULL DEFAULT 0;").map_err(|e| e.to_string())?;
-            migration
-                .execute_batch(media::INDEXES)
-                .map_err(|e| e.to_string())?;
-            migration.execute_batch("UPDATE media SET unreferenced=unixepoch() WHERE unreferenced IS NULL AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id); PRAGMA user_version=15;").map_err(|e| e.to_string())?;
-            migration.commit().map_err(|e| e.to_string())?;
-        }
-        if version == 14 {
-            let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
-            migration
-                .execute_batch(
-                    "ALTER TABLE media ADD COLUMN staging_attempt INTEGER NOT NULL DEFAULT 0;",
-                )
-                .map_err(|e| e.to_string())?;
-            migration
-                .execute_batch(media::INDEXES)
-                .map_err(|e| e.to_string())?;
-            migration.execute_batch("UPDATE media SET unreferenced=unixepoch() WHERE unreferenced IS NULL AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id); PRAGMA user_version=15;").map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }
         data.sessions.retain(|_, session| session.expires > now());

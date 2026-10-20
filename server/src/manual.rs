@@ -14,6 +14,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         "console" => CONSOLE,
         "sudo" => SUDO,
         "bot" => BOT,
+        "clean" => CLEAN,
         _ => {
             let name = format!("/{topic}");
             let command = commands::available(true, false)
@@ -21,22 +22,20 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
                 .find(|command| command.name == name)
                 .ok_or_else(|| format!("No manual for '{topic}'. Use /man to list topics."))?;
             return Ok(format!(
-                "# {}\n\n{}\n\n## Usage\n\n```\n{}\n```{}\n\n## Access required\n\n- The command grant must allow the selected conversation and its target.\n- The matching action grants must allow each affected resource.\n\n{}\n\n## See also\n\nUse `/help` to list commands available here, or `/man permissions` to understand grants.",
+                "# {}\n\n- {}\n\n## Usage\n\n```text\n{}\n```{}\n\n## Access required\n\n- The command grant must allow the selected conversation and its target.\n- The matching action grants must allow each affected resource.\n\n{}\n\n## See also\n\n- Use `/help` to list commands available here, or `/man permissions` to understand grants.",
                 command.name,
                 command.description,
-                command.usage,
+                commands::usage_forms(command).join("\n"),
                 match topic {
-                    "ls" => LS,
-                    "new" => NEW,
-                    "rm" => RM,
+                    "user" => USER,
+                    "room" => ROOM,
                     "retract" => RETRACT,
-                    "rename" => RENAME,
                     _ => "",
                 },
                 if command.requirements.is_empty() {
-                    "No additional action grant is required.".into()
+                    "- No additional action grant is required.".into()
                 } else {
-                    format!("Requires: {}.", command.requirements)
+                    format!("- Requires: {}.", command.requirements)
                 }
             ));
         }
@@ -56,7 +55,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
             .filter(|name| name.starts_with(prefix))
             .collect::<Vec<_>>()
             .join("\n");
-        text.push_str(&format!("\n\n## {title}\n\n```\n{actions}\n```"));
+        text.push_str(&format!("\n\n## {title}\n\n```text\n{actions}\n```"));
     }
     text.push_str("\n\n## Command grants");
     let catalog = commands::available(true, false);
@@ -64,9 +63,9 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         let names = catalog
             .iter()
             .filter(|command| command.section == section)
-            .map(|command| format!("`{}`", command.name))
+            .map(|command| format!("- `{}`", command.name))
             .collect::<Vec<_>>()
-            .join(", ");
+            .join("\n");
         text.push_str(&format!("\n\n### {section}\n\n{names}"));
     }
     Ok(text)
@@ -74,22 +73,21 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
 
 const OVERVIEW: &str = r#"# CommonRoom manual
 
-Use `/help` to list commands available in the selected conversation.
+- Use `/help` to list commands available in the selected conversation.
 
 ## Everyday commands
 
-- `/man ls` — list rooms, accounts, groups, and global group members.
-- `/man new` — create an invitation-only room or account.
-- `/man rm` — delete a room/account or remove a group assignment.
+- `/man user` — list and manage accounts and scoped metadata.
+- `/man room` — list and manage rooms and membership.
 - `/man alias` — customize command prefixes in the web app.
 
 ## Usage
 
-```
+```text
 /man [command|topic]
 ```
 
-Command names work with or without a slash: `/man grant` and `/man /grant` are equivalent.
+- Command names work with or without a slash: `/man grant` and `/man /grant` are equivalent.
 
 ## Access control topics
 
@@ -103,192 +101,176 @@ Command names work with or without a slash: `/man grant` and `/man /grant` are e
 
 ## Other commands
 
-Use `/man history`, `/man reset`, or another command name for its usage.
-`/help` lists commands available in the selected conversation.
-`/console` opens the Command view; select a room or use `/join room` to return to a conversation.
+- Use `/man history`, `/man user`, or another command name for its usage.
+- `/help` lists commands available in the selected conversation.
+- `/console` opens the Command view; select a room or use `/room join room` to return to a conversation.
 
-Manuals are public documentation. Reading one does not grant permission to run the command."#;
+- Manuals are public documentation.
+- Reading one does not grant permission to run the command."#;
 
-const RENAME: &str = r#"
-
-## Examples
-
-```
-/rename room support helpdesk
-/rename user bob robert
-/rename robert
-/rename bob robert
-```
-
-The one-name form renames your own account. The two-name form retains account
-renaming syntax; use the explicit room form to rename a room.
-Names use the same 1–32 Unicode character rules as account and room creation.
-
-Room renames preserve identity, ownership, membership, scoped grants, history and
-read positions. Owners of rooms created or transferred with this version and
-scoped room admins receive `x:room.rename`; ordinary members and global admins do not
-receive it for other people's rooms. Existing explicit owner grants are preserved;
-su can add a missing permission with `/grant owner room x:room.rename` and the
-command with `/grant owner room /rename`.
-
-Account renames retain identity, sessions, history and read positions. The own/any
-account rename permissions remain separate from room rename authority."#;
-
-const LS: &str = r#"
+const USER: &str = r#"
 
 ## Examples
 
+```text
+/user ls @global
+/user ls
+/user ls #support
+/user get @all
+/user get bob @all
+/user get bob media.max_size #support
+/user set @all media.max_size 10m #support
+/user set bob media.max_age 7d #support
+/user set bob media.user_quota 1g
+/user set bob label @unset
+/user rename bob robert
+/user new alice temporary-password admin
+/user passwd old-password new-password
 ```
-/ls
-/ls room
-/ls user
-/ls group
-/ls @admin
-```
 
-## What is listed?
+- Metadata is a bounded list per account and scope.
+- Omitted scope uses the selected room; Console/stdin use `@global`.
+- In private views, specify a room or `@global` for user metadata and lists.
+- Use `#name` to select a room explicitly.
+- `@all` selects every user in the scope, including the caller.
+- `get` without a key returns the effective metadata list.
+- Read your own metadata freely; other accounts require r:account.metadata (global/account) or room policy-management authority.
+- Only su can set, remove or bulk-update metadata, including media limits.
+- Only su may change a su account.
+- Global admins receive `r:account.metadata` for inspection.
+- Room policy managers may inspect members' room metadata.
+- `x:account.metadata` is reserved for su; explicit grants do not bypass the su check.
 
-- `/ls` and `/ls room` list rooms you can discover or read, plus your readable private conversations.
-- `/ls user` lists accounts. Disabled accounts are visible only to su.
-- `/ls group` lists the fixed user, admin, and su bundles; use `/man groups` for their permissions.
-- `/ls @user`, `/ls @admin`, and `/ls @su` filter explicit global group assignments, not room assignments or individual permissions.
+## Media values
 
-An account can belong to several groups. Its displayed label is its highest global group;
-an account listed under @user can therefore display admin. Listing never changes access.
-Account listings require `r:account.list` at global scope."#;
+- `media.max_size`: size per file; accepts `k`, `m`, `g` units.
+- `media.max_age`: duration, or `-1` for permanent.
+- `media.user_quota`: account-wide quota; accepts `k`, `m`, `g` units.
+- `/user set bob media.user_quota 1g` targets account-wide metadata when scope is omitted.
+- Explicit room scopes cannot set account-wide quota.
+- Size and quota cannot exceed server ceilings.
+- Room values override global values, then server defaults.
+- `@unset` removes a value and restores inheritance.
+- Custom lowercase keys accept single-token values up to 256 bytes.
+- Use `@all` in the key position to read every key.
+- Metadata never grants permissions.
+- `get` shows effective media values, including inherited limits and server defaults.
 
-const NEW: &str = r#"
+- Bulk writes authorize all targets before committing; any rejection rolls back the entire operation.
+- Renames preserve stable IDs, metadata, history and cursors.
+- Passwords are masked in browser output.
+- Deleting accounts needs confirmation in the browser and retains room messages attributed to the deleted account."#;
+
+const ROOM: &str = r#"
 
 ## Examples
 
-```
-/new room support
-/new user bob temporary-password
-/new user alice temporary-password admin
-```
-
-## Rooms
-
-New rooms are invitation-only. The creator owns the room and receives participant
-and management grants. Invite Bob with `/add bob support`.
-`/join support` opens a room you can already access. Su accounts and
-`/sudo /join support` callers also save participant membership and room user grants.
-
-## Accounts
-
-The optional group is user or admin; omitting it means user. Creating an admin
-requires `x:group.admin.assign` as well as `x:account.create`.
-Assign su separately with `/grant username su`, which only an existing su can run.
-Names and passwords are single arguments; spaces are not supported.
-Passwords are masked in browser command output. Use `/passwd old new` to change
-your own password or `/reset username password` with explicit reset authority.
-
-See `/man ownership` for room management and `/man groups` for group defaults."#;
-
-const RM: &str = r#"
-
-## Examples
-
-```
-/rm room support
-/rm user bob
-/rm group bob user support
-/rm group alice admin
+```text
+/room ls
+/room new #support
+/room rename #support helpdesk
+/room add bob #helpdesk
+/room owner bob #helpdesk
+/room join #helpdesk
+/room leave #helpdesk
+/room delete #helpdesk
 ```
 
-## Delete a room or account
+## Scope and membership
 
-- Removing a room permanently deletes its messages and scoped access.
-- Removing an account revokes its sessions and removes its private conversations for both participants.
-- Room messages and reply quotes remain attributed to the deleted account.
-- Reusing a deleted name does not inherit old grants, history, sessions, or read positions.
+- Explicit room scopes require `#name`; omitted scopes use the selected room.
+- `/room add bob` invites Bob to the selected room.
+- `/room add bob #support` invites Bob to a specific room.
+- `add`, `kick`, `owner` and `leave` use the selected room when omitted.
+- Listing shows authorized global rooms.
+- Creation requires w:room.create at @global, assigns ownership and creates invitation-only admission.
+- Rename/delete/invite/remove/owner operations require their matching room actions.
+- Opening a room requires read/join access.
+- Owners must transfer ownership before leaving.
+- Deletion requires browser confirmation.
 
-Only su can delete a su account. Ordinary admins cannot delete themselves or
-the last active admin. Use `/disable username` for reversible account suspension.
-
-## Remove a group assignment
-
-The group must be user, admin, or su. Without a room, remove its global assignment;
-with a room, remove that room's assignment. The predefined bundle itself remains.
-Direct grants and other group assignments still apply. `/kick username room`
-removes membership and scoped access; `/revoke` also removes individual grants.
-The delegation and su restrictions described in `/man revoke` apply.
-
-## Confirmation
-
-The web app asks for confirmation before sending `/rm`, including aliases and
-sudo. Stdin executes directly. Room/account deletion cannot be undone;
-group access can be granted again by an authorized manager."#;
+- Room identity, membership, grants, user metadata, history and read positions survive renames.
+- Deletion removes room metadata; reusing a name inherits nothing."#;
 
 const RETRACT: &str = r#"
 
 ## Behavior
 
-Retract a retained message by its ID. It disappears for every participant,
-and retained replies lose their quote preview. Read permission is required;
-own-message authority applies to your messages, while any-message authority
-also allows retracting other authors' messages.
+- Retract a retained message by its ID.
+- It disappears for every participant, and retained replies lose their quote preview.
+- Read permission is required; own-message authority applies to your messages, while any-message authority also allows retracting other authors' messages.
 
-The web app asks for confirmation, including aliases and sudo. Stdin executes
-directly. Retraction cannot be undone. The message's hover action supplies its
-ID automatically in the web app."#;
+- The web app asks for confirmation, including aliases and sudo.
+- Stdin executes directly.
+- Retraction cannot be undone.
+- The message's hover action supplies its ID automatically in the web app."#;
 
 const GRANT: &str = r#"# /grant
 
-Give someone a group of permissions, or one permission in a specific place.
-The account and resource must already exist.
+- Give someone a group of permissions, or one permission in a specific place.
+- The account and resource must already exist.
+
+## Bulk selection
+
+- Use @all in the user field to select every active user in the requested scope.
+- For example `/grant @all #support w:media.upload`, `/revoke @all user #support`, or `/grant @all admin` (global).
+- All targets are checked against the original policy; any rejection rolls back the complete batch.
+- Protected accounts, ownership, delegation and last-administrator guards still apply.
 
 ## Assign a group
 
-```
-/grant username [user|admin|su] [room]
+```text
+/grant username [user|admin|su] [#room]
 ```
 
 - Without a room, the group applies at global scope.
 - With a room, user gives participant access; admin adds room management.
 - Omitting the group means global admin. Write the group explicitly for clarity.
 
-Give Bob participant access to support:
+- Give Bob participant access to support:
 
-```
-/grant bob user support
+```text
+/grant bob user #support
 ```
 
-Give Alice every permission:
+- Give Alice every permission:
 
-```
+```text
 /grant alice su
 ```
 
 ## Add one permission
 
-```
+```text
 /grant username scope permission [minimum-age]
 ```
 
-Use an exact action name or a slash command. For history access, grant both:
+- Use an exact action name or a slash command.
+- For history access, grant both:
 
-```
-/grant bob support r:message.read
-/grant bob support /history
+```text
+/grant bob #support r:message.read
+/grant bob #support /history
 ```
 
-These grants add access. They do not remove write access from another grant or group.
-Use `/man scopes` for room, global, account, and private-conversation scope names.
+- These grants add access.
+- They do not remove write access from another grant or group.
+- Use `/man scopes` for room, global, account, and private-conversation scope names.
 
 ## Let someone invite users
 
-As the owner of support, give Alice participant access, then both invitation grants:
+- As the owner of support, give Alice participant access, then both invitation grants:
 
-```
-/add alice support
-/grant alice support x:member.add
-/grant alice support /add
+```text
+/room add alice #support
+/grant alice #support x:member.add
+/grant alice #support /room
 ```
 
-Alice can now run `/add bob support`. Her global user or admin group does not replace room participant access.
-The `/add` command grant alone does not grant `x:member.add`.
-Remove these direct grants with `/revoke alice support x:member.add` and `/revoke alice support /add`.
+- Alice can now run `/room add bob #support`.
+- Her global user or admin group does not replace room participant access.
+- The `/room add` command grant alone does not grant `x:member.add`.
+- Remove these direct grants with `/revoke alice #support x:member.add` and `/revoke alice #support /room`.
 
 ## Who can grant access?
 
@@ -296,113 +278,111 @@ Remove these direct grants with `/revoke alice support x:member.add` and `/revok
 - Only su can change individual global, account, or private grants, or assign room admin.
 - Global admin assignment requires `x:group.admin.assign`.
 - Room managers need `x:policy.change` and can delegate only participant permissions they hold.
-- The room owner may also grant or revoke `x:member.add` and `/add` within that room, if they hold those permissions.
+- The room owner may also grant or revoke `x:member.add` and `/room add` within that room, if they hold those permissions.
 - Giving the room user group requires authority to delegate its full participant bundle.
 - Command grants must allow the selected conversation and target; action grants must allow the target.
 
 ## Limit history cleanup
 
-Only `x:history.clean` accepts minimum-age. Use positive durations with s/m/h/d/w units.
+- Only `x:history.clean` accepts minimum-age.
+- Use positive durations with s/m/h/d/w units.
 
-Media uploads use a separate typed constraint form:
+- Upload permissions contain no quotas or retention values.
+- Use `/user set bob media.max_size 25m #support` and `/user set bob media.max_age 7d #support`.
+- `/revoke bob #support w:media.upload` blocks new uploads there; `/grant bob #support w:media.upload` restores permission.
+- Metadata limits remain independent.
+
+- This example permits cleanup of messages older than seven days; su must issue these grants:
 
 ```text
-/grant bob support w:media.upload 26214400 7d
-/grant bob support w:media.upload 26214400 -1
+/grant bob #support x:history.clean 7d
+/grant bob #support /clean
 ```
 
-The optional media arguments are maximum bytes and maximum age (s/m/h/d/w, or -1
-for permanent). Omitted values use server media defaults. Uploads additionally
-require read/send rights. A single additive grant must cover both size and age;
-room managers cannot delegate a larger allowance than they hold. Revoke all
-matching direct media grants with `/revoke bob support w:media.upload`.
-Room user/admin groups include uploads using server defaults. A room-specific
-`/revoke bob support w:media.upload` blocks uploads there, including global/direct
-upload grants (su remains fully trusted). `/grant` clears that restriction;
-explicit conversation media limits replace the implicit default. Private
-participants also have uploads by default. Revoking room uploads preserves text
-sending and attachment reading, and does not affect private uploads.
-This example permits cleanup of messages older than seven days; su must issue these grants:
-
-```
-/grant bob support x:history.clean 7d
-/grant bob support /clean
-```
-
-An unrestricted cleanup grant from elsewhere still applies.
+- An unrestricted cleanup grant from elsewhere still applies.
 
 ## Check access
 
-`/permissions support` shows your effective access and, for authorized managers, the room's grants.
-See `/man permissions` for the catalog and `/man revoke` to remove access."#;
+- `/permissions #support` shows your effective access and, for authorized managers, the room's grants.
+- See `/man permissions` for the catalog and `/man revoke` to remove access."#;
 
 const REVOKE: &str = r#"# /revoke
 
-Remove a group assignment or a direct permission.
-Access from other grants and groups still applies.
+- Remove a group assignment or a direct permission.
+- Access from other grants and groups still applies.
+
+## Bulk selection
+
+- Use @all in the user field to select every active user in the requested scope.
+- For example `/grant @all #support w:media.upload`, `/revoke @all user #support`, or `/grant @all admin` (global).
+- All targets are checked against the original policy; any rejection rolls back the complete batch.
+- Protected accounts, ownership, delegation and last-administrator guards still apply.
 
 ## Remove a group
 
-```
-/revoke username [user|admin|su] [room]
-```
-
-Remove Bob's participant bundle from support:
-
-```
-/revoke bob user support
+```text
+/revoke username [user|admin|su] [#room]
 ```
 
-The exact assignment is removed. Omitting the group means global admin.
-Only su can remove su assignments. Ordinary admins cannot remove the last active admin.
+- Remove Bob's participant bundle from support:
+
+```text
+/revoke bob user #support
+```
+
+- The exact assignment is removed.
+- Omitting the group means global admin.
+- Only su can remove su assignments.
+- Ordinary admins cannot remove the last active admin.
 
 ## Remove one direct permission
 
-```
+```text
 /revoke username scope permission
 ```
 
-Remove a direct send permission and a direct reply command grant:
+- Remove a direct send permission and a direct reply command grant:
 
-```
-/revoke bob support w:message.create
-/revoke bob support /reply
+```text
+/revoke bob #support w:message.create
+/revoke bob #support /reply
 ```
 
-This removes the named direct permission at that scope, including its cleanup-age variants.
-It does not remove the same permission supplied by a group or a global grant.
-The scope-management rules from `/man grant` apply here too.
+- This removes the named direct permission at that scope, including its cleanup-age variants.
+- It does not remove the same permission supplied by a group or a global grant.
+- The scope-management rules from `/man grant` apply here too.
 
 ## Make a participant read-only
 
-Replace Bob's room user bundle with grants to find, open, and read support:
+- Replace Bob's room user bundle with grants to find, open, and read support:
 
-```
-/revoke bob user support
-/grant bob support r:room.discover
-/grant bob support x:room.join
-/grant bob support r:message.read
-/grant bob support /history
+```text
+/revoke bob user #support
+/grant bob #support r:room.discover
+/grant bob #support x:room.join
+/grant bob #support r:message.read
+/grant bob #support /history
 ```
 
-Inspect `/permissions support` for other direct, room admin, or global grants that may still allow writes.
+- Inspect `/permissions #support` for other direct, room admin, or global grants that may still allow writes.
 
 ## Remove room membership
 
-Revoking grants may leave the person's name in the member list.
-Use `/kick` to remove membership and their direct/scoped group grants:
+- Revoking grants may leave the person's name in the member list.
+- Use `/room kick` to remove membership and their direct/scoped group grants:
 
-```
-/kick bob support
+```text
+/room kick bob #support
 ```
 
-Global grants still apply, except a room media-upload restriction overrides upload
-grants in that room (su remains fully trusted). Revocation takes effect on the next server check and updates connected clients.
-Content already received by a client cannot be taken back."#;
+- Global grants still apply, except a room media-upload restriction overrides upload grants in that room (su remains fully trusted).
+- Revocation takes effect on the next server check and updates connected clients.
+- Content already received by a client cannot be taken back."#;
 
 const PERMISSIONS: &str = r#"# Permissions
 
-A grant allows one action or command in a particular scope. Without a matching grant, access is denied.
+- A grant allows one action or command in a particular scope.
+- Without a matching grant, access is denied.
 
 ## Three kinds of action
 
@@ -412,14 +392,14 @@ A grant allows one action or command in a particular scope. Without a matching g
 
 ## Commands need grants too
 
-Running `/history` requires both its command grant and `r:message.read` on the conversation.
-HTTP history requests check read access independently of command grants.
+- Running `/history` requires both its command grant and `r:message.read` on the conversation.
+- HTTP history requests check read access independently of command grants.
 
-Grants add together, without wildcards or groups nested inside groups. Room media
-has a narrow revocation override: `/revoke user room w:media.upload` blocks uploads
-there until `/grant` restores them, even with a global upload grant. Su remains
-fully trusted. Other permissions keep their additive behavior.
-Global grants apply globally; resource grants apply only to the resource's stable identity.
+- Grants add together, without wildcards or groups nested inside groups.
+- Room media has a narrow revocation override: `/revoke user #room w:media.upload` blocks uploads there until `/grant` restores them, even with a global upload grant.
+- Su remains fully trusted.
+- Other permissions keep their additive behavior.
+- Global grants apply globally; resource grants apply only to the resource's stable identity.
 
 ## Message ownership
 
@@ -427,12 +407,12 @@ Global grants apply globally; resource grants apply only to the resource's stabl
 - `w:message.retract.any` allows retracting other authors' messages.
 - Both also require read access and the `/retract` command grant.
 
-Authorship uses stable account IDs, so reusing a username does not inherit old messages.
+- Authorship uses stable account IDs, so reusing a username does not inherit old messages.
 
 ## Inspect access
 
-```
-/permissions support
+```text
+/permissions #support
 /permissions @groups
 ```
 
@@ -441,12 +421,13 @@ Authorship uses stable account IDs, so reusing a username does not inherit old m
 - `/permissions @groups` lists predefined bundles.
 - `/permissions @audit` shows the audit log to su.
 
-See `/man grant`, `/man revoke`, `/man groups`, and `/man scopes`.
-The catalogs below list exact permission names."#;
+- See `/man grant`, `/man revoke`, `/man groups`, and `/man scopes`.
+- The catalogs below list exact permission names."#;
 
 const GROUPS: &str = r#"# Groups
 
-Groups are predefined bundles of grants. Their scope determines where the bundle applies.
+- Groups are predefined bundles of grants.
+- Their scope determines where the bundle applies.
 
 ## user
 
@@ -465,198 +446,210 @@ Groups are predefined bundles of grants. Their scope determines where the bundle
 - Only existing su members can add or remove su members.
 - Stdin belongs to su and provides recovery access.
 
-## Private chats and migrated accounts
+## Private chats
 
-Private participants receive content grants in their original pair while they have a server group.
-Individual direct grants still add access.
+- Private participants receive content grants in their original pair while they have a server group.
+- Individual direct grants still add access.
 
-Additional explicit grants can extend these predefined bundles.
-Inspect actual grants before assuming fresh-account defaults.
+- Additional explicit grants can extend these predefined bundles.
+- Inspect actual grants before assuming fresh-account defaults.
 
 ## Manage groups
 
-```
+```text
 /permissions @groups
-/grant bob user support
-/revoke bob user support
+/grant bob user #support
+/revoke bob user #support
 ```
 
-See `/man grant` and `/man revoke` for authorization rules."#;
+- See `/man grant` and `/man revoke` for authorization rules."#;
 
 const SCOPES: &str = r#"# Scopes
 
-A scope is the place where a grant applies.
+- A scope is the place where a grant applies.
 
 ## Scope names
 
-- `support` — one room, identified internally by its stable ID.
+- `#support` — one room, identified internally by its stable ID.
 - `@global` — global access across all resource scopes.
 - `@account:alice` — one account, identified by its stable ID.
 - `@private:alice:bob` — an existing private pair, using its original participant IDs.
 
-Deleting and recreating an account or room does not restore its old grants.
-Resource names and message IDs are identifiers, not credentials.
+- Deleting and recreating an account or room does not restore its old grants.
+- Resource names and message IDs are identifiers, not credentials.
 
 ## Who can change each scope?
 
 - Only su can change global, account, or private grants.
 - Room managers can delegate their own participant permissions within their room.
-- Room owners can also delegate `x:member.add` and `/add` to let participants invite users.
+- Room owners can also delegate `x:member.add` and `/room add` to let participants invite users.
 
 ## Selected conversation and target
 
-The selected conversation is where you invoke a command. An explicit argument can select a different target.
-Both places must allow the command, and each affected target must allow the action.
-The Command view does not bypass target checks.
+- The selected conversation is where you invoke a command.
+- An explicit argument can select a different target.
+- Optional scopes use the selected conversation; Console/stdin use `@global`.
+- User metadata/lists and bots require an explicit room or `@global` in private views.
+- Grant/revoke keep explicit permission scopes; group assignments without a room stay global.
+- Both places must allow the command, and each affected target must allow the action.
+- The Command view does not bypass target checks.
 
-Cleanup across multiple conversations checks every target before changing any history.
+- Cleanup across multiple conversations checks every target before changing any history.
 
 ## Examples
 
-Read one room:
+- Read one room:
 
-```
-/grant bob support r:message.read
-/grant bob support /history
+```text
+/grant bob #support r:message.read
+/grant bob #support /history
 ```
 
-Reset Alice's password (grants issued by su):
+- Reset Alice's password (grants issued by su):
 
-```
+```text
 /grant bob @account:alice x:account.password.reset
-/grant bob @account:alice /reset
+/grant bob @account:alice /user
 ```
 
-Inspect an existing private pair (grants issued by su):
+- Inspect an existing private pair (grants issued by su):
 
-```
+```text
 /grant auditor @private:alice:bob r:message.read
 /grant auditor @private:alice:bob /history
 ```
 
-Command invocation still needs its own grant in the selected context. Use `/man grant` for the full rules."#;
+- Command invocation still needs its own grant in the selected context.
+- Use `/man grant` for the full rules."#;
 
 const SUDO: &str = r#"# /sudo
 
-Run one slash command with temporary superuser authority.
+- Run one slash command with temporary superuser authority.
 
 ## Usage
 
-```
+```text
 /sudo /command [arguments]
 ```
 
 ## Access required
 
-Both grants must apply at global scope. Only su can grant this authority:
+- Both grants must apply at global scope.
+- Only su can grant this authority:
 
-```
+```text
 /grant bob @global /sudo
 /grant bob @global x:command.sudo
 ```
 
-Neither grant alone permits elevation. User and admin groups do not include sudo;
-the su group includes both grants.
+- Neither grant alone permits elevation.
+- User and admin groups do not include sudo; the su group includes both grants.
 
 ## Examples
 
-```
-/sudo /new room support
-/sudo /join support
-/sudo /reset alice new-password
+```text
+/sudo /room new support
+/sudo /room join #support
+/sudo /user reset alice new-password
 /sudo /permissions @audit
 ```
 
-The wrapped command receives all su command and action permissions. It can manage
-su accounts and grant permanent privileges, so sudo delegates full superuser trust.
-The caller keeps their name and stable identity in messages, room ownership, and
-audit entries. Elevation does not itself change groups or persist any grants.
-Normal validation, storage rollback, and session checks still apply.
-`/sudo /join room` saves the caller's membership and room user grants, so they
-retain participant access after elevation ends. Output is the wrapped command's
-result or error.
+- The wrapped command receives all su command and action permissions.
+- It can manage su accounts and grant permanent privileges, so sudo delegates full superuser trust.
+- The caller keeps their name and stable identity in messages, room ownership, and audit entries.
+- Elevation does not itself change groups or persist any grants.
+- Normal validation, storage rollback, and session checks still apply.
+- `/sudo /room join room` saves the caller's membership and room user grants, so they retain participant access after elevation ends.
+- Output is the wrapped command's result or error.
 
-For password commands, both sudo grants are rechecked after hashing. Nested sudo
-and ordinary message text are rejected. Browser-local clear and logout complete
-in the requesting tab after the server authorizes sudo.
+- For password commands, both sudo grants are rechecked after hashing.
+- Nested sudo and ordinary message text are rejected.
+- Browser-local clear and logout complete in the requesting tab after the server authorizes sudo.
 
 ## Revoke
 
-```
+```text
 /revoke bob @global /sudo
 /revoke bob @global x:command.sudo
 ```
 
-Revoking either grant blocks future sudo commands. Explicit group assignments and
-other additive grants still apply."#;
+- Revoking either grant blocks future sudo commands.
+- Explicit group assignments and other additive grants still apply."#;
 
 const CONSOLE: &str = r#"# /console
 
-Open the Command view in this browser tab. There is no Command button in the sidebar.
+- Open the Command view in this browser tab.
+- There is no Command button in the sidebar.
 
 ## Usage
 
-```
+```text
 /console
 ```
 
-Accounts with no conversations start in this view automatically.
-Select a conversation in the sidebar, or use `/join room`, to leave it.
-Each view keeps its own command output until the tab is refreshed.
+- Accounts with no conversations start in this view automatically.
+- Select a conversation in the sidebar, or use `/room join room`, to leave it.
+- Each view keeps its own command output until the tab is refreshed.
 
 ## Access required
 
-The `/console` command grant must allow the selected context. The user group includes it by default.
-Opening the Command view does not add permissions. Commands still check their context, targets, and required actions.
-This command is available in the web UI only."#;
+- The `/console` command grant must allow the selected context.
+- The user group includes it by default.
+- Opening the Command view does not add permissions.
+- Commands still check their context, targets, and required actions.
+- This command is available in the web UI only."#;
 
 const OWNERSHIP: &str = r#"# Room ownership
 
-The person who creates a room owns it and receives participant and management grants.
+- The person who creates a room owns it and receives participant and management grants.
 
 ## Create and invite
 
-Creating a room requires `w:room.create` at global scope and the `/new` command grant.
-Creation saves the room, stable identity, ownership, and grants together.
+- Creating a room requires `w:room.create` at global scope and the `/room` command grant.
+- Creation saves the room, stable identity, ownership, and grants together.
 
-```
-/new room support
-/add bob support
+```text
+/room new support
+/room add bob #support
 ```
 
-New rooms are invitation-only. `/join` opens a room you already have access to.
-Su accounts and `/sudo /join room` callers can admit themselves, saving membership
-and room user grants. Ordinary joins do not add membership or grants.
-Another server admin does not automatically gain access to your new room.
+- New rooms are invitation-only.
+- `/room join` opens a room you already have access to.
+- Su accounts and `/sudo /room join room` callers can admit themselves, saving membership and room user grants.
+- Ordinary joins do not add membership or grants.
+- Another server admin does not automatically gain access to your new room.
 
 ## Owner permissions
 
 - Invite or remove participants.
 - Inspect and change participant grants.
-- Delegate invitations with both `x:member.add` and `/add`; see `/man grant` for the steps.
+- Delegate invitations with both `x:member.add` and `/room add`; see `/man grant` for the steps.
 - Clean history and delete the room.
 - Transfer ownership to another account.
 
-Ownership does not grant account/server management or permission to retract other authors' messages.
+- Ownership does not grant account/server management or permission to retract other authors' messages.
 
 ## Transfer ownership
 
-```
-/owner bob support
+```text
+/room owner bob #support
 ```
 
-This transfers ownership and its management grants. Existing participant access remains.
-An owner must transfer ownership before leaving or being kicked.
-Ordinary room managers, including the owner, must transfer ownership before revoking the owner's room user group. Su authority, including /sudo, can revoke it without a transfer.
+- This transfers ownership and its management grants.
+- Existing participant access remains.
+- An owner must transfer ownership before leaving or being kicked.
+- Ordinary room managers, including the owner, must transfer ownership before revoking the owner's room user group.
+- Su authority, including /sudo, can revoke it without a transfer.
 
 ## Recovery
 
-Disabling or deleting an owner returns the room to the console. su has global recovery access.
-Use `/permissions support` to inspect the room's grants."#;
+- Disabling or deleting an owner returns the room to the console. su has global recovery access.
+- Use `/permissions #support` to inspect the room's grants."#;
 
 const BOT: &str = r#"# /bot
 
-Manage bot accounts, tokens and external runtime settings. `[scope]` and `[key]` are optional.
+- Manage bot accounts, tokens and external runtime settings.
+- `[scope]` and `[key]` are optional.
 
 ## Accounts
 
@@ -666,7 +659,9 @@ Manage bot accounts, tokens and external runtime settings. `[scope]` and `[key]`
 - `/bot owner name user` — assign the bot owner by stable account identity.
 - `/bot rm name @global` — delete the account and its tokens.
 
-Scope defaults to the current room. Console/private views need an explicit room. Always write `@global` explicitly.
+- Scope defaults to the current room; Console/stdin use `@global`.
+- In private views, specify a room or `@global`.
+- Use `@global` explicitly to select global scope from a room.
 
 ## Tokens
 
@@ -674,24 +669,109 @@ Scope defaults to the current room. Console/private views need an explicit room.
 - `/bot token ls name` — list token IDs and labels.
 - `/bot token rm name token-id` — revoke a token and disconnect its sockets.
 
-Tokens follow the account's current grants.
+- Tokens follow the account's current grants.
 
-Configure an online worker through its advertised chat commands, such as
-`@helper /config get` and `@helper /config set prompt "Help with Rust questions."`.
-The worker validates settings and enforces its owner/admin policy.
+- Configure an online worker through its advertised chat commands, such as `@helper /config get` and `@helper /config set prompt "Help with Rust questions."`.
+- The worker validates settings and enforces its owner/admin policy.
 
 ## Permissions
 
 - Every operation needs `/bot` command access in its context and target.
 - Accounts/tokens: global admin, su or stdin; ordinary account/scope permissions also apply. Tokens require `x:bot.credentials`.
 
-Use `/grant`, `/revoke`, `/add`, `/kick`, `/disable`, `/enable` and `/rename` as for any user.
+- Use `/grant`, `/revoke`, `/room add`, `/room kick`, `/user disable`, `/user enable` and `/user rename` as for any user.
 
 ## Examples
 
-```
-/bot new helper support
+```text
+/bot new helper #support
 /bot token new helper worker
 @helper /config set prompt "Help with Rust questions."
 @helper /config get
 ```"#;
+
+const CLEAN: &str = r#"# /clean
+
+- Delete history older than an age in an explicit scope.
+- Both age and scope are required, even inside a room or private chat.
+
+## Usage
+
+```text
+/clean age scope [--dry-run]
+```
+
+## Scopes
+
+- `#support`: one room; the `#` prefix is required.
+- `@direct:bob`: your existing private chat with Bob; requires a signed-in account.
+- `@private:alice:bob`: one existing private pair, including authorized inspection.
+- `@private`: all existing private conversations.
+- `@global`: all rooms and private conversations.
+- `@all` remains an explicit alias for `@global`.
+- Missing private chats are rejected; cleanup never creates a conversation.
+
+## Examples
+
+```text
+/clean 30d #support --dry-run
+/clean 30d #support
+/clean 7d @direct:bob --dry-run
+/clean 7d @private:alice:bob
+/clean 30d @private
+/clean 30d @global --dry-run
+```
+
+## Permissions
+
+- Require `/clean` command access in the invocation context and every target.
+- Require `x:history.clean` on every target; existing minimum-age constraints apply.
+- Private participants do not receive cleanup authority automatically.
+- Su can delegate private cleanup through explicit grants:
+
+```text
+/grant alice @private:alice:bob /clean
+/grant alice @private:alice:bob x:history.clean
+```
+
+- Check all targets before counting or deleting; one denial rejects the entire batch.
+- Storage failures roll back message deletion, attachment references, revisions and audit changes.
+
+## Preview and results
+
+- `--dry-run` checks the same permissions and counts matching messages and attachment references.
+- Preview changes no messages, metadata, revisions or audit records.
+- Execution reports deleted messages and removed attachment references as Markdown bullets.
+- Shared attachments remain available while another retained message references them.
+- Unreferenced files are cleaned asynchronously; quota is released after confirmed storage deletion.
+- Cleanup does not change user metadata, grants or configured retention.
+"#;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    #[test]
+    fn every_manual_uses_bullets_for_explanations_and_fences_for_syntax() {
+        let mut topics = vec!["overview", "groups", "scopes", "ownership"];
+        topics.extend(
+            crate::commands::available(true, false)
+                .iter()
+                .map(|c| c.name),
+        );
+        for topic in topics {
+            let text = super::manual(Some(topic)).unwrap();
+            let mut fence = false;
+            for line in text.lines() {
+                if line.starts_with("```") {
+                    fence = !fence;
+                    continue;
+                }
+                assert!(
+                    fence || line.is_empty() || line.starts_with('#') || line.starts_with("- "),
+                    "{topic}: unformatted explanation: {line}"
+                );
+            }
+            assert!(!fence, "{topic}: unclosed code block");
+        }
+    }
+}

@@ -89,6 +89,11 @@ export function useMediaUploads(
         file.name,
         file.size,
         active.signal,
+        {
+          filename: encodeURIComponent(file.name).slice(0, 256),
+          ...(file.type ? { "content-type": file.type } : {}),
+          client: "commonroom-web",
+        },
       );
       if (!valid()) {
         abandon(ticket.media_id);

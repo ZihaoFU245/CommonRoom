@@ -464,73 +464,7 @@ impl Engine {
                 }
                 Ok(String::new())
             }
-            "/clean" => {
-                if !(2..=3).contains(&parts.len()) {
-                    return Err(
-                        "Usage: /clean age [room|@private|@all], e.g. /clean 7d @all".into(),
-                    );
-                }
-                let age = parse_age(parts[1])?;
-                let cutoff = now()
-                    .checked_sub(age)
-                    .ok_or("Age is older than the clock permits.")?;
-                let scope = parts.get(2).copied().or(context.view).unwrap_or("@all");
-                // Resolve and authorize every affected conversation before mutating any.
-                let scopes: Vec<_> = if scope == "@all" || scope == "@private" {
-                    self.data
-                        .private
-                        .keys()
-                        .map(|key| self.private_scope(key))
-                        .chain(
-                            self.data
-                                .rooms
-                                .values()
-                                .filter(|_| scope == "@all")
-                                .map(|r| Scope::Room(r.id.clone())),
-                        )
-                        .collect()
-                } else if let Some(key) = scope.strip_prefix("@private:") {
-                    if !self.data.private.contains_key(key) {
-                        return Err("Private conversation not found.".into());
-                    }
-                    vec![self.private_scope(key)]
-                } else if let Some(peer) = scope.strip_prefix("@direct:") {
-                    let key = private_key(author, peer);
-                    vec![self.private_scope(&key)]
-                } else {
-                    vec![self.room_scope(scope)?]
-                };
-                if scopes.is_empty() {
-                    self.require_clean(actor, &Scope::Server, age)?;
-                }
-                for target in &scopes {
-                    self.require_target_command(actor, target, parts[0])?;
-                    self.require_clean(actor, target, age)?;
-                }
-                let mut removed = 0;
-                for target in &scopes {
-                    let id = match target {
-                        Scope::Room(id) | Scope::Private(id) => id,
-                        _ => continue,
-                    };
-                    let count:usize=self.history_store.read(|db| db.query_row("SELECT count(*) FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2",params![id,cutoff],|r|r.get(0)).map_err(|e|e.to_string()))?;
-                    if count > 0 {
-                        self.pending_cleanups.push((id.clone(), cutoff));
-                        if let Some(room) = self.data.rooms.values_mut().find(|r| r.id == *id) {
-                            room.revision = room.revision.wrapping_add(1);
-                        }
-                        if let Some(chat) = self.data.private.values_mut().find(|c| c.id == *id) {
-                            chat.revision = chat.revision.wrapping_add(1);
-                        }
-                        removed += count;
-                    }
-                }
-                self.audit(actor, "/clean", scope);
-                Ok(format!(
-                    "Deleted {removed} messages older than {} from {scope}.",
-                    parts[1]
-                ))
-            }
+            "/clean" => self.apply_cleanup(context),
             "/tell" => {
                 if actor.is_none() {
                     return Err("Direct messages require a user account.".into());

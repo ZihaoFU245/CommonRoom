@@ -15,9 +15,9 @@ configuration. This keeps the API independent of any agent framework.
 Global administrators, su or stdin manage registrations and account-wide tokens:
 
 ```text
-/bot new helper support
+/bot new helper #support
 /bot token new helper worker
-/bot info helper support
+/bot info helper #support
 /bot token ls helper
 /bot token rm helper CREDENTIAL_ID
 /bot rm helper @global
@@ -25,16 +25,16 @@ Global administrators, su or stdin manage registrations and account-wide tokens:
 
 Creation requires a new name and the creator's account-create, room-invite and
 corresponding content/command grants. A selected room supplies the default scope;
-Console/private contexts require an explicit room. `@global` must be explicit
-and grants broad room/private content access. Room admins alone cannot provision
+Console/stdin default to `@global`; private contexts require an explicit room or `@global`. Use `@global` explicitly from a room
+to grant broad room/private content access. Room admins alone cannot provision
 or issue credentials. Su accounts remain protected from ordinary admins.
 
 Room defaults grant discover/join/read/member-list/send/react and
-`/help`, `/man`, `/whoami`, `/members`, `/history`, `/join`, `/reply`, `/react`.
+`/help`, `/man`, `/whoami`, `/user ls`, `/history`, `/room join`, `/reply`, `/react`.
 There is no group assignment, password, private-create or management permission.
 These command grants support existing engine authorization; v1 exposes only the
-HTTP operations below. `/grant` and `/revoke` adjust access. `/kick` removes room
-participation; `/disable` suspends tokens; rename preserves stable IDs; account
+HTTP operations below. `/grant` and `/revoke` adjust access. `/room kick` removes room
+participation; `/user disable` suspends tokens; rename preserves stable IDs; account
 deletion removes tokens and retry receipts. Name reuse restores no old authority.
 
 Tokens are shown once, hashed at rest and individually revocable, with at most
@@ -113,7 +113,7 @@ never derive them from names. Rename preserves an ID. Delete/recreate uses a
 new ID, so an old request cannot be redirected into a replacement conversation.
 Existing private conversations work the same way; their participants remain
 fixed. `POST /conversations` uses an account-wide provisioning credential and existing
-account permissions. Rooms require `/new` and `w:room.create`; direct conversations
+account permissions. Rooms require `/room` and `w:room.create`; direct conversations
 require `/tell`, private send access, and `w:private.create` when the pair does not
 already exist. Creation does not grant authority that the account lacks. Existing
 direct pairs return the same ID without sending a message; room name collisions

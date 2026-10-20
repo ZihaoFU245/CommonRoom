@@ -215,7 +215,7 @@ mod tests {
         let mut engine = Engine::open(path).unwrap();
         engine.execute(None, None, "/new room support").unwrap();
         engine
-            .execute(None, None, "/bot new helper support")
+            .execute(None, None, "/bot new helper #support")
             .unwrap();
         engine.execute(None, None, "/grant helper admin").unwrap();
         engine
@@ -321,48 +321,6 @@ mod tests {
         drop(engine);
         std::fs::remove_dir_all(dir).unwrap();
     }
-    #[test]
-    fn v9_migration_preserves_metadata_and_message_receipts_and_failed_ddl_rolls_back() {
-        let dir = std::env::temp_dir().join(format!("chat-v9-upgrade-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("chat.sqlite");
-        let engine = fixture(&path);
-        engine
-            .db
-            .lock()
-            .unwrap()
-            .execute_batch("DROP TABLE bot_command_receipts; UPDATE state SET json=json_set(json,'$.policy.audit',json(coalesce((SELECT json_group_array(json(json)) FROM (SELECT json FROM audit_entries ORDER BY sequence)),'[]'))); DROP TABLE audit_entries; DROP INDEX messages_reply; DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=9;")
-            .unwrap();
-        let before = engine.data.clone();
-        drop(engine);
-        let engine = Engine::open(&path).unwrap();
-        assert!(engine.data == before);
-        assert_eq!(
-            engine
-                .db
-                .lock()
-                .unwrap()
-                .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
-                .unwrap(),
-            15
-        );
-        engine
-            .db
-            .lock()
-            .unwrap()
-            .execute_batch("PRAGMA user_version=9;")
-            .unwrap();
-        drop(engine);
-        assert!(Engine::open(&path).is_err());
-        let db = Connection::open(&path).unwrap();
-        assert_eq!(
-            db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
-                .unwrap(),
-            9
-        );
-        drop(db);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }
 
 #[cfg(test)]
@@ -374,7 +332,7 @@ mod limits_tests {
         let mut engine = Engine::open(Path::new(":memory:")).unwrap();
         engine.execute(None, None, "/new room support").unwrap();
         engine
-            .execute(None, None, "/bot new helper support")
+            .execute(None, None, "/bot new helper #support")
             .unwrap();
         let account = engine.data.users["helper"].id.clone();
         let created = now();

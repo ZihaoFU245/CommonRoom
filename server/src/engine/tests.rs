@@ -5,8 +5,8 @@ pub(super) fn engine() -> Engine {
         e.provision(name, "test-hash".into(), admin, false).unwrap();
     }
     e.execute(Some("alice"), None, "/new room lobby").unwrap();
-    e.execute(Some("alice"), None, "/add bob lobby").unwrap();
-    e.execute(Some("alice"), None, "/add eve lobby").unwrap();
+    e.execute(Some("alice"), None, "/add bob #lobby").unwrap();
+    e.execute(Some("alice"), None, "/add eve #lobby").unwrap();
     e
 }
 pub(super) fn persisted_messages(e: &Engine, id: &str) -> VecDeque<Message> {
@@ -59,7 +59,8 @@ fn cleanup_respects_age_scope_permissions_and_persistence() {
                     .is_err()
             );
         }
-        e.execute(Some("alice"), Some("one"), "/clean 7d").unwrap();
+        e.execute(Some("alice"), Some("one"), "/clean 7d #one")
+            .unwrap();
         assert_eq!(room_messages(&e, "one").len(), 1);
         assert_eq!(room_messages(&e, "two").len(), 2);
         assert_eq!(private_messages(&e, "alice:bob").len(), 2);
@@ -114,7 +115,7 @@ fn private_rings_are_independent_and_read_positions_persist() {
         }
         e.set_limits(64, 64, 3).unwrap();
         e.execute(Some("alice"), None, "/new room room").unwrap();
-        e.execute(Some("alice"), None, "/add bob room").unwrap();
+        e.execute(Some("alice"), None, "/add bob #room").unwrap();
         for n in 0..5 {
             e.execute(Some("alice"), None, &format!("/tell bob 私信 {n} 🙂"))
                 .unwrap();
@@ -270,8 +271,8 @@ fn permissions_and_private_delivery() {
     let mut e = engine();
     assert!(e.execute(Some("bob"), None, "/new room secret").is_err());
     e.execute(Some("alice"), None, "/new room secret").unwrap();
-    assert!(e.execute(Some("bob"), None, "/join secret").is_err());
-    e.execute(Some("alice"), None, "/add bob secret").unwrap();
+    assert!(e.execute(Some("bob"), None, "/join #secret").is_err());
+    e.execute(Some("alice"), None, "/add bob #secret").unwrap();
     e.execute(Some("bob"), Some("secret"), "hello").unwrap();
     assert!(
         !e.snapshot("eve")
@@ -290,7 +291,7 @@ fn permissions_and_private_delivery() {
     assert!(!history.contains("other-private"));
     assert_eq!(e.snapshot("alice").unwrap().direct.len(), 1);
     assert_eq!(e.snapshot("eve").unwrap().direct.len(), 1);
-    e.execute(Some("alice"), None, "/kick bob secret").unwrap();
+    e.execute(Some("alice"), None, "/kick bob #secret").unwrap();
     assert!(e.execute(Some("bob"), Some("secret"), "blocked").is_err());
     assert!(e.execute(Some("eve"), None, "/disable bob").is_err());
 }
@@ -528,7 +529,7 @@ fn message_features_persist_and_rollback() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        15
+        16
     );
 }
 #[test]
@@ -618,7 +619,7 @@ fn delete_user_checks_permissions_and_cleans_references() {
     assert!(
         e.execute(Some("alice"), None, "/help")
             .unwrap()
-            .contains("/rm user name")
+            .contains("delete who")
     );
     e.execute(Some("bob"), Some("lobby"), "old room message")
         .unwrap();
@@ -811,7 +812,7 @@ fn history_tail_members_and_account_recovery() {
     e.execute(Some("alice"), None, "/new room private").unwrap();
     assert!(e.execute(Some("bob"), Some("private"), "/history").is_err());
     assert!(
-        e.execute(Some("bob"), Some("lobby"), "/members private")
+        e.execute(Some("bob"), Some("lobby"), "/members #private")
             .is_err()
     );
     e.execute(Some("bob"), None, "/tell   alice   spaced text")
@@ -865,9 +866,9 @@ fn retract_enforces_ownership_membership_and_private_visibility() {
     assert!(e.execute(Some("alice"), Some("lobby"), &command).is_err());
     e.execute(Some("alice"), Some("lobby"), &format!("/reply {id} reply"))
         .unwrap();
-    e.execute(Some("alice"), None, "/kick bob lobby").unwrap();
+    e.execute(Some("alice"), None, "/kick bob #lobby").unwrap();
     assert!(e.execute(Some("bob"), Some("lobby"), &command).is_err());
-    e.execute(Some("alice"), None, "/add bob lobby").unwrap();
+    e.execute(Some("alice"), None, "/add bob #lobby").unwrap();
     let revision = e.data.rooms["lobby"].revision;
     e.execute(Some("bob"), Some("lobby"), &command).unwrap();
     assert_eq!(e.data.rooms["lobby"].revision, revision + 1);
@@ -1250,7 +1251,6 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
                         scope: authorization::Scope::Server,
                         permissions: BTreeSet::from(["/delete".into()]),
                         minimum_age: 0,
-                        media: None,
                     });
                     e.db.lock()
                         .unwrap()
@@ -1284,7 +1284,7 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            15
+            16
         );
     }
 }
@@ -1440,28 +1440,28 @@ fn edits_enforce_ownership_scope_permissions_and_validation() {
         assert!(e.execute(Some("bob"), Some("lobby"), &text).is_err());
     }
     e.execute(Some("alice"), None, "/new room other").unwrap();
-    e.execute(Some("alice"), None, "/add bob other").unwrap();
+    e.execute(Some("alice"), None, "/add bob #other").unwrap();
     assert!(
         e.execute(Some("bob"), Some("other"), &format!("/edit {id} forbidden"))
             .is_err()
     );
-    e.execute(None, None, "/revoke bob user lobby").unwrap();
-    e.execute(None, None, "/grant bob lobby r:message.read")
+    e.execute(None, None, "/revoke bob user #lobby").unwrap();
+    e.execute(None, None, "/grant bob #lobby r:message.read")
         .unwrap();
-    e.execute(None, None, "/grant bob lobby /edit").unwrap();
+    e.execute(None, None, "/grant bob #lobby /edit").unwrap();
     assert!(
         e.execute(Some("bob"), Some("lobby"), &format!("/edit {id} forbidden"))
             .is_err()
     );
-    e.execute(None, None, "/grant bob lobby w:message.edit.own")
+    e.execute(None, None, "/grant bob #lobby w:message.edit.own")
         .unwrap();
-    e.execute(None, None, "/revoke bob lobby /edit").unwrap();
+    e.execute(None, None, "/revoke bob #lobby /edit").unwrap();
     assert!(
         e.execute(Some("bob"), Some("lobby"), &format!("/edit {id} forbidden"))
             .is_err()
     );
     assert_eq!(room_messages(&e, "lobby")[0].text, "original");
-    e.execute(None, None, "/grant bob lobby /edit").unwrap();
+    e.execute(None, None, "/grant bob #lobby /edit").unwrap();
     e.execute(
         Some("bob"),
         Some("lobby"),
@@ -1633,7 +1633,7 @@ fn edit_any_grants_survive_restart_and_revoke() {
         e.execute(Some("alice"), Some("team"), "original").unwrap();
         id = room_messages(&e, "team")[0].id.clone();
         for permission in ["w:message.edit.any", "r:message.read", "/edit"] {
-            e.execute(None, None, &format!("/grant eve team {permission}"))
+            e.execute(None, None, &format!("/grant eve #team {permission}"))
                 .unwrap();
         }
     }
@@ -1645,7 +1645,7 @@ fn edit_any_grants_survive_restart_and_revoke() {
     )
     .unwrap();
     assert_eq!(room_messages(&e, "team")[0].from, "alice");
-    e.execute(None, None, "/revoke eve team w:message.edit.any")
+    e.execute(None, None, "/revoke eve #team w:message.edit.any")
         .unwrap();
     assert!(
         e.execute(Some("eve"), Some("team"), &format!("/edit {id} denied"))
@@ -1808,48 +1808,6 @@ fn rename_only_rewrites_indexed_references_and_revises_affected_conversations() 
         .unwrap();
     assert!(plan.contains("SEARCH"), "{plan}");
 }
-#[test]
-fn v10_reference_migration_backfills_and_rolls_back_on_failure() {
-    for fail in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.sqlite");
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("alice", "hash".into(), true, false).unwrap();
-        e.execute(Some("alice"), None, "/new room team").unwrap();
-        e.execute(Some("alice"), Some("team"), "before migration")
-            .unwrap();
-        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.audit',json(coalesce((SELECT json_group_array(json(json)) FROM (SELECT json FROM audit_entries ORDER BY sequence)),'[]'))); DROP TABLE audit_entries; DROP INDEX messages_reply; DROP TRIGGER message_accounts_insert; DROP TRIGGER message_accounts_update; DROP TABLE message_accounts; DROP INDEX reactions_username; PRAGMA user_version=10;").unwrap();
-        if fail {
-            e.db.lock()
-                .unwrap()
-                .execute_batch("CREATE TABLE reactions_username(dummy);")
-                .unwrap();
-        }
-        drop(e);
-        if fail {
-            assert!(Engine::open(&path).is_err());
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                10
-            );
-            assert_eq!(
-                db.query_row::<u32, _, _>(
-                    "SELECT count(*) FROM sqlite_master WHERE name='message_accounts'",
-                    [],
-                    |r| r.get(0)
-                )
-                .unwrap(),
-                0
-            );
-        } else {
-            let mut e = Engine::open(&path).unwrap();
-            e.execute(Some("alice"), None, "/rename renamed").unwrap();
-            assert_eq!(room_messages(&e, "team")[0].from, "renamed");
-        }
-    }
-}
 
 #[test]
 fn maintenance_writes_only_target_revision_messages_and_append_only_audit() {
@@ -1879,7 +1837,7 @@ fn maintenance_writes_only_target_revision_messages_and_append_only_audit() {
     assert_eq!(room_messages(&e, "lobby").len(), 1);
     assert!(room_messages(&e, "lobby")[0].reply.is_none());
     age_first(&e, &e.data.rooms["lobby"].id);
-    e.execute(None, Some("lobby"), "/clean 7d").unwrap();
+    e.execute(None, Some("lobby"), "/clean 7d #lobby").unwrap();
     assert!(room_messages(&e, "lobby").is_empty());
     assert_eq!(
         e.db.lock()
@@ -1919,65 +1877,6 @@ fn audit_retention_appends_without_rewriting_policy_or_retained_entries() {
     assert_eq!(e.data.policy.audit.len(), 1000);
     assert_eq!(e.data.policy.audit.front().unwrap().target, "5");
     assert!(stored_data(&e) == e.data);
-}
-#[test]
-fn v11_audit_migration_preserves_entries_and_failed_ddl_rolls_back() {
-    for fail in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.sqlite");
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("alice", "hash".into(), true, false).unwrap();
-        let audit = e.data.policy.audit.clone();
-        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.audit',json((SELECT json_group_array(json_remove(json,'$.id')) FROM (SELECT json FROM audit_entries ORDER BY sequence)))); DROP TABLE audit_entries; PRAGMA user_version=11;").unwrap();
-        if !fail {
-            e.db.lock()
-                .unwrap()
-                .execute_batch("DROP INDEX messages_reply;")
-                .unwrap();
-        }
-        drop(e);
-        if fail {
-            assert!(Engine::open(&path).is_err());
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                11
-            );
-            assert_eq!(
-                db.query_row::<u32, _, _>(
-                    "SELECT count(*) FROM sqlite_master WHERE name='audit_entries'",
-                    [],
-                    |r| r.get(0)
-                )
-                .unwrap(),
-                0
-            );
-        } else {
-            let e = Engine::open(&path).unwrap();
-            assert!(e.data.policy.audit.iter().all(|entry| !entry.id.is_empty()));
-            let mut restored = e.data.policy.audit.clone();
-            let mut expected = audit;
-            for entry in &mut restored {
-                entry.id.clear();
-            }
-            for entry in &mut expected {
-                entry.id.clear();
-            }
-            assert!(restored == expected);
-            assert_eq!(
-                e.db.lock()
-                    .unwrap()
-                    .query_row::<usize, _, _>(
-                        "SELECT json_array_length(json,'$.policy.audit') FROM state",
-                        [],
-                        |r| r.get(0)
-                    )
-                    .unwrap(),
-                0
-            );
-        }
-    }
 }
 #[test]
 fn expired_sessions_are_not_loaded_and_login_removes_expired_disk_entries() {

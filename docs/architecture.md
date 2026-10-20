@@ -14,9 +14,11 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `storage.rs` | SQLite opening, transactional initialization, writer connection, bounded maintenance, cursors, checkpointing |
 | `history.rs` | Four read-only connections, keyset pagination, bounded page/unread caches and cache statistics |
 | `authorization.rs` and `authorization/` | Policy types, predefined bundles and compiled index; `access.rs` owns access checks/delegation, `commands.rs` owns policy inspection/mutations |
+| `objects.rs` | Object command listing, scoped account metadata, bulk metadata selection and validation |
 | `accounts.rs` | Account/session lifecycle, roles, provisioning, and account deletion |
 | `rooms.rs` | Room creation, deletion, invitations, joining, and leaving |
-| `messages.rs` | Message construction, private queues, reactions, replies, and cleanup |
+| `messages.rs` | Message construction, private queues, reactions and replies |
+| `cleanup.rs` | Explicit history cleanup scopes, authorization and read-only previews |
 | `queries.rs` | Authorization-filtered snapshots, history, directories, and unread calculations |
 | `dispatch.rs` | Input validation, command routing, and rollback on rejected/failed mutations |
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
@@ -90,11 +92,11 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v15; validated v9/v10/v11/v12/v13/v14 databases upgrade transactionally, and older schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v16; only HEAD v15 upgrades transactionally. Earlier schemas are rejected.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
-Schema v7 adds indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback clones metadata rather than history. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
+History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback clones metadata rather than history. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
 
 New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy changes use a full snapshot. Presence changes send only the authorized online directory, and extra tabs do not broadcast unchanged presence. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
 
@@ -129,7 +131,7 @@ received page remains usable during live revision churn, with a refresh status.
 Live snapshot tails enter the ledger even when paging fails. Read acknowledgements
 use one pending timer reading current state, so incoming messages cannot starve it.
 
-Schema v12 stores audit entries separately from policy JSON. Metadata saves write
+Audit entries are stored separately from policy JSON. Metadata saves write
 only changed entities; retraction and cleanup use targeted message/revision/audit
 transactions with rollback recovery. History pages batch reactions in one range
 query. Unread counts/first/bounds come from one SQL statement, seeking only the
@@ -170,8 +172,8 @@ measurement and reuses computed styles until layout/font changes.
 
 `web/media.rs` owns browser upload/config/completion/download HTTP adapters and
 background cleanup orchestration. `engine/media.rs` owns scoped authorization,
-compiled media grant constraints, configured quotas and media lifecycle; `engine/storage/media.rs` owns all media SQL,
-transactional message references, deletion claims and schema v15. `media.rs`
+scoped user metadata limits, configured quotas and media lifecycle; `engine/storage/media.rs` owns all media SQL,
+transactional message references, deletion claims and schema v16. `media.rs`
 provides the S3 transport through rust-s3. Storage network calls run outside engine
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
@@ -190,3 +192,16 @@ Preview validates authoritative metadata before loading bytes. Browser codecs
 handle playback; file signature classification uses a bounded 4 KiB S3 range
 without loading whole files or adding decoder libraries. HTML/SVG file previews
 reuse the existing isolated frame and opt-in policy rather than another renderer.
+
+Command replies share `ConsoleOutput.tsx` and the lazy `Manual.tsx` renderer.
+`features/conversation/manual.ts` formats output for display without changing
+wire payloads; `commandMarkdown.ts` tokenizes full Markdown with HTML and images
+disabled. The renderer creates Preact nodes and safe links directly, without
+HTML insertion, attachment loading or message-preview preferences. `/help` and
+manual usage derive complete invocations from the same server command catalogue.
+
+
+`engine/cleanup.rs` resolves explicit cleanup scopes, authorizes every target,
+and prepares counts before scheduling history deletion. Read-only previews use
+the same plan under the shared engine lock; execution commits through existing
+history-maintenance transactions and attachment reference triggers.

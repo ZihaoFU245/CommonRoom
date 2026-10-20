@@ -54,7 +54,9 @@ async fn execute_input_inner(
     let elevated = sudo_command(&input.text)?;
     let text = elevated.unwrap_or(&input.text);
     let sudo = elevated.is_some();
-    let parts: Vec<_> = text.split_whitespace().collect();
+    let command = text.split_whitespace().next().unwrap_or("");
+    let routed = crate::commands::route(text);
+    let parts: Vec<_> = routed.split_whitespace().collect();
     let provision = crate::commands::provision_command(&parts)?;
     if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
         return app.engine()?.with_command_authority(
@@ -119,7 +121,7 @@ async fn execute_input_inner(
         return Ok((reply, change));
     }
     if passwd && parts.len() != 3 {
-        return Err("Usage: /passwd old new".into());
+        return Err("Usage: /user passwd old new".into());
     }
     if input.text.len() > 4000 {
         return Err("Password commands support at most 4000 bytes.".into());
@@ -131,14 +133,14 @@ async fn execute_input_inner(
     let target_id = {
         let mut engine = app.engine()?;
         engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
-            engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
+            engine.require_command(Some(user), input.room.as_deref(), command)?;
             if passwd {
                 let scope = engine.account_target(Some(user), user, Action::Password)?;
-                engine.require_target_command(Some(user), &scope, parts[0])?;
+                engine.require_target_command(Some(user), &scope, command)?;
                 Ok(None)
             } else if reset {
                 let scope = engine.account_target(Some(user), name, Action::Reset)?;
-                engine.require_target_command(Some(user), &scope, parts[0])?;
+                engine.require_target_command(Some(user), &scope, command)?;
                 Ok(Some(
                     engine
                         .data
@@ -149,7 +151,7 @@ async fn execute_input_inner(
                         .clone(),
                 ))
             } else {
-                engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
+                engine.require_target_command(Some(user), &Scope::Server, command)?;
                 engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
                 if admin {
                     engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
@@ -200,9 +202,9 @@ async fn execute_input_inner(
     }
     engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
         if passwd {
-            engine.require_command(Some(user), input.room.as_deref(), "/passwd")?;
+            engine.require_command(Some(user), input.room.as_deref(), command)?;
             let scope = engine.account_target(Some(user), user, Action::Password)?;
-            engine.require_target_command(Some(user), &scope, parts[0])?;
+            engine.require_target_command(Some(user), &scope, command)?;
             return engine
                 .change_password(
                     user,
@@ -213,15 +215,15 @@ async fn execute_input_inner(
                 .map(|text| (text, Some(Change::All)));
         }
         // Recheck the command, action and target identity after hashing.
-        engine.require_command(Some(user), input.room.as_deref(), parts[0])?;
+        engine.require_command(Some(user), input.room.as_deref(), command)?;
         if reset {
             let scope = engine.account_target(Some(user), name, Action::Reset)?;
-            engine.require_target_command(Some(user), &scope, parts[0])?;
+            engine.require_target_command(Some(user), &scope, command)?;
             if engine.data.users.get(name).map(|u| &u.id) != target_id.as_ref() {
                 return Err("Account changed. Try again.".into());
             }
         } else {
-            engine.require_target_command(Some(user), &Scope::Server, parts[0])?;
+            engine.require_target_command(Some(user), &Scope::Server, command)?;
             engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
             if admin {
                 engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;

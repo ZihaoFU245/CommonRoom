@@ -18,22 +18,21 @@ su retains full authority.
 Use the existing policy commands:
 
 ```text
-/revoke bob files w:media.upload
-/grant bob files w:media.upload
+/revoke bob #files w:media.upload
+/grant bob #files w:media.upload
 /grant alice @global w:media.upload
-/grant bob files w:media.upload 26214400 7d
-/grant archivist files w:media.upload 26214400 -1
+/user set bob media.max_size 25m #files
+/user set bob media.max_age 7d #files
+/user set archivist media.max_age -1 #files
+/user set bob media.user_quota 100m @global
 ```
 
-Optional arguments are maximum bytes and maximum age (`s/m/h/d/w`, or `-1` for
-permanent). Omitted constraints use server media defaults. Grants are additive;
-a request must fit a single grant's size/age pair, with the server size ceiling
-always applied. Explicit media grants at the conversation scope replace its implicit default
-allowance; multiple explicit grants remain additive. `/grant` clears the room
-restriction and `/revoke` persists it across reconnects, group reassignments,
-renames and owner transfers. Room managers may delegate only upload limits they
-themselves hold; only su changes global/private/account grants. `/permissions` shows typed
-media constraints. Existing cleanup grants' minimum age remains independent.
+Grant/revoke only operate on permissions. User metadata supplies maximum file
+bytes, retention (s/m/h/d/w or -1 for permanent), and total account bytes. Room
+values override global values, then server defaults. Size/quota remain within
+server ceilings. `/grant` clears the room upload restriction; `/revoke` persists
+it across reconnects and renames. Only su may set or remove metadata limits; admins and room managers have
+inspection access only. `/user get bob #files` shows effective limits, including inherited values and defaults.
 
 Allocation persists a reservation before returning a five-minute presigned PUT
 URL, signing the exact declared size and `application/octet-stream`. Clients send
@@ -127,12 +126,12 @@ non-secret settings in `data/config.json` while stopped, then restart:
     "path_style": false
   },
   "media": {
-    "max_size": 26214400,
+    "max_size": "25m",
     "max_age": 604800,
     "pending_ttl": 86400,
     "cleanup_interval": 86400,
     "cleanup_batch": 32,
-    "user_quota": 1073741824,
+    "user_quota": "1g",
     "pending_limit": 8,
     "allocations_per_minute": 30
   }
@@ -140,7 +139,7 @@ non-secret settings in `data/config.json` while stopped, then restart:
 ```
 
 Times are seconds. `max_age` is the default maximum age, not a ceiling on explicit
-su-approved retention grants. `-1` disables age expiration, but not quotas or
+authorized user retention metadata. `-1` disables age expiration, but not quotas or
 cleanup after message references disappear. `max_size` is a hard chat ceiling;
 client validation reads it from the API. Per-grant size restrictions are also
 checked server-side. Pending slots include verified unsent objects; byte quota
@@ -293,10 +292,8 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite is v15; validated v9-v15 data upgrades transactionally. V13 media gains
-persisted expiry/publication/deletion state; existing referenced media receives
-seven-day expiry from its original creation time, preserving object keys. Back up
-the stopped database and corresponding bucket snapshot together.
+SQLite is v16. Only HEAD v15 upgrades transactionally; older schemas are rejected.
+The upgrade transfers media grant limits into scoped account metadata.
 
 ```sh
 rtk cargo build --locked
@@ -309,7 +306,7 @@ a private test bucket and ephemeral ports, and removes its own workspace. It
 checks signing, CORS, HTTP/WebSocket flow, verification, private download access,
 message references and retraction under a non-root base path. No external storage
 account is used. Unit tests cover grants, pending slots, retention, cancellation,
-cleanup claims, reference rollback, restart and migration failure. Provider URL
+cleanup claims, reference rollback, restart and HEAD upgrade failure. Provider URL
 construction tests supplement local integration; production AWS/R2 credentials,
 actual CORS/ingress policy and lifecycle behavior require deployment verification.
 
@@ -347,10 +344,27 @@ delete retains the row and quota. Final/staging retry timestamps prevent failed
 objects monopolizing subsequent batches. V15 adds partial due-set/tombstone
 indexes, a covering quota index, staging retry state, and reference-removal
 tracking. Mutable SQL columns are authoritative over legacy JSON state copies.
-V14 upgrades transactionally; earlier supported versions migrate directly to v15.
+
 
 Single PUT/copy uploads have a conservative portable 5,000,000,000-byte ceiling;
 provider/ingress limits may be lower. A PUT URL must be used within five minutes;
 that expiry does not terminate an already admitted transfer. The client uses a
 separate 15-minute transfer timeout, deduplicates progress at most 10 times per
 second, and creates local image previews only for files up to 4 MiB.
+
+## Client object hints
+
+Allocation accepts optional `hints`: filename, content-type, label, and client.
+Each value is 1–256 printable ASCII bytes with no surrounding spaces; encode
+Unicode filenames using percent encoding. Unknown keys, controls, extra entries,
+and oversized values are rejected before any quota reservation or storage I/O.
+The browser sends a percent-encoded filename, its declared MIME when available,
+and `commonroom-web` as client. These are inspection hints supplied by the client.
+
+The returned PUT headers include signed `x-amz-meta-client-<key>` fields. Send
+those headers exactly, and allow the four `x-amz-meta-client-` header names in
+bucket CORS, as listed in [Deployment](deployment.md#bucket-cors). Finalization
+uses [CopyObject metadata replacement](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html)
+to keep only the validated allocation hints, dropping arbitrary staging metadata.
+Hints never set trusted MIME, authorization, size, quota, retention, object paths
+or download response headers; normal server verification remains authoritative.

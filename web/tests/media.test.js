@@ -84,6 +84,7 @@ test("media API sends cookies only to CommonRoom and validates completion", asyn
     conversation_id: "room-id",
     filename: "photo.png",
     size: 123,
+    hints: {},
   });
   assert.equal(calls[1].options.credentials, "same-origin");
   assert.equal(calls[1].options.cache, "no-store");
@@ -124,12 +125,25 @@ test("direct upload omits chat cookies, reports progress and aborts", async (t) 
   const signal = new AbortController();
   const progress = [];
   const file = new File(["hello"], "file.txt");
-  const pending = uploadFile(ticket, file, signal.signal, (value) =>
+  const hintedTicket = {
+    ...ticket,
+    upload: {
+      ...ticket.upload,
+      headers: {
+        ...ticket.upload.headers,
+        "x-amz-meta-client-label": "file hint",
+      },
+    },
+  };
+  const pending = uploadFile(hintedTicket, file, signal.signal, (value) =>
     progress.push(value),
   );
   assert.equal(xhr.withCredentials, false);
   assert.equal(xhr.url, ticket.upload.url);
-  assert.deepEqual(xhr.headers, { "Content-Type": "application/octet-stream" });
+  assert.deepEqual(xhr.headers, {
+    "Content-Type": "application/octet-stream",
+    "x-amz-meta-client-label": "file hint",
+  });
   xhr.upload.onprogress({ lengthComputable: true, loaded: 3, total: 5 });
   assert.deepEqual(progress, [60]);
   signal.abort();
@@ -270,4 +284,31 @@ test("attachment paths share validation, malformed origins fail without throwing
   xhr.status = 200;
   xhr.onload();
   await pending;
+});
+
+test("upload hint headers are bounded and cannot inject cookies or server headers", () => {
+  const withHeaders = (headers) => ({
+    ...ticket,
+    upload: {
+      ...ticket.upload,
+      headers: { ...ticket.upload.headers, ...headers },
+    },
+  });
+  assert.ok(
+    isUploadTicket(
+      withHeaders({
+        "x-amz-meta-client-filename": "%E4%BD%A0.png",
+        "x-amz-meta-client-content-type": "text/html",
+      }),
+    ),
+  );
+  for (const headers of [
+    { Cookie: "session=secret" },
+    { Authorization: "Bearer secret" },
+    { "x-amz-meta-trusted-uploader": "forged" },
+    { "x-amz-meta-client-label": "bad\r\nheader: injected" },
+    { "x-amz-meta-client-label": "x".repeat(257) },
+    { "x-amz-meta-client-label": 42 },
+  ])
+    assert.equal(isUploadTicket(withHeaders(headers)), false);
 });

@@ -12,11 +12,11 @@ rtk cargo run --locked
 Create accounts in the server's stdin console:
 
 ```text
-/new user alice alice admin
-/new user bob bob user
-/new room demo
-/add alice demo
-/add bob demo
+/user new alice alice admin
+/user new bob bob user
+/room new demo
+/room add alice #demo
+/room add bob #demo
 ```
 
 Run the web development server in another terminal:

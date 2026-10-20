@@ -1,110 +1,134 @@
 # Commands
 
-## Using commands
+Type commands in the composer. `/help` lists commands permitted here; `/man user`,
+`/man room`, and `/man grant` explain syntax and authorization. Commands check both
+the selected context and the target. Output stays in this view and tab until reload.
+Passwords are masked. Enter sends, Shift+Enter adds a line, and Tab completes.
 
-Type commands in the composer. Enter sends, Shift + Enter adds a line, Tab accepts
-a suggestion, arrow keys choose one, and Escape closes the suggestions.
-`/help` lists commands permitted in the current context; `/man COMMAND` explains
-server command syntax and required grants. The server checks both the invocation context and
-the target. Opening `/console` adds no permissions. Accounts without conversations
-start in Command; select a conversation or use `/join ROOM` to return.
+## Users
 
-Commands and their replies stay in the originating view and tab. Reloading clears
-command output and reloads server history. `/clear` only clears the local display.
-Passwords are masked in local output and never logged. The URL remembers the
-selected conversation. Memberships and private peers come from the server on
-login, reconnect and foreground refresh.
+```text
+/user ls [scope]
+/user get who [key] [scope]
+/user set who key value [scope]
+/user rename [who] new-name
+/user new name password [user|admin]
+/user delete who
+/user disable who
+/user enable who
+/user passwd old-password new-password
+/user reset who password
+```
 
-## Syntax
+Omitted scope uses the selected room; Console/stdin use `@global`.
+In private views, specify a room or `@global` for user lists/metadata. `#support` names a room explicitly. `/user ls` lists its members using `r:member.list`;
+global listing requires `r:account.list`. `/user rename robert` renames yourself.
+Names use 1–32 Unicode characters without whitespace, controls, or ASCII
+punctuation except `_` and `-`.
 
-| Command | Who | Behavior |
-| --- | --- | --- |
-| `/ls [room\|user\|group\|@user\|@admin\|@su]` | Matching list grants | Default: rooms and own readable private pairs; user lists accounts; @group filters global assignments; group lists predefined bundles |
-| `/new room NAME` or `/new user NAME PASSWORD [user\|admin]` | Room/account-create grant | Create an invitation-only room or account; admin assignment needs its own grant |
-| `/rm room NAME` or `/rm user NAME` | Room/account-delete grant | Permanently remove the target; web asks for confirmation |
-| `/rm group USER GROUP [ROOM]` | Group management grants | Remove an assignment; other assignments and direct grants still apply |
-| `/alias A B` | Web only | Replace one command prefix; save the mapping in this browser |
-| `/help` | Authorized commands | Show commands permitted in the current context |
-| `/man [command\|topic]` | Manual command grant | Read manuals: grant, revoke, permissions, groups, scopes, ownership, or any server command |
-| `/whoami` | Accounts/stdin | Show name and group label (`user`, `admin`, `su`) |
-| `/console` | Web command grant | Open the Command view in this tab; does not add permissions |
-| `/sudo /command [arguments]` | Global `/sudo` and `x:command.sudo` grants | Execute one command with su authority while retaining the caller's identity |
-| `/permissions [scope]` | Accounts/stdin | Inspect effective grants; `@groups` lists predefined bundles, `@audit` requires su |
-| `/grant user group [room]` or `/grant user scope permission [minimum-age]` | Scoped grant/group managers | Assign a predefined group or add a direct action/command grant; `/man grant` explains |
-| `/revoke user group [room]` or `/revoke user scope permission` | Scoped grant/group managers | Remove a group assignment or direct permission; `/man revoke` explains |
-| `/owner user [room]` | Room management grants | Transfer room ownership |
-| `/debug on\|off` | Metadata grant | Toggle expandable details for readable messages in this tab |
-| `/rename room name new-name`, `/rename user name new-name`, or `/rename [user] new-name` | Scoped room rename or own/any account rename grant | Rename a room or account; preserve identity, history and read positions |
-| `/passwd old new` | Own-password grant | Change password and sign out other sessions |
-| `/members [room]` | Member-list grant | List authorized conversation participants |
-| `/history [start end]` or `/history #room` | Read and command grants | Read inclusive sequence range; default latest 100, maximum 100 per page |
-| `/join room` | Read/join grants | Open an authorized room; su and sudo also save participant membership |
-| `/leave [room]` | Accounts | Remove own room access; owners must transfer first |
-| `/tell user message` | Private-send grants | Send within a private conversation |
-| `/react message-id reaction` | Read/reaction grants | Toggle a reaction on a message in the selected conversation |
-| `/retract message-id` | Read/retract grants | Retract own messages; su has permission to retract any message |
-| `/reply message-id message` | Read/write grants | Reply within the selected conversation |
-| `/add user [room]` | Room-invite grant | Add participant with room user grants |
-| `/kick user [room]` | Room-remove grant | Remove participant and direct room grants |
-| `/configs` | Configuration grant | Print active configuration; changes require restart |
-| `/clean age [scope]` | Scoped cleanup grants | Authorize every target before deleting old messages; units s/m/h/d/w |
-| `/clear` | Web command grant | Clear visible local history; refresh restores persisted history |
-| `/logout` | Web | Sign out |
-| `/reset name password` | Explicit password-reset grant | Reset password and revoke sessions; ordinary admins have no default reset grant |
-| `/disable name` | Account-disable grant | Disable, revoke sessions and remove room access |
-| `/enable name` | Account-enable grant | Enable without restoring room access |
+Each account has a metadata list per scope. `/user get bob` returns Bob's list in the current scope; `/user get @all #support` returns every member's effective list in
+that room. A key narrows the result. Metadata never includes passwords, sessions,
+or grants, and is not included in broadcast snapshots. Read your own metadata;
+other users require `r:account.metadata` at global/account scope or room policy
+management. Only su can set, remove or bulk-update metadata. Global admins
+receive `r:account.metadata` for reading; room policy managers may inspect their
+members' room metadata. `x:account.metadata` remains reserved for su, and an
+explicit write flag does not bypass this restriction. Stdin and authorized
+`/sudo` commands act with su authority.
 
-## Browser aliases
+```text
+/user set bob media.max_size 10m #support
+/user set @all media.max_age 7d #support
+/user set bob media.user_quota 100m @global
+/user set bob label reviewer
+/user set bob label @unset
+```
 
-`/alias rooms /ls room` makes `/rooms` run `/ls room`. A accepts a command name
-with an optional leading slash; B accepts a command and subcommand. Repeating A
-replaces its mapping. Expansion happens once, preserves following arguments,
-and also works inside `/sudo`; it never adds server permissions. `/alias` and
-`/sudo` themselves cannot be remapped.
+Keys use 1–64 lowercase letters, digits, `.`, `_`, or `-`. Values are single tokens
+up to 256 UTF-8 bytes without controls; each scope holds at most 32 keys. `@unset`
+removes a key. `media.max_size` means bytes per file, `media.max_age` accepts
+s/m/h/d/w durations or `-1` for permanent, and `media.user_quota` is a global
+account byte quota. Positive size/quota values cannot exceed server ceilings.
+Room media values override global values, then server defaults; getters show
+effective media values, including inherited values and server defaults. Only su may change limits, within the server ceilings.
+Unknown `media.*` keys are rejected. Custom keys never change permissions. `/user get bob @all` reads all keys;
+`/user get @all @all` reads all users and keys in the selected scope.
 
-Mappings use localStorage, survive refresh, and are shared by accounts in the
-same browser profile. Settings → Alias lets you add, edit, or remove mappings.
-Storage failures are reported. Web `/rm` and `/retract`
-commands, including aliases and sudo, ask for confirmation before sending.
-Stdin removals execute directly. Old command syntax is unsupported; stored-grant
-updates are described in [Data](data.md).
+Account rename preserves identity, metadata, history and cursors. Deletion
+revokes sessions and removes private conversations, retaining room messages as
+`name (deleted)`. Reusing a name inherits no old data. Ordinary admins cannot
+delete themselves or the last active admin; password resets need explicit rights.
 
-## Rooms, accounts and cleanup
+## Rooms
 
-New rooms are invitation-only. Creation assigns ownership and grants; `/join`
-opens an authorized room without creating membership for ordinary accounts.
-Superusers, including `/sudo /join room` callers, join as persisted participants
-with room user grants. There is no default room;
-existing rooms, including `lobby`, can be removed. Owners must transfer ownership
-before leaving or being kicked. Only su can manage a su account. Ordinary admins
-cannot delete themselves or the last active admin.
+```text
+/room ls
+/room new #name
+/room delete #name
+/room rename #name new-name
+/room join #name
+/room leave [#name]
+/room add who [#name]
+/room kick who [#name]
+/room owner who [#name]
+```
 
-`/rm user bob` removes Bob's account and private pairs for both participants.
-Room messages and reply quotes remain with author `bob (deleted)`. The name and
-user-limit slot become available; a replacement account inherits no old access,
-DMs, sessions or read positions. Use `/disable` for reversible suspension.
-Groups are fixed bundles; `/rm group` removes an assignment, not the bundle.
+Explicit room scopes require `#name`. Listing shows global rooms you can discover/read.
+New rooms are invitation-only, with ownership and participant/management grants
+assigned to the creator. Each operation requires its matching action grant. `/room add bob` invites Bob
+to the selected room; `/room add bob #support` names a target explicitly.
+`add`, `kick`, `owner` and `leave` all allow the room argument to be omitted.
+Ordinary joins open authorized rooms; su and sudo joins also save membership.
+Owners must transfer before leaving or being removed. Rename preserves identity,
+scoped metadata, history, grants and cursors. Deletion removes room metadata;
+reusing the name starts fresh. Browser deletion asks for confirmation before sending.
 
-`/clean 7d ROOM`, `/clean 24h @private`, and `/clean 7d @all` remove messages
-older than the specified UTC age (units s/m/h/d/w). Without a scope, cleanup uses
-the selected room, or all messages in Command/stdin. It preserves accounts,
-rooms and memberships. `/configs` shows active configuration; edit
-`data/config.json` while stopped and restart to apply changes. See
-[Security](security.md) for delegation, ownership and conditional cleanup grants.
+## Grants and bulk selection
 
-Names contain 1–32 Unicode characters, including Chinese, accents, combining
-marks and emoji. Whitespace, controls and ASCII punctuation other than `_` and
-`-` are excluded to keep command, mention and conversation syntax unambiguous.
+```text
+/grant user|@all group [#room]
+/grant user|@all scope permission [minimum-age]
+/revoke user|@all group [#room]
+/revoke user|@all scope permission
+```
 
-Use `/rename room support helpdesk` for rooms and `/rename user bob robert`
-for accounts. `/rename robert` still renames yourself, and `/rename bob robert`
-still targets an account. Room renaming requires `/rename` in the selected
-context and on the target, plus `x:room.rename` on the target room. It preserves
-ownership, membership, grants, history and unread/read positions on all devices.
-New or transferred room owners and scoped room admins receive that action;
-ordinary participants and global admins do not receive it for other rooms.
-Existing explicit owner grants are preserved. Su can add missing rights with
-`/grant owner support x:room.rename` and `/grant owner support /rename`.
+`@all` selects every active account globally, or all active members of the named
+room. Grant/revoke retain explicit direct-permission scopes; group assignments
+without a room remain global. For example `/grant @all #support w:media.upload` restores room uploads and
+`/revoke @all #support /reply` removes direct reply-command grants. Existing group
+rights still apply. All targets are authorized against the original policy;
+any rejection or failed database write rolls back the complete batch. Protected
+su accounts, ownership, delegation and last-active-admin checks still apply.
+Metadata `@all` similarly includes every account/member in its scope (including
+disabled accounts). No selector silently skips protected users.
+
+Grant/revoke only change access. Upload size, retention and byte quota belong in
+`/user set`; extra media arguments on `/grant` are rejected. Cleanup's existing
+minimum-age permission constraint remains supported. See `/man permissions`,
+`/man groups`, and `/man scopes` for action/command grants and predefined bundles.
+
+## Other commands and browser aliases
+
+Message commands (`/tell`, `/history`, `/reply`, `/react`, `/edit`, `/retract`),
+`/permissions`, `/sudo`, `/bot`, `/configs`, `/clean`, `/debug`, `/whoami`,
+`/console`, `/clear`, `/logout`, `/help` and `/man` retain their purposes.
+`/clean age scope [--dry-run]` always requires an explicit scope. Use `#ROOM`,
+`@direct:USER` for your existing private chat, `@private:a:b` for one pair,
+`@private` for all private chats, or `@global` for all conversations. `@all` is
+an explicit global alias. Both `/clean` and `x:history.clean` must allow every
+target, including private chats; participants have no cleanup permission by
+default. Su may delegate private cleanup with explicit command and action grants.
+`--dry-run` checks access and counts messages/references without database writes.
+Execution deletes matching history atomically; any denied target or failed
+storage write rejects the whole operation. Reports distinguish message/reference
+removal from later storage cleanup and quota release. Shared media remains while
+retained messages reference it. See `/man clean` for examples. Configuration changes require a restart.
+
+`/alias rooms /room ls` saves a browser command prefix. Expansion happens once,
+preserves arguments, and works inside `/sudo`; it never adds permissions.
+Settings → Alias manages mappings in localStorage, shared by accounts in that
+browser profile. `/alias` and `/sudo` cannot be remapped. Deletes and retractions,
+including aliases and sudo, ask for browser confirmation; stdin acts directly.
 
 ## Messages and settings
 
@@ -133,9 +157,12 @@ opens its conversation; private previews appear only after opting in.
 The bell shows a slash while muted. Click the enabled bell to mute immediately;
 click the muted bell to enable notifications. Blocked permission is reported
 with instructions to change the browser's site settings.
-Composer suggestions show command syntax only; use `/man` for descriptions.
+Composer suggestions show one level at a time: `/u` offers `/user`,
+`/user ` offers subcommands, and `/user ls ` offers scopes. Free-form arguments
+show no fallback wall of syntax; use `/man` for usage and permission details.
 All matching suggestions remain available in a scrollable list. Up/Down selects
-a match, Tab completes it, and repeated Tab cycles the matches. Shift+Tab moves
+a match, Tab completes it, and repeated Tab cycles argument matches. Choosing a command or subcommand
+advances to its next level. Shift+Tab moves
 focus backward. Completion replaces the token at the cursor and preserves
 following text. Command arguments suggest known users, rooms, scopes, permissions,
 retained message IDs/reactions, and bot subcommands. New names, passwords, bot
@@ -150,7 +177,7 @@ The transcript displays the mention followed by the complete command and
 arguments as literal code, including when Markdown is enabled. The invocation
 is an ordinary room message visible to all authorized readers.
 
-Settings opens Account with `/rename` and `/passwd` forms. Appearance controls
+Settings opens Account with `/user rename` and `/user passwd` forms. Appearance controls
 light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 (12–18px); preferences stay in this browser. Reset restores defaults. Theme
 applies before rendering, and palette text contrast is at least 4.5:1.
@@ -178,7 +205,7 @@ outside or press Escape to close it.
 
 ## Bot management
 
-Lifecycle and credential subcommands require global admins, su or stdin. `/bot new name` defaults to the selected room; Console/private views require an explicit room, and global scope always requires `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /kick to remove room participation.
+Lifecycle and credential subcommands require global admins, su or stdin. `/bot new name` defaults to the selected room; Console/stdin default to `@global`; private views require an explicit room or `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /room kick to remove room participation.
 
 Credentials are account-wide: `/bot token new name label` shows a secret once, `/bot token ls name` lists IDs/labels/creation times, and `/bot token rm name id` revokes one. Token management requires x:bot.credentials and respects protected-su targets. Use /man bot or [Bots](bots.md) for the full contract. Configure workers using their advertised chat commands, such as `@helper /config get` and `@helper /config set key "value"`. The worker enforces its owner/admin policy; /bot does not launch agents.
 
@@ -278,11 +305,45 @@ server grants. Set `autonomous` to `"false"` to restore mention-only room input.
 `model.maxToolCalls` defaults to 32 (range 1–128); explicitly update older saved
 limits with `@SimpleBot /config set model.maxToolCalls "32"`.
 
-Media grants also accept `/grant user scope w:media.upload [max-bytes] [max-age]`.
-Age uses s/m/h/d/w, or -1 for permanent retention. See [Media uploads](media-uploads.md)
-for default room/private uploads, delegation limits and independent S3 configuration.
+Media sizes and account quotas use metadata. `k`, `m`, `g` mean powers of
+1024 (case-insensitive): `512k`, `25m`, `1g`. Config media size/quota fields
+use the same string notation. `/user get` lists effective media limits even
+when no override is stored; unrelated global custom metadata stays private.
 
 Room members can upload by default. Owners can block a member's uploads with
-`/revoke user room w:media.upload`, and restore them with `/grant user room
-w:media.upload`. This room restriction overrides upload grants there (except su),
+`/revoke user #room w:media.upload`, and restore them with `/grant user #room w:media.upload`. This room restriction overrides upload grants there (except su),
 while leaving text and read permissions unchanged.
+
+## Command output formatting
+
+All command replies use the same Markdown display, independently of the message
+Markdown preference. Help groups commands by category and lists each full
+subcommand on its own line. Manuals support headings, nested and numbered lists,
+tables, emphasis, links and language-labelled code fences.
+
+User/room lists and bot details receive headings and readable lists. Configuration appears as formatted JSON; user
+metadata appears as per-user key/value lists; history and credentials
+remain literal code blocks. Errors and ordinary acknowledgements preserve their
+text without interpreting user-provided Markdown. HTML stays text, images do not
+load, and command output never opens an HTML or attachment preview. Code blocks
+and tables scroll within the output on narrow screens; inline syntax wraps.
+
+Only presentation changes for structured results: wire-level JSON, history and
+credential text remain intact for API consumers and copy/paste.
+
+List headings identify their scope: `/user ls #support` starts with **Users in
+#support**; `/user ls` uses the originating room, and global lists say
+**Users globally**. Metadata headings identify the target users and scope.
+Manual explanations use short Markdown bullets under headings, with separate
+syntax/example code blocks. Errors use the public `/user` and `/room` syntax.
+
+Scope defaults apply to user lists/metadata, bot new/list/info,
+permissions and history. Cleanup requires an explicit scope, including in
+Console, rooms and private views. Room discovery, account lifecycle, bot credentials and
+server configuration remain inherently global operations. Room membership
+commands use the selected room and require a named room in Console/private views.
+
+`/user set bob media.user_quota 1g` updates global account quota when scope is
+omitted; explicit room scopes cannot hold account-wide quota. For bulk quota
+updates, `@all` still selects members of the current room (all accounts in
+Console). Only su can execute these metadata updates.

@@ -177,6 +177,17 @@ async function send(
   escaped = false,
   markdown = false,
 ) {
+  // Stay below the server's per-socket fixed-window budget as coverage grows.
+  client.sendTimes ??= [];
+  client.sendTimes = client.sendTimes.filter(
+    (time) => Date.now() - time < 10200,
+  );
+  if (client.sendTimes.length >= 30)
+    await pause(10200 - (Date.now() - client.sendTimes[0]));
+  client.sendTimes = client.sendTimes.filter(
+    (time) => Date.now() - time < 10200,
+  );
+  client.sendTimes.push(Date.now());
   const id = ++client.serial;
   const frame = JSON.stringify({ id, room, text, markdown });
   client.ws.send(escaped ? frame.replaceAll("🙂", "\\ud83d\\ude42") : frame);
@@ -209,14 +220,14 @@ try {
     ["bob", "user"],
     ["eve", "user"],
   ]) {
-    child.stdin.write(`/new user ${name} ${name}-long-password ${role}\n`);
+    child.stdin.write(`/user new ${name} ${name}-long-password ${role}\n`);
     await until(
       () => logs.includes(`Account ${name} created.`),
       `provision ${name}`,
     );
   }
   child.stdin.write(
-    "/grant alice @global x:account.password.reset\n/grant alice @global /reset\n",
+    "/grant alice @global x:account.password.reset\n/grant alice @global /user\n",
   );
   await until(
     () => logs.includes("Grant updated."),
@@ -250,7 +261,7 @@ try {
     eve = await connect(cookies.eve);
   // Rename must preserve both live sockets and the original session cookies.
   const renameTab = await connect(cookies.bob);
-  await send(bob, "/rename user bob 测试用户🙂");
+  await send(bob, "/user rename bob 测试用户🙂");
   await until(
     () =>
       bob.snapshot.username === "测试用户🙂" &&
@@ -266,7 +277,7 @@ try {
     renameTab.frames.find((frame) => frame.id === renameTab.serial).text,
     /Name: 测试用户🙂/,
   );
-  await send(renameTab, "/rename bob");
+  await send(renameTab, "/user rename bob");
   await until(
     () =>
       bob.snapshot.username === "bob" && renameTab.snapshot.username === "bob",
@@ -345,7 +356,7 @@ try {
   await send(alice, "/help");
   const help = alice.frames.find((f) => f.id === alice.serial).text;
   assert.ok(help.split("\n").length > 10);
-  assert.ok(help.includes("/reset"));
+  assert.ok(help.includes("reset who password"));
   await until(
     () => alice.snapshot.online.includes("bob"),
     "online presence broadcast",
@@ -377,13 +388,13 @@ try {
     [],
     "unmessaged accounts are not private contacts",
   );
-  await send(bob, "/new user denied abc", null, "error");
-  await send(bob, "/reset alice abc", null, "error");
-  await send(bob, "/disable alice", null, "error");
-  await send(bob, "/enable alice", null, "error");
-  await send(alice, "/new user carol abc", null);
-  await send(alice, "/new user dave abc", null, "error");
-  child.stdin.write("/new user dave abc\n");
+  await send(bob, "/user new denied abc", null, "error");
+  await send(bob, "/user reset alice abc", null, "error");
+  await send(bob, "/user disable alice", null, "error");
+  await send(bob, "/user enable alice", null, "error");
+  await send(alice, "/user new carol abc", null);
+  await send(alice, "/user new dave abc", null, "error");
+  child.stdin.write("/user new dave abc\n");
   await until(
     () => logs.includes("User limit reached (4)."),
     "stdin user limit",
@@ -395,7 +406,7 @@ try {
     () => alice.snapshot.online.includes("carol"),
     "new account online",
   );
-  await send(alice, "/reset carol xyz", null);
+  await send(alice, "/user reset carol xyz", null);
   await until(
     () => carol.ws.readyState === WebSocket.CLOSED,
     "admin password reset revokes sessions",
@@ -404,17 +415,17 @@ try {
   const carol2 = await connect(await login("carol", "xyz"));
   const carol3Cookie = await login("carol", "xyz");
   const carol3 = await connect(carol3Cookie);
-  await send(carol2, "/passwd wrong abc", null, "error");
-  await send(carol2, "/passwd xyz abc", null);
+  await send(carol2, "/user passwd wrong abc", null, "error");
+  await send(carol2, "/user passwd xyz abc", null);
   await until(
     () => carol3.ws.readyState === WebSocket.CLOSED,
     "password change revokes other sessions",
   );
   assert.equal((await request("me", carol3Cookie)).status, 401);
   await send(carol2, "/whoami", null);
-  await send(alice, "/disable carol", null);
-  await send(alice, "/enable carol", null);
-  await send(alice, "/disable alice", null, "error");
+  await send(alice, "/user disable carol", null);
+  await send(alice, "/user enable carol", null);
+  await send(alice, "/user disable alice", null, "error");
   await send(alice, "/grant bob");
   await until(() => bob.snapshot.admin, "live admin grant");
   await send(bob, "/whoami");
@@ -433,20 +444,60 @@ try {
     0,
     "commands must not enter persisted chat history",
   );
-  await send(bob, "/new room forbidden", null, "error");
-  await send(alice, "/new room study");
-  await send(alice, "/new room overflow", null, "error");
-  child.stdin.write("/new room overflow\n");
+  await send(bob, "/room new forbidden", null, "error");
+  await send(alice, "/room new study");
+  await send(alice, "/room new overflow", null, "error");
+  child.stdin.write("/room new overflow\n");
   await until(
     () => logs.includes("Room limit reached (1)."),
     "stdin room limit",
   );
-  await send(bob, "/join study", null, "error");
-  await send(alice, "/add bob study");
+  await send(bob, "/room join #study", null, "error");
+  await send(alice, "/room add bob #study");
   await until(
     () => bob.snapshot.rooms.some((r) => r.name === "study"),
     "membership delivery",
   );
+  await send(alice, "/user set @all label shared", "study", "error");
+  child.stdin.write("/user set @all label shared #study\n");
+  await until(
+    () => logs.includes("Updated metadata for 2 users."),
+    "su metadata seed",
+  );
+  await send(alice, "/user get @all", "study");
+  const metadata = JSON.parse(
+    alice.frames.find((frame) => frame.id === alice.serial).text,
+  );
+  assert.deepEqual(Object.keys(metadata), ["alice", "bob"]);
+  assert.equal(metadata.bob.label, "shared");
+  await send(bob, "/user ls", "study");
+  assert.equal(
+    bob.frames.find((frame) => frame.id === bob.serial).text,
+    "alice\nbob",
+  );
+  await send(alice, "/user get bob @global", "study");
+  const globalMetadata = JSON.parse(
+    alice.frames.find((frame) => frame.id === alice.serial).text,
+  );
+  assert.equal(globalMetadata.bob["media.user_quota"], "1073741824");
+  assert.equal(globalMetadata.bob.label, undefined);
+  await send(alice, "/user set bob media.user_quota 512m", "study", "error");
+  child.stdin.write("/user set bob media.user_quota 512m\n");
+  await until(
+    () => logs.includes("Updated metadata for 1 users."),
+    "su quota update",
+  );
+  await send(bob, "/user get bob @all", "study");
+  assert.equal(
+    JSON.parse(bob.frames.find((frame) => frame.id === bob.serial).text).bob[
+      "media.user_quota"
+    ],
+    "536870912",
+  );
+  await send(alice, "/grant bob study w:message.react", "study", "error");
+  await send(bob, "/user get @all", "study", "error");
+  await send(alice, "/grant @all #study w:message.react", "study");
+  await send(alice, "/revoke @all #study w:message.react", "study");
   await send(bob, "a retained room message", "study");
   const multilingual = "你好 日本語 한국어 مرحبا नमस्ते Привет שלום 🙂 e\u0301";
   await send(bob, multilingual, "study", "notice", false, true);
@@ -511,9 +562,9 @@ try {
     through: roomReply.sequence,
   });
   assert.equal(readRoom.status, 200);
-  await send(bob, "/rename room study denied", "study", "error");
-  await send(eve, "/rename room study denied", null, "error");
-  await send(alice, "/rename room study 学习🚀", "study");
+  await send(bob, "/room rename #study denied", "study", "error");
+  await send(eve, "/room rename #study denied", null, "error");
+  await send(alice, "/room rename #study 学习🚀", "study");
   await until(
     () =>
       [alice, bob].every(
@@ -540,7 +591,7 @@ try {
     200,
   );
   await send(bob, "after room rename", "学习🚀");
-  await send(alice, "/rename room 学习🚀 study", "学习🚀");
+  await send(alice, "/room rename #学习🚀 study", "学习🚀");
   await until(
     () =>
       [alice, bob].every((client) =>
@@ -587,7 +638,7 @@ try {
     true,
   );
   await send(bob, `/edit ${roomMessageId} ${multilingual}`, "study");
-  child.stdin.write("/grant alice study w:message.edit.any\n");
+  child.stdin.write("/grant alice #study w:message.edit.any\n");
   await until(
     () =>
       alice.snapshot.rooms
@@ -610,7 +661,7 @@ try {
       .messages.find((m) => m.id === roomMessageId).from,
     "bob",
   );
-  child.stdin.write("/revoke alice study w:message.edit.any\n");
+  child.stdin.write("/revoke alice #study w:message.edit.any\n");
   await until(
     () =>
       !alice.snapshot.rooms
@@ -732,6 +783,54 @@ try {
     () => !alice.snapshot.direct.some((m) => m.id === retractPrivateId),
     "private deletion broadcast",
   );
+  await send(alice, "/clean 7d", "@direct:bob", "error");
+  await send(alice, "/clean 7d @direct:bob --dry-run", null, "error");
+  child.stdin.write(
+    "/grant alice @private:alice:bob /clean\n/grant alice @private:alice:bob x:history.clean\n",
+  );
+  await until(
+    () =>
+      alice.snapshot.private_access["@direct:bob"]?.permissions.includes(
+        "x:history.clean",
+      ),
+    "private cleanup grants",
+  );
+  const privateRevision = (
+    await (await request("history?view=%40direct%3Abob", cookies.alice)).json()
+  ).revision;
+  assert.ok(Number.isSafeInteger(privateRevision));
+  await send(alice, "/clean 7d @direct:bob --dry-run", "@direct:bob");
+  assert.ok(
+    alice.frames
+      .find((frame) => frame.id === alice.serial)
+      .text.startsWith("## Cleanup preview"),
+  );
+  assert.equal(
+    (
+      await (
+        await request("history?view=%40direct%3Abob", cookies.alice)
+      ).json()
+    ).revision,
+    privateRevision,
+  );
+  await send(alice, "/clean 7d @private:alice:bob", null);
+  child.stdin.write("/revoke alice @private:alice:bob x:history.clean\n");
+  await until(
+    () =>
+      !alice.snapshot.private_access["@direct:bob"]?.permissions.includes(
+        "x:history.clean",
+      ),
+    "private cleanup revocation",
+  );
+  await send(alice, "/clean 7d @direct:bob --dry-run", null, "error");
+  child.stdin.write("/revoke alice @private:alice:bob /clean\n");
+  await until(
+    () =>
+      !alice.snapshot.private_access["@direct:bob"]?.commands.includes(
+        "/clean",
+      ),
+    "private cleanup command revocation",
+  );
   const bobOtherDevice = await connect(cookies.bob);
   const readState = bob.snapshot.unread["@direct:alice"];
   assert.ok(readState.count > 0);
@@ -794,14 +893,14 @@ try {
     aliceFrameCount,
     "read changes are sent only to this user's devices",
   );
-  await send(alice, "/kick bob study");
+  await send(alice, "/room kick bob #study");
   await until(
     () => !bob.snapshot.rooms.some((r) => r.name === "study"),
     "membership revocation",
   );
   await send(bob, "not allowed", "study", "error");
-  await send(alice, "/clean 7d study", null);
-  await send(alice, "/add bob study");
+  await send(alice, "/clean 7d #study", null);
+  await send(alice, "/room add bob #study");
   await stop();
   const destination = join(temporary, "migrated");
   await cp(source, destination, { recursive: true });
@@ -899,7 +998,7 @@ try {
     "independent private history",
   );
   const migratedBob = await connect(cookies.bob);
-  child.stdin.write("/reset bob changed-long-password\n");
+  child.stdin.write("/user reset bob changed-long-password\n");
   await until(
     () => logs.includes("Account bob password reset."),
     "password reset",
@@ -909,7 +1008,7 @@ try {
     "reset disconnects old socket",
   );
   assert.equal((await request("me", cookies.bob)).status, 401);
-  child.stdin.write("/disable eve\n");
+  child.stdin.write("/user disable eve\n");
   await until(() => logs.includes("Disabled eve."), "disable account");
   assert.equal((await request("me", cookies.eve)).status, 401);
   assert.equal((await request("logout", cookies.alice, {})).status, 200);
@@ -934,7 +1033,7 @@ try {
   await start(devices);
   for (const name of ["alice", "bob", "eve"]) {
     child.stdin.write(
-      `/new user ${name} ${name}-long-password ${name === "alice" ? "admin" : "user"}\n`,
+      `/user new ${name} ${name}-long-password ${name === "alice" ? "admin" : "user"}\n`,
     );
     await until(
       () => logs.includes(`Account ${name} created.`),
@@ -944,7 +1043,7 @@ try {
   const deviceCookie = await login("alice");
   const deviceOne = await connect(deviceCookie);
   for (const name of ["empty", "quiet", "active"])
-    await send(deviceOne, `/new room ${name}`, null);
+    await send(deviceOne, `/room new ${name}`, null);
   await send(deviceOne, "/tell bob older conversation", null);
   // Busy Eve history must not evict Bob or his separate snapshot tail.
   for (let i = 0; i < 55; i++) {
@@ -989,7 +1088,7 @@ try {
   assertDirectory(await (await request("me", secondCookie)).json());
   const deviceTwo = await connect(secondCookie);
   assertDirectory(deviceTwo.snapshot);
-  await send(deviceOne, "/new room added_elsewhere", null);
+  await send(deviceOne, "/room new added_elsewhere", null);
   await until(
     () =>
       deviceTwo.snapshot.rooms.some((room) => room.name === "added_elsewhere"),
@@ -1008,9 +1107,9 @@ try {
   const bobSecondCookie = await login("bob");
   const bobDevice = await connect(bobCookie);
   const bobSecondDevice = await connect(bobSecondCookie);
-  await send(eveDevice, "/rm user bob", null, "error");
-  await send(deviceOne, "/rm user alice", null, "error");
-  await send(deviceOne, "/add bob active", null);
+  await send(eveDevice, "/user delete bob", null, "error");
+  await send(deviceOne, "/user delete alice", null, "error");
+  await send(deviceOne, "/room add bob #active", null);
   await send(bobDevice, "preserved after deletion", "active");
   await until(
     () =>
@@ -1023,7 +1122,7 @@ try {
   await send(deviceOne, `/reply ${originalId} @bob preserved reply`, "active");
   await send(bobDevice, `/react ${originalId} 👍`, "active");
   await send(deviceOne, "/tell bob private before deletion", null);
-  await send(deviceOne, "/rm user bob", null);
+  await send(deviceOne, "/user delete bob", null);
   await until(
     () =>
       bobDevice.ws.readyState === WebSocket.CLOSED &&
@@ -1051,7 +1150,7 @@ try {
     (await request("history?view=%40direct%3Abob", deviceCookie)).status,
     403,
   );
-  await send(deviceOne, "/new user bob fresh-password", null);
+  await send(deviceOne, "/user new bob fresh-password", null);
   const freshBobCookie = await login("bob", "fresh-password");
   const freshBob = await connect(freshBobCookie);
   assert.deepEqual(freshBob.snapshot.rooms, []);
@@ -1063,7 +1162,7 @@ try {
     "replacement user's fresh private history",
   );
   assert.equal(freshBob.snapshot.direct[0].text, "fresh private");
-  child.stdin.write("/rm user eve\n");
+  child.stdin.write("/user delete eve\n");
   await until(
     () => logs.includes("Deleted account eve"),
     "stdin account deletion",
@@ -1099,7 +1198,7 @@ try {
     ["reader", "user"],
     ["other", "admin"],
   ]) {
-    child.stdin.write(`/new user ${name} ${name}-long-password ${role}\n`);
+    child.stdin.write(`/user new ${name} ${name}-long-password ${role}\n`);
     await until(
       () => logs.includes(`Account ${name} created.`),
       `trust account ${name}`,
@@ -1112,42 +1211,48 @@ try {
     readerClient = await connect(readerCookie),
     otherClient = await connect(otherCookie);
   child.stdin.write(
-    "/grant reader @global w:room.create\n/grant reader @global /new\n",
+    "/grant reader @global w:room.create\n/grant reader @global /room\n",
   );
   await until(
     () =>
       readerClient.snapshot.permissions.includes("w:room.create") &&
-      readerClient.snapshot.commands.some((command) => command.name === "/new"),
+      readerClient.snapshot.commands.some(
+        (command) => command.name === "/room",
+      ),
     "user receives room creation grants",
   );
-  await send(readerClient, "/new room delegated", null);
-  await send(readerClient, "/grant owner delegated /add", "delegated");
-  await send(ownerClient, "/add other delegated", null, "error");
-  await send(readerClient, "/grant owner delegated x:member.add", "delegated");
-  await send(ownerClient, "/add other delegated", null, "error");
-  await send(readerClient, "/add owner", "delegated");
-  await send(ownerClient, "/add other", "delegated");
+  await send(readerClient, "/room new delegated", null);
+  await send(readerClient, "/grant owner #delegated /room", "delegated");
+  await send(ownerClient, "/room add other #delegated", null, "error");
+  await send(readerClient, "/grant owner #delegated x:member.add", "delegated");
+  await send(ownerClient, "/room add other #delegated", null, "error");
+  await send(readerClient, "/room add owner", "delegated");
+  await send(ownerClient, "/room add other", "delegated");
   await until(
     () => otherClient.snapshot.rooms.some((room) => room.name === "delegated"),
     "delegated invitation grants participant access",
   );
   await send(otherClient, "invited participant", "delegated");
-  await send(readerClient, "/revoke owner delegated x:member.add", "delegated");
-  await send(ownerClient, "/add other", "delegated", "error");
-  await send(readerClient, "/revoke owner delegated /add", "delegated");
-  await send(ownerClient, "/add other", "delegated", "error");
-  await send(readerClient, "/rm room delegated", "delegated");
-  await send(ownerClient, "/new room owned", null);
+  await send(
+    readerClient,
+    "/revoke owner #delegated x:member.add",
+    "delegated",
+  );
+  await send(ownerClient, "/room add other", "delegated", "error");
+  await send(readerClient, "/revoke owner #delegated /room", "delegated");
+  await send(ownerClient, "/room add other", "delegated", "error");
+  await send(readerClient, "/room delete #delegated", "delegated");
+  await send(ownerClient, "/room new owned", null);
   await send(ownerClient, "private room text", "owned");
-  await send(otherClient, "/join owned", null, "error");
+  await send(otherClient, "/room join #owned", null, "error");
   assert.equal((await request("history?view=owned", otherCookie)).status, 403);
   await send(readerClient, "/man grant", null);
   assert.ok(readerClient.frames.at(-1).text.includes("scope permission"));
   await send(readerClient, "/man revoke", null);
   assert.ok(readerClient.frames.at(-1).text.includes("direct permission"));
   await send(readerClient, "/man unknown", null, "error");
-  await send(ownerClient, "/grant reader owned r:message.read", "owned");
-  await send(ownerClient, "/grant reader owned /history", "owned");
+  await send(ownerClient, "/grant reader #owned r:message.read", "owned");
+  await send(ownerClient, "/grant reader #owned /history", "owned");
   await until(
     () => readerClient.snapshot.rooms.some((r) => r.name === "owned"),
     "read-only live grant",
@@ -1179,14 +1284,14 @@ try {
         .length === 0,
     "su retracts another author",
   );
-  await send(ownerClient, "/disable reader", null, "error");
+  await send(ownerClient, "/user disable reader", null, "error");
   await send(otherClient, "/revoke reader su", null);
   await until(
     () => !readerClient.snapshot.groups.includes("su"),
     "live su revoke",
   );
   await send(readerClient, "write revoked", "owned", "error");
-  await send(ownerClient, "/revoke reader owned r:message.read", "owned");
+  await send(ownerClient, "/revoke reader #owned r:message.read", "owned");
   await until(
     () => !readerClient.snapshot.rooms.some((r) => r.name === "owned"),
     "live read revoke",
@@ -1228,7 +1333,7 @@ try {
     });
     assert.equal(response.status, 404, "server must not serve UI assets");
   }
-  child.stdin.write("/new user alice alice-long-password admin\n");
+  child.stdin.write("/user new alice alice-long-password admin\n");
   await until(
     () => logs.includes("Account alice created."),
     "production account provisioning",
@@ -1242,7 +1347,7 @@ try {
   assert.match(secureLogin.headers.get("set-cookie"), /Path=\/commonroom\//);
   const secureCookie = secureLogin.headers.get("set-cookie").split(";")[0];
   const secureClient = await connect(secureCookie);
-  await send(secureClient, "/new room production", null);
+  await send(secureClient, "/room new production", null);
   await send(secureClient, "production websocket works", "production");
   assert.equal(
     (await request("logout", secureCookie, {}, "https://evil.example")).status,
@@ -1281,7 +1386,7 @@ try {
   );
   await start(paginated);
   child.stdin.write(
-    "/new user alice alice-long-password admin\n/new user bob bob-long-password user\n/new room paged\n/add alice paged\n",
+    "/user new alice alice-long-password admin\n/user new bob bob-long-password user\n/room new paged\n/add alice #paged\n",
   );
   await until(
     () => logs.includes("alice added to #paged."),
@@ -1354,7 +1459,7 @@ try {
   const botData = join(temporary, "bots");
   await start(botData, true, undefined, "/commonroom/");
   child.stdin.write(
-    "/new user alice alice-long-password admin\n/new room support\n/grant alice admin support\n/grant alice @global /sudo\n/grant alice @global x:command.sudo\n/new room secret\n",
+    "/user new alice alice-long-password admin\n/room new support\n/grant alice admin #support\n/grant alice @global /sudo\n/grant alice @global x:command.sudo\n/room new secret\n",
   );
   await until(() => logs.includes("Created #secret."), "bot fixture");
   const botAdmin = await connect(await login("alice"));
@@ -1450,7 +1555,7 @@ try {
   );
   const agent = await connect(null, botSecret, true);
   agent.ws.send(
-    JSON.stringify({ id: 99, room: "support", text: "/rm user alice" }),
+    JSON.stringify({ id: 99, room: "support", text: "/user delete alice" }),
   );
   await until(
     () =>
@@ -1578,24 +1683,24 @@ try {
   );
   const durable = {
     conversation_id: conversationId,
-    text: "/rm user alice",
+    text: "/user delete alice",
     markdown: true,
   };
   const durableResponse = await botFetch("messages", durable, "restart-proof");
   assert.equal(durableResponse.status, 200);
   assert.equal(durableResponse.value.replayed, false);
-  assert.equal(durableResponse.value.message.text, "/rm user alice");
+  assert.equal(durableResponse.value.message.text, "/user delete alice");
   // A new room with the same label cannot receive a write using a retired ID.
-  await send(botAdmin, "/new room scratch");
-  await send(botAdmin, "/grant helper scratch r:message.read");
-  await send(botAdmin, "/grant helper scratch w:message.create");
+  await send(botAdmin, "/room new scratch");
+  await send(botAdmin, "/grant helper #scratch r:message.read");
+  await send(botAdmin, "/grant helper #scratch w:message.create");
   const stale = (await botFetch("me")).value.conversations.find(
     (c) => c.view === "scratch",
   ).id;
-  await send(botAdmin, "/rm room scratch");
-  await send(botAdmin, "/new room scratch");
-  await send(botAdmin, "/grant helper scratch r:message.read");
-  await send(botAdmin, "/grant helper scratch w:message.create");
+  await send(botAdmin, "/room delete #scratch");
+  await send(botAdmin, "/room new scratch");
+  await send(botAdmin, "/grant helper #scratch r:message.read");
+  await send(botAdmin, "/grant helper #scratch w:message.create");
   assert.equal(
     (
       await botFetch(
@@ -1648,13 +1753,13 @@ try {
   assert.equal(resumedWorker.error(), undefined);
   resumedWorker.controller.abort();
   await resumedWorker.done;
-  await send(botAdmin, "/revoke helper support r:message.read", "support");
+  await send(botAdmin, "/revoke helper #support r:message.read", "support");
   await until(
     () => !agent.snapshot.conversations.some((c) => c.id === conversationId),
     "permission removal snapshot",
   );
   assert.equal((await history()).value.error.code, "forbidden");
-  await send(botAdmin, "/grant helper support r:message.read", "support");
+  await send(botAdmin, "/grant helper #support r:message.read", "support");
   const after = (await history()).value.messages.at(-1).sequence;
   await stop();
   await start(botData, true, undefined, "/commonroom/");

@@ -7,6 +7,33 @@ use std::{
     time::Duration,
 };
 
+/// Client display hints only. Never use these headers for authorization, type,
+/// object identity, expiry, quota, or response headers.
+pub(crate) fn hint_headers(
+    hints: &std::collections::BTreeMap<String, String>,
+) -> Result<axum::http::HeaderMap, String> {
+    let mut headers = axum::http::HeaderMap::new();
+    if hints.len() > 4 {
+        return Err("At most four upload hints are allowed.".into());
+    }
+    for (key, value) in hints {
+        if !["filename", "content-type", "label", "client"].contains(&key.as_str())
+            || value.is_empty()
+            || value.len() > 256
+            || !value.bytes().all(|c| (32..=126).contains(&c))
+            || value.trim() != value
+        {
+            return Err("Upload hints require known keys and 1–256 printable ASCII bytes without surrounding spaces.".into());
+        }
+        let name =
+            axum::http::HeaderName::from_bytes(format!("x-amz-meta-client-{key}").as_bytes())
+                .map_err(|_| "Invalid hint name.")?;
+        let value = axum::http::HeaderValue::from_str(value).map_err(|_| "Invalid hint value.")?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
 pub(crate) struct MediaStorage {
     pub bucket: Box<Bucket>,
     pub public: Box<Bucket>,
@@ -166,8 +193,17 @@ impl MediaStorage {
         result
     }
 
+    #[cfg(test)]
     pub async fn upload_url(&self, id: &str, size: u64) -> Result<String, s3::error::S3Error> {
-        let mut headers = axum::http::HeaderMap::new();
+        self.upload_url_with_hints(id, size, axum::http::HeaderMap::new())
+            .await
+    }
+    pub async fn upload_url_with_hints(
+        &self,
+        id: &str,
+        size: u64,
+        mut headers: axum::http::HeaderMap,
+    ) -> Result<String, s3::error::S3Error> {
         headers.insert(
             "content-type",
             axum::http::HeaderValue::from_static("application/octet-stream"),
@@ -210,8 +246,18 @@ impl MediaStorage {
         if head.content_length.and_then(|n| u64::try_from(n).ok()) != Some(media.size) {
             return Err(Invalid("Uploaded file size does not match the request."));
         }
-        let status = self
-            .bucket
+        let mut copy = self.bucket.clone();
+        copy.extra_headers =
+            hint_headers(&media.hints).map_err(|_| Invalid("Invalid upload hints."))?;
+        copy.extra_headers.insert(
+            "x-amz-metadata-directive",
+            axum::http::HeaderValue::from_static("REPLACE"),
+        );
+        copy.extra_headers.insert(
+            "content-type",
+            axum::http::HeaderValue::from_static("application/octet-stream"),
+        );
+        let status = copy
             .copy_object_internal(&source, &destination)
             .await
             .map_err(|e| failure("copy", e))?;
@@ -392,7 +438,7 @@ pub(crate) async fn setup_local_s3() -> Result<(), String> {
             }
         }
         let cors = s3::serde_types::CorsConfiguration::new(vec![s3::serde_types::CorsRule::new(
-            Some(vec!["content-type".into()]),
+            Some(vec!["content-type".into(), "x-amz-meta-client-filename".into(), "x-amz-meta-client-content-type".into(), "x-amz-meta-client-label".into(), "x-amz-meta-client-client".into()]),
             vec!["PUT".into(), "GET".into(), "HEAD".into()],
             vec!["http://127.0.0.1:5173".into(), "http://localhost:5173".into()],
             Some(vec!["ETag".into()]),
@@ -456,6 +502,103 @@ pub(crate) mod tests {
             probe_gate: tokio::sync::Mutex::new(()),
             probe_result: Mutex::new(None),
         })
+    }
+    #[test]
+    fn upload_hints_reject_unknown_headers_controls_unicode_and_excessive_values() {
+        use std::collections::BTreeMap;
+        for (key, value) in [
+            ("uploader", "trusted"),
+            ("label", "bad\r\ninjected: true"),
+            ("filename", "你好.png"),
+            ("client", " padded "),
+            ("client", ""),
+        ] {
+            assert!(hint_headers(&BTreeMap::from([(key.into(), value.into())])).is_err());
+        }
+        assert!(hint_headers(&BTreeMap::from([("label".into(), "x".repeat(257))])).is_err());
+        let headers = hint_headers(&BTreeMap::from([
+            ("filename".into(), "%E4%BD%A0.png".into()),
+            ("content-type".into(), "text/html".into()),
+        ]))
+        .unwrap();
+        assert_eq!(headers["x-amz-meta-client-filename"], "%E4%BD%A0.png");
+        assert!(!headers.contains_key("content-type"));
+    }
+    #[tokio::test]
+    async fn upload_hints_are_signed_and_finalization_replaces_untrusted_staging_metadata() {
+        use std::collections::BTreeMap;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let storage = test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+        let hints = BTreeMap::from([
+            ("label".into(), "inspection-only".into()),
+            ("content-type".into(), "text/html".into()),
+        ]);
+        let url = storage
+            .upload_url_with_hints("object", 8, hint_headers(&hints).unwrap())
+            .await
+            .unwrap();
+        let url = url::Url::parse(&url).unwrap();
+        let signed = url
+            .query_pairs()
+            .find(|(k, _)| k == "X-Amz-SignedHeaders")
+            .unwrap()
+            .1
+            .into_owned();
+        assert!(signed.contains("x-amz-meta-client-label"));
+        assert!(signed.contains("x-amz-meta-client-content-type"));
+        let server = tokio::spawn(async move {
+            for step in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let size = socket.read(&mut chunk).await.unwrap();
+                    assert!(size > 0);
+                    bytes.extend_from_slice(&chunk[..size]);
+                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+                let response = match step {
+                    0 => {
+                        assert!(request.starts_with("head "));
+                        "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nx-amz-meta-client-label: tampered\r\nx-amz-meta-trusted-owner: forged\r\nConnection: close\r\n\r\n".as_bytes().to_vec()
+                    }
+                    1 => {
+                        assert!(request.starts_with("put /private/media/7d/"));
+                        assert!(request.contains("x-amz-metadata-directive: replace"));
+                        assert!(request.contains("x-amz-meta-client-label: inspection-only"));
+                        assert!(request.contains("x-amz-meta-client-content-type: text/html"));
+                        assert!(
+                            !request.contains("tampered") && !request.contains("trusted-owner")
+                        );
+                        let body = "<CopyObjectResult><ETag>test</ETag></CopyObjectResult>";
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    }
+                    _ => {
+                        assert!(request.starts_with("get "));
+                        b"HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\nContent-Range: bytes 0-7/8\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n".to_vec()
+                    }
+                };
+                socket.write_all(&response).await.unwrap();
+            }
+        });
+        let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+        engine
+            .provision("alice", "hash".into(), true, false)
+            .unwrap();
+        engine
+            .execute(Some("alice"), None, "/room new #files")
+            .unwrap();
+        let mut media = engine
+            .allocate_media_with_hints("alice", &engine.data.rooms["files"].id, "file", 8, hints)
+            .unwrap();
+        storage.finalize(&mut media).await.unwrap();
+        assert_eq!(media.content_type, "image/png");
+        assert_eq!(media.hints["content-type"], "text/html");
+        server.await.unwrap();
     }
     #[test]
     fn object_locks_and_storage_capacity_are_independent_and_bounded() {
@@ -743,7 +886,13 @@ pub(crate) mod tests {
             probe_result: Mutex::new(None),
         };
         let cors = s3::serde_types::CorsConfiguration::new(vec![s3::serde_types::CorsRule::new(
-            Some(vec!["content-type".into()]),
+            Some(vec![
+                "content-type".into(),
+                "x-amz-meta-client-filename".into(),
+                "x-amz-meta-client-content-type".into(),
+                "x-amz-meta-client-label".into(),
+                "x-amz-meta-client-client".into(),
+            ]),
             vec!["PUT".into(), "GET".into(), "HEAD".into()],
             vec!["http://127.0.0.1:5173".into()],
             Some(vec!["ETag".into()]),

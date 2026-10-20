@@ -228,7 +228,7 @@ export function Settings({
                     setFeedback("Username cannot contain whitespace.");
                     return;
                   }
-                  submit(`/rename ${name}`);
+                  submit(`/user rename ${name}`);
                 }}
               >
                 <label for="account-name">Username</label>
@@ -243,7 +243,7 @@ export function Settings({
                   type="submit"
                   disabled={
                     pending ||
-                    !canCommand("/rename") ||
+                    !canCommand("/user") ||
                     !state.account_access.permissions.some((permission) =>
                       ["w:account.rename.own", "x:account.rename.any"].includes(
                         permission,
@@ -269,7 +269,7 @@ export function Settings({
                     setFeedback("Password commands cannot contain whitespace.");
                     return;
                   }
-                  submit(`/passwd ${oldPassword} ${newPassword}`, true);
+                  submit(`/user passwd ${oldPassword} ${newPassword}`, true);
                 }}
               >
                 <h3>Change password</h3>
@@ -311,7 +311,7 @@ export function Settings({
                   type="submit"
                   disabled={
                     pending ||
-                    !canCommand("/passwd") ||
+                    !canCommand("/user") ||
                     !state.account_access.permissions.includes(
                       "w:account.password.own",
                     )

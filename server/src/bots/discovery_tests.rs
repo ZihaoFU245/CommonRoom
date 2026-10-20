@@ -66,10 +66,10 @@ fn catalogue_lifecycle_is_session_owned_and_rechecks_credentials_and_members() {
             .provision("reader", "hash".into(), false, false)
             .unwrap();
         engine
-            .execute(None, None, "/grant reader support r:message.read")
+            .execute(None, None, "/grant reader #support r:message.read")
             .unwrap();
         engine
-            .execute(None, None, "/grant reader support w:message.create")
+            .execute(None, None, "/grant reader #support w:message.create")
             .unwrap();
         assert!(
             app.bot_runtimes
@@ -384,7 +384,7 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
         for name in ["bob", "carol"] {
             engine.provision(name, "hash".into(), false, false).unwrap();
             engine
-                .execute(None, None, &format!("/add {name} support"))
+                .execute(None, None, &format!("/add {name} #support"))
                 .unwrap();
         }
         engine.execute(None, None, "/bot owner helper bob").unwrap();

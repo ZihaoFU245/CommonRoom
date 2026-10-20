@@ -24,7 +24,7 @@ export function AliasSettings({
     <>
       <h3>Alias</h3>
       <p class="account-summary">
-        Map a command name to another command, such as /rooms to /ls room. Saved
+        Map a command name to another command, such as /rooms to /room ls. Saved
         in this browser and shared by accounts using it.
       </p>
       <form
@@ -58,7 +58,7 @@ export function AliasSettings({
         <input
           id="alias-target"
           value={target}
-          placeholder="/ls room"
+          placeholder="/room ls"
           autoComplete="off"
           spellcheck={false}
           required

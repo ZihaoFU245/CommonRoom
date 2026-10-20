@@ -75,11 +75,12 @@ export const api = {
     filename: string,
     size: number,
     signal: AbortSignal,
+    hints: Record<string, string> = {},
   ) =>
     request(
       "media/uploads",
       isUploadTicket,
-      { conversation_id: conversationId, filename, size },
+      { conversation_id: conversationId, filename, size, hints },
       signal,
     ),
   abandonMedia: (id: string) =>

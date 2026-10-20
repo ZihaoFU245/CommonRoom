@@ -172,6 +172,9 @@ impl Engine {
         value: &str,
         write: bool,
     ) -> Result<Scope, String> {
+        if !value.starts_with('#') && !value.starts_with('@') {
+            return Err("Room scopes require #name.".into());
+        }
         let denied = "Scope not found or access denied.";
         let scope = self.parse_scope(value).map_err(|error| {
             if self.is_su(actor) {
@@ -207,7 +210,10 @@ impl Engine {
                 "Permission required: {} at {}. Check /permissions {} for effective access.",
                 action.name(),
                 self.scope_label(scope),
-                self.scope_label(scope)
+                match scope {
+                    Scope::Room(_) => format!("#{}", self.scope_label(scope)),
+                    _ => self.scope_label(scope),
+                }
             ))
         }
     }
@@ -285,7 +291,10 @@ impl Engine {
             Err(format!(
                 "Command not permitted on this target: {command}. Missing command grant at {}. Check /permissions {} or /man {}.",
                 self.scope_label(scope),
-                self.scope_label(scope),
+                match scope {
+                    Scope::Room(_) => format!("#{}", self.scope_label(scope)),
+                    _ => self.scope_label(scope),
+                },
                 command.trim_start_matches('/')
             ))
         }
@@ -380,8 +389,11 @@ impl Engine {
         let member = member_rights();
         if member.actions & !own.actions != 0 || member.commands & !own.commands != 0 {
             return Err(format!(
-                "Inviting or assigning the user group requires authority to delegate every participant permission in {}. Ask the room owner to add you with /add first; /add also requires x:member.add and the /add command grant.",
-                self.scope_label(scope)
+                "Inviting or assigning the user group requires authority to delegate every participant permission in {}. Ask the room owner to add you with /room add first; /room add also requires x:member.add and the /room command grant.",
+                match scope {
+                    Scope::Room(_) => format!("#{}", self.scope_label(scope)),
+                    _ => self.scope_label(scope),
+                }
             ));
         }
         Ok(())
@@ -401,7 +413,6 @@ impl Engine {
             scope,
             permissions,
             minimum_age: 0,
-            media: None,
         });
     }
     pub(in crate::engine) fn audit(&mut self, actor: Option<&str>, operation: &str, target: &str) {
@@ -487,6 +498,6 @@ impl Engine {
                 "Unknown scope: {value}. Use a room name, @global, @account:user, or @private:a:b."
             ));
         }
-        self.room_scope(value)
+        self.room_scope(value.strip_prefix('#').unwrap_or(value))
     }
 }

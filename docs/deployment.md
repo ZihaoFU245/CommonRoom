@@ -107,7 +107,7 @@ Logs go to stdout. To keep the interactive console while logging to a file:
 
 Closing stdin leaves the web server running. `Ctrl+C` or `SIGTERM` stops it gracefully
 and checkpoints SQLite. No account exists on first start: create the first admin from
-the console with `/new user NAME PASSWORD admin` (see [Commands](commands.md)).
+the console with `/user new NAME PASSWORD admin` (see [Commands](commands.md)).
 
 ## Configuration
 
@@ -454,7 +454,13 @@ through the RustFS console or any S3 client:
     {
       "AllowedOrigins": ["https://chat.example.com"],
       "AllowedMethods": ["PUT", "GET", "HEAD"],
-      "AllowedHeaders": ["content-type"],
+      "AllowedHeaders": [
+        "content-type",
+        "x-amz-meta-client-filename",
+        "x-amz-meta-client-content-type",
+        "x-amz-meta-client-label",
+        "x-amz-meta-client-client"
+      ],
       "ExposeHeaders": ["ETag"],
       "MaxAgeSeconds": 300
     }
@@ -483,7 +489,7 @@ seconds to propagate CORS changes.
 
 1. Create a bucket in the target region with Block Public Access on and default
    encryption (SSE-S3) enabled. Do not require extra headers such as SSE-C; presigned
-   URLs sign only `content-type` and `content-length`.
+   URLs sign `content-type`, `content-length`, and accepted client hint headers.
 2. Create an IAM principal for the server with this policy, scoped to the bucket:
 
    ```json
@@ -527,7 +533,7 @@ seconds to propagate CORS changes.
    - `region`: `auto`
    - `path_style`: `true`
 4. Apply the CORS policy from [Bucket CORS](#bucket-cors): UI origin, `PUT`, `GET`,
-   `HEAD`, and `content-type`.
+   `HEAD`, and `content-type` plus `x-amz-meta-client-*`.
 5. Add lifecycle rules per prefix if desired; R2 applies them asynchronously. Rules are
    prefix- and day-based, and object tags are not supported (chat does not use them).
 6. Add `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` to the UI CSP and verify an
@@ -618,14 +624,14 @@ lifecycle rule is a backstop for objects that outlive their metadata because a p
 died mid-cleanup; it is asynchronous and rounds to days. Rules key off the prefix, not
 object tags (R2 has no tags).
 
-The final key encodes the grant class:
+The final key encodes the retention class:
 
 | Prefix | Contents |
 | --- | --- |
 | `uploads/` | Staging objects; cleanup deletes them once they are older than the pending TTL (default 24h). |
-| `media/1d/`, `media/7d/`, ... | Whole-day grant lifetimes, `media/<N>d/`. |
+| `media/1d/`, `media/7d/`, ... | Whole-day metadata lifetimes, `media/<N>d/`. |
 | `media/<N>s/` | Sub-day lifetimes such as `media/3600s/`. |
-| `media/permanent/` | Grants with no expiry (`-1`). |
+| `media/permanent/` | Metadata with no expiry (`-1`). |
 
 Reasonable rules: expire `uploads/` after 1 day, `media/1d/` after 1 day, and
 `media/7d/` after 7 days. Add one rule per whole-day class you actually use, never
@@ -690,8 +696,8 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-The server accepts schema v15 and upgrades v9 through v14 transactionally. Older schemas
-are unsupported, and a v15 database cannot be opened by an older binary. Back up before
+The server accepts schema v16 and upgrades only HEAD v15 transactionally. Older
+schemas are unsupported, and a v16 database cannot be opened by an older binary. Back up before
 upgrading, keeping the database and object store consistent ([Data](data.md)).
 
 Stop the old process before starting the new one; only one process may use a data

@@ -109,7 +109,7 @@ Global admin, su, or the stdin console:
 
 ```text
 /new room support
-/bot new helper support
+/bot new helper #support
 /bot token new helper worker
 ```
 

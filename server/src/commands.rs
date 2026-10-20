@@ -1,11 +1,58 @@
 use serde::Serialize;
 
-pub const NEW_USER_USAGE: &str = "/new user name password [user|admin]";
-pub const NEW_USAGE: &str = "/new room name | /new user name password [user|admin]";
-pub const RM_USAGE: &str = "/rm room name | /rm user name | /rm group user group [room]";
-pub const LS_USAGE: &str = "/ls [room|user|group|@user|@admin|@su]";
-pub const RENAME_USAGE: &str =
-    "/rename room name new-name | /rename user name new-name | /rename [user] new-name";
+pub const NEW_USER_USAGE: &str = "/user new name password [user|admin]";
+pub const NEW_USAGE: &str = "/room new #name | /user new name password [user|admin]";
+pub const RM_USAGE: &str = "/room delete #name | /user delete name | /revoke user group [#room]";
+pub const LS_USAGE: &str = "/room ls | /user ls [scope] | /permissions @groups";
+pub const RENAME_USAGE: &str = "/room rename #name new-name | /user rename [who] new-name";
+
+/// Explicit room targets use #; an omitted optional scope uses the current view.
+pub fn validate_room_arguments(input: &str) -> Result<(), String> {
+    let parts = input.split_whitespace().collect::<Vec<_>>();
+    let index = match parts.as_slice() {
+        ["/room", "join" | "leave" | "delete" | "rename", ..] => Some(2),
+        ["/room", "add" | "kick" | "owner", ..] => Some(3),
+        ["/join" | "/leave" | "/members", ..] => Some(1),
+        ["/add" | "/kick" | "/owner" | "/clean", ..] => Some(2),
+        _ => None,
+    };
+    if let Some(value) = index.and_then(|index| parts.get(index))
+        && !value.starts_with('#')
+        && !value.starts_with('@')
+    {
+        return Err("Room scopes require #name.".into());
+    }
+    Ok(())
+}
+
+/// Route object commands to the existing domain operations; authorization uses the family.
+pub fn route(input: &str) -> String {
+    let parts: Vec<_> = input.split_whitespace().collect();
+    let (family, operation) = match parts.as_slice() {
+        [family @ ("/user" | "/room"), operation, ..] => (*family, *operation),
+        _ => return input.to_owned(),
+    };
+    let tail = parts.iter().skip(2).copied().collect::<Vec<_>>().join(" ");
+    let tail = if family == "/room" {
+        tail.split_whitespace()
+            .map(|v| v.strip_prefix('#').unwrap_or(v))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        tail
+    };
+    match (family, operation) {
+        ("/user", "new") => format!("/new user {tail}"),
+        ("/user", "delete") => format!("/rm user {tail}"),
+        ("/user", "rename") if (3..=4).contains(&parts.len()) => format!("/rename {tail}"),
+        ("/user", "disable" | "enable" | "reset" | "passwd") => format!("/{operation} {tail}"),
+        ("/room", "new") => format!("/new room {tail}"),
+        ("/room", "delete") => format!("/rm room {tail}"),
+        ("/room", "rename") => format!("/rename room {tail}"),
+        ("/room", "join" | "leave" | "add" | "kick" | "owner") => format!("/{operation} {tail}"),
+        _ => input.to_owned(),
+    }
+}
 
 #[derive(Clone, Serialize)]
 pub struct Command {
@@ -32,6 +79,20 @@ pub fn available(admin: bool, console: bool) -> &'static [Command] {
 fn catalogue(admin: bool, console: bool) -> Vec<Command> {
     let definitions = [
         (
+            "Account",
+            "/user",
+            "/user ls [scope] | get who [key] [scope] | set who key value [scope] | rename [who] name | new name password [user|admin] | delete who | disable who | enable who | passwd old new | reset who password",
+            "List users, inspect or update metadata, and manage accounts",
+            false,
+        ),
+        (
+            "Rooms",
+            "/room",
+            "/room ls | new #name | delete #name | rename #name new-name | join #name | leave [#name] | add user [#room] | kick user [#room] | owner user [#room]",
+            "List and manage rooms and membership",
+            false,
+        ),
+        (
             "Server",
             "/bot",
             "/bot new name [scope] | ls [scope] | info name [scope] | owner name user | rm name @global | token new name label | token ls name | token rm name id",
@@ -51,13 +112,6 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             "/permissions [scope]",
             "Inspect effective grants",
             false,
-        ),
-        (
-            "Rooms",
-            "/owner",
-            "/owner user [room]",
-            "Transfer room ownership",
-            true,
         ),
         (
             "General",
@@ -95,88 +149,17 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             false,
         ),
         (
-            "General",
-            "/rename",
-            RENAME_USAGE,
-            "Rename a room, yourself or an authorized account",
-            false,
-        ),
-        (
-            "Account",
-            "/passwd",
-            "/passwd old new",
-            "Change your password; sign out other sessions",
-            false,
-        ),
-        (
-            "Account",
-            "/reset",
-            "/reset user password",
-            "Reset a password and revoke sessions",
-            true,
-        ),
-        (
-            "Account",
-            "/disable",
-            "/disable user",
-            "Disable an account and revoke sessions",
-            true,
-        ),
-        (
-            "Account",
-            "/enable",
-            "/enable user",
-            "Enable an account",
-            true,
-        ),
-        (
             "Account",
             "/grant",
-            "/grant user group [room] | /grant user scope permission [minimum-age]",
+            "/grant user|@all group [#room] | /grant user|@all scope permission [minimum-age]",
             "Assign a group or add a scoped permission; /man grant explains",
             true,
         ),
         (
             "Account",
             "/revoke",
-            "/revoke user group [room] | /revoke user scope permission",
+            "/revoke user|@all group [#room] | /revoke user|@all scope permission",
             "Remove a group assignment or direct permission; /man revoke explains",
-            true,
-        ),
-        (
-            "Rooms",
-            "/members",
-            "/members [room]",
-            "List conversation participants",
-            false,
-        ),
-        (
-            "Rooms",
-            "/join",
-            "/join room",
-            "Open an authorized room; su and sudo also save participant membership",
-            false,
-        ),
-        ("Rooms", "/leave", "/leave [room]", "Leave a room", false),
-        (
-            "General",
-            "/new",
-            NEW_USAGE,
-            "Create an invitation-only room or account (default group: user)",
-            true,
-        ),
-        (
-            "Rooms",
-            "/add",
-            "/add user [room]",
-            "Invite a user to a room",
-            true,
-        ),
-        (
-            "Rooms",
-            "/kick",
-            "/kick user [room]",
-            "Remove a user from a room",
             true,
         ),
         (
@@ -217,7 +200,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Messages",
             "/history",
-            "/history [start end] or /history #room",
+            "/history [start end] | /history #room",
             "Read a sequence range or the latest 100 messages from #room",
             false,
         ),
@@ -231,22 +214,8 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Server",
             "/clean",
-            "/clean age [room|@private|@all]",
-            "Delete messages older than an age, e.g. 7d or 24h",
-            true,
-        ),
-        (
-            "General",
-            "/ls",
-            LS_USAGE,
-            "List rooms (default), accounts, predefined groups, or global group members",
-            false,
-        ),
-        (
-            "General",
-            "/rm",
-            RM_USAGE,
-            "Delete a room/account or remove a group assignment; web confirms first",
+            "/clean age scope [--dry-run]",
+            "Delete or preview old messages in an explicit room or private scope",
             true,
         ),
     ];
@@ -301,6 +270,10 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
 /// Documentation only. Domain handlers remain the authority for each operation.
 pub fn requirements(command: &str) -> &'static str {
     match command {
+        "/user" => {
+            "Account/member listing, account lifecycle or metadata permissions on the target; metadata writes are su-only; metadata values never grant access"
+        }
+        "/room" => "Room discovery, creation or management permissions on the target room",
         "/sudo" => "x:command.sudo and /sudo at @global; temporary superuser authority",
         "/new" => {
             "w:room.create or x:account.create at @global; x:group.admin.assign for admin accounts"
@@ -352,19 +325,93 @@ pub fn help(admin: bool, console: bool) -> String {
     help_for(available(admin, console))
 }
 
+/// Expand alternative forms into complete invocations without splitting argument
+/// choices such as [user|admin] or user|@all.
+pub fn usage_forms(command: &Command) -> Vec<String> {
+    command
+        .usage
+        .split(" | ")
+        .map(|form| {
+            if form.starts_with('/') {
+                form.to_owned()
+            } else {
+                format!("{} {form}", command.name)
+            }
+        })
+        .collect()
+}
+
+fn form_description(command: &Command, usage: &str) -> &'static str {
+    let parts = usage.split_whitespace().skip(1).take(2).collect::<Vec<_>>();
+    match (command.name, parts.as_slice()) {
+        ("/user", ["ls", ..]) => "List accounts globally or members of a room",
+        ("/user", ["get", ..]) => "Read one user's metadata, or use @all for the scope",
+        ("/user", ["set", ..]) => "Set scoped metadata for one user or @all (su only)",
+        ("/user", ["rename", ..]) => "Rename yourself or an authorized account",
+        ("/user", ["new", ..]) => "Create an account; the default group is user",
+        ("/user", ["delete", ..]) => "Delete an account and its private conversations",
+        ("/user", ["disable", ..]) => "Disable an account and revoke its sessions",
+        ("/user", ["enable", ..]) => "Enable an account",
+        ("/user", ["passwd", ..]) => "Change your password and sign out other sessions",
+        ("/user", ["reset", ..]) => "Reset an authorized account's password",
+        ("/room", ["ls", ..]) => "List rooms you can discover or read",
+        ("/room", ["new", ..]) => "Create an invitation-only room",
+        ("/room", ["delete", ..]) => "Delete a room and its messages",
+        ("/room", ["rename", ..]) => "Rename a room while preserving its identity and history",
+        ("/room", ["join", ..]) => "Open an authorized room",
+        ("/room", ["leave", ..]) => "Leave a room after transferring ownership if needed",
+        ("/room", ["add", ..]) => "Invite a user to a room",
+        ("/room", ["kick", ..]) => "Remove a user's room membership and scoped access",
+        ("/room", ["owner", ..]) => "Transfer room ownership",
+        ("/bot", ["new", ..]) => "Create a bot account in the selected scope",
+        ("/bot", ["ls", ..]) => "List bot accounts in a scope",
+        ("/bot", ["info", ..]) => "Show bot ownership, status and permissions",
+        ("/bot", ["owner", ..]) => "Assign the bot owner",
+        ("/bot", ["rm", ..]) => "Delete a bot account and its credentials",
+        ("/bot", ["token", "new"]) => "Issue an account-wide credential, shown once",
+        ("/bot", ["token", "ls"]) => "List credential IDs and labels",
+        ("/bot", ["token", "rm"]) => "Revoke a credential",
+        ("/grant", [_, "group", ..]) => "Assign a predefined permission bundle",
+        ("/grant", _) => "Add a scoped action or command grant",
+        ("/revoke", [_, "group", ..]) => "Remove a predefined group assignment",
+        ("/revoke", _) => "Remove a direct scoped permission",
+        _ => command.description,
+    }
+}
+
 pub fn help_for(commands: &[Command]) -> String {
-    ["General", "Account", "Rooms", "Messages", "Server"]
+    let sections = ["General", "Account", "Rooms", "Messages", "Server"]
         .into_iter()
         .filter_map(|section| {
-            let lines: Vec<_> = commands
+            let entries = commands
                 .iter()
                 .filter(|c| c.section == section)
-                .map(|c| format!("{} — {}", c.usage, c.description))
-                .collect();
-            (!lines.is_empty()).then(|| format!("[{section}]\n{}", lines.join("\n")))
+                .map(|command| {
+                    let forms = usage_forms(command);
+                    if forms.len() == 1 {
+                        format!("- `{}` — {}", forms[0], command.description)
+                    } else {
+                        let lines = forms
+                            .iter()
+                            .map(|usage| {
+                                format!("- `{usage}` — {}", form_description(command, usage))
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!(
+                            "### `{}`\n\n{}\n\n{lines}",
+                            command.name, command.description
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+            (!entries.is_empty()).then(|| format!("## {section}\n\n{}", entries.join("\n\n")))
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    format!(
+        "# Commands\n\nAvailable in this context. Use `/man command` for examples, scopes and required permissions.\n\n{sections}"
+    )
 }
 
 /// Shared syntax for the console and asynchronous web password jobs.
@@ -378,11 +425,19 @@ pub struct ProvisionCommand<'a> {
 
 pub fn provision_command<'a>(parts: &[&'a str]) -> Result<Option<ProvisionCommand<'a>>, String> {
     let (name, password, role, reset) = match parts {
-        ["/new", "user", name, password] => (*name, *password, "user", false),
-        ["/new", "user", name, password, role] => (*name, *password, *role, false),
-        ["/reset", name, password] => (*name, *password, "user", true),
-        ["/new", "user", ..] => return Err(format!("Usage: {NEW_USER_USAGE}")),
-        ["/reset", ..] => return Err("Usage: /reset name password".into()),
+        ["/new", "user", name, password] | ["/user", "new", name, password] => {
+            (*name, *password, "user", false)
+        }
+        ["/new", "user", name, password, role] | ["/user", "new", name, password, role] => {
+            (*name, *password, *role, false)
+        }
+        ["/reset", name, password] | ["/user", "reset", name, password] => {
+            (*name, *password, "user", true)
+        }
+        ["/new", "user", ..] | ["/user", "new", ..] => {
+            return Err(format!("Usage: {NEW_USER_USAGE}"));
+        }
+        ["/reset", ..] => return Err("Usage: /user reset name password".into()),
         _ => return Ok(None),
     };
     if !["user", "admin"].contains(&role) {
@@ -394,4 +449,48 @@ pub fn provision_command<'a>(parts: &[&'a str]) -> Result<Option<ProvisionComman
         admin: role == "admin",
         reset,
     }))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn help_prints_full_subcommands_as_markdown_instead_of_pipe_chains() {
+        let catalogue = available(true, false);
+        let text = help_for(catalogue);
+        assert!(text.starts_with("# Commands\n\n"));
+        for name in ["/user", "/room", "/bot", "/grant", "/revoke"] {
+            let command = catalogue
+                .iter()
+                .find(|c| c.name == name)
+                .expect("registered command");
+            assert!(text.contains(&format!("### `{name}`\n\n")));
+            for usage in usage_forms(command) {
+                assert!(usage.starts_with(&format!("{name} ")));
+                assert!(text.contains(&format!("- `{usage}` — ")));
+                assert!(!usage.contains(" | "));
+            }
+        }
+        assert!(text.contains("/user new name password [user|admin]"));
+        assert!(text.contains("/bot token rm name id"));
+        assert!(!text.contains("[General]"));
+    }
+
+    #[test]
+    fn help_keeps_authorized_filtering_and_manual_usage_has_one_form_per_line() {
+        let catalogue = available(true, false);
+        let only = catalogue
+            .iter()
+            .filter(|c| c.name == "/room")
+            .cloned()
+            .collect::<Vec<_>>();
+        let text = help_for(&only);
+        assert!(text.contains("/room rename #name new-name"));
+        assert!(!text.contains("/user set"));
+        let manual = crate::manual::manual(Some("user")).expect("user manual");
+        assert!(manual.contains("```text\n/user ls [scope]\n/user get who [key] [scope]\n/user set who key value [scope]"));
+        assert!(!manual.contains(" | get who"));
+    }
 }

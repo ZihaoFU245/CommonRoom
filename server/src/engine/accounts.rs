@@ -6,6 +6,7 @@ impl Engine {
         actor: Option<&str>,
         name: &str,
         new_name: &str,
+        command: &str,
     ) -> Result<String, String> {
         let own_scope = self
             .data
@@ -21,7 +22,7 @@ impl Engine {
             authorization::Action::RenameAny
         };
         let scope = self.account_target(actor, name, action)?;
-        self.require_target_command(actor, &scope, "/rename")?;
+        self.require_target_command(actor, &scope, command)?;
         if !valid_name(new_name) {
             return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
         }
@@ -257,6 +258,7 @@ impl Engine {
                     hash,
                     id: uuid::Uuid::new_v4().to_string(),
                     disabled: false,
+                    metadata: BTreeMap::new(),
                 },
             );
         }
@@ -403,9 +405,9 @@ impl Engine {
         let CommandContext { actor, parts, .. } = *context;
         match parts[0] {
             "/enable" => {
-                require_len(parts, 2, "/enable user")?;
+                require_len(parts, 2, "/user enable who")?;
                 let scope = self.account_target(actor, parts[1], authorization::Action::Enable)?;
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 self.audit(actor, "/enable", parts[1]);
                 self.data
                     .users
@@ -415,9 +417,9 @@ impl Engine {
                 Ok(format!("Enabled {}.", parts[1]))
             }
             "/disable" => {
-                require_len(parts, 2, "/disable user")?;
+                require_len(parts, 2, "/user disable who")?;
                 let scope = self.account_target(actor, parts[1], authorization::Action::Disable)?;
-                self.require_target_command(actor, &scope, parts[0])?;
+                self.require_target_command(actor, &scope, context.command)?;
                 if !self.is_su(actor)
                     && self.is_admin(parts[1])
                     && self

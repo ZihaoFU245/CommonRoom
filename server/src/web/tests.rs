@@ -191,7 +191,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
         .provision("alice", "hash".into(), true, false)
         .unwrap();
     engine
-        .execute(Some("alice"), None, "/new room support")
+        .execute(Some("alice"), None, "/room new support")
         .unwrap();
     engine
         .login("fixture".into(), "alice", "hash", None)
@@ -272,7 +272,9 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
         engine.provision(name, hash.clone(), false, false).unwrap();
     }
     engine.provision("disabled", hash, false, false).unwrap();
-    engine.execute(None, None, "/disable disabled").unwrap();
+    engine
+        .execute(None, None, "/user disable disabled")
+        .unwrap();
     let app = App {
         media: None,
         engine: Arc::new(RwLock::new(engine)),
@@ -386,8 +388,8 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         .provision("target", "hash".into(), false, false)
         .unwrap();
     engine.execute(None, None, "/grant target su").unwrap();
-    engine.execute(None, None, "/disable target").unwrap();
-    engine.execute(None, None, "/new room team").unwrap();
+    engine.execute(None, None, "/user disable target").unwrap();
+    engine.execute(None, None, "/room new team").unwrap();
     engine.execute(None, None, "/revoke actor user").unwrap();
     for permission in ["/sudo", "x:command.sudo"] {
         engine
@@ -419,18 +421,18 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
     for (text, changed, expected) in [
         ("/sudo /configs", false, None),
         (
-            "/sudo /passwd actor-old-password actor-new-password",
+            "/sudo /user passwd actor-old-password actor-new-password",
             true,
             Some("Password changed. Other sessions signed out."),
         ),
         (
-            "/sudo /reset target long-sudo-password",
+            "/sudo /user reset target long-sudo-password",
             true,
             Some("Account target password reset."),
         ),
-        ("/sudo /enable target", true, Some("Enabled target.")),
+        ("/sudo /user enable target", true, Some("Enabled target.")),
         (
-            "/sudo /new user created long-created-password admin",
+            "/sudo /user new created long-created-password admin",
             true,
             Some("Account created created."),
         ),
@@ -459,7 +461,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         markdown: false,
         id: 2,
         room: None,
-        text: "/sudo /join team".into(),
+        text: "/sudo /room join #team".into(),
     };
     let (reply, mutation) = super::commands::execute_input(&app, &headers, "actor", &join)
         .await
@@ -472,7 +474,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
     assert!(room.permissions.contains(&"w:message.create".into()));
     assert!(snapshot.groups.is_empty());
     let repeated = super::commands::Input {
-        text: "/sudo /join team".into(),
+        text: "/sudo /room join #team".into(),
         ..join
     };
     let (repeated_reply, mutation) =
@@ -483,7 +485,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
     assert!(mutation.is_none());
     for (command, expected) in [
         ("/man sudo", crate::manual::manual(Some("sudo"))),
-        ("/join missing", Err("Room not found.".into())),
+        ("/room join #missing", Err("Room not found.".into())),
     ] {
         let elevated = super::commands::Input {
             markdown: false,
@@ -559,8 +561,11 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                 )
                 .unwrap();
             engine
-                .execute(None, None, "/grant actor @account:target /reset")
+                .execute(None, None, "/grant actor @account:target /user")
                 .unwrap();
+            if case == "command" {
+                engine.execute(None, None, "/revoke actor admin").unwrap();
+            }
             engine
                 .login("fixture".into(), "actor", "hash", None)
                 .unwrap();
@@ -594,11 +599,11 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             ready.await.unwrap();
             let job_app = app.clone();
             let text = if case == "creation" {
-                "/new user created long-fixture-password user"
+                "/user new created long-fixture-password user"
             } else if case.starts_with("sudo-") {
-                "/sudo /reset target long-fixture-password"
+                "/sudo /user reset target long-fixture-password"
             } else {
-                "/reset target long-fixture-password"
+                "/user reset target long-fixture-password"
             };
             let job = tokio::spawn(async move {
                 let mut headers = HeaderMap::new();
@@ -641,7 +646,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                         .unwrap();
                     }
                     "command" => {
-                        e.execute(None, None, "/revoke actor @account:target /reset")
+                        e.execute(None, None, "/revoke actor @account:target /user")
                             .unwrap();
                     }
                     "target-su" => {
@@ -649,10 +654,10 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                     }
                     "target-disabled-su" => {
                         e.execute(None, None, "/grant target su").unwrap();
-                        e.execute(None, None, "/disable target").unwrap();
+                        e.execute(None, None, "/user disable target").unwrap();
                     }
                     "target-replaced" | "sudo-target-replaced" => {
-                        e.execute(None, None, "/rm user target").unwrap();
+                        e.execute(None, None, "/user delete target").unwrap();
                         e.provision("target", "replacement-hash".into(), false, false)
                             .unwrap();
                         // Regrant on the replacement to ensure rejection checks identity as well as rights.
@@ -662,7 +667,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                             "/grant actor @account:target x:account.password.reset",
                         )
                         .unwrap();
-                        e.execute(None, None, "/grant actor @account:target /reset")
+                        e.execute(None, None, "/grant actor @account:target /user")
                             .unwrap();
                     }
                     "session" | "sudo-session" => {
@@ -670,7 +675,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                             .unwrap();
                     }
                     "disabled" | "sudo-disabled" => {
-                        e.execute(None, None, "/disable actor").unwrap();
+                        e.execute(None, None, "/user disable actor").unwrap();
                     }
                     "creation" => {
                         e.execute(None, None, "/revoke actor admin").unwrap();
@@ -752,7 +757,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
         .provision("alice", "hash".into(), true, false)
         .unwrap();
     engine
-        .execute(Some("alice"), None, "/new room support")
+        .execute(Some("alice"), None, "/room new support")
         .unwrap();
     engine
         .execute(Some("alice"), Some("support"), "initial")
@@ -761,7 +766,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
         .provision("bob", "hash".into(), false, false)
         .unwrap();
     engine
-        .execute(Some("alice"), Some("support"), "/add bob")
+        .execute(Some("alice"), Some("support"), "/room add bob")
         .unwrap();
     engine.login("bob".into(), "bob", "hash", None).unwrap();
     engine.login("one".into(), "alice", "hash", None).unwrap();
@@ -900,7 +905,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
     );
     app.engine()
         .unwrap()
-        .execute(None, None, "/revoke bob user support")
+        .execute(None, None, "/revoke bob user #support")
         .unwrap();
     let revoked = snapshots::value(&app, &bob_headers, false).unwrap();
     let snapshot: serde_json::Value = serde_json::from_str(&revoked).unwrap();
@@ -925,7 +930,7 @@ async fn stalled_media_io_does_not_occupy_api_jobs_or_serialize_other_files() {
         .login("fixture".into(), "alice", "hash", None)
         .unwrap();
     engine
-        .execute(Some("alice"), None, "/new room files")
+        .execute(Some("alice"), None, "/room new files")
         .unwrap();
     let room = engine.data.rooms["files"].id.clone();
     let first = engine.allocate_media("alice", &room, "first", 1).unwrap();
@@ -999,4 +1004,174 @@ async fn stalled_media_io_does_not_occupy_api_jobs_or_serialize_other_files() {
         two.await.unwrap().unwrap().status(),
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+#[allow(clippy::panic)] // Include the failing command in table-driven assertions.
+async fn every_catalogued_command_form_runs_through_web_dispatch() {
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    let hash = crate::engine::hash_password("actor-old-password").unwrap();
+    engine
+        .provision("actor", hash.clone(), true, false)
+        .unwrap();
+    engine.execute(None, None, "/grant actor su").unwrap();
+    for name in ["bob", "ls", "get"] {
+        engine.provision(name, "hash".into(), false, false).unwrap();
+    }
+    engine
+        .login("fixture".into(), "actor", &hash, None)
+        .unwrap();
+    let (changes, _) = broadcast::channel(1);
+    let app = App {
+        media: None,
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        HeaderValue::from_static("chat_session=fixture"),
+    );
+    let probes = [
+        (None, "/room new #team"),
+        (None, "/room ls"),
+        (None, "/room add bob #team"),
+        (Some("team"), "/room add ls"),
+        (Some("team"), "/room add get"),
+        (Some("team"), "/room join #team"),
+        (Some("team"), "/user ls #team"),
+        (Some("team"), "/user set @all label member"),
+        (Some("team"), "/user get @all"),
+        (Some("team"), "/grant bob #team w:message.react"),
+        (Some("team"), "/revoke bob #team w:message.react"),
+        (Some("team"), "/grant bob user #team"),
+        (Some("team"), "/revoke bob user #team"),
+        (Some("team"), "/room add bob"),
+        (Some("team"), "/room kick ls"),
+        (Some("team"), "/room owner bob"),
+        (Some("team"), "/room leave"),
+        (None, "/room join #team"),
+        (Some("team"), "/help"),
+        (Some("team"), "/man room"),
+        (Some("team"), "/permissions"),
+        (Some("team"), "/debug on"),
+        (Some("team"), "/whoami"),
+        (Some("team"), "/console"),
+        (Some("team"), "/tell bob private-message"),
+        (Some("team"), "original-message"),
+        (Some("team"), "/reply $message reply-message"),
+        (Some("team"), "/react $message helpful"),
+        (Some("team"), "/edit $message edited-message"),
+        (Some("team"), "/history"),
+        (Some("team"), "/history #team"),
+        (Some("team"), "/retract $message"),
+        (Some("team"), "/clean 7d #team --dry-run"),
+        (Some("team"), "/clean 7d #team"),
+        (None, "/configs"),
+        (None, "/sudo /whoami"),
+        // Clear/logout are browser-local; their elevated forms authorize here.
+        (None, "/sudo /clear"),
+        (None, "/sudo /logout"),
+        (Some("team"), "/bot new helper"),
+        (Some("team"), "/bot ls"),
+        (Some("team"), "/bot info helper"),
+        (None, "/bot owner helper bob"),
+        (None, "/bot token new helper worker"),
+        (None, "/bot token ls helper"),
+        (None, "/bot token rm helper $token"),
+        (None, "/bot rm helper @global"),
+        (None, "/user new created long-created-password user"),
+        (None, "/user reset created long-reset-password"),
+        (None, "/user disable created"),
+        (None, "/user enable created"),
+        (None, "/user rename created renamed"),
+        (None, "/user delete renamed"),
+        (None, "/user passwd actor-old-password actor-new-password"),
+        (None, "/room rename #team renamed"),
+        (None, "/room delete #renamed"),
+    ];
+    let command_path = |text: &str| {
+        let parts = text.split_whitespace().collect::<Vec<_>>();
+        let count = match parts.as_slice() {
+            ["/bot", "token", ..] => 3,
+            ["/user" | "/room" | "/bot", ..] => 2,
+            _ => 1,
+        };
+        parts.into_iter().take(count).collect::<Vec<_>>().join(" ")
+    };
+    let mut covered = std::collections::BTreeSet::new();
+    let mut message = String::new();
+    let mut token_id = String::new();
+    for (room, source) in probes {
+        let text = source
+            .replace("$message", &message)
+            .replace("$token", &token_id);
+        let input = super::commands::Input {
+            id: 1,
+            room: room.map(str::to_owned),
+            text: text.clone(),
+            markdown: false,
+        };
+        let (reply, change) = super::commands::execute_input(&app, &headers, "actor", &input)
+            .await
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
+        if source.ends_with("--dry-run") {
+            assert!(change.is_none());
+            assert!(reply.starts_with("## Cleanup preview"));
+        }
+        covered.insert(command_path(source));
+        if source == "/sudo /clear" {
+            covered.insert("/clear".into());
+        }
+        if source == "/sudo /logout" {
+            covered.insert("/logout".into());
+        }
+        if source == "original-message" {
+            message = app
+                .engine_read()
+                .unwrap()
+                .history("actor", "team")
+                .unwrap()
+                .messages
+                .last()
+                .unwrap()
+                .id
+                .clone();
+        }
+        if source.starts_with("/bot token new") {
+            token_id = reply.split_whitespace().nth(2).unwrap().to_owned();
+        }
+        if source.starts_with("/room add") {
+            let name = source.split_whitespace().nth(2).unwrap();
+            assert!(
+                app.engine_read().unwrap().data.rooms["team"]
+                    .members
+                    .contains(name),
+                "{source}"
+            );
+        }
+    }
+    for command in crate::commands::available(true, false) {
+        for form in crate::commands::usage_forms(command) {
+            assert!(
+                covered.contains(&command_path(&form)),
+                "Missing success probe for {form}"
+            );
+        }
+    }
+    let engine = app.engine_read().unwrap();
+    assert!(!engine.data.rooms.contains_key("renamed"));
+    assert!(!engine.data.users.contains_key("renamed"));
+    assert!(crate::engine::verify_password(
+        "actor-new-password",
+        &engine.data.users["actor"].hash
+    ));
 }

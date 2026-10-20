@@ -17,8 +17,9 @@ export function captureSubmission(
   return Object.freeze({ ...value });
 }
 export function deletionKind(text: string): "message" | "resource" | null {
-  const command = commandText(text).split(/\s+/u)[0];
-  return command === "/rm"
+  const [command, operation] = commandText(text).split(/\s+/u);
+  return command === "/rm" ||
+    (["/user", "/room"].includes(command || "") && operation === "delete")
     ? "resource"
     : command === "/retract"
       ? "message"

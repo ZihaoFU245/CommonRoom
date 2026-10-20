@@ -475,18 +475,24 @@ export function useCommands({
       if (current.reply) setReplyTarget(null);
       const [command, argument, name] = commandText(current.text).split(/\s+/u);
       const target =
-        command === "/new"
-          ? argument === "room"
-            ? name
-            : undefined
-          : argument;
+        command === "/room"
+          ? name?.replace(/^#/u, "")
+          : command === "/new"
+            ? argument === "room"
+              ? name
+              : undefined
+            : argument;
       if (command === "/clear") clearView();
       if (command === "/logout") logout();
       if (command === "/console") {
         desiredRoom.current = null;
         setSelected("@command");
       }
-      if (["/new", "/join"].includes(command || "") && target) {
+      if (
+        (["/new", "/join"].includes(command || "") ||
+          (command === "/room" && ["new", "join"].includes(argument || ""))) &&
+        target
+      ) {
         desiredRoom.current = target;
         if (currentState.current.rooms.some((room) => room.name === target)) {
           setSelected(target);

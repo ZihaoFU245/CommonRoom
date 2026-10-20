@@ -60,7 +60,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v15 restart and v9/v10/v11/v12/v13/v14 migration, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Command-family tests cover group filtering, removed syntax, and group-removal authorization.
+Current-schema persistence tests cover v16 restart and HEAD v15 upgrade, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -163,7 +163,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v15 restart and v9/v10/v11/v12/v13/v14 migration and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v16 restart and HEAD v15 upgrade and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -355,7 +355,7 @@ Native tool regressions cover buffered and streamed function calls, fragmented
 arguments, tool results, non-retryable command POSTs, saved mutation results,
 duplicate suppression and uncertain-effect restart/pruning behavior. Server tests
 cover current command/target grants, scoped-token isolation, bot admin access,
-verified sender roles, policy-inspection privacy, owner transfer/rename/deletion,
+verified sender roles, policy-inspection privacy, owner transfer/user rename/deletion,
 and private-catalogue filtering against current ownership.
 
 SimpleBot configuration regressions cover quoted/empty values, Unicode and
@@ -367,7 +367,7 @@ half-close cleanup through the actual Vite proxy.
 
 Command receipt regressions verify concurrent replay, payload conflicts,
 authenticated outcome lookup after target deletion, terminal rejection,
-revocation, restart, receipt-write failure rollback and transactional v9 upgrade.
+revocation, restart, receipt-write failure rollback and current-schema restart.
 History tests load pages around message IDs and reject mixed cursor modes.
 SimpleBot regressions cover public help/ping without model calls, fresh context
 on restart, quoted-message retrieval, model-driven paging, bounded/deduplicated
@@ -514,14 +514,12 @@ they do not install or validate a third-party sandbox.
 
 Correctness/availability regressions cover the actual HTTP 401 message and non-JSON
 proxy failures, per-account session eviction after 256 login attempts, disabled
-administrators in last-admin guards, indexed rename isolation and v10 migration
-backfill/rollback. Hook tests drive continuous revision changes during explicit
+administrators in last-admin guards, indexed rename isolation and indexed references. Hook tests drive continuous revision changes during explicit
 paging and continuous snapshots during read acknowledgements; retries stay bounded,
 the original range is preserved, and live tails remain in the ordering ledger.
 
 Performance regressions guard unrelated entity/state writes during retraction and
-cleanup, audit retention without rewriting retained entries, v11 audit migration
-and failed-DDL rollback, startup expiry pruning, configuration ceilings, shared
+cleanup, audit retention without rewriting retained entries, audit write rollback, startup expiry pruning, configuration ceilings, shared
 snapshot buffers after read-only commands, credential-isolated bot cache reuse,
 revocation checks, prepared-send races and fail-closed rollback reload failures. Snapshot synchronization tests reject
 older socket baselines after newer HTTP data and accept a restarted instance.
@@ -559,8 +557,7 @@ Media availability regressions hold local S3 requests open while checking that
 ordinary chat reads still pass with a one-permit API budget and another file's
 completion proceeds concurrently. Transport tests cover invalid/missing objects
 versus 503 failures, zero-size guards, per-key batch deletion errors, in-flight
-probe sharing without stale health caching, and filename encoding. V14-to-v15
-migration/rollback, covering quota/partial expiry query plans, orphan triggers,
+probe sharing without stale health caching, and filename encoding. Covering quota/partial expiry query plans, orphan triggers,
 canonical SQL state, and write-free plain-text reconciliation use scratch data.
 
 Media cache regressions cover reload reuse, live denial of cached bytes, canonical
@@ -569,3 +566,48 @@ matching and disabled-storage fallback. Media engine tests cover restart claims,
 shared references, last-reference removal, quota retention on failed deletion and
 late staging recovery. Bot cache tests cover repeated renders/focus during offline
 backoff, exponential rests, empty results and immediate notification refresh.
+
+Object-command regressions cover scoped user lists, complete bulk metadata reads,
+privacy, protected accounts, media inheritance/quotas, renames, room deletion,
+read-only execution and failed-write rollback. Bulk grant/revoke tests exercise original-policy authorization, owners, protected su accounts, and the last active
+administrator. Only HEAD v15-to-v16 migration is tested; pre-HEAD upgrade fixtures
+are removed and versions 1–14 are tested for unchanged rejection. Upload hint tests
+cover bounds/header injection, signing, replacement metadata and browser headers.
+
+Command-output regressions cover full subcommand paths, permission-filtered help,
+multiline manual usage, nested/numbered lists, tables, language-labelled fences,
+literal errors/statuses, exact JSON and history/credential fence containment.
+HTML and image loading remain disabled in command output. The isolated visual
+fixture is `/scripts/commands/index.html` on the Vite development server, with
+compact-width and dark-theme controls and no account/server data.
+
+Command-interface regressions execute every catalogued form through the web
+request dispatcher, including password hashing, bot credentials, all room/user
+subcommands, and invitation targets named `ls`/`get`. The matrix fails when a
+new catalogue form lacks a success probe. Separate owner tests verify implicit
+room invitations, explicit `#room` targets, permission removal and public error
+syntax; grant tests cover `#room` membership writes. Existing denial probes
+cover every registered command without grants. Browser tests verify scoped
+headings, one-level completion, free-form argument silence and bullet-only
+manual explanations outside syntax/example fences.
+
+Scope-default regressions verify current-room user lists and bulk metadata,
+explicit global overrides, Console/stdin bot defaults, explicit `#room` cleanup,
+and rejection of unsupported private defaults without global writes. Separate
+grant/revoke tests preserve required direct-permission scopes and global group
+defaults. Output heading tests use the originating view for omitted scopes.
+
+Metadata-interface tests cover `@all` keys/users, effective 1g quota defaults,
+account-wide shorthand, inherited media limits without global custom-key leaks,
+case-insensitive k/m/g sizes, checked overflow, config serialization, and
+readable metadata lists. Explicit bare room scopes are rejected across command
+families; completion, manuals and integration fixtures use `#room`.
+
+
+Cleanup regressions require explicit scopes in every view, exercise peer/pair and
+bulk private targets, reject missing chats without creation, preserve private
+scope privacy, enforce command/action/age checks during preview and execution,
+and roll back batches on injected storage failures. Preview preserves database
+write counts, audit and revisions. Media tests verify reference counts and shared
+object retention. Metadata-authority tests cover admin/owner reads, all mutation
+forms denied to non-su, explicit write-flag bypass rejection, and su writes.

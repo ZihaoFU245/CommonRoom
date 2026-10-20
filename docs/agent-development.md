@@ -13,7 +13,7 @@ checkpoints; `contract.mjs` validates actual payloads against the published
 schema. This separation makes transport behavior reusable without an agent
 framework. Node 22.18+ and the project's locked development dependencies suffice.
 
-Provision `/bot new helper support` and `/bot token new helper worker`, then
+Provision `/bot new helper #support` and `/bot token new helper worker`, then
 use the operator credential to issue a restricted expiring worker token through
 `POST /api/bot/v1/credentials`, then inject that secret as `BOT_TOKEN`. Never put it in code, URLs or logs.
 

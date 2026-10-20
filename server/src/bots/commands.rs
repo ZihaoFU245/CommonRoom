@@ -12,7 +12,7 @@ const DEFAULT_ACTIONS: &[Action] = &[
     Action::React,
 ];
 const DEFAULT_COMMANDS: &[&str] = &[
-    "/help", "/man", "/whoami", "/members", "/history", "/join", "/reply", "/react",
+    "/user", "/room", "/help", "/man", "/whoami", "/history", "/reply", "/react",
 ];
 
 impl Engine {
@@ -87,10 +87,15 @@ impl Engine {
     }
 
     fn bot_scope(&self, view: Option<&str>, explicit: Option<&str>) -> Result<Scope, String> {
+        if explicit.is_some_and(|value| !value.starts_with('#') && !value.starts_with('@')) {
+            return Err("Room scopes require #name.".into());
+        }
         match explicit.or(view) {
-            Some("@global") if explicit.is_some() => Ok(Scope::Server),
-            Some(name) if !name.starts_with('@') => self.room_scope(name),
-            _ => Err("Specify a room or @global explicitly; Console and private views have no default bot scope.".into()),
+            None | Some("@command" | "@global") => Ok(Scope::Server),
+            Some(name) if !name.starts_with('@') => self.room_scope(name.trim_start_matches('#')),
+            _ => Err(
+                "Bot commands need a room or @global; specify the scope in private views.".into(),
+            ),
         }
     }
 
@@ -168,11 +173,10 @@ impl Engine {
                 if self.data.users.len() >= self.max_users { return Err(format!("User limit reached ({}).", self.max_users)); }
                 let id = uuid::Uuid::new_v4().to_string();
                 // No password is issued. This is an ordinary account; /reset can later set one.
-                self.data.users.insert((*name).into(), Account { id: id.clone(), hash: "!no-password".into(), disabled: false });
+                self.data.users.insert((*name).into(), Account { id: id.clone(), hash: "!no-password".into(), disabled: false, metadata: BTreeMap::new() });
                 self.data.bots.insert(id.clone(), Registration {owner_id:self.principal_id(actor).filter(|id| *id != "console").map(str::to_owned), ..Default::default()});
                 self.data.policy.grants.push(Grant {
                     owner: false, subject: Subject::Account(id), scope: scope.clone(), minimum_age: 0,
-            media: None,
                     permissions: DEFAULT_ACTIONS.iter().map(|a| a.name().to_owned())
                         .chain(DEFAULT_COMMANDS.iter().map(|c| (*c).to_owned())).collect(),
                 });

@@ -34,7 +34,7 @@ fn explicit_scope_and_safe_defaults_are_enforced() {
         assert!(e.data == before);
     }
     assert!(
-        e.execute(Some("admin"), Some("support"), "/bot new helper secret")
+        e.execute(Some("admin"), Some("support"), "/bot new helper #secret")
             .is_err()
     );
     new_bot(&mut e);
@@ -119,12 +119,13 @@ fn mentions_replies_reactions_and_literal_commands_are_ordinary_messages() {
 #[test]
 fn only_global_admins_manage_connections_and_su_targets_stay_protected() {
     let mut e = fixture();
-    e.execute(None, None, "/grant human admin support").unwrap();
+    e.execute(None, None, "/grant human admin #support")
+        .unwrap();
     assert!(
         e.execute(Some("human"), Some("support"), "/bot new denied")
             .is_err()
     );
-    e.execute(None, None, "/grant human support /bot").unwrap();
+    e.execute(None, None, "/grant human #support /bot").unwrap();
     assert!(
         e.execute(Some("human"), Some("support"), "/bot ls")
             .is_err()
@@ -206,20 +207,20 @@ fn credentials_follow_identity_and_revoke_disable_delete_fail_closed() {
 fn room_scoped_grants_can_be_revoked_and_other_grants_added_normally() {
     let mut e = fixture();
     new_bot(&mut e);
-    e.execute(None, None, "/revoke helper support /react")
+    e.execute(None, None, "/revoke helper #support /react")
         .unwrap();
     assert!(
         !e.commands_for(Some("helper"), Some("support"))
             .iter()
             .any(|c| c.name == "/react")
     );
-    e.execute(None, None, "/revoke helper support r:message.read")
+    e.execute(None, None, "/revoke helper #support r:message.read")
         .unwrap();
     assert!(e.history("helper", "support").is_err());
     assert!(e.snapshot("helper").unwrap().rooms.is_empty());
-    e.execute(None, None, "/grant helper secret r:message.read")
+    e.execute(None, None, "/grant helper #secret r:message.read")
         .unwrap();
-    e.execute(None, None, "/grant helper secret /history")
+    e.execute(None, None, "/grant helper #secret /history")
         .unwrap();
     assert!(e.history("helper", "secret").is_ok());
     assert!(
@@ -322,7 +323,7 @@ fn registrations_and_credentials_survive_current_schema_restart() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        15
+        16
     );
 }
 
@@ -552,7 +553,7 @@ fn stable_targets_cannot_follow_recreated_names_and_receipts_survive_restart_and
     e.execute(None, None, "/rm room renamed").unwrap();
     e.execute(None, None, "/new room support").unwrap();
     for action in ["r:message.read", "w:message.create"] {
-        e.execute(None, None, &format!("/grant renamedbot support {action}"))
+        e.execute(None, None, &format!("/grant renamedbot #support {action}"))
             .unwrap();
     }
     assert_eq!(
@@ -619,7 +620,7 @@ fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
             .unwrap()
             .replayed
     );
-    e.execute(None, None, "/revoke helper support /reply")
+    e.execute(None, None, "/revoke helper #support /reply")
         .unwrap();
     assert_eq!(
         e.send_bot_message("helper", &request, Some("a"))
@@ -628,7 +629,7 @@ fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
             .code,
         Code::Forbidden
     );
-    e.execute(None, None, "/grant helper support /reply")
+    e.execute(None, None, "/grant helper #support /reply")
         .unwrap();
     e.db.lock()
         .unwrap()
@@ -756,7 +757,7 @@ fn prepared_bot_send_rechecks_revision_permissions_and_concurrent_receipts() {
     );
     assert_eq!(e.history("helper", "support").unwrap().messages.len(), 1);
     let prepared = e.prepare_bot_send("helper", &input, Some("next")).unwrap();
-    e.execute(None, None, "/revoke helper support w:message.create")
+    e.execute(None, None, "/revoke helper #support w:message.create")
         .unwrap();
     assert_eq!(
         e.commit_bot_send("helper", &input, Some("next"), prepared)
