@@ -1,3 +1,4 @@
+import { requestAbort } from "./requestAbort.ts";
 import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
 import {
   isSnapshot,
@@ -31,33 +32,37 @@ async function request<T>(
   signal?: AbortSignal,
   timeoutMs = 15000,
 ): Promise<T> {
-  const response = await fetch(new URL(`api/${path}`, document.baseURI), {
-    method: body === undefined ? "GET" : "POST",
-    credentials: "same-origin",
-    cache: "no-store",
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-      : AbortSignal.timeout(timeoutMs),
-    ...(body === undefined
-      ? {}
-      : {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-  });
-  const value: unknown = await response.json().catch(() => null);
-  if (!response.ok)
-    throw new ApiError(
-      response.status,
-      value === null
-        ? `Server request failed (${response.status}).`
-        : responseError(value),
-    );
-  if (!validate(value))
-    throw new Error(
-      "Invalid server response. Please reload or check the server version.",
-    );
-  return value;
+  const cancellation = requestAbort(timeoutMs, signal);
+  try {
+    const response = await fetch(new URL(`api/${path}`, document.baseURI), {
+      method: body === undefined ? "GET" : "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: cancellation.signal,
+      ...(body === undefined
+        ? {}
+        : {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+    });
+    const value: unknown = await response.json().catch(() => null);
+    cancellation.signal.throwIfAborted();
+    if (!response.ok)
+      throw new ApiError(
+        response.status,
+        value === null
+          ? `Server request failed (${response.status}).`
+          : responseError(value),
+      );
+    if (!validate(value))
+      throw new Error(
+        "Invalid server response. Please reload or check the server version.",
+      );
+    return value;
+  } finally {
+    cancellation.dispose();
+  }
 }
 
 export const api = {

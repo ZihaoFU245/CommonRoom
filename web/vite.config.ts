@@ -172,6 +172,11 @@ function mediaWorker(): Plugin {
 
 export default defineConfig({
   base: "./",
+  // Pin the supported Chrome floor while retaining the other Vite 7 targets.
+  build: {
+    target: ["chrome114", "edge107", "firefox104", "safari16"],
+    cssTarget: ["chrome114", "edge107", "firefox104", "safari16"],
+  },
   plugins: [preact(), markdownRendererUrl(), markdownFrame(), mediaWorker()],
   server: {
     port: 5173,

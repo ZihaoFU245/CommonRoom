@@ -1,3 +1,4 @@
+import { requestAbort } from "./requestAbort.ts";
 export interface UploadTicket {
   media_id: string;
   upload: {
@@ -219,31 +220,36 @@ export async function documentSource(
   path: string,
   signal: AbortSignal,
 ): Promise<string> {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    cache: "no-store",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
-  });
-  if (!response.ok || !response.body)
-    throw new Error("Unable to load preview.");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let size = 0;
-  let source = "";
+  const cancellation = requestAbort(15000, signal);
   try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > previewLimit)
-        throw new Error(
-          "Preview is limited to 1 MiB. Download this file instead.",
-        );
-      source += decoder.decode(chunk.value, { stream: true });
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: cancellation.signal,
+    });
+    if (!response.ok || !response.body)
+      throw new Error("Unable to load preview.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let size = 0;
+    let source = "";
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > previewLimit)
+          throw new Error(
+            "Preview is limited to 1 MiB. Download this file instead.",
+          );
+        source += decoder.decode(chunk.value, { stream: true });
+      }
+      return source + decoder.decode();
+    } finally {
+      await reader.cancel();
     }
-    return source + decoder.decode();
   } finally {
-    await reader.cancel();
+    cancellation.dispose();
   }
 }
 

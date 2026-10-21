@@ -661,3 +661,26 @@ checks unauthorized completion/download, immutable final objects, private signed
 reads, restart cleanup protection, replacement and removal. Browser verification
 should position/zoom a rectangular image, confirm, and inspect chat/sidebar/account
 at desktop and compact widths. Check URL failures leave no blank avatar space.
+
+
+## Chrome 114 compatibility
+
+The production build targets Chrome 114 explicitly. `requestAbort.test.js` runs
+both native and missing-`AbortSignal.any` paths, checking early cancellation,
+first-abort reasons, deadline expiry during body reads, and listener/timer cleanup
+on completion and failure. Build targets do not polyfill runtime APIs.
+
+For browser verification, use an isolated Chrome for Testing 114 profile and
+throwaway server data. Check the built UI at a non-root HTTPS base path: login,
+room history, WebSocket sends and reload, desktop/compact settings, media config,
+document previews, and request cancellation/timeouts. Also verify service-worker
+activation and CSS `:has`, `color-mix`, and dynamic viewport units. Keep the installed
+browser and working data folder untouched. No benchmarks are required.
+
+Chrome 114.0.5735.133 was verified against the production bundle on 2026-10-22
+using isolated temporary accounts and a `/commonroom/` HTTPS base path. Login,
+history, WebSocket messages, reload, settings, Markdown/LaTeX, streamed document
+preview, cancellation/deadlines, avatar canvas/WebP encoding and worker activation
+passed at desktop 1440×1000 and compact 390×844 with no page errors. Storage was disabled; S3 transfers were not part of
+this browser compatibility smoke. Unit tests cover the shared request path used
+by avatar/media uploads and completion.

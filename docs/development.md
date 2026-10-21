@@ -57,6 +57,20 @@ separately before deploying.
 
 Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` contains real account credentials, sessions, and private history; do not delete or modify it for tests. Tests create their own temporary folders. Stop a server before copying its entire data folder.
 
+## Browser compatibility
+
+The minimum supported Chrome version is 114. Production JavaScript and CSS targets
+pin `chrome114` in Vite while preserving the other existing browser targets.
+Build targets handle syntax, not missing runtime APIs. Feature-detect newer APIs
+and keep fallbacks in focused helpers; do not infer support from the user agent.
+
+All request cancellation/deadlines go through `api/requestAbort.ts`. It uses native
+`AbortSignal.any` when available and `AbortController` forwarding on Chrome 114.
+It owns timeout timers for consistent `TimeoutError` reasons and releases timers
+and listeners in `finally`, after response bodies finish. ESLint rejects direct
+`AbortSignal.any`/`timeout` calls elsewhere. The browser floor applies to the UI;
+Node/Deno development and bot-worker requirements remain separate.
+
 ## Coding conventions
 
 - Read [Architecture](architecture.md) before changing state ownership or module boundaries.
