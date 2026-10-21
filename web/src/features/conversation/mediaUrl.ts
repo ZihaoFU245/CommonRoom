@@ -1,4 +1,5 @@
-/** Only explicit network URLs and base64 raster images may fetch. */
+import { mediaPath } from "../../api/media.ts";
+/** Explicit network URLs, canonical attachment paths and base64 raster images. */
 export function safeMediaUrl(value: string): boolean {
   if (!value || value !== value.trim() || /[\u0000-\u0020\u007f]/u.test(value))
     return false;
@@ -8,6 +9,7 @@ export function safeMediaUrl(value: string): boolean {
     )
   )
     return value.slice(value.indexOf(",") + 1).length > 0;
+  if (mediaPath(value)) return true;
   if (!/^https?:\/\//iu.test(value)) return false;
   try {
     const url = new URL(value);

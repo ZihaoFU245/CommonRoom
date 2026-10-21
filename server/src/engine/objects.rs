@@ -174,10 +174,12 @@ impl Engine {
                         .metadata_access(context.actor, &name, &Scope::Server, false)
                         .is_ok();
                     let mut sections = BTreeMap::new();
-                    sections.insert(
-                        "@global".to_owned(),
-                        self.metadata_section(&name, &Scope::Server, key, global_read)?,
-                    );
+                    if global_read {
+                        sections.insert(
+                            "@global".to_owned(),
+                            self.metadata_section(&name, &Scope::Server, key, true)?,
+                        );
+                    }
                     if scope != Scope::Server {
                         sections.insert(
                             format!("#{}", self.scope_label(&scope)),
@@ -337,6 +339,8 @@ impl Engine {
             )?;
             let scope_key = Self::metadata_scope_key(&scope)?.to_owned();
             let value = self.validate_metadata(key, value, &scope)?;
+            // Quota is account-wide; the omitted scope still selects @all from
+            // the current view. Explicit @global selects every account instead.
             let selection = if *who == "@all" && *key == "media.user_quota" && rest.is_empty() {
                 self.object_scope(context.actor, context.view, None)?
             } else {
@@ -345,6 +349,13 @@ impl Engine {
             let targets = self.metadata_targets(context.actor, who, &selection)?;
             for name in &targets {
                 self.metadata_access(context.actor, name, &scope, true)?;
+                if value != "@unset"
+                    && let Some(entries) = self.data.users[name].metadata.get(&scope_key)
+                    && entries.len() >= 32
+                    && !entries.contains_key(*key)
+                {
+                    return Err("At most 32 metadata keys per scope.".into());
+                }
             }
             for name in &targets {
                 let metadata = &mut self
@@ -354,9 +365,6 @@ impl Engine {
                     .ok_or("User not found.")?
                     .metadata;
                 let entries = metadata.entry(scope_key.clone()).or_default();
-                if value != "@unset" && entries.len() >= 32 && !entries.contains_key(*key) {
-                    return Err("At most 32 metadata keys per scope.".into());
-                }
                 if value == "@unset" {
                     entries.remove(*key);
                 } else {
@@ -389,6 +397,8 @@ impl Engine {
             if *key != "@all" {
                 self.validate_metadata(key, "@unset", &scope)?;
             }
+            // Quota is account-wide; the omitted scope still selects @all from
+            // the current view. Explicit @global selects every account instead.
             let selection = if *who == "@all" && *key == "media.user_quota" && rest.is_empty() {
                 self.object_scope(context.actor, context.view, None)?
             } else {

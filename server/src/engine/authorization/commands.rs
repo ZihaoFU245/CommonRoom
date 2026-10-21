@@ -224,6 +224,7 @@ impl Engine {
             }
             // The compiled authorization index remains the original policy until
             // dispatch commits the batch. Any error restores the outer snapshot.
+            let audit = self.data.policy.audit.clone();
             for name in &names {
                 let mut selected = parts.to_vec();
                 selected[1] = name;
@@ -250,6 +251,8 @@ impl Engine {
             {
                 return Err("Cannot revoke the last active administrator.".into());
             }
+            self.data.policy.audit = audit;
+            self.audit(actor, parts[0], &parts[1..].join(" "));
             return Ok(format!("Updated grants for {} users.", names.len()));
         }
         match parts[0] {
@@ -478,14 +481,33 @@ impl Engine {
                     if group == Group::User && matches!(scope, Scope::Room(_)) {
                         self.require_member_delegation(actor, &scope)?;
                     }
-                    self.assign(target, group, scope.clone());
-                    if let Some(name) = parts.get(3) {
-                        self.data
+                    let room_name = if let Scope::Room(id) = &scope {
+                        let (name, room) = self
+                            .data
                             .rooms
-                            .get_mut(name.trim_start_matches('#'))
+                            .iter()
+                            .find(|(_, room)| &room.id == id)
+                            .ok_or("Room not found.")?;
+                        if !room.members.contains(parts[1]) {
+                            self.require(actor, &scope, Action::Invite)?;
+                            self.require_member_delegation(actor, &scope)?;
+                        }
+                        Some(name.clone())
+                    } else {
+                        None
+                    };
+                    self.assign(target, group, scope.clone());
+                    if let Some(name) = room_name {
+                        let added = self
+                            .data
+                            .rooms
+                            .get_mut(&name)
                             .ok_or("Room not found.")?
                             .members
                             .insert(parts[1].into());
+                        if added {
+                            self.audit(actor, "/add", &format!("{} {name}", parts[1]));
+                        }
                     }
                 } else {
                     if group == Group::User

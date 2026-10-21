@@ -201,6 +201,8 @@ without overlapping a socket that is already connecting.
 All paths use `base_url`; requests use existing cookies and browser origin checks.
 Allocation/completion/publication require `w:media.upload` plus read/send rights.
 `conversation_id` may also be `@direct:username` to establish a first private pair.
+The empty private directory and reservation commit together after validation and
+quota/rate checks; rejected allocations leave no pair behind.
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
@@ -217,9 +219,10 @@ a 100-second server budget sits below the 120-second browser timeout.
 Storage failures/busy completion return 503, invalid uploads return 400. The PUT
 URL admits a request for five minutes; the client transfer timeout is separately
 15 minutes. The
-client resolves the returned permanent path against the application origin and
-keeps a separate attachment preview/card, then generates Markdown only when
-sending through the ordinary message path.
+client keeps a separate attachment preview/card and generates root-relative media
+Markdown only when sending through the ordinary message path. These paths retain
+the configured base path and remain usable after an origin change. A new server
+instance clears unsent attachments and asks the user to attach the file again.
 No upload automatically publishes a message. Managed references are derived from
 canonical media paths in message text and persisted atomically; no new frame field
 is required. Unbound uploads cannot be downloaded. Configuration/storage-worker
@@ -246,16 +249,19 @@ are optional UI hints; the client verifies MIME with the info endpoint on click.
 Browser media bytes are explicitly persisted by the application-scoped media worker
 under canonical file URLs (playback/download queries share content). Each cached
 read still calls the authenticated `/info` endpoint; no S3 GET is needed on a hit.
-Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
-for bounds, partial-range caching and fallback behavior.
+Only full 200 responses are cached; hits refresh eviction recency, and ranges can
+be served from a complete cached object. Every range still checks `/info` so
+access revocations take effect immediately. Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
+for bounds, full-object caching and fallback behavior.
 
 ## Object commands and upload hints
 
 The command catalogue advertises `/user` and `/room` families. See [Commands](commands.md)
 for scoped listing, metadata and lifecycle syntax. `/user get` returns a local JSON
 notice shaped as `{username: {scope: {key: {value, source}}}}`.
-The `@global` section always appears; a room read also includes its `#name`
-section. Sources are `config`, `role`, `@global`, or `#name`. Account-wide quota appears
+The `@global` section appears only with account/global read authority; a room read
+includes its `#name` section. Room-only readers receive effective room limits, but
+no global section or account quota. Sources are `config`, `role`, `@global`, or `#name`. Account-wide quota appears
 only under `@global`. A key filter applies to both sections. Metadata is absent
 from broadcast snapshots. Bulk writes
 and grant changes return one acknowledgement only after an atomic commit.

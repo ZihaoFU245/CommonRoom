@@ -21,13 +21,13 @@ impl Engine {
         if self.data.rooms.contains_key(new_name) {
             return Err("Room already exists.".into());
         }
-        let before = self.data.clone();
+        let before = MetadataChange::capture(&self.data, ChangeFamily::RoomRename);
         self.audit(actor, "/rename room", &format!("{name} -> {new_name}"));
         let mut room = self.data.rooms.remove(name).ok_or("Room not found.")?;
         room.revision = room.revision.wrapping_add(1);
         self.data.rooms.insert(new_name.into(), room);
         if let Err(error) = self.store_room_rename(name, new_name, &before) {
-            self.data = before;
+            before.restore(&mut self.data);
             tracing::error!(error = %error, "Room rename failed");
             return Err("Storage unavailable; rename was not applied.".into());
         }
@@ -176,7 +176,8 @@ impl Engine {
                             .ok_or("Account unavailable.")?
                             .id
                             .clone();
-                        self.data
+                        self.metadata_dirty |= self
+                            .data
                             .rooms
                             .get_mut(name)
                             .ok_or("Room not found.")?
@@ -195,12 +196,15 @@ impl Engine {
                     if self.data.rooms.get(name).is_some_and(|r| r.owner_id == id) {
                         return Err("Transfer ownership before leaving your room.".into());
                     }
-                    self.data
+                    self.metadata_dirty |= self
+                        .data
                         .rooms
                         .get_mut(name)
                         .ok_or("Room not found.")?
                         .members
                         .remove(user);
+                    let assignment_count = self.data.policy.assignments.len();
+                    let grant_count = self.data.policy.grants.len();
                     self.data
                         .policy
                         .assignments
@@ -208,6 +212,8 @@ impl Engine {
                     self.data.policy.grants.retain(|g| {
                         !(g.subject == Subject::Account(id.clone()) && g.scope == scope)
                     });
+                    self.metadata_dirty |= assignment_count != self.data.policy.assignments.len()
+                        || grant_count != self.data.policy.grants.len();
                 }
                 Ok(format!(
                     "{} #{name}.",

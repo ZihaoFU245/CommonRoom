@@ -76,11 +76,44 @@ impl Engine {
                 ..Default::default()
             },
         );
-        if let Err(error) = self.save_empty_private(&key) {
-            self.data.private.remove(&key);
-            return Err(error);
-        }
         Ok(id)
+    }
+    // The tentative private directory is visible only under the engine writer.
+    // Storage commits it together with the reservation, after every quota check.
+    pub(crate) fn allocate_media_target(
+        &mut self,
+        user: &str,
+        target: &str,
+        filename: &str,
+        size: u64,
+        hints: BTreeMap<String, String>,
+        preview: bool,
+    ) -> Result<Option<Media>, String> {
+        let new_key = target
+            .strip_prefix("@direct:")
+            .map(|peer| private_key(user, peer))
+            .filter(|key| !self.data.private.contains_key(key));
+        let conversation = self.resolve_media_conversation(user, target)?;
+        let result = if preview {
+            crate::media::hint_headers(&hints).and_then(|_| {
+                self.validate_media_allocation(user, &conversation, filename, size)
+                    .map(|_| None)
+            })
+        } else {
+            self.allocate_media_with_hints(user, &conversation, filename, size, hints)
+                .map(Some)
+        };
+        if let Some(key) = new_key {
+            if preview || result.is_err() {
+                self.data.private.remove(&key);
+            } else {
+                self.bot_index
+                    .conversations
+                    .insert(conversation, format!("@private:{key}"));
+                self.revision = self.revision.wrapping_add(1);
+            }
+        }
+        result
     }
     pub(crate) fn media_allowance(
         &self,
@@ -127,10 +160,23 @@ impl Engine {
     ) -> Result<(), String> {
         let previous = media_references(previous);
         for id in media_references(text).difference(&previous) {
-            let media = self.stored_media(id)?;
             let user = actor.ok_or("Media uploads require an account.")?;
             self.require(Some(user), scope, Action::Read)?;
             self.require(Some(user), scope, Action::Send)?;
+            let (media, referenced) = self.stored_media_with_reference(id)?;
+            let conversation = match scope {
+                Scope::Room(id) | Scope::Private(id) => id,
+                _ => return Err("Upload not found.".into()),
+            };
+            if media.conversation != *conversation
+                || !media.ready
+                || media.deleting
+                || media.deleted
+                || media.expires.is_some_and(|expiry| expiry <= now())
+                || (self.principal_id(actor) != Some(media.uploader.as_str()) && !referenced)
+            {
+                return Err("Upload not found.".into());
+            }
             self.media_allowance(user, scope, media.size, Some(media.max_age))?;
         }
         Ok(())

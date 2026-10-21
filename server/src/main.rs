@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        shutdown: Default::default(),
     };
     let listener = tokio::net::TcpListener::bind(&app.config.bind).await?;
     console::start(app.clone());
@@ -89,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             app.stopping
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            app.shutdown.notify_one();
             let _ = app.changes.send(web::Change::All);
             tracing::info!("Shutting down");
         }

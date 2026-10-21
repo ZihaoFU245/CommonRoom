@@ -371,6 +371,7 @@ impl Engine {
             .iter()
             .any(|a| a.account_id == account_id && a.group == group && a.scope == scope)
         {
+            self.metadata_dirty = true;
             self.data.policy.assignments.push(Assignment {
                 account_id,
                 group,
@@ -413,6 +414,7 @@ impl Engine {
         });
     }
     pub(in crate::engine) fn audit(&mut self, actor: Option<&str>, operation: &str, target: &str) {
+        self.metadata_dirty = true;
         let actor_id = self.principal_id(actor).unwrap_or("unavailable").to_owned();
         if self.data.policy.audit.len() >= 1000 {
             self.data.policy.audit.pop_front();

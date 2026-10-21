@@ -65,9 +65,7 @@ pub(super) fn reconcile(
         }
         let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation=?2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (uploader=?3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)))", params![id,conversation,message.author_id,now()], |r| r.get(0)).map_err(|e| e.to_string())?;
         if !valid {
-            return Err(
-                "Attachment is unavailable or belongs to another conversation/user.".into(),
-            );
+            return Err("Upload not found.".into());
         }
     }
     if ids == previous {
@@ -110,10 +108,11 @@ impl Engine {
         let quota = self
             .data
             .users
-            .values()
-            .find(|u| u.id == media.uploader)
-            .and_then(|u| u.metadata.get("@global"))
-            .and_then(|m| m.get("media.user_quota"))
+            .iter()
+            .find(|(_, u)| u.id == media.uploader)
+            .and_then(|(name, _)| {
+                self.metadata_value(name, &authorization::Scope::Server, "media.user_quota")
+            })
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(self.media_config.user_quota)
             .min(self.media_config.user_quota);
@@ -130,6 +129,23 @@ impl Engine {
         }
         if recent >= self.media_config.allocations_per_minute {
             return Err("Upload rate limit reached; retry in a minute.".into());
+        }
+        if let Some((key, chat)) = self
+            .data
+            .private
+            .iter()
+            .find(|(_, chat)| chat.id == media.conversation)
+        {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='private' AND key=?1)",
+                    [key],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if !exists {
+                put_entity(&tx, "private", key, &private_metadata(chat))?;
+            }
         }
         let json = serde_json::to_string(media).map_err(|e| e.to_string())?;
         tx.execute(

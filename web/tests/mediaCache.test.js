@@ -100,7 +100,7 @@ test("cached full objects satisfy native ranges and never render HTML inline", a
   assert.match(html.headers.get("Content-Disposition"), /^attachment;/);
   assert.equal(html.headers.get("X-Content-Type-Options"), "nosniff");
 });
-test("partial playback responses are cached even with legacy bucket CORS", async () => {
+test("partial playback responses preserve legacy CORS support without caching fragments", async () => {
   const f = fixture();
   const instance = new MediaCache(f.storage, f.network);
   const first = await f.load(instance, "?playback=0", "bytes=0-2");
@@ -108,6 +108,7 @@ test("partial playback responses are cached even with legacy bucket CORS", async
   assert.equal(first.headers.get("Content-Range"), "bytes 0-2/6");
   assert.equal(await first.text(), "abc");
   await Promise.all(f.work);
+  assert.equal(f.saved.size, 0);
   const next = await f.load(
     new MediaCache(f.storage, f.network),
     "?playback=1",
@@ -115,7 +116,7 @@ test("partial playback responses are cached even with legacy bucket CORS", async
   );
   assert.equal(next.status, 206);
   assert.equal(await next.text(), "abc");
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 2);
 });
 test("storage failures preserve downloads and worker matching respects the deployment scope", async () => {
   const f = fixture();
@@ -178,4 +179,47 @@ test("persistent cache evicts old entries rather than growing without bounds", a
   }
   assert.equal(f.saved.size, 128);
   assert.equal(f.saved.has(first), false);
+});
+
+test("cache hits protect recently viewed objects from eviction", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  const urls = Array.from(
+    { length: 129 },
+    (_, index) =>
+      new URL(
+        path.replace(
+          /d5cd8a44-d8b7-4c63-91fe-3cc63f106178/u,
+          `d5cd8a44-d8b7-4c63-91fe-${String(index).padStart(12, "0")}`,
+        ),
+      ),
+  );
+  async function load(url) {
+    await (
+      await instance.respond(new Request(url), url, (work) => f.work.push(work))
+    ).arrayBuffer();
+    await Promise.all(f.work);
+  }
+  for (const url of urls.slice(0, 128)) await load(url);
+  await load(urls[0]);
+  await load(urls[128]);
+  assert.equal(f.saved.size, 128);
+  assert.equal(f.saved.has(urls[0].href), true);
+  assert.equal(f.saved.has(urls[1].href), false);
+});
+
+test("actual network Content-Length wins over info and cached ranges use that length", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, async (url, options) =>
+    String(url).endsWith("/info")
+      ? f.network(url, options)
+      : new Response("abcd", { headers: { "Content-Length": "4" } }),
+  );
+  const full = await f.load(instance);
+  assert.equal(full.headers.get("Content-Length"), "4");
+  assert.equal(await full.text(), "abcd");
+  await Promise.all(f.work);
+  const range = await f.load(instance, "", "bytes=-2");
+  assert.equal(range.headers.get("Content-Range"), "bytes 2-3/4");
+  assert.equal(await range.text(), "cd");
 });

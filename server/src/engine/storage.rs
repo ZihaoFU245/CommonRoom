@@ -147,6 +147,7 @@ impl Engine {
             read_positions,
             revision: 0,
             recovery_failed: false,
+            metadata_dirty: false,
             presence_revision: 0,
             read_clock: 0,
             instance: uuid::Uuid::new_v4().to_string(),
@@ -227,6 +228,14 @@ impl Engine {
         rooms: &[String],
         before: Option<&Data>,
     ) -> Result<(), String> {
+        self.save_metadata(rooms, before, None)
+    }
+    pub(super) fn save_metadata(
+        &mut self,
+        rooms: &[String],
+        before: Option<&Data>,
+        change: Option<&MetadataChange>,
+    ) -> Result<(), String> {
         let authorization = if self.authorization.revision != self.data.policy.revision {
             Some(super::authorization::CompiledPolicy::compile(&self.data)?)
         } else {
@@ -235,8 +244,11 @@ impl Engine {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let tx = db.savepoint().map_err(|e| e.to_string())?;
-        if let Some(before) = before {
-            write_delta(&tx, &self.data, before).map_err(storage_error)?;
+        if let Some(before) = change
+            .map(|change| change.view(&self.data))
+            .or_else(|| before.map(Into::into))
+        {
+            write_delta_view(&tx, &self.data, before).map_err(storage_error)?;
         } else {
             write_data(&tx, &self.data).map_err(storage_error)?;
         }
@@ -287,7 +299,7 @@ impl Engine {
         &mut self,
         name: &str,
         new_name: &str,
-        before: &Data,
+        before: &MetadataChange,
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
@@ -305,7 +317,7 @@ impl Engine {
                 params![format!("room:{new_name}"), format!("room:{name}")],
             )
             .map_err(|e| e.to_string())?;
-        write_delta(&transaction, &self.data, before)?;
+        write_delta_view(&transaction, &self.data, before.view(&self.data))?;
         transaction.commit().map_err(|e| e.to_string())
     }
     /// Rename account state and every affected read cursor in one transaction.
@@ -314,7 +326,7 @@ impl Engine {
         name: &str,
         new_name: &str,
         conversations: &BTreeMap<String, String>,
-        before: &Data,
+        before: &MetadataChange,
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
@@ -364,7 +376,7 @@ impl Engine {
                 *revision = revision.wrapping_add(1);
             }
         }
-        write_delta(&transaction, &self.data, before)?;
+        write_delta_view(&transaction, &self.data, before.view(&self.data))?;
         transaction.commit().map_err(|e| e.to_string())
     }
     /// Account deletion and its cursor cleanup must commit atomically.
@@ -372,13 +384,13 @@ impl Engine {
         &mut self,
         name: &str,
         removed: &BTreeSet<String>,
-        before: &Data,
+        before: &MetadataChange,
     ) -> Result<(), String> {
         let writer = self.db.clone();
         let mut db = writer.lock().map_err(|_| "Storage unavailable.")?;
         let transaction = db.savepoint().map_err(|e| e.to_string())?;
         rewrite_account_messages(&transaction, name, None)?;
-        write_delta(&transaction, &self.data, before)?;
+        write_delta_view(&transaction, &self.data, before.view(&self.data))?;
         transaction
             .execute(
                 "DELETE FROM read_positions WHERE username=?1",
@@ -970,6 +982,9 @@ fn write_map_delta<T: serde::Serialize + PartialEq>(
     values: &BTreeMap<String, T>,
     before: &BTreeMap<String, T>,
 ) -> Result<(), String> {
+    if std::ptr::eq(values, before) {
+        return Ok(());
+    }
     for (key, value) in values {
         if before.get(key) != Some(value) {
             put_entity(db, kind, key, value)?;
@@ -984,40 +999,69 @@ fn write_map_delta<T: serde::Serialize + PartialEq>(
     }
     Ok(())
 }
-fn write_delta(db: &Connection, data: &Data, before: &Data) -> Result<(), String> {
-    write_map_delta(db, "account", &data.users, &before.users)?;
-    write_map_delta(db, "session", &data.sessions, &before.sessions)?;
+fn write_delta_view(
+    db: &Connection,
+    data: &Data,
+    before: changes::DataView<'_>,
+) -> Result<(), String> {
+    write_map_delta(db, "account", &data.users, before.users)?;
+    write_map_delta(db, "session", &data.sessions, before.sessions)?;
+    let rooms_changed = !std::ptr::eq(&data.rooms, before.rooms);
+    let private_changed = !std::ptr::eq(&data.private, before.private);
     for (kind, current, previous) in [
         (
             "room",
-            data.rooms
-                .iter()
-                .map(|(key, r)| (key, &r.id, r.revision))
-                .collect::<Vec<_>>(),
-            before
-                .rooms
-                .iter()
-                .map(|(key, r)| (key, &r.id, r.revision))
-                .collect::<Vec<_>>(),
+            if rooms_changed {
+                data.rooms
+                    .iter()
+                    .map(|(key, r)| (key, &r.id, r.revision))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            },
+            if rooms_changed {
+                before
+                    .rooms
+                    .iter()
+                    .map(|(key, r)| (key, &r.id, r.revision))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            },
         ),
         (
             "private",
-            data.private
-                .iter()
-                .map(|(key, c)| (key, &c.id, c.revision))
-                .collect(),
-            before
-                .private
-                .iter()
-                .map(|(key, c)| (key, &c.id, c.revision))
-                .collect(),
+            if private_changed {
+                data.private
+                    .iter()
+                    .map(|(key, c)| (key, &c.id, c.revision))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            if private_changed {
+                before
+                    .private
+                    .iter()
+                    .map(|(key, c)| (key, &c.id, c.revision))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         ),
     ] {
         for (key, _, revision) in &current {
             let changed = if kind == "room" {
-                data.rooms.get(*key) != before.rooms.get(*key)
+                data.rooms
+                    .get(*key)
+                    .map(|r| (&r.id, &r.owner_id, &r.members, r.revision))
+                    != before
+                        .rooms
+                        .get(*key)
+                        .map(|r| (&r.id, &r.owner_id, &r.members, r.revision))
             } else {
-                data.private.get(*key) != before.private.get(*key)
+                data.private.get(*key).map(|c| (&c.id, c.revision))
+                    != before.private.get(*key).map(|c| (&c.id, c.revision))
             };
             if changed {
                 if kind == "room" {
@@ -1048,21 +1092,24 @@ fn write_delta(db: &Connection, data: &Data, before: &Data) -> Result<(), String
             .map_err(|e| e.to_string())?;
         }
     }
-    for account in before
-        .users
-        .values()
-        .filter(|old| !data.users.values().any(|new| new.id == old.id))
-    {
-        db.execute(
-            "DELETE FROM bot_receipts WHERE account_id=?1",
-            [&account.id],
-        )
-        .map_err(|e| e.to_string())?;
-        db.execute(
-            "DELETE FROM bot_command_receipts WHERE account_id=?1",
-            [&account.id],
-        )
-        .map_err(|e| e.to_string())?;
+    if !std::ptr::eq(&data.users, before.users) {
+        let current_ids: BTreeSet<_> = data.users.values().map(|user| &user.id).collect();
+        for account in before
+            .users
+            .values()
+            .filter(|old| !current_ids.contains(&old.id))
+        {
+            db.execute(
+                "DELETE FROM bot_receipts WHERE account_id=?1",
+                [&account.id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM bot_command_receipts WHERE account_id=?1",
+                [&account.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     if data.next_sequence != before.next_sequence {
         db.execute(
@@ -1076,7 +1123,7 @@ fn write_delta(db: &Connection, data: &Data, before: &Data) -> Result<(), String
         || data.policy.assignments != before.policy.assignments
         || data.policy.grants != before.policy.grants
         || data.policy.media_revocations != before.policy.media_revocations
-        || data.bots != before.bots
+        || (!std::ptr::eq(&data.bots, before.bots) && &data.bots != before.bots)
     {
         write_state(db, data)?;
     }
@@ -1124,7 +1171,31 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
+    /// One indexed range per target, batched on a single reader connection.
+    /// The existing messages_time expression index covers the cutoff predicate.
+    pub(super) fn cleanup_counts(
+        &self,
+        ids: &[String],
+        cutoff: u64,
+    ) -> Result<BTreeMap<String, (usize, usize)>, String> {
+        self.history_store.read(|db| {
+            let mut totals = BTreeMap::new();
+            let mut query = db.prepare("SELECT targets.value, count(DISTINCT m.sequence), count(refs.media_id) FROM json_each(?1) AS targets LEFT JOIN messages AS m ON m.conversation=targets.value AND json_extract(m.json,'$.time')<?2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value").map_err(|e| e.to_string())?;
+            for batch in ids.chunks(256) {
+                let json = serde_json::to_string(batch).map_err(|e| e.to_string())?;
+                let rows = query.query_map(params![json, cutoff], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, usize>(1)?, row.get::<_, usize>(2)?)))).map_err(|e| e.to_string())?;
+                for row in rows {
+                    let (id, counts) = row.map_err(|e| e.to_string())?;
+                    totals.insert(id, counts);
+                }
+            }
+            Ok(totals)
+        })
+    }
     pub(super) fn save_history_maintenance(&mut self) -> Result<(), String> {
+        if self.pending_deletes.is_empty() && self.pending_cleanups.is_empty() {
+            return Ok(());
+        }
         let ids: BTreeSet<_> = self
             .pending_deletes
             .iter()
@@ -1176,6 +1247,7 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
+
     pub(super) fn save_empty_private(&mut self, key: &str) -> Result<(), String> {
         let chat = self
             .data

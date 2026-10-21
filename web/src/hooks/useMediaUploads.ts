@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
-import { uploadFile } from "../api/media.ts";
+import { filenameHint, uploadFile } from "../api/media.ts";
 import type { CompletedMedia } from "../api/media.ts";
 import { errorMessage } from "../api/protocol.ts";
 
@@ -22,6 +22,22 @@ export function useMediaUploads(
   const currentAttachment = useRef<Attachment | null>(null);
   const controller = useRef<AbortController | null>(null);
   const allocated = useRef<string | null>(null);
+  const previousInstance = useRef(serverInstance);
+  useEffect(() => {
+    if (!serverInstance) return;
+    const previous = previousInstance.current;
+    previousInstance.current = serverInstance;
+    if (!previous || previous === serverInstance) return;
+    if (currentAttachment.current || controller.current) {
+      controller.current?.abort();
+      controller.current = null;
+      allocated.current = null;
+      release();
+      setBusy(false);
+      setStatus("");
+      setError("The server restarted. Attach the file again before sending.");
+    }
+  }, [serverInstance]);
   const currentConversation = useRef(conversationId);
   currentConversation.current = conversationId;
   function abandon(id: string | null) {
@@ -90,7 +106,7 @@ export function useMediaUploads(
         file.size,
         active.signal,
         {
-          filename: encodeURIComponent(file.name).slice(0, 256),
+          filename: filenameHint(file.name),
           ...(file.type ? { "content-type": file.type } : {}),
           client: "commonroom-web",
         },

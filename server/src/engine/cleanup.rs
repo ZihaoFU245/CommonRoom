@@ -113,18 +113,22 @@ impl Engine {
             self.require_target_command(context.actor, &Scope::Server, "/clean")?;
             self.require_clean(context.actor, &Scope::Server, age)?;
         }
-        let mut counts = Vec::with_capacity(targets.len());
-        for target in targets {
-            let id = match &target {
-                Scope::Room(id) | Scope::Private(id) => id,
-                _ => return Err("Invalid cleanup scope.".into()),
-            };
-            let (messages, references) = self.history_store.read(|db| db.query_row(
-                "SELECT (SELECT count(*) FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2), (SELECT count(*) FROM message_media AS refs JOIN messages AS m ON m.conversation=refs.conversation AND m.sequence=refs.sequence WHERE m.conversation=?1 AND json_extract(m.json,'$.time')<?2)",
-                params![id, cutoff], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?))
-            ).map_err(|error| error.to_string()))?;
-            counts.push((target, messages, references));
-        }
+        let ids = targets
+            .iter()
+            .map(|target| match target {
+                Scope::Room(id) | Scope::Private(id) => Ok(id.clone()),
+                _ => Err("Invalid cleanup scope.".to_owned()),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let totals = self.cleanup_counts(&ids, cutoff)?;
+        let counts = targets
+            .into_iter()
+            .zip(ids)
+            .map(|(target, id)| {
+                let (messages, references) = totals.get(&id).copied().unwrap_or_default();
+                (target, messages, references)
+            })
+            .collect();
         Ok(CleanupPlan {
             scope: scope.into(),
             age: if age == 0 {
@@ -165,6 +169,9 @@ impl Engine {
             if let Some(chat) = self.data.private.values_mut().find(|chat| &chat.id == id) {
                 chat.revision = chat.revision.wrapping_add(1);
             }
+        }
+        if self.pending_cleanups.is_empty() {
+            return Ok(report);
         }
         self.audit(
             context.actor,

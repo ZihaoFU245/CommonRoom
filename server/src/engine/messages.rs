@@ -392,13 +392,13 @@ impl Engine {
                     return Err("Messages support at most 4000 characters.".into());
                 }
                 if parts[0] == "/edit" {
-                    self.authorize_media_text(actor, &scope, value, &original.text)?;
                     let actor_id = self.principal_id(actor).ok_or("Account unavailable.")?;
                     if original.author_id != actor_id
                         && !self.allows(actor, &scope, Action::EditAny)
                     {
                         return Err("You can only edit your own messages.".into());
                     }
+                    self.authorize_media_text(actor, &scope, value, &original.text)?;
                     if original.text == value {
                         return Ok("Message unchanged.".into());
                     }

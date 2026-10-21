@@ -102,7 +102,7 @@ export function mediaMarkdown(
   const label = media.filename.replace(/[\\[\]<>\r\n]/gu, "_");
   const kind = attachmentKind(media.content_type);
   const image = media.content_type.startsWith("image/") && kind !== "svg";
-  return `${image ? "!" : ""}[${label}](${url.href}${kind ? ` "media:${kind}"` : ""})`;
+  return `${image ? "!" : ""}[${label}](${url.pathname}${kind ? ` "media:${kind}"` : ""})`;
 }
 
 export function uploadFile(
@@ -245,4 +245,18 @@ export async function documentSource(
   } finally {
     await reader.cancel();
   }
+}
+
+// Keep complete Unicode code points and percent escapes within S3's hint limit.
+export function filenameHint(filename: string): string {
+  let result = "";
+  for (const point of filename) {
+    const code = point.codePointAt(0) ?? 0;
+    const encoded = encodeURIComponent(
+      code >= 0xd800 && code <= 0xdfff ? "\ufffd" : point,
+    );
+    if (result.length + encoded.length > 256) break;
+    result += encoded;
+  }
+  return result;
 }

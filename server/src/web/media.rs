@@ -82,15 +82,18 @@ pub(crate) async fn allocate(
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let storage = storage(&app)?;
-    crate::media::hint_headers(&input.hints).map_err(|e| failed(&e))?;
-    let (conversation, uploader, input) = authenticated(&app, &headers, move |app, user| {
+    let (storage, uploader, input) = authenticated(&app, &headers, move |app, user| {
+        let storage = storage(app)?;
         let mut engine = app.engine_api()?;
-        let conversation = engine
-            .resolve_media_conversation(user, &input.conversation_id)
-            .map_err(|e| failed(&e))?;
         engine
-            .validate_media_allocation(user, &conversation, &input.filename, input.size)
+            .allocate_media_target(
+                user,
+                &input.conversation_id,
+                &input.filename,
+                input.size,
+                input.hints.clone(),
+                true,
+            )
             .map_err(|e| failed(&e))?;
         let uploader = engine
             .data
@@ -99,7 +102,7 @@ pub(crate) async fn allocate(
             .ok_or_else(|| failed("Account unavailable."))?
             .id
             .clone();
-        Ok((conversation, uploader, input))
+        Ok((storage, uploader, input))
     })
     .await?;
     // Live probe deliberately preserves rejection before reserving offline uploads.
@@ -108,27 +111,33 @@ pub(crate) async fn allocate(
         .await
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let media = authenticated(&app, &headers, move |app, user| {
-        let engine = app.engine_read_api()?;
+        let mut engine = app.engine_api()?;
         if engine.data.users.get(user).is_none_or(|u| u.id != uploader) {
             return Err(failed("Account changed; retry upload."));
         }
         engine
-            .allocate_media_with_hints(
+            .allocate_media_target(
                 user,
-                &conversation,
+                &input.conversation_id,
                 &input.filename,
                 input.size,
                 input.hints,
+                false,
             )
-            .map_err(|e| failed(&e))
+            .map_err(|e| failed(&e))?
+            .ok_or_else(|| failed("Upload not found."))
     })
     .await?;
     let hint_headers = crate::media::hint_headers(&media.hints).map_err(|e| failed(&e))?;
-    let mut upload_headers = media
-        .hints
+    let mut upload_headers = hint_headers
         .iter()
-        .map(|(key, value)| (format!("x-amz-meta-client-{key}"), value.clone()))
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .map(|(key, value)| {
+            value
+                .to_str()
+                .map(|value| (key.as_str().to_owned(), value.to_owned()))
+                .map_err(|_| failed("Invalid hint value."))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
     upload_headers.insert("Content-Type".into(), "application/octet-stream".into());
     let url = storage
         .upload_url_with_hints(&media.id, media.size, hint_headers)
@@ -249,13 +258,21 @@ pub(crate) fn start_cleanup(app: App) {
         let retry = normal.min(std::time::Duration::from_secs(60));
         let mut delay = std::time::Duration::ZERO;
         loop {
-            tokio::time::sleep(delay).await;
             if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            delay = match tokio::time::timeout(std::time::Duration::from_secs(20), cleanup(&app))
-                .await
-            {
+            tokio::select! {
+                () = app.shutdown.notified() => break,
+                () = tokio::time::sleep(delay) => {},
+            }
+            if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            let result = tokio::select! {
+                () = app.shutdown.notified() => break,
+                result = tokio::time::timeout(std::time::Duration::from_secs(20), cleanup(&app)) => result,
+            };
+            delay = match result {
                 Ok(Ok(true)) => normal,
                 Ok(Ok(false)) => retry,
                 Ok(Err(message)) => {

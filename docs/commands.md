@@ -28,8 +28,8 @@ Names use 1–32 Unicode characters without whitespace, controls, or ASCII
 punctuation except `_` and `-`.
 
 Each account has a global root and sparse room branches. `/user get bob #support`
-(or `/user get bob` while in that room) displays separate `@global` and `#support`
-sections. Global entries show values without hints. Room entries show `set here` or
+(or `/user get bob` while in that room) displays a `#support` section and, with
+account/global read authority, an `@global` section. Global entries show values without hints. Room entries show `set here` or
 `inherited`. Room overrides take precedence; `@unset`
 removes the override and restores inheritance. Custom keys inherit too, but global
 custom values appear only with permission to read that account's global metadata.
@@ -95,21 +95,27 @@ reusing the name starts fresh. Browser deletion asks for confirmation before sen
 ## Grants and bulk selection
 
 ```text
-/grant user|@all group [#room]
+/grant user|@all group [#room|@global]
 /grant user|@all scope permission
-/revoke user|@all group [#room]
+/revoke user|@all group [#room|@global]
 /revoke user|@all scope permission
 ```
 
 `@all` selects every active account globally, or all active members of the named
 room. Grant/revoke retain explicit direct-permission scopes; group assignments
-without a room remain global. For example `/grant @all #support w:media.upload` restores room uploads and
+without a room remain global; explicit `@global` is equivalent. A room group grant
+that admits a new member also requires `x:member.add` and participant delegation
+authority. For example `/grant @all #support w:media.upload` restores room uploads and
 `/revoke @all #support /reply` removes direct reply-command grants. Existing group
 rights still apply. All targets are authorized against the original policy;
 any rejection or failed database write rolls back the complete batch. Protected
 su accounts, ownership, delegation and last-active-admin checks still apply.
 Metadata `@all` similarly includes every account/member in its scope (including
 disabled accounts). No selector silently skips protected users.
+`media.user_quota` always writes the global root. Its omitted-scope shorthand keeps
+`@all` selection in the current view: `/user set @all media.user_quota 128m` in a
+room updates only that room's members. Add `@global` explicitly to select all accounts.
+The same rule applies to quota reset.
 
 Grant/revoke only change access. Upload size, retention and byte quota belong in
 `/user set`; extra media arguments on `/grant` are rejected. Cleanup's existing
@@ -128,6 +134,7 @@ an explicit global alias. Both `/clean` and `x:history.clean` must allow every
 target, including private chats; participants have no cleanup permission by
 default. Su may delegate private cleanup with explicit command and action grants.
 `--dry-run` checks access and counts messages/references without database writes.
+Execution with no matching messages makes no writes or revision/audit changes.
 Execution deletes matching history atomically; any denied target or failed
 storage write rejects the whole operation. Reports distinguish message/reference
 removal from later storage cleanup and quota release. Shared media remains while
@@ -233,7 +240,7 @@ integrals, sums and matrices. It defaults off, works without HTML or scripts,
 and leaves code spans/blocks literal. Invalid math displays a readable fallback.
 This supports LaTeX math notation rather than full LaTeX documents.
 Markdown images and GIFs use `![alt](url)` and render without a separate opt-in.
-Only absolute HTTP/HTTPS URLs and base64 raster images (PNG, JPEG, GIF, WebP,
+Only absolute HTTP/HTTPS URLs, canonical root-relative attachment paths, and base64 raster images (PNG, JPEG, GIF, WebP,
 AVIF, BMP) are allowed. Rejected URLs display the alt text. Images are lazy,
 use `no-referrer`, and fit the message width. Remote hosts still receive the
 viewer's IP address when an image loads.

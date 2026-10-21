@@ -234,10 +234,10 @@ const GRANT: &str = r#"# /grant
 ## Assign a group
 
 ```text
-/grant username [user|admin|su] [#room]
+/grant username [user|admin|su] [#room|@global]
 ```
 
-- Without a room, the group applies at global scope.
+- Without a room, or with explicit `@global`, the group applies at global scope.
 - With a room, user gives participant access; admin adds room management.
 - Omitting the group means global admin. Write the group explicitly for clarity.
 
@@ -336,7 +336,7 @@ const REVOKE: &str = r#"# /revoke
 ## Remove a group
 
 ```text
-/revoke username [user|admin|su] [#room]
+/revoke username [user|admin|su] [#room|@global]
 ```
 
 - Remove Bob's participant bundle from support:

@@ -88,9 +88,10 @@ uncertain acknowledgement asks the user to inspect history before retrying.
 There is no automatic retry of an uncertain browser message.
 
 A new private conversation can start with media: allocation accepts
-`@direct:username`, authorizes creation, and saves an empty stable pair before
-allocation. Unused pairs persist like other empty private conversations and
-contain no message/unread event. Ordinary existing conversation IDs also work.
+`@direct:username`, authorizes creation, and commits an empty stable pair together
+with its upload reservation after size, quota and rate checks. Rejected allocations
+leave no private directory behind. Successfully reserved but unused pairs persist
+like other empty private conversations and contain no message/unread event. Ordinary existing conversation IDs also work.
 
 Messages and references commit atomically. Pending publication ends only when a
 message commits. Media records remain for authorization and cleanup. Other readers
@@ -103,10 +104,12 @@ Downloads require current read access, an unexpired verified object and a retain
 message reference. Chat redirects to a signed GET valid for at most 60 seconds,
 capped by remaining media life. Redirects/storage responses use `no-store`. A scoped `media-cache.js` service worker
 persists immutable bytes under the stable application media URL. Every reuse first
-checks `/info` with the current session (no S3 I/O), so expiry, retraction and lost
-access still stop reads. Reloads, preview/download switches and playback retry URLs
-reuse those bytes. Full cached objects serve byte ranges locally; partial playback
-responses are cached by exact range. The cache holds at most 128 entries/256 MiB;
+checks `/info` with the current session (no S3 I/O), including every seek/range
+request, so expiry, retraction and lost access still stop reads immediately. This
+intentionally pays one authorization/database request per range; there is no auth TTL. Reloads, preview/download switches and playback retry URLs
+reuse those bytes. Full cached objects serve byte ranges locally. Only complete
+200 responses are cached; partial playback responses stream without occupying cache
+entries. Cache hits refresh eviction recency. The cache holds at most 128 entries/256 MiB;
 larger responses stream normally, and browser eviction or disabled storage can
 require another download. Cache Storage retains local downloaded copies across
 sessions; it contains no credentials and never supplies an offline authorization
@@ -204,7 +207,9 @@ without any retained message reference for deletion, including unfinished upload
 from the previous process. Shared attachments survive while any message still
 references them. This uses authoritative `message_media` rows rather than scanning
 S3, and needs no bucket-list permission. Unknown objects created outside the tracked
-upload protocol remain the operator's responsibility.
+upload protocol remain the operator's responsibility. The browser clears unsent
+attachments when it receives a new server instance and asks the user to attach
+again; completed but unsent objects from the previous process are unavailable.
 
 Cleanup starts immediately and repeats every 24 hours by default. An explicit saved
 `cleanup_interval` is preserved. Published attachments become eligible as soon as
@@ -259,7 +264,7 @@ Debug creates the **private** `commonroom-draft` bucket automatically with this 
 {"CORSRules":[{
   "AllowedOrigins":["http://127.0.0.1:5173","http://localhost:5173"],
   "AllowedMethods":["PUT","GET","HEAD"],
-  "AllowedHeaders":["content-type"],
+  "AllowedHeaders":["content-type","x-amz-meta-client-filename","x-amz-meta-client-content-type","x-amz-meta-client-label","x-amz-meta-client-client"],
   "ExposeHeaders":["ETag"],
   "MaxAgeSeconds":300
 }]}

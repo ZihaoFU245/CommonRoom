@@ -314,3 +314,14 @@ test("HTML preview classifies active content and keeps full documents out of Mar
   assert.ok(nodes.some((node) => node.tag === "h1"));
   assert.ok(!nodes.some((node) => node.tag === "pre"));
 });
+
+test("canonical root-relative attachments render while other local destinations stay blocked", () => {
+  const path =
+    "/commonroom/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file";
+  assert.equal(safeMediaUrl(path), true);
+  assert.equal(safeMediaUrl(path + "?unsafe=1"), false);
+  const nodes = plainNodes(`![photo](${path}) [video](${path} "media:video")`);
+  assert.match(JSON.stringify(nodes), /"tag":"img"/);
+  assert.match(JSON.stringify(nodes), /"href":"\/commonroom\/api\/media\//);
+  assert.equal(safeMediaUrl("/api/logout"), false);
+});

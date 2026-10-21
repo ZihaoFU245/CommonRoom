@@ -46,6 +46,7 @@ fn fixture() -> (App, String) {
             snapshots: Default::default(),
             bot_runtimes: Default::default(),
             stopping: Default::default(),
+            shutdown: Default::default(),
         },
         secret,
     )

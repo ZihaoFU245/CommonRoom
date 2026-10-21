@@ -27,6 +27,7 @@ mod tests;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod trust_tests;
 
+use changes::{ChangeFamily, MetadataChange};
 use dispatch::CommandContext;
 pub use dispatch::sudo_command;
 use helpers::*;
@@ -46,6 +47,7 @@ pub struct Engine {
     pub data: Data,
     pub revision: u64,
     recovery_failed: bool,
+    metadata_dirty: bool,
     pub(crate) presence_revision: u64,
     pub(crate) read_clock: u64,
     pub(crate) instance: String,
@@ -76,4 +78,9 @@ impl Engine {
     }
 }
 
+mod changes;
 mod objects;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod review_tests;

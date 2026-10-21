@@ -2,7 +2,8 @@ use serde::Serialize;
 
 pub const NEW_USER_USAGE: &str = "/user new name password [user|admin]";
 pub const NEW_USAGE: &str = "/room new #name | /user new name password [user|admin]";
-pub const RM_USAGE: &str = "/room delete #name | /user delete name | /revoke user group [#room]";
+pub const RM_USAGE: &str =
+    "/room delete #name | /user delete name | /revoke user group [#room|@global]";
 pub const LS_USAGE: &str = "/room ls | /user ls [scope] | /permissions @groups";
 pub const RENAME_USAGE: &str = "/room rename #name new-name | /user rename [who] new-name";
 
@@ -32,15 +33,24 @@ pub fn route(input: &str) -> String {
         [family @ ("/user" | "/room"), operation, ..] => (*family, *operation),
         _ => return input.to_owned(),
     };
-    let tail = parts.iter().skip(2).copied().collect::<Vec<_>>().join(" ");
-    let tail = if family == "/room" {
-        tail.split_whitespace()
-            .map(|v| v.strip_prefix('#').unwrap_or(v))
-            .collect::<Vec<_>>()
-            .join(" ")
-    } else {
-        tail
+    let room_index = match (family, operation) {
+        ("/room", "new" | "delete" | "rename" | "join" | "leave") => Some(2),
+        ("/room", "add" | "kick" | "owner") => Some(3),
+        _ => None,
     };
+    let tail = parts
+        .iter()
+        .enumerate()
+        .skip(2)
+        .map(|(index, value)| {
+            if Some(index) == room_index {
+                value.strip_prefix('#').unwrap_or(value)
+            } else {
+                value
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     match (family, operation) {
         ("/user", "new") => format!("/new user {tail}"),
         ("/user", "delete") => format!("/rm user {tail}"),
@@ -154,14 +164,14 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Account",
             "/grant",
-            "/grant user|@all group [#room] | /grant user|@all scope permission",
+            "/grant user|@all group [#room|@global] | /grant user|@all scope permission",
             "Assign a group or add a scoped permission; /man grant explains",
             true,
         ),
         (
             "Account",
             "/revoke",
-            "/revoke user|@all group [#room] | /revoke user|@all scope permission",
+            "/revoke user|@all group [#room|@global] | /revoke user|@all scope permission",
             "Remove a group assignment or direct permission; /man revoke explains",
             true,
         ),

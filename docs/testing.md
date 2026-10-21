@@ -631,3 +631,14 @@ rollback, branch pruning across restart, and preservation of password hashes.
 Password reset uses the explicit `password` selector throughout console/web tests,
 including authority rechecks after hashing, session revocation and UI redaction.
 Global metadata entries have no hints; room entries retain inheritance/local hints.
+
+## Static-review regressions
+
+`engine/review_tests.rs` covers room-only metadata projection, explicit global
+group grants and batch audit, membership invitation authority, uniform attachment
+errors and edit ownership ordering, atomic first-DM reservations, no-op cleanup,
+bulk key-cap prevalidation, family-scoped snapshots, and indexed batched cleanup
+counts. Query-plan assertions inspect index selection without benchmarking.
+Web tests cover portable Markdown attachment paths, complete Unicode hints, full
+object cache bounds/recency/ranges, actual content lengths, and restart invalidation
+of unsent attachments. Benchmarks remain explicitly opt-in and ignored by normal tests.

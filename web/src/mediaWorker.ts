@@ -25,7 +25,14 @@ self.addEventListener("install", (event) =>
   event.waitUntil(self.skipWaiting()),
 );
 self.addEventListener("activate", (event) =>
-  event.waitUntil(self.clients.claim()),
+  event.waitUntil(
+    (async () => {
+      await caches.delete("commonroom-media-v1").catch(() => {
+        /* Storage-disabled browsers still need worker/network fallback. */
+      });
+      await self.clients.claim();
+    })(),
+  ),
 );
 self.addEventListener("fetch", (event) => {
   const url = mediaCachePath(event.request, self.registration.scope);

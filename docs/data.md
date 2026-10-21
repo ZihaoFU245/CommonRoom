@@ -84,7 +84,9 @@ Sends/replies insert one message, prune beyond the configured per-conversation r
 
 Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. One writer connection and four independent read-only connections use WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages are bounded to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting; SQLite page caches and response copies are additional memory.
 
-Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains metadata only. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.
+Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains only the command family's affected metadata maps,
+excluding transient message bodies. Cleanup counting batches authorized IDs against
+the existing timestamp expression index; this requires no schema change. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.
 
 Message JSON may include a boolean `markdown` field. Missing fields default to
 false, preserving plain-text rendering for existing messages. This additive JSON

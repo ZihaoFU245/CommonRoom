@@ -278,5 +278,11 @@ test("verified attachments stay separate from text and release only on acknowled
     null,
     "Large images do not allocate a decoded composer preview",
   );
+  render(null);
+  render("server-e");
+  hook = render("server-e");
+  assert.equal(hook.attachment, null);
+  assert.match(hook.error, /server restarted.*Attach the file again/);
+  assert.equal(hook.busy, false);
   hook.cancel();
 });

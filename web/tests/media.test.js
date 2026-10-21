@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   documentSource,
+  filenameHint,
   previewLimit,
   attachmentKind,
   attachmentLink,
@@ -51,7 +52,7 @@ test("media responses reject unsafe destinations and preserve base paths", () =>
     );
   assert.equal(
     mediaMarkdown(media, "https://chat.example.com/commonroom/"),
-    `![screen_shot_.png](https://chat.example.com/commonroom/api/media/${id}/file)`,
+    `![screen_shot_.png](/commonroom/api/media/${id}/file)`,
   );
   assert.ok(
     mediaMarkdown(
@@ -170,7 +171,7 @@ test("native attachment hints preserve Markdown and cannot target external origi
     assert.equal(attachmentKind(mime), kind);
     assert.equal(
       mediaMarkdown({ ...media, content_type: mime }, base),
-      `[screen_shot_.png](https://chat.example.com/commonroom/api/media/${id}/file "media:${kind}")`,
+      `[screen_shot_.png](/commonroom/api/media/${id}/file "media:${kind}")`,
     );
     assert.deepEqual(
       attachmentLink(new URL(media.path, base).href, `media:${kind}`, base),
@@ -311,4 +312,18 @@ test("upload hint headers are bounded and cannot inject cookies or server header
     { "x-amz-meta-client-label": 42 },
   ])
     assert.equal(isUploadTicket(withHeaders(headers)), false);
+});
+
+test("filename hints preserve complete encoded Unicode within the header limit", () => {
+  for (const name of [
+    "é".repeat(200),
+    "📎".repeat(100),
+    "a".repeat(255) + "é",
+    "bad\ud800name",
+  ]) {
+    const hint = filenameHint(name);
+    assert.ok(hint.length <= 256);
+    assert.doesNotThrow(() => decodeURIComponent(hint));
+  }
+  assert.equal(filenameHint("résumé.pdf"), encodeURIComponent("résumé.pdf"));
 });

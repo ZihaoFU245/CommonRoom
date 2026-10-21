@@ -1,5 +1,5 @@
 /** Persistent immutable bytes. Every reuse first checks live server authorization. */
-const cacheName = "commonroom-media-v1";
+const cacheName = "commonroom-media-v2";
 const byteLimit = 256 * 1024 * 1024;
 const entryLimit = 128;
 interface Metadata {
@@ -59,6 +59,29 @@ export class MediaCache {
     this.storage = storage;
     this.network = network;
   }
+  private touch(
+    cache: Cache,
+    key: string,
+    keepAlive: (work: Promise<void>) => void,
+  ): void {
+    const work = this.writes
+      .then(async () => {
+        const saved = await cache.match(key);
+        if (!saved) return;
+        await cache.delete(key);
+        await cache.put(key, saved);
+      })
+      .catch(() => {
+        /* Cache maintenance cannot interrupt playback. */
+      });
+    this.writes = work;
+    this.pending.set(key, work);
+    keepAlive(
+      work.finally(() => {
+        if (this.pending.get(key) === work) this.pending.delete(key);
+      }),
+    );
+  }
   async respond(
     request: Request,
     url: URL,
@@ -80,13 +103,13 @@ export class MediaCache {
     const output = headers(info, url.searchParams.get("download") === "true");
     const range = request.headers.get("Range");
     const key = new URL(url.pathname, url);
-    if (range) key.searchParams.set("range", range);
     let cache: Cache | undefined;
     try {
       cache = await this.storage.open(cacheName);
       await this.pending.get(key.href);
       const saved = await cache.match(key.href);
-      if (saved) {
+      if (saved && !range) {
+        this.touch(cache, key.href, keepAlive);
         const size = saved.headers.get("Content-Length");
         if (size) output.set("Content-Length", size);
         const contentRange = saved.headers.get("Content-Range");
@@ -98,29 +121,32 @@ export class MediaCache {
       }
       // A fully cached object can satisfy later native player byte ranges.
       if (range) {
-        const full = await cache.match(new URL(url.pathname, url).href);
+        const full = saved;
         const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
         if (full && match && (match[1] || match[2])) {
+          this.touch(cache, key.href, keepAlive);
+          const fullSize =
+            Number(full.headers.get("Content-Length")) || info.size;
           const start = match[1]
             ? Number(match[1])
-            : Math.max(0, info.size - Number(match[2]));
+            : Math.max(0, fullSize - Number(match[2]));
           const end =
             match[1] && match[2]
-              ? Math.min(Number(match[2]), info.size - 1)
-              : info.size - 1;
+              ? Math.min(Number(match[2]), fullSize - 1)
+              : fullSize - 1;
           if (
             !Number.isSafeInteger(start) ||
             !Number.isSafeInteger(end) ||
             start > end ||
-            start >= info.size
+            start >= fullSize
           )
             return new Response(null, {
               status: 416,
-              headers: { "Content-Range": `bytes */${info.size}` },
+              headers: { "Content-Range": `bytes */${fullSize}` },
             });
           const blob = await full.blob();
           output.set("Content-Length", String(end - start + 1));
-          output.set("Content-Range", `bytes ${start}-${end}/${info.size}`);
+          output.set("Content-Range", `bytes ${start}-${end}/${fullSize}`);
           return new Response(blob.slice(start, end + 1), {
             status: 206,
             headers: output,
@@ -156,9 +182,8 @@ export class MediaCache {
     }
     if (response.status === 206 && !contentRange) return response;
     const size =
-      response.status === 200
-        ? info.size
-        : Number(response.headers.get("Content-Length"));
+      Number(response.headers.get("Content-Length")) ||
+      (response.status === 200 ? info.size : 0);
     if (Number.isSafeInteger(size) && size > 0)
       output.set("Content-Length", String(size));
     if (contentRange) output.set("Content-Range", contentRange);
@@ -166,13 +191,21 @@ export class MediaCache {
       status: response.status,
       headers: output,
     });
-    if (cache && size > 0 && size <= byteLimit) {
+    if (
+      cache &&
+      !range &&
+      response.status === 200 &&
+      size > 0 &&
+      size <= byteLimit
+    ) {
       const target = cache;
-      // Cache.put rejects 206; store its bytes as 200 and restore Content-Range
-      // when serving the identical range. Serialized writes bound total storage.
+      // Cache only whole objects: seeking cannot fill the cache with overlapping
+      // fragments. Serialized writes and recency touches share one order.
       const copy = new Response(result.clone().body, { headers: output });
       const work = this.writes
         .then(async () => {
+          // Concurrent misses may already have filled this key.
+          await target.delete(key.href);
           const keys = [...(await target.keys())];
           let bytes = 0;
           for (const stored of keys)

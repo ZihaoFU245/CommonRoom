@@ -209,6 +209,9 @@ impl Engine {
                 engine.execute_inner(actor, room, command, markdown)
             });
         }
+        if let Some(result) = self.read_command(actor, room, input) {
+            return result;
+        }
         let command = input.split_whitespace().next().unwrap_or("");
         commands::validate_room_arguments(input)?;
         let routed = commands::route(input);
@@ -241,28 +244,9 @@ impl Engine {
             self.require_target_command(actor, &scope, command)?;
             return self.delete_user(actor, parts[2]);
         }
-        if matches!(
-            parts.first().copied(),
-            Some(
-                "/permissions"
-                    | "/debug"
-                    | "/help"
-                    | "/man"
-                    | "/whoami"
-                    | "/console"
-                    | "/ls"
-                    | "/members"
-                    | "/history"
-            )
-        ) {
-            return self.apply(actor, room, input, markdown);
-        }
         if let Some(change) = self.message_change(actor, room, &parts, input) {
             let result = self.apply(actor, room, input, markdown);
             return self.finish_message_change(change, result, None, std::convert::identity);
-        }
-        if parts.first() == Some(&"/clean") && parts.last() == Some(&"--dry-run") {
-            return self.apply(actor, room, input, markdown);
         }
         if matches!(parts.first().copied(), Some("/retract" | "/clean")) {
             let revision = self.revision;
@@ -277,11 +261,18 @@ impl Engine {
             }
             return result;
         }
-        let before = self.data.clone();
+        let family = match parts.first().copied() {
+            Some("/user") => ChangeFamily::Metadata,
+            Some("/enable" | "/disable") => ChangeFamily::Accounts,
+            Some("/grant" | "/revoke") => ChangeFamily::Policy,
+            _ => ChangeFamily::Rooms,
+        };
+        let before = MetadataChange::capture(&self.data, family);
+        self.metadata_dirty = false;
         let result = self.apply(actor, room, input, markdown);
         match result {
             Ok(reply) => {
-                if self.data == before {
+                if !self.metadata_dirty {
                     return Ok(reply);
                 }
                 if self.data.policy.assignments != before.policy.assignments
@@ -290,20 +281,15 @@ impl Engine {
                 {
                     self.data.policy.revision = before.policy.revision.wrapping_add(1);
                 }
-                let removed_rooms = before
-                    .rooms
-                    .keys()
-                    .filter(|name| !self.data.rooms.contains_key(*name))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if let Err(e) = self.save_with_removed_rooms(&removed_rooms, Some(&before)) {
-                    self.data = before;
+                let removed_rooms = before.removed_rooms(&self.data);
+                if let Err(e) = self.save_metadata(&removed_rooms, None, Some(&before)) {
+                    before.restore(&mut self.data);
                     return Err(e);
                 }
                 Ok(reply)
             }
             Err(e) => {
-                self.data = before;
+                before.restore(&mut self.data);
                 Err(e)
             }
         }

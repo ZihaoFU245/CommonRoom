@@ -32,7 +32,7 @@ impl Engine {
         if self.data.users.contains_key(new_name) {
             return Err("Username already exists.".into());
         }
-        let before = self.data.clone();
+        let before = MetadataChange::capture(&self.data, ChangeFamily::AccountRename);
         self.audit(actor, "/rename", &format!("{name} -> {new_name}"));
         let account = self.data.users.remove(name).ok_or("User not found.")?;
         self.data.users.insert(new_name.into(), account);
@@ -60,9 +60,17 @@ impl Engine {
             }
         }
         if let Err(error) = self.store_account_rename(name, new_name, &conversations, &before) {
-            self.data = before;
+            before.restore(&mut self.data);
             tracing::error!(error = %error, "Account rename failed");
             return Err("Storage unavailable; rename was not applied.".into());
+        }
+        // Stored authors and quotes were rewritten transactionally. Discard any
+        // transient command rows so no caller can observe the former name.
+        for room in self.data.rooms.values_mut() {
+            room.messages.clear();
+        }
+        for chat in self.data.private.values_mut() {
+            chat.messages.clear();
         }
         self.read_positions.remove(new_name);
         if let Some(positions) = self.read_positions.remove(name) {
@@ -105,7 +113,7 @@ impl Engine {
         {
             return Err("Account or session changed. Please log in again.".into());
         }
-        let before = self.data.clone();
+        let before = MetadataChange::capture(&self.data, ChangeFamily::Credentials);
         self.data
             .users
             .get_mut(user)
@@ -114,8 +122,8 @@ impl Engine {
         self.data
             .sessions
             .retain(|token, session| session.username != user || token == keep);
-        if let Err(error) = self.save_delta(&before) {
-            self.data = before;
+        if let Err(error) = self.save_metadata(&[], None, Some(&before)) {
+            before.restore(&mut self.data);
             return Err(error);
         }
         Ok("Password changed. Other sessions signed out.".into())
@@ -240,7 +248,7 @@ impl Engine {
         if !valid_name(name) {
             return Err("Invalid username.".into());
         }
-        let before = self.data.clone();
+        let before = MetadataChange::capture(&self.data, ChangeFamily::Credentials);
         if reset {
             let user = self.data.users.get_mut(name).ok_or("User not found.")?;
             user.hash = hash;
@@ -282,8 +290,8 @@ impl Engine {
             );
             self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         }
-        if let Err(e) = self.save_delta(&before) {
-            self.data = before;
+        if let Err(e) = self.save_metadata(&[], None, Some(&before)) {
+            before.restore(&mut self.data);
             return Err(e);
         }
         Ok(format!(
@@ -312,7 +320,7 @@ impl Engine {
         {
             return Err("Cannot delete the last active administrator.".into());
         }
-        let previous = self.data.clone();
+        let previous = MetadataChange::capture(&self.data, ChangeFamily::DeleteAccount);
         let deleted_id = self
             .data
             .users
@@ -382,7 +390,7 @@ impl Engine {
         // Only update the in-memory cursor cache after the transaction succeeds.
         let result = self.store_account_deletion(name, &removed, &previous);
         if let Err(error) = result {
-            self.data = previous;
+            previous.restore(&mut self.data);
             tracing::error!(error = %error, "Account deletion failed");
             return Err("Storage unavailable; account deletion was not applied.".into());
         }

@@ -48,6 +48,7 @@ pub struct App {
     pub snapshots: Arc<Mutex<snapshots::SnapshotCache>>,
     pub bot_runtimes: crate::bots::runtime::Hub,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
+    pub shutdown: Arc<tokio::sync::Notify>,
 }
 impl App {
     pub fn io_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {

@@ -1,3 +1,4 @@
+import { mediaPath } from "../../api/media.ts";
 import MarkdownIt from "markdown-it";
 import { safeMediaUrl } from "./mediaUrl.ts";
 type Token = ReturnType<typeof parser.parse>[number];
@@ -74,7 +75,11 @@ export function markdownTokens(tokens: Token[]): MarkdownNode[] {
         };
         if (node.tag === "a") {
           const href = String(token.attrGet("href") ?? "");
-          if (/^https?:\/\//iu.test(href) || /^mailto:/iu.test(href))
+          if (
+            /^https?:\/\//iu.test(href) ||
+            /^mailto:/iu.test(href) ||
+            mediaPath(href)
+          )
             node.href = href;
           else node.tag = "span";
           const title = token.attrGet("title");

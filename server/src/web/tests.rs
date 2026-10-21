@@ -23,6 +23,7 @@ fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let engine = app.engine.clone();
     assert!(
@@ -81,6 +82,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -125,6 +127,7 @@ fn cookies_are_http_only_and_secure_in_production() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let value = cookie(&app, "token", 43200);
     assert!(value.contains("HttpOnly"));
@@ -218,6 +221,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     for path in ["/api/me", "/api/history?view=support"] {
         for (origin, site, status) in [
@@ -287,6 +291,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     for (name, succeeds) in names
         .iter()
@@ -331,6 +336,7 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     async fn attempt(app: &App, peer: &str, forwarded: &str) -> StatusCode {
         let mut headers = HeaderMap::new();
@@ -412,6 +418,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -589,6 +596,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                 snapshots: Default::default(),
                 bot_runtimes: Default::default(),
                 stopping: Default::default(),
+                shutdown: Default::default(),
             };
             let (release, wait) = std::sync::mpsc::channel();
             let (started, ready) = tokio::sync::oneshot::channel();
@@ -721,6 +729,7 @@ fn engine_readers_overlap_and_io_admission_is_bounded() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let reader = app.engine_read().unwrap();
     let other = app.clone();
@@ -784,6 +793,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     app.update_presence(None, Some("alice")).unwrap();
     let barrier = Arc::new(std::sync::Barrier::new(8));
@@ -948,6 +958,7 @@ async fn stalled_media_io_does_not_occupy_api_jobs_or_serialize_other_files() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let post = |id: &str| {
         Request::builder()
@@ -1034,6 +1045,7 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         snapshots: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
+        shutdown: Default::default(),
     };
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1174,4 +1186,38 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         "actor-new-password",
         &engine.data.users["actor"].hash
     ));
+}
+
+#[tokio::test]
+async fn unauthenticated_uploads_do_not_reveal_storage_configuration_or_hint_validation() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let (changes, _) = broadcast::channel(1);
+    let mut app = App {
+        media: None,
+        engine: Arc::new(RwLock::new(
+            Engine::open(std::path::Path::new(":memory:")).unwrap(),
+        )),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+        shutdown: Default::default(),
+    };
+    for enabled in [false, true] {
+        if enabled {
+            app.media = Some(crate::media::tests::test_storage("http://127.0.0.1:1"));
+        }
+        let request = Request::builder().method("POST").uri("/api/media/uploads")
+            .header(header::ORIGIN, "http://localhost:5173")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"conversation_id":"missing","filename":"file","size":8,"hints":{"unknown":"bad"}}"#)).unwrap();
+        let response = router(app.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }

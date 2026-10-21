@@ -96,7 +96,7 @@ This layout scales feature development by putting each change in its owning modu
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
-History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback clones metadata rather than history. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
+History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback snapshots only the maps a command family can change, omits message bodies, and uses an explicit mutation flag instead of whole-state comparison. Read commands share one fast path across browser, stdin and sudo. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
 
 New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy changes use a full snapshot. Presence changes send only the authorized online directory, and extra tabs do not broadcast unchanged presence. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
 
@@ -121,7 +121,7 @@ and skips sorting when no new message IDs arrive.
 `engine/storage/command_receipts.rs` owns atomic native command outcomes. An outer
 SQLite savepoint encloses ordinary command storage savepoints and its receipt;
 receipt failure rolls back SQLite and reloads authoritative metadata/cursors
-before broadcasting; successful commands do not clone all metadata/cursors.
+before broadcasting. The receipt wrapper does not clone metadata/cursors on success; administrative commands inside it retain family-scoped metadata snapshots.
 
 Browser API failures retain HTTP status; 401 responses return the user to login.
 Requests have a 15-second client deadline. Login sessions are capped at eight per
@@ -214,3 +214,7 @@ Only explicit values are stored. `media.user_quota` is root-only.
 Command read projections carry per-scope values and their source, filtered by
 account/room read authority. Room deletion prunes every account's matching branch
 inside the existing room-deletion transaction; a failure rolls back both.
+
+Cleanup previews batch up to 256 authorized conversation IDs per aggregate query on
+one history reader, using the existing conversation/timestamp expression index.
+A cleanup with no matching messages leaves the audit, database and revision unchanged.
