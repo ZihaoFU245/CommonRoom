@@ -267,8 +267,8 @@ notice shaped as `{username: {scope: {key: {value, source}}}}`.
 The `@global` section appears only with account/global read authority; a room read
 includes its `#name` section. Room-only readers receive effective room limits, but
 no global section or account quota. Sources are `config`, `role`, `@global`, or `#name`. Account-wide quota appears
-only under `@global`. A key filter applies to both sections. Metadata is absent
-from broadcast snapshots. Bulk writes
+only under `@global`. A key filter applies to both sections. Other metadata is absent
+from broadcast snapshots. The public avatar profile key is projected separately as `avatars`. Bulk writes
 and grant changes return one acknowledgement only after an atomic commit.
 
 Upload hints are an optional object with keys `filename`, `content-type`, `label`,
@@ -301,3 +301,32 @@ ordinary execution and previews use the same per-target metadata resolution.
 selected scope, atomically across bulk targets. It does not change credentials.
 `/user reset who password new-password` is the explicit password-reset form,
 using the existing asynchronous hashing, authority recheck and session revocation.
+
+## User avatars
+
+Snapshots include `avatars`, a username-to-image-URL map for visible identities.
+Older servers may omit it. Only the global `avatar` metadata key is projected;
+other metadata remains private. External URLs require HTTPS, no credentials or
+controls, and at most 2048 bytes. Clients load them with no referrer and hide
+missing/failed images without reserving layout space.
+
+All avatar writes authenticate the current session and enforce browser origin
+checks; they only update the caller's profile, independently of room upload grants.
+General metadata commands retain their su requirement.
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `POST /api/avatars` | `{url:"https://…"}` or `{url:null}` | `{ok:true}`; set or remove own avatar |
+| `POST /api/avatars/uploads` | `{size}` (1 byte–2 MiB) | Existing media upload ticket shape |
+| `POST /api/avatars/uploads/{id}/complete` | `{}` | `{ok:true}`; verify bytes and set own avatar |
+| `GET /api/avatars/{id}/file` | Authenticated same-origin read | 307 to private, 60-second signed S3 GET |
+
+Upload PUTs target staging `uploads/<id>` with the returned headers and no chat
+cookies. Completion copies verified PNG/JPEG/WebP bytes to immutable
+`avatars/<stable-account-id>/<id>` before updating metadata and broadcasting a
+snapshot. The stored link `/api/avatars/<id>/file` is deployment-relative: clients
+resolve it under their application base path. Active avatars have no retention
+expiry. Replaced/removed avatars stop receiving new signed reads immediately;
+already issued URLs expire within 60 seconds. Unreferenced objects use the existing
+cleanup worker, staging grace, retries, quota and allocation rate limits.
+No image bytes are stored in SQLite or streamed through chat.

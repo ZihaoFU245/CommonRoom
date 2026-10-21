@@ -234,8 +234,8 @@ Rename keeps it on the same stable identity; room deletion
 removes that room's entries from every account in the same transaction as room
 deletion. Account deletion removes the complete map. Empty branches are removed
 on unset; reusing a room name creates a new ID and inherits no deleted overrides.
-Metadata updates save changed accounts and audit entries atomically. Values are
-never included in public snapshots. User media limits are independent of grants;
+Metadata updates save changed accounts and audit entries atomically. Other values are
+never included in public snapshots; the global avatar link is a public profile projection. User media limits are independent of grants;
 `/user get` and `/user set` enforce current access on every selected account.
 
 Metadata mutation now requires su at execution time. Global admin group bundles
@@ -249,3 +249,18 @@ admin and su default to `-1`, users to `0`, and room owners to `-1` in their roo
 Private cleanup uses the global root. Role defaults are never persisted, so role
 revocation and ownership transfer cannot leave stale unlimited values behind.
 Su and authorized sudo bypass cleanup permissions and metadata limits.
+
+## Avatars
+
+The optional `metadata["@global"]["avatar"]` is an HTTPS image URL or a canonical
+`/api/avatars/<id>/file` link. Only this profile key has a self-service HTTP writer;
+ordinary metadata mutations still require su. The writer preserves other metadata
+and rolls back failed persistence. These values use existing account JSON and
+media rows, so SQLite remains schema v17 with no migration.
+
+Uploaded avatars use media records with conversation `@avatar` and permanent
+retention. Immutable file bytes live at `avatars/<stable-account-id>/<upload-id>`
+in private S3. Metadata references protect them during startup/daily cleanup;
+replacing/removing the avatar or deleting its account releases the reference.
+They count toward existing byte quotas and rate limits; completed avatars do not
+consume pending-upload slots. Backups must include the `avatars/` prefix.

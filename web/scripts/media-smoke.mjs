@@ -222,6 +222,62 @@ try {
     bob = await login("bob"),
     eve = await login("eve");
   const send = await socket(alice);
+  // Avatars have their own account-owned namespace, independent of room grants.
+  const avatarBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ZkAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const avatarTicketResponse = await request("/api/avatars/uploads", bob, {
+    size: avatarBytes.length,
+  });
+  assert.equal(avatarTicketResponse.status, 200);
+  const avatarTicket = await avatarTicketResponse.json();
+  assert.equal(
+    (
+      await fetch(avatarTicket.upload.url, {
+        method: "PUT",
+        headers: avatarTicket.upload.headers,
+        body: avatarBytes,
+      })
+    ).status,
+    200,
+  );
+  const avatarComplete = `/api/avatars/uploads/${avatarTicket.media_id}/complete`;
+  assert.equal((await request(avatarComplete, alice, {})).status, 400);
+  assert.equal((await request(avatarComplete, bob, {})).status, 200);
+  assert.equal((await request(avatarComplete, bob, {})).status, 200);
+  const avatarPath = `/api/avatars/${avatarTicket.media_id}/file`;
+  assert.equal((await request(avatarPath, null)).status, 401);
+  const avatarRedirect = await request(avatarPath, alice);
+  assert.equal(avatarRedirect.status, 307);
+  assert.equal(avatarRedirect.headers.get("cache-control"), "no-store");
+  assert.match(
+    new URL(avatarRedirect.headers.get("location")).pathname,
+    /\/avatars\//u,
+  );
+  const avatarDownload = await fetch(avatarRedirect.headers.get("location"));
+  assert.equal(avatarDownload.headers.get("content-type"), "image/png");
+  assert.deepEqual(
+    Buffer.from(await avatarDownload.arrayBuffer()),
+    avatarBytes,
+  );
+  // A still-valid staging URL cannot alter the immutable avatar others see.
+  await fetch(avatarTicket.upload.url, {
+    method: "PUT",
+    headers: avatarTicket.upload.headers,
+    body: Buffer.alloc(avatarBytes.length),
+  });
+  assert.deepEqual(
+    Buffer.from(
+      await (await fetch(avatarRedirect.headers.get("location"))).arrayBuffer(),
+    ),
+    avatarBytes,
+  );
+  assert.equal(
+    (await (await request("/api/me", alice)).json()).avatars.bob,
+    avatarPath,
+  );
+
   const snapshot = await (await request("/api/me", alice)).json();
   const conversation = snapshot.rooms.find((room) => room.name === "files").id;
   assert.deepEqual(await (await request("/api/media/config", alice)).json(), {
@@ -452,6 +508,29 @@ try {
     (await request(`/api/media/${retainedMedia.media_id}/info`, bob)).status,
     200,
   );
+  assert.equal(
+    (await request(avatarPath, alice)).status,
+    307,
+    "Saved avatar survives restart and startup cleanup",
+  );
+  assert.equal(
+    (
+      await request("/api/avatars", bob, {
+        url: "https://example.com/avatar.png",
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await request(avatarPath, alice)).status,
+    404,
+    "Replacing avatar revokes new reads",
+  );
+  assert.equal((await request("/api/avatars", bob, { url: null })).status, 200);
+  assert.equal(
+    (await (await request("/api/me", alice)).json()).avatars.bob,
+    undefined,
+  );
   const stopped = once(rustfs, "exit");
   rustfs.kill("SIGTERM");
   await stopped;
@@ -487,7 +566,7 @@ try {
   let recovered = false;
   for (let attempt = 0; attempt < 100 && !recovered; attempt++) {
     recovered = await fetch(env.CHAT_S3_ENDPOINT).then(
-      () => true,
+      (response) => response.status !== 503,
       () => false,
     );
     if (!recovered) await pause(100);
@@ -525,7 +604,7 @@ try {
     400,
   );
   console.log(
-    "Media smoke passed: RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
+    "Media smoke passed: avatars (private upload, ownership, immutable bytes, restart, replacement/removal), RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
   );
 } finally {
   for (const ws of sockets) ws.terminate();

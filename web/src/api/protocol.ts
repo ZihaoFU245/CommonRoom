@@ -77,6 +77,7 @@ export interface Snapshot {
   policy_revision: number;
   admin: boolean;
   users: string[];
+  avatars?: Record<string, string>;
   online: string[];
   rooms: Room[];
   direct: Message[];
@@ -248,6 +249,9 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   commands(v.private_commands) &&
   integer(v.policy_revision) &&
   strings(v.users) &&
+  (v.avatars === undefined ||
+    (record(v.avatars) &&
+      Object.values(v.avatars).every((url) => typeof url === "string"))) &&
   strings(v.online) &&
   Array.isArray(v.rooms) &&
   v.rooms.every(

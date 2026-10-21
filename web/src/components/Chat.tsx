@@ -574,6 +574,7 @@ export function Chat({
             </div>
           )}
           <MessageList
+            avatars={state.avatars}
             motionScope={
               state.private_access[selected]?.id ??
               state.rooms.find((room) => room.name === selected)?.id ??

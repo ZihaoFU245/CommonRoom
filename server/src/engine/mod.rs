@@ -1,5 +1,6 @@
 mod accounts;
 pub mod authorization;
+pub(crate) mod avatars;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod benchmarks;

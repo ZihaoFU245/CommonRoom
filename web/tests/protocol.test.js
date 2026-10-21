@@ -227,3 +227,15 @@ test("presence frames validate the online directory without carrying history", (
       null,
     );
 });
+
+test("avatar directory accepts optional string maps and rejects malformed profiles", () => {
+  assert.equal(
+    isSnapshot({
+      ...snapshot,
+      avatars: { alice: "https://example.com/a.png" },
+    }),
+    true,
+  );
+  for (const avatars of [null, [], "url", { alice: 42 }, { alice: null }])
+    assert.equal(isSnapshot({ ...snapshot, avatars }), false);
+});

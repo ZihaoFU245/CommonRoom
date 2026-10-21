@@ -219,3 +219,10 @@ inside the existing room-deletion transaction; a failure rolls back both.
 Cleanup previews batch up to 256 authorized conversation IDs per aggregate query on
 one history reader, using the existing conversation/timestamp expression index.
 A cleanup with no matching messages leaves the audit, database and revision unchanged.
+
+`engine/avatars.rs` owns self-service profile validation, ownership and the avatar
+metadata projection. `web/avatars.rs` adapts authenticated HTTP requests to that
+engine and the shared S3 transport. Avatar files use the existing tracked media
+lifecycle with a dedicated `avatars/` final prefix and profile references instead
+of message references. `AvatarSettings.tsx` owns the local crop/confirm flow;
+`Avatar.tsx` reveals images only after load and removes failures from layout.

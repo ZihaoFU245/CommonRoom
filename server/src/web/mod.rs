@@ -1,4 +1,5 @@
 pub(crate) mod auth;
+mod avatars;
 mod bot_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
@@ -111,6 +112,13 @@ pub(crate) fn error(code: StatusCode, message: &str) -> ApiError {
 pub fn router(app: App) -> Router {
     let routes = Router::new()
         .merge(crate::bots::routes())
+        .route("/api/avatars", post(avatars::set))
+        .route("/api/avatars/uploads", post(avatars::allocate))
+        .route(
+            "/api/avatars/uploads/{id}/complete",
+            post(avatars::complete),
+        )
+        .route("/api/avatars/{id}/file", get(avatars::download))
         .route("/api/media/config", get(media::config))
         .route("/api/media/uploads", post(media::allocate))
         .route("/api/media/uploads/{id}/complete", post(media::complete))

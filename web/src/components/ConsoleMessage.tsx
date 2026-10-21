@@ -1,3 +1,4 @@
+import { Avatar } from "./Avatar.tsx";
 import { CollapsibleMessage } from "./CollapsibleMessage.tsx";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { memo } from "preact/compat";
@@ -14,6 +15,7 @@ import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
 
 export const ConsoleMessage = memo(function ConsoleMessage({
   message,
+  avatar,
   self,
   date,
   grouped,
@@ -34,6 +36,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   onDelete,
 }: {
   message: Message;
+  avatar?: string | undefined;
   self: string;
   date: MessageDate;
   grouped: boolean;
@@ -121,6 +124,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
           {date.time}
         </time>
       )}
+      {!grouped && <Avatar url={avatar} name={message.from} />}
       <div class="message-content">
         {!grouped && (
           <header class="message-meta">

@@ -36,7 +36,7 @@ custom values appear only with permission to read that account's global metadata
 Room managers without that permission see local custom values and effective media/cleanup
 limits. `media.user_quota` appears only in the global section and is never a room
 override. `/user get @all #support` applies the same view to every member.
-Metadata never grants permissions and is absent from broadcast snapshots.
+Metadata never grants permissions. Only the public global avatar link is projected in broadcast snapshots.
 Read your own metadata;
 other users require `r:account.metadata` at global/account scope or room policy
 management. Only su can set, remove or bulk-update metadata. Global admins
@@ -391,3 +391,13 @@ Password reset uses `/user reset bob password new-password`; it targets one
 account, accepts no scope, and retains `x:account.password.reset` authorization.
 The literal `password` selector separates credential resets from metadata resets.
 Password changes keep the existing session-revocation and post-hash rechecks.
+
+## Avatar settings
+
+Settings → Account shows your round avatar, name and groups. Click the avatar
+(or the plus placeholder) for Upload, Set URL and Remove. HTTPS image URLs such
+as Gravatar work without object storage. Upload accepts PNG, JPEG or WebP up to
+20 MiB/40 megapixels; position and zoom the circular preview, then confirm. The
+browser crops the selected square into a 512×512 PNG (maximum 2 MiB) before
+uploading to S3. Cancel leaves the existing avatar unchanged. Avatars appear next
+to chat authors and sidebar names only after loading successfully.

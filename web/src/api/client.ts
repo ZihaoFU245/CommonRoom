@@ -61,6 +61,17 @@ async function request<T>(
 }
 
 export const api = {
+  setAvatar: (url: string | null) => request("avatars", isOk, { url }),
+  allocateAvatar: (size: number, signal: AbortSignal) =>
+    request("avatars/uploads", isUploadTicket, { size }, signal),
+  completeAvatar: (id: string, signal: AbortSignal) =>
+    request(
+      `avatars/uploads/${encodeURIComponent(id)}/complete`,
+      isOk,
+      {},
+      signal,
+      120000,
+    ),
   mediaInfo: (id: string, signal: AbortSignal) =>
     request(
       `media/${encodeURIComponent(id)}/info`,
