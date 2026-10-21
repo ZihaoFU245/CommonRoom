@@ -32,7 +32,7 @@ fn unavailable() -> ApiError {
 }
 
 // Each blocking job owns its API permit. No permit survives into S3 I/O or locks.
-async fn authenticated<T: Send + 'static>(
+pub(super) async fn authenticated<T: Send + 'static>(
     app: &App,
     headers: &HeaderMap,
     work: impl FnOnce(&App, &str) -> Result<T, ApiError> + Send + 'static,
@@ -55,7 +55,7 @@ fn media_json(app: &App, media: &crate::engine::media::Media) -> Json<serde_json
         json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename}),
     )
 }
-fn storage_failure(failure: crate::media::StorageError) -> ApiError {
+pub(super) fn storage_failure(failure: crate::media::StorageError) -> ApiError {
     let status = match failure {
         crate::media::StorageError::Invalid(_) => StatusCode::BAD_REQUEST,
         crate::media::StorageError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,

@@ -327,7 +327,7 @@ impl Engine {
         }
         let unread = self.collect_unreads(name, true, Some(&scope_rights)).ok()?;
         complete &= unread.len() == readable;
-        let snapshot = Snapshot {
+        let mut snapshot = Snapshot {
             sync: SyncVersion {
                 instance: self.instance.clone(),
                 revision: self
@@ -379,6 +379,7 @@ impl Engine {
                 rights(&self.private_scope(&private_key(name, name))),
             ),
             policy_revision: self.data.policy.revision,
+            avatars: self.avatar_directory(),
             online: self.online(name),
             users: self
                 .data
@@ -484,6 +485,29 @@ impl Engine {
                 .map(|(n, _)| n.clone())
                 .collect(),
         };
+        let visible: BTreeSet<&str> = snapshot
+            .users
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(name))
+            .chain(snapshot.private_peers.iter().map(String::as_str))
+            .chain(snapshot.direct.iter().map(|m| m.from.as_str()))
+            .chain(
+                snapshot
+                    .rooms
+                    .iter()
+                    .flat_map(|r| r.members.iter().map(String::as_str)),
+            )
+            .chain(
+                snapshot
+                    .rooms
+                    .iter()
+                    .flat_map(|r| r.messages.iter().map(|m| m.from.as_str())),
+            )
+            .collect();
+        snapshot
+            .avatars
+            .retain(|user, _| visible.contains(user.as_str()));
         Some((snapshot, complete))
     }
     pub(super) fn apply_queries(&self, context: &CommandContext<'_>) -> Result<String, String> {

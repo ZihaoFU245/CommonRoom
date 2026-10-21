@@ -25,7 +25,7 @@ END;
 ";
 
 fn delete_tombstones(db: &Connection, cutoff: u64) -> Result<(), String> {
-    db.execute("DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id)", [cutoff]).map_err(|e| e.to_string())?;
+    db.execute("DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar')='/api/avatars/'||media.id||'/file')", [cutoff]).map_err(|e| e.to_string())?;
     Ok(())
 }
 // Columns are authoritative for mutable state; legacy JSON copies are ignored.
@@ -96,7 +96,7 @@ impl Engine {
     // recent uploads from a previous process no longer have a live reservation.
     pub(crate) fn prepare_media_cleanup(&self) -> Result<(), String> {
         self.db.lock().map_err(|_| "Storage unavailable.")?.execute(
-            "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id)",
+            "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar')='/api/avatars/'||media.id||'/file')",
             [],
         ).map_err(|e| e.to_string())?;
         Ok(())
@@ -184,7 +184,7 @@ impl Engine {
         let db = self.db.lock().map_err(|_| "Storage unavailable.")?;
         let changed = db
             .execute(
-                "UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4 WHERE id=?1 AND ready=0 AND deleting=0 AND deleted=0",
+                "UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND ready=0 AND deleting=0 AND deleted=0",
                 params![media.id, json, now(), media.expires],
             )
             .map_err(|e| e.to_string())?;
@@ -244,7 +244,7 @@ impl Engine {
             let mut query = tx.prepare("SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (
                 SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)
                 UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)
-                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
+                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar')='/api/avatars/'||media.id||'/file') AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
             ) ORDER BY cleanup_attempt,created LIMIT ?3").map_err(|e| e.to_string())?;
             query
                 .query_map(

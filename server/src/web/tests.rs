@@ -1219,5 +1219,115 @@ async fn unauthenticated_uploads_do_not_reveal_storage_configuration_or_hint_val
             .body(Body::from(r#"{"conversation_id":"missing","filename":"file","size":8,"hints":{"unknown":"bad"}}"#)).unwrap();
         let response = router(app.clone()).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/avatars/uploads")
+            .header(header::ORIGIN, "http://localhost:5173")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"size":8}"#))
+            .unwrap();
+        let response = router(app.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+}
+
+#[tokio::test]
+async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    for name in ["alice", "bob"] {
+        engine.provision(name, "hash".into(), false, false).unwrap();
+        engine.login(name.into(), name, "hash", None).unwrap();
+    }
+    let (changes, mut notifications) = broadcast::channel(8);
+    let app = App {
+        media: None,
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+        shutdown: Default::default(),
+    };
+    let routes = router(app.clone());
+    for (cookie, origin, body, status) in [
+        (
+            "",
+            "http://localhost:5173",
+            r#"{"url":"https://example.com/a.png"}"#,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "alice",
+            "https://evil.example",
+            r#"{"url":"https://example.com/a.png"}"#,
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            r#"{"url":"javascript:alert(1)"}"#,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            r#"{"url":"https://example.com/a.png","user":"bob"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            r#"{"url":"https://example.com/a.png"}"#,
+            StatusCode::OK,
+        ),
+    ] {
+        let response = routes
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/avatars")
+                    .header(header::ORIGIN, origin)
+                    .header(header::COOKIE, format!("chat_session={cookie}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
+    assert!(matches!(notifications.try_recv(), Ok(Change::All)));
+    assert_eq!(
+        app.engine_read().unwrap().avatar_directory()["alice"],
+        "https://example.com/a.png"
+    );
+    assert!(
+        !app.engine_read()
+            .unwrap()
+            .avatar_directory()
+            .contains_key("bob")
+    );
+    let response = routes
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/avatars")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::COOKIE, "chat_session=alice")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"url":null}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(app.engine_read().unwrap().avatar_directory().is_empty());
 }

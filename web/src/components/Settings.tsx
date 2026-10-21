@@ -1,3 +1,4 @@
+import { AvatarSettings } from "./AvatarSettings.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AliasSettings } from "./AliasSettings.tsx";
 import type { Aliases } from "../features/conversation/aliases.ts";
@@ -215,10 +216,7 @@ export function Settings({
           {tab === "account" ? (
             <>
               <h3>Account</h3>
-              <p class="account-summary">
-                Signed in as <strong>{state.username}</strong> ·{" "}
-                {state.groups.join(", ")}
-              </p>
+              <AvatarSettings state={state} />
               <form
                 class="account-form"
                 onSubmit={(event) => {

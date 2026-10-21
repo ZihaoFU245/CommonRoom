@@ -32,6 +32,9 @@ fn default_media_age() -> i64 {
 }
 impl Media {
     pub(crate) fn final_key(&self) -> String {
+        if self.conversation == "@avatar" {
+            return format!("avatars/{}/{}", self.uploader, self.id);
+        }
         let class = match self.max_age {
             -1 => "permanent".to_owned(),
             age if age % 86400 == 0 => format!("{}d", age / 86400),

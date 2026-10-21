@@ -1,3 +1,4 @@
+import { Avatar } from "./Avatar.tsx";
 import type { Snapshot } from "../api/protocol.ts";
 import { Brand } from "./Brand.tsx";
 import { UnreadBadge } from "./UnreadBadge.tsx";
@@ -61,7 +62,12 @@ export function Sidebar({
                 class={`room-link ${peer === name ? "selected" : ""}`}
                 onClick={() => choose(`@direct:${name}`)}
               >
-                <span class="hash">↗</span>
+                <span class="private-chat-icon">
+                  <span class="hash" aria-hidden="true">
+                    ↗
+                  </span>
+                  <Avatar url={state.avatars?.[name]} name={name} />
+                </span>
                 {name}
                 <UnreadBadge
                   count={state.unread[`@direct:${name}`]?.count ?? 0}
@@ -74,6 +80,7 @@ export function Sidebar({
       </nav>
       <div class="sidebar-bottom">
         <div class="profile">
+          <Avatar url={state.avatars?.[state.username]} name={state.username} />
           <div class="profile-name">
             <strong>{state.username}</strong>
             <small>

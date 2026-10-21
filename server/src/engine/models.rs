@@ -117,6 +117,7 @@ pub struct Snapshot {
     pub policy_revision: u64,
     pub admin: bool,
     pub users: Vec<String>,
+    pub avatars: BTreeMap<String, String>,
     pub online: Vec<String>,
     pub rooms: Vec<RoomView>,
     pub direct: Vec<Message>,

@@ -203,7 +203,7 @@ For versioned buckets, also remove noncurrent versions; delete markers alone do
 not reclaim bytes. Use a dedicated bucket/prefix for this application.
 
 On each server start, before accepting uploads, SQLite marks every tracked object
-without any retained message reference for deletion, including unfinished uploads
+without any retained message or active avatar profile reference for deletion, including unfinished uploads
 from the previous process. Shared attachments survive while any message still
 references them. This uses authoritative `message_media` rows rather than scanning
 S3, and needs no bucket-list permission. Unknown objects created outside the tracked
@@ -284,7 +284,7 @@ rtk proxy env CHAT_DATA="$PWD/tmp/media-chat" \
 
 Development credentials must never be used for public storage. Keep storage's
 administration console private. Service credentials need object read/write/delete
-on `uploads/*` and `media/*`; clients get no listing/deletion/final-key writes.
+on `uploads/*`, `media/*`, and `avatars/*`; clients get no listing/deletion/final-key writes.
 
 ## Deployment and verification
 
@@ -375,3 +375,17 @@ uses [CopyObject metadata replacement](https://docs.aws.amazon.com/AmazonS3/late
 to keep only the validated allocation hints, dropping arbitrary staging metadata.
 Hints never set trusted MIME, authorization, size, quota, retention, object paths
 or download response headers; normal server verification remains authoritative.
+
+## Account avatars
+
+Avatar uploads share this private bucket, signing, quota/rate limits and cleanup
+worker, but do not require room media permissions. The authenticated account owns
+its profile. Settings crops local images into a 512×512 PNG before confirmation
+uploads it; completion accepts raster PNG/JPEG/WebP up to 2 MiB. The original
+rectangle is never uploaded. Final files use `avatars/<account-id>/<upload-id>`;
+include `avatars/*` in storage credentials and backups and exclude it from expiry
+lifecycle rules. Saved avatars have permanent retention, remain protected during
+startup/daily cleanup, and stop receiving new download URLs when replaced or
+removed. Browser loads and updates propagate through the public avatar projection
+in snapshots. External HTTPS avatar URLs work even with storage disabled.
+See [Protocol](protocol.md#user-avatars).

@@ -22,6 +22,7 @@ interface Props {
   atBottom: RefObject<boolean>;
   entries: TimelineEntry[];
   username: string;
+  avatars?: Record<string, string> | undefined;
   pending: boolean;
   debug: boolean;
   allowHtml: boolean;
@@ -45,6 +46,7 @@ export const MessageList = memo(function MessageList({
   atBottom,
   entries,
   username,
+  avatars,
   pending,
   debug,
   allowHtml,
@@ -170,6 +172,7 @@ export const MessageList = memo(function MessageList({
         {isUnreadBoundary && <div class="unread-divider">New messages</div>}
         <ConsoleMessage
           message={entry.message}
+          avatar={avatars?.[entry.message.from]}
           expanded={
             expandedMessages.get(entry.message.id) === entry.message.text
           }

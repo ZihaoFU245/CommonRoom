@@ -648,3 +648,16 @@ counts. Query-plan assertions inspect index selection without benchmarking.
 Web tests cover portable Markdown attachment paths, complete Unicode hints, full
 object cache bounds/recency/ranges, actual content lengths, and restart invalidation
 of unsent attachments. Benchmarks remain explicitly opt-in and ignored by normal tests.
+
+## Avatar coverage
+
+Engine tests cover self-service URL validation, metadata isolation, allocation
+limits, stable ownership, invalid MIME, rename/restart persistence, failed-write
+rollback, expired uploads and account replacement. HTTP tests check session and
+origin enforcement, rejected target injection, broadcasts and removal. Web tests
+cover crop geometry, URL/base-path handling and optional snapshot validation.
+The media smoke suite additionally uploads avatar bytes to real local RustFS,
+checks unauthorized completion/download, immutable final objects, private signed
+reads, restart cleanup protection, replacement and removal. Browser verification
+should position/zoom a rectangular image, confirm, and inspect chat/sidebar/account
+at desktop and compact widths. Check URL failures leave no blank avatar space.

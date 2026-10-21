@@ -378,7 +378,7 @@ operations at once. Keep the API proxy timeout at 130s or more.
 1. Create a private bucket. Do not enable public access, website hosting, or directory
    listing.
 2. Create credentials that can `GetObject`, `PutObject`, and `DeleteObject` on
-   `uploads/*` and `media/*` in that bucket. Chat needs no bucket administration
+   `uploads/*`, `media/*`, and `avatars/*` in that bucket. Chat needs no bucket administration
    permission at runtime; bucket creation, CORS, and lifecycle rules are operator work.
 3. Configure bucket CORS for browser uploads ([Bucket CORS](#bucket-cors)).
 4. Set `s3.endpoint` (the server's route to storage). Set `public_endpoint` (the
@@ -501,7 +501,8 @@ seconds to propagate CORS changes.
          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
          "Resource": [
            "arn:aws:s3:::commonroom-media/uploads/*",
-           "arn:aws:s3:::commonroom-media/media/*"
+           "arn:aws:s3:::commonroom-media/media/*",
+           "arn:aws:s3:::commonroom-media/avatars/*"
          ]
        }
      ]
@@ -631,6 +632,7 @@ The final key encodes the retention class:
 | `uploads/` | Staging objects; cleanup deletes them once they are older than the pending TTL (default 24h). |
 | `media/1d/`, `media/7d/`, ... | Whole-day metadata lifetimes, `media/<N>d/`. |
 | `media/<N>s/` | Sub-day lifetimes such as `media/3600s/`. |
+| `avatars/` | Permanent account avatar files; do not apply an expiry lifecycle rule. |
 | `media/permanent/` | Metadata with no expiry (`-1`). |
 
 Reasonable rules: expire `uploads/` after 1 day, `media/1d/` after 1 day, and
