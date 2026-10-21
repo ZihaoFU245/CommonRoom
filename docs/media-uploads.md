@@ -382,8 +382,12 @@ or download response headers; normal server verification remains authoritative.
 
 Avatar uploads share this private bucket, signing, quota/rate limits and cleanup
 worker, but do not require room media permissions. The authenticated account owns
-its profile. Settings crops local images into a 512×512 PNG before confirmation
-uploads it; completion accepts raster PNG/JPEG/WebP up to 2 MiB. The original
+its profile. Settings accepts local PNG/JPEG/WebP sources up to 20 MiB and 40
+megapixels, crops and resizes to at most 256×256, and encodes WebP at 80% quality
+(PNG fallback). It reduces dimensions further if needed to fit 64 KiB before
+uploading; the server caps new allocations at 64 KiB. Previously saved avatars
+remain readable. External URLs load the original bytes without this size limit.
+Completion accepts raster PNG/JPEG/WebP. The original
 rectangle is never uploaded. Final files use `avatars/<account-id>/<upload-id>`;
 include `avatars/*` in storage credentials and backups and exclude it from expiry
 lifecycle rules. Saved avatars have permanent retention, remain protected during

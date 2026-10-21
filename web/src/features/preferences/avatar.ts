@@ -35,3 +35,29 @@ export function cropSquare(
     size,
   };
 }
+export const AVATAR_SIZE = 256;
+export const MAX_AVATAR_BYTES = 64 * 1024;
+
+export async function encodeAvatar(source: HTMLCanvasElement): Promise<Blob> {
+  const output = source.ownerDocument.createElement("canvas");
+  const context = output.getContext("2d");
+  if (!context) throw new Error("Unable to resize avatar.");
+  // PNG fallback in browsers without WebP encoding must fit the same byte cap.
+  for (const size of [AVATAR_SIZE, 128, 96]) {
+    output.width = size;
+    output.height = size;
+    context.drawImage(source, 0, 0, size, size);
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      output.toBlob(
+        (value) =>
+          value
+            ? resolve(value)
+            : reject(new Error("Unable to encode avatar.")),
+        "image/webp",
+        0.8,
+      ),
+    );
+    if (blob.size > 0 && blob.size <= MAX_AVATAR_BYTES) return blob;
+  }
+  throw new Error("Compressed avatar exceeds 64 KiB.");
+}

@@ -2,7 +2,7 @@
 use super::media::Media;
 use super::*;
 
-pub(crate) const MAX_AVATAR_SIZE: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_AVATAR_SIZE: u64 = 64 * 1024;
 pub(crate) fn avatar_path(id: &str) -> String {
     format!("/api/avatars/{id}/file")
 }
@@ -80,7 +80,7 @@ impl Engine {
             return Err("Account unavailable.".into());
         }
         if size == 0 || size > MAX_AVATAR_SIZE {
-            return Err("Avatar must be between 1 byte and 2 MiB.".into());
+            return Err("Avatar must be between 1 byte and 64 KiB.".into());
         }
         let account = self.data.users.get(user).ok_or("Account unavailable.")?;
         let media = Media {
@@ -207,6 +207,14 @@ mod tests {
         let mut e = super::super::tests::engine();
         for size in [0, MAX_AVATAR_SIZE + 1] {
             assert!(e.allocate_avatar("bob", size).is_err());
+        }
+        assert_eq!(MAX_AVATAR_SIZE, 65_536);
+        {
+            let boundary_engine = super::super::tests::engine();
+            let boundary = boundary_engine
+                .allocate_avatar("bob", MAX_AVATAR_SIZE)
+                .unwrap();
+            assert_eq!(boundary.size, MAX_AVATAR_SIZE);
         }
         e.media_config.pending_limit = 1;
         let mut media = ready(&e, "bob");

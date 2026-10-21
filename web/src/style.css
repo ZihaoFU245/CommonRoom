@@ -1362,8 +1362,9 @@ button:focus-visible {
   transform: translateX(1px);
 }
 .settings-dialog {
-  width: min(680px, calc(100vw - 32px));
-  height: min(680px, calc(100dvh - 40px));
+  width: min(960px, 90vw);
+  max-width: calc(100vw - 32px);
+  height: 90dvh;
   max-height: calc(100dvh - 40px);
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1719,6 +1720,51 @@ button:focus-visible {
 .account-form button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+.account-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.account-setting-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-setting-detail p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+.account-setting-action {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.account-setting-action:hover:not(:disabled),
+.account-form .account-cancel:hover:not(:disabled) {
+  background: var(--wash);
+}
+.account-setting-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.account-editor {
+  max-width: 440px;
+}
+.account-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.account-form .account-cancel {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
 }
 .account-error {
   color: var(--danger);

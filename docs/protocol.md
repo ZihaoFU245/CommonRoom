@@ -317,7 +317,7 @@ General metadata commands retain their su requirement.
 | Endpoint | Request | Response |
 | --- | --- | --- |
 | `POST /api/avatars` | `{url:"https://…"}` or `{url:null}` | `{ok:true}`; set or remove own avatar |
-| `POST /api/avatars/uploads` | `{size}` (1 byte–2 MiB) | Existing media upload ticket shape |
+| `POST /api/avatars/uploads` | `{size}` (1 byte–64 KiB) | Existing media upload ticket shape |
 | `POST /api/avatars/uploads/{id}/complete` | `{}` | `{ok:true}`; verify bytes and set own avatar |
 | `GET /api/avatars/{id}/file` | Authenticated same-origin read | 307 to private, 60-second signed S3 GET |
 

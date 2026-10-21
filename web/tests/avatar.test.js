@@ -3,7 +3,42 @@ import assert from "node:assert/strict";
 import {
   avatarSource,
   cropSquare,
+  encodeAvatar,
+  MAX_AVATAR_BYTES,
 } from "../src/features/preferences/avatar.ts";
+
+test("avatar encoding bounds bytes, requests WebP and shrinks PNG fallback", async () => {
+  const attempts = [];
+  const output = {
+    width: 0,
+    height: 0,
+    getContext: () => ({ drawImage() {} }),
+    toBlob(callback, type, quality) {
+      attempts.push([this.width, this.height, type, quality]);
+      callback(
+        new Blob([new Uint8Array(this.width * this.height * 4)], {
+          type: "image/png",
+        }),
+      );
+    },
+  };
+  const source = { ownerDocument: { createElement: () => output } };
+  const blob = await encodeAvatar(source);
+  assert.equal(MAX_AVATAR_BYTES, 65536);
+  assert.equal(blob.type, "image/png");
+  assert.equal(blob.size, MAX_AVATAR_BYTES);
+  assert.deepEqual(attempts, [
+    [256, 256, "image/webp", 0.8],
+    [128, 128, "image/webp", 0.8],
+  ]);
+  output.toBlob = (callback) =>
+    callback(new Blob(["small"], { type: "image/webp" }));
+  assert.equal((await encodeAvatar(source)).type, "image/webp");
+  output.toBlob = (callback) => callback(new Blob([new Uint8Array(65537)]));
+  await assert.rejects(encodeAvatar(source), /exceeds 64 KiB/u);
+  output.toBlob = (callback) => callback(null);
+  await assert.rejects(encodeAvatar(source), /Unable to encode/u);
+});
 
 test("avatar sources preserve base paths and reject unsafe URLs", () => {
   const id = "12345678-1234-1234-1234-123456789abc";

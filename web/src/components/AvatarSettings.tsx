@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import autoAnimate from "@formkit/auto-animate";
 import { Avatar } from "./Avatar.tsx";
 import type { Snapshot } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
 import { uploadFile } from "../api/media.ts";
-import { cropSquare } from "../features/preferences/avatar.ts";
+import {
+  AVATAR_SIZE,
+  cropSquare,
+  encodeAvatar,
+} from "../features/preferences/avatar.ts";
 
 export function AvatarSettings({ state }: { state: Snapshot }) {
   const [menu, setMenu] = useState(false);
@@ -17,9 +22,18 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
   const [y, setY] = useState(50);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const animatedSettings = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const controller = useRef(new AbortController());
+  useEffect(() => {
+    if (!animatedSettings.current) return;
+    const animation = autoAnimate(animatedSettings.current, {
+      duration: 120,
+      easing: "ease-out",
+    });
+    return () => animation.destroy?.();
+  }, []);
   useEffect(() => () => controller.current.abort(), []);
   useEffect(() => {
     if (!file) return;
@@ -58,7 +72,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
       x,
       y,
     );
-    context.clearRect(0, 0, 512, 512);
+    context.clearRect(0, 0, AVATAR_SIZE, AVATAR_SIZE);
     context.drawImage(
       image,
       crop.x,
@@ -67,8 +81,8 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
       crop.size,
       0,
       0,
-      512,
-      512,
+      AVATAR_SIZE,
+      AVATAR_SIZE,
     );
   }, [image, zoom, x, y]);
   function run(work: () => Promise<unknown>) {
@@ -88,21 +102,19 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
   async function upload() {
     const element = canvas.current;
     if (!element || !image) throw new Error("Choose an image first.");
-    const blob = await new Promise<Blob>((resolve, reject) =>
-      element.toBlob(
-        (value) =>
-          value ? resolve(value) : reject(new Error("Unable to crop image.")),
-        "image/png",
-      ),
-    );
-    if (blob.size > 2 * 1024 * 1024)
-      throw new Error("Cropped avatar exceeds 2 MiB.");
+    const blob = await encodeAvatar(element);
     const signal = controller.current.signal;
     const ticket = await api.allocateAvatar(blob.size, signal);
     try {
       await uploadFile(
         ticket,
-        new File([blob], "avatar.png", { type: "image/png" }),
+        new File(
+          [blob],
+          blob.type === "image/webp" ? "avatar.webp" : "avatar.png",
+          {
+            type: blob.type,
+          },
+        ),
         signal,
         () => {},
       );
@@ -113,7 +125,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
     }
   }
   return (
-    <div class="avatar-settings">
+    <div class="avatar-settings" ref={animatedSettings}>
       <div class="account-card">
         <button
           type="button"
@@ -199,6 +211,10 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           }}
         >
           <label for="avatar-url">Avatar image URL</label>
+          <p class="account-summary">
+            External images load at their original size. Upload an image to
+            minimize bandwidth.
+          </p>
           <input
             id="avatar-url"
             type="url"
@@ -228,8 +244,8 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           </p>
           <canvas
             ref={canvas}
-            width={512}
-            height={512}
+            width={AVATAR_SIZE}
+            height={AVATAR_SIZE}
             aria-label="Circular avatar crop preview"
           />
           {(

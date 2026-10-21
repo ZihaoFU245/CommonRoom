@@ -52,7 +52,7 @@ pub(crate) async fn allocate(
     let (storage, uploader) = authenticated(&app, &headers, move |app, user| {
         let storage = storage(app)?;
         if input.size == 0 || input.size > crate::engine::avatars::MAX_AVATAR_SIZE {
-            return Err(failed("Avatar must be between 1 byte and 2 MiB."));
+            return Err(failed("Avatar must be between 1 byte and 64 KiB."));
         }
         let engine = app.engine_read_api()?;
         Ok((
