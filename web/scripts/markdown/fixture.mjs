@@ -49,7 +49,10 @@ function Fixture() {
     handle = useRef(null),
     end = useRef(null),
     atBottom = useRef(false);
-  const jump = (sequence) => handle.current?.scrollToSequence(sequence);
+  const jump = (sequence) => {
+    atBottom.current = sequence === 1000;
+    handle.current?.scrollToSequence(sequence);
+  };
   return h(
     "main",
     { style: { maxWidth: compact ? "360px" : "1000px", margin: "16px auto" } },
@@ -246,6 +249,80 @@ function Fixture() {
         },
         "Check fold motion",
       ),
+      h(
+        "button",
+        {
+          onClick: async () => {
+            const viewport = container.current;
+            if (!viewport) return;
+            const pinned = atBottom.current;
+            const sequence = pinned ? 1000 : 1;
+            setEntries((rows) =>
+              rows.map((row) =>
+                row.message.sequence === sequence
+                  ? {
+                      ...row,
+                      message: { ...row.message, text: image, markdown: true },
+                    }
+                  : row,
+              ),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            const article = document.getElementById(`message-m${sequence}`);
+            const shell = article?.querySelector(".collapsible-message");
+            const picture = article?.querySelector("img");
+            if (!shell || !picture) return;
+            const frame = () => new Promise(requestAnimationFrame);
+            const canvas = document.createElement("canvas");
+            canvas.width = 240;
+            canvas.height = 180;
+            const paint = canvas.getContext("2d");
+            paint.fillStyle = "#f3a653";
+            paint.fillRect(0, 0, 240, 180);
+            const before = shell.getBoundingClientRect().height;
+            const initialGap =
+              viewport.scrollHeight -
+              viewport.clientHeight -
+              viewport.scrollTop;
+            const anchor = article.getBoundingClientRect().top;
+            picture.src = canvas.toDataURL();
+            const heights = [],
+              gaps = [],
+              anchors = [];
+            for (let i = 0; i < 24; i++) {
+              await frame();
+              // Sample after resize observers and scroll corrections, as painted.
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              heights.push(shell.getBoundingClientRect().height);
+              gaps.push(
+                viewport.scrollHeight -
+                  viewport.clientHeight -
+                  viewport.scrollTop,
+              );
+              anchors.push(article.getBoundingClientRect().top);
+            }
+            const after = shell.getBoundingClientRect().height;
+            setDiagnostics(
+              JSON.stringify({
+                kind: "delayed image",
+                compact,
+                pinned,
+                before,
+                after,
+                intermediateFrames: heights.filter(
+                  (height) => height > before + 1 && height < after - 1,
+                ).length,
+                initialGap,
+                maxBottomGap: pinned ? Math.max(...gaps) : null,
+                anchorDrift: !pinned
+                  ? Math.max(...anchors.map((top) => Math.abs(top - anchor)))
+                  : null,
+              }),
+            );
+          },
+        },
+        "Check delayed image motion",
+      ),
       h("button", { onClick: () => setCompact(!compact) }, "Toggle compact"),
       h("button", { onClick: () => jump(1) }, "Jump to start"),
       h("button", { onClick: () => jump(1000) }, "Jump to end"),
@@ -332,7 +409,15 @@ function Fixture() {
         historyElement: container,
         virtualTimeline: handle,
         end,
-        onScroll: () => {},
+        onScroll: () => {
+          const viewport = container.current;
+          if (viewport)
+            atBottom.current =
+              viewport.scrollHeight -
+                viewport.clientHeight -
+                viewport.scrollTop <
+              24;
+        },
       }),
     ),
   );

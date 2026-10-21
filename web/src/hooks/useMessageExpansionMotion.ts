@@ -25,12 +25,12 @@ export function useMessageExpansionMotion() {
   }, []);
   useEffect(() => () => stop.current?.(), []);
 
-  function prepareTransition(expanding: boolean) {
+  function prepareTransition(expanding: boolean, visibleHeight?: number) {
     const clip = panel.current;
     const natural = content.current;
     if (!clip || !natural) return;
     // Capture an interrupted animation's current size before cancelling it.
-    const height = clip.getBoundingClientRect().height;
+    const height = visibleHeight ?? clip.getBoundingClientRect().height;
     const viewport = clip.closest<HTMLElement>(".message-list");
     const bottom = toggle.current?.getBoundingClientRect().bottom;
     stop.current?.();
@@ -71,11 +71,11 @@ export function useMessageExpansionMotion() {
     const target = expanding
       ? natural.getBoundingClientRect().height
       : Math.min(limit, natural.getBoundingClientRect().height);
-    const visibleHeight = viewport
+    const viewportHeight = viewport
       ? viewport.getBoundingClientRect().bottom -
         clip.getBoundingClientRect().top
       : target;
-    const motion = messageExpansionMotion(height, target, visibleHeight);
+    const motion = messageExpansionMotion(height, target, viewportHeight);
     animation = clip.animate(
       motion.frames.map((keyframe) => ({
         ...keyframe,

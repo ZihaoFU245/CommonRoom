@@ -1819,6 +1819,11 @@ button:focus-visible {
   white-space: normal;
   margin-block: 0.5em;
 }
+.collapsible-message,
+.collapsible-message-content {
+  display: flow-root;
+  min-width: 0;
+}
 .message-preview {
   --message-preview-height: 256px;
   max-height: var(--message-preview-height);

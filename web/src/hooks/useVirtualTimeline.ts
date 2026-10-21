@@ -84,9 +84,12 @@ export function useVirtualTimeline(
     const element = container.current;
     if (!element) return;
     const old = previous.current;
-    // The expansion animation pins its own visible footer. Applying an interior
-    // row anchor here would fight that scroll correction on every resize frame.
-    const resizing = element.querySelector("[data-message-resizing]") !== null;
+    // Folding pins its visible footer; delayed content can pin the chat bottom.
+    // An interior row anchor would fight either correction on every resize frame.
+    const resizing =
+      element.querySelector(
+        "[data-message-resizing], [data-content-resizing]",
+      ) !== null;
     if (!resizing) {
       if (atBottom.current) {
         element.scrollTop = element.scrollHeight - element.clientHeight;

@@ -111,6 +111,7 @@ Allow HTML and LaTeX start off. It does not access account data.
   wide/compact layouts, delayed Markdown/image sizing,
   virtual scroll away/back, editing, conversation switches and window eviction.
   Short messages must have no dropdown and editors must remain fully visible.
+- Use Check delayed image motion at the start and end in wide and compact layouts. It loads a local generated image after the initial layout and samples painted heights and scroll placement: expect multiple intermediate frames, at most 1px bottom gap when following the newest message, and at most 1px anchor drift while reading older messages. Repeat while HTML/frame previews and math finish loading. Manual wheel/touch/keyboard scrolling must release bottom following, and reduced motion must apply the final height immediately. Resize the viewport during a load and expand/fold before it finishes; there must be no nested resize animation or stuck fixed height. `contentResizeMotion.test.js` covers mount suppression, delayed growth/shrinkage, retargeting, stale completions, reduced motion, reflow, explicit folding, offscreen updates and bottom ownership.
 - In mixed messages, verify surrounding Markdown, inline emphasis, lists and math
   remain formatted while only HTML enters the viewer. Multiple separated portions
   need independent consent; adjacent HTML/CSS/scripts share a working preview.

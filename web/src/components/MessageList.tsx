@@ -5,6 +5,7 @@ import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useVirtualTimeline } from "../hooks/useVirtualTimeline.ts";
 import { useTimelineMotion } from "../hooks/useTimelineMotion.ts";
+import { ContentMotionContext } from "../hooks/useContentResizeMotion.ts";
 import { memo } from "preact/compat";
 import type { Command, Message, TimelineEntry } from "../api/protocol.ts";
 import {
@@ -194,27 +195,29 @@ export const MessageList = memo(function MessageList({
     );
   });
   return (
-    <HtmlGateContext.Provider value={gates}>
-      <section
-        ref={historyElement}
-        onScroll={onScroll}
-        class="message-list console-history"
-        aria-label="Conversation history"
-        aria-live="polite"
-      >
-        <div class="timeline-rows">
-          <div
-            aria-hidden="true"
-            style={{ height: window.top, flexShrink: 0 }}
-          />
-          {renderedEntries}
-          <div
-            aria-hidden="true"
-            style={{ height: window.bottom, flexShrink: 0 }}
-          />
-          <div ref={end} />
-        </div>
-      </section>
-    </HtmlGateContext.Provider>
+    <ContentMotionContext.Provider value={atBottom}>
+      <HtmlGateContext.Provider value={gates}>
+        <section
+          ref={historyElement}
+          onScroll={onScroll}
+          class="message-list console-history"
+          aria-label="Conversation history"
+          aria-live="polite"
+        >
+          <div class="timeline-rows">
+            <div
+              aria-hidden="true"
+              style={{ height: window.top, flexShrink: 0 }}
+            />
+            {renderedEntries}
+            <div
+              aria-hidden="true"
+              style={{ height: window.bottom, flexShrink: 0 }}
+            />
+            <div ref={end} />
+          </div>
+        </section>
+      </HtmlGateContext.Provider>
+    </ContentMotionContext.Provider>
   );
 });
