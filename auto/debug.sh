@@ -21,8 +21,8 @@ export CHAT_S3_PUBLIC_ENDPOINT="${CHAT_S3_PUBLIC_ENDPOINT:-$CHAT_S3_ENDPOINT}"
 export CHAT_S3_BUCKET="${CHAT_S3_BUCKET:-commonroom-draft}"
 export CHAT_S3_REGION="${CHAT_S3_REGION:-us-east-1}"
 export CHAT_S3_PATH_STYLE="${CHAT_S3_PATH_STYLE:-true}"
-export CHAT_S3_ACCESS_KEY="${CHAT_S3_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-commonroom-draft}}"
-export CHAT_S3_SECRET_KEY="${CHAT_S3_SECRET_KEY:-${RUSTFS_SECRET_KEY:-commonroom-draft-local-only}}"
+export CHAT_S3_ACCESS_KEY="${CHAT_S3_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-cr}}"
+export CHAT_S3_SECRET_KEY="${CHAT_S3_SECRET_KEY:-${RUSTFS_SECRET_KEY:-pass}}"
 
 # Prepare only the loopback development service. Remote S3 remains operator-managed.
 case "$CHAT_S3_ENDPOINT" in

@@ -248,7 +248,9 @@ inherited output-path settings and confines filesystem writes using macOS
 cannot be established and rejects symlink runtime roots. It starts only RustFS.
 
 `auto/debug.sh` configures chat for this local endpoint/bucket and matching dev
-credentials automatically, but does **not** start or stop RustFS. For a loopback
+credentials (`cr` / `pass`) automatically, but does **not** start or stop RustFS.
+Set `RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` before launching both scripts to
+override those credentials consistently. For a loopback
 HTTP endpoint with path-style addressing, debug runs `chat --setup-local-s3` to
 create the private bucket if missing and apply browser CORS on every start. This
 setup command exits before opening chat data and refuses remote endpoints.
@@ -277,8 +279,8 @@ stdin, and run the frontend normally (room members can upload immediately):
 rtk proxy env CHAT_DATA="$PWD/tmp/media-chat" \
   CHAT_S3_ENDPOINT=http://127.0.0.1:19000 \
   CHAT_S3_BUCKET=commonroom-draft \
-  CHAT_S3_ACCESS_KEY=commonroom-draft \
-  CHAT_S3_SECRET_KEY=commonroom-draft-local-only \
+  CHAT_S3_ACCESS_KEY=cr \
+  CHAT_S3_SECRET_KEY=pass \
   cargo run --locked
 ```
 

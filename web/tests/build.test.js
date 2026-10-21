@@ -215,8 +215,8 @@ setTimeout(()=>process.exit(1),3000).unref();
               CHAT_S3_BUCKET: "commonroom-draft",
               CHAT_S3_REGION: "us-east-1",
               CHAT_S3_PATH_STYLE: "true",
-              CHAT_S3_ACCESS_KEY: "commonroom-draft",
-              CHAT_S3_SECRET_KEY: "commonroom-draft-local-only",
+              CHAT_S3_ACCESS_KEY: "cr",
+              CHAT_S3_SECRET_KEY: "pass",
             },
       });
       assert.deepEqual(

@@ -19,8 +19,8 @@ cd "$runtime"
 # Clean environment prevents inherited RustFS output paths escaping tmp/.
 # Filesystem confinement also covers undocumented/default output paths.
 set -- env -i PATH="$PATH" \
-    RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-commonroom-draft}" \
-    RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-commonroom-draft-local-only}" \
+    RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-cr}" \
+    RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-pass}" \
     RUSTFS_CONSOLE_ENABLE=true \
     RUSTFS_LOG_DIRECTORY="$runtime/logs" \
     RUSTFS_OBS_LOG_DIRECTORY="$runtime/logs" \
