@@ -16,12 +16,35 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
   const [urlMode, setUrlMode] = useState(false);
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [image, setImage] = useState<HTMLCanvasElement | null>(null);
   const [zoom, setZoom] = useState(1);
   const [x, setX] = useState(50);
   const [y, setY] = useState(50);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [preview, setPreview] = useState<string>();
+  const [avatarVersion, setAvatarVersion] = useState(0);
+  const [committed, setCommitted] = useState<{
+    path: string | undefined;
+    previous: string | undefined;
+  }>();
+  const avatarButton = useRef<HTMLButtonElement>(null);
+  const currentAvatar = state.avatars?.[state.username];
+  useEffect(() => {
+    if (committed && currentAvatar !== committed.previous)
+      setCommitted(undefined);
+  }, [currentAvatar, committed]);
+  const displayed =
+    committed && currentAvatar === committed.previous
+      ? committed.path
+      : currentAvatar;
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
   const animatedSettings = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -45,7 +68,25 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
         setFile(null);
         return;
       }
-      setImage(decoded);
+      const working = document.createElement("canvas");
+      const scale = Math.min(
+        1,
+        1024 / Math.max(decoded.naturalWidth, decoded.naturalHeight),
+      );
+      working.width = Math.max(1, Math.round(decoded.naturalWidth * scale));
+      working.height = Math.max(1, Math.round(decoded.naturalHeight * scale));
+      const context = working.getContext("2d");
+      if (!context) {
+        setFeedback("Unable to resize image.");
+        setFile(null);
+        return;
+      }
+      context.drawImage(decoded, 0, 0, working.width, working.height);
+      decoded.onload = null;
+      decoded.onerror = null;
+      decoded.src = "";
+      URL.revokeObjectURL(source);
+      setImage(working);
       setZoom(1);
       setX(50);
       setY(50);
@@ -65,13 +106,49 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
   useEffect(() => {
     const context = canvas.current?.getContext("2d");
     if (!image || !context) return;
-    const crop = cropSquare(
-      image.naturalWidth,
-      image.naturalHeight,
-      zoom,
-      x,
-      y,
-    );
+    const frame = requestAnimationFrame(() => {
+      const crop = cropSquare(image.width, image.height, zoom, x, y);
+      context.clearRect(0, 0, AVATAR_SIZE, AVATAR_SIZE);
+      context.drawImage(
+        image,
+        crop.x,
+        crop.y,
+        crop.size,
+        crop.size,
+        0,
+        0,
+        AVATAR_SIZE,
+        AVATAR_SIZE,
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [image, zoom, x, y]);
+  function run(work: () => Promise<unknown>) {
+    setBusy(true);
+    setFeedback("Updating avatar…");
+    work()
+      .then(() => {
+        setFeedback("Avatar updated.");
+      })
+      .catch((error: unknown) => {
+        setPreview(undefined);
+        setFeedback(errorMessage(error));
+      })
+      .finally(() => {
+        setBusy(false);
+        setUploading(false);
+        avatarButton.current?.focus();
+      });
+  }
+  async function upload() {
+    setUploading(true);
+    const signal = controller.current.signal;
+    const element = canvas.current;
+    if (!element || !image) throw new Error("Choose an image first.");
+    // Draw synchronously too: confirmation may precede the pending preview frame.
+    const crop = cropSquare(image.width, image.height, zoom, x, y);
+    const context = element.getContext("2d");
+    if (!context) throw new Error("Unable to crop image.");
     context.clearRect(0, 0, AVATAR_SIZE, AVATAR_SIZE);
     context.drawImage(
       image,
@@ -84,43 +161,46 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
       AVATAR_SIZE,
       AVATAR_SIZE,
     );
-  }, [image, zoom, x, y]);
-  function run(work: () => Promise<unknown>) {
-    setBusy(true);
-    setFeedback("");
-    work()
-      .then(() => {
-        setFeedback("Avatar updated.");
-        setMenu(false);
-        setUrlMode(false);
-        setFile(null);
-        setImage(null);
-      })
-      .catch((error: unknown) => setFeedback(errorMessage(error)))
-      .finally(() => setBusy(false));
-  }
-  async function upload() {
-    const element = canvas.current;
-    if (!element || !image) throw new Error("Choose an image first.");
     const blob = await encodeAvatar(element);
-    const signal = controller.current.signal;
-    const ticket = await api.allocateAvatar(blob.size, signal);
+    signal.throwIfAborted();
+    setPreview(URL.createObjectURL(blob));
+    setMenu(false);
+    setFile(null);
+    setImage(null);
+    avatarButton.current?.focus();
+    const uploadId = crypto.randomUUID();
+    let allocated = false;
     try {
+      const ticket = await api.allocateAvatar(blob.size, signal, uploadId);
+      allocated = true;
       await uploadFile(
         ticket,
         new File(
           [blob],
           blob.type === "image/webp" ? "avatar.webp" : "avatar.png",
-          {
-            type: blob.type,
-          },
+          { type: blob.type },
         ),
         signal,
-        () => {},
       );
-      await api.completeAvatar(ticket.media_id, signal);
+      const complete = await api.completeAvatar(ticket.media_id, signal);
+      setCommitted({ path: complete.path, previous: currentAvatar });
+      setPreview(undefined);
     } catch (error) {
-      await api.abandonMedia(ticket.media_id).catch(() => {});
+      setPreview(undefined);
+      // A failed optimistic frame must not survive if the previous URL also fails.
+      setAvatarVersion((version) => version + 1);
+      setFeedback(
+        signal.aborted
+          ? "Cancelling upload…"
+          : "Upload failed; releasing reservation…",
+      );
+      // Recover a lost allocation response with the same ID before abandoning.
+      // A replay cannot reserve another slot, even when the first request is late.
+      if (!allocated)
+        await api
+          .allocateAvatar(blob.size, new AbortController().signal, uploadId)
+          .catch(() => {});
+      await api.abandonMedia(uploadId).catch(() => {});
       throw error;
     }
   }
@@ -132,11 +212,17 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           class="account-avatar"
           aria-label="Change avatar"
           aria-expanded={menu}
-          disabled={busy}
-          onClick={() => setMenu(!menu)}
+          ref={avatarButton}
+          aria-busy={busy}
+          onClick={() => {
+            if (!busy) setMenu(!menu);
+          }}
         >
           <Avatar
-            url={state.avatars?.[state.username]}
+            key={avatarVersion}
+            url={displayed}
+            {...(preview ? { preview } : {})}
+            decorative={false}
             name={state.username}
             large
             fallback
@@ -147,6 +233,22 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           <p>Groups: {state.groups.join(", ") || "none"}</p>
         </div>
       </div>
+      {feedback && (
+        <p class="account-summary" role="status">
+          {feedback}
+        </p>
+      )}
+      {busy && uploading && (
+        <button
+          type="button"
+          onClick={() => {
+            controller.current.abort();
+            controller.current = new AbortController();
+          }}
+        >
+          Cancel upload
+        </button>
+      )}
       {menu && (
         <div class="avatar-menu" aria-label="Avatar actions">
           <button
@@ -172,8 +274,17 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           </button>
           <button
             type="button"
-            disabled={busy || !state.avatars?.[state.username]}
-            onClick={() => run(() => api.setAvatar(null))}
+            disabled={busy || !displayed}
+            onClick={() =>
+              run(async () => {
+                await api.setAvatar(null);
+                setCommitted({ path: undefined, previous: currentAvatar });
+                setPreview(undefined);
+                setFile(null);
+                setImage(null);
+                setMenu(false);
+              })
+            }
           >
             Remove
           </button>
@@ -207,13 +318,21 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           class="account-form"
           onSubmit={(event) => {
             event.preventDefault();
-            run(() => api.setAvatar(url.trim()));
+            const value = url.trim();
+            run(async () => {
+              await api.setAvatar(value);
+              setCommitted({ path: value, previous: currentAvatar });
+              setPreview(undefined);
+              setUrlMode(false);
+              setMenu(false);
+            });
           }}
         >
           <label for="avatar-url">Avatar image URL</label>
           <p class="account-summary">
-            External images load at their original size. Upload an image to
-            minimize bandwidth.
+            External hosts receive viewers’ IP addresses and may serve large
+            images. Viewers must enable external avatars in Security. Upload an
+            image for everyone to see it by default.
           </p>
           <input
             id="avatar-url"
@@ -287,11 +406,6 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
             Cancel
           </button>
         </div>
-      )}
-      {feedback && (
-        <p class="account-summary" role="status">
-          {feedback}
-        </p>
       )}
     </div>
   );

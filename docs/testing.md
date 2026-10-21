@@ -658,7 +658,12 @@ origin enforcement, rejected target injection, broadcasts and removal. Web tests
 cover crop geometry, URL/base-path handling and optional snapshot validation.
 The media smoke suite additionally uploads avatar bytes to real local RustFS,
 checks unauthorized completion/download, immutable final objects, private signed
-reads, restart cleanup protection, replacement and removal. Browser verification
+reads, restart cleanup protection, replacement and removal. Allocation replays check
+stable IDs and reject different owners/sizes. Engine regressions cover visibility
+revocation and disabled-account retention; HTTP info checks enforce session/origin
+and live visibility. Query-plan tests require an uncorrelated cleanup reference list.
+Web regressions cover retained image frames, identity changes, decorative/sized images,
+default-off external URLs and live authorization on cached avatar bytes. Browser verification
 should position/zoom a rectangular image, confirm, and inspect chat/sidebar/account
 at desktop and compact widths. Check URL failures leave no blank avatar space.
 

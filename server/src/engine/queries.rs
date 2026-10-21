@@ -379,7 +379,7 @@ impl Engine {
                 rights(&self.private_scope(&private_key(name, name))),
             ),
             policy_revision: self.data.policy.revision,
-            avatars: self.avatar_directory(),
+            avatars: BTreeMap::new(),
             online: self.online(name),
             users: self
                 .data
@@ -505,9 +505,7 @@ impl Engine {
                     .flat_map(|r| r.messages.iter().map(|m| m.from.as_str())),
             )
             .collect();
-        snapshot
-            .avatars
-            .retain(|user, _| visible.contains(user.as_str()));
+        snapshot.avatars = self.avatar_directory_for(&visible);
         Some((snapshot, complete))
     }
     pub(super) fn apply_queries(&self, context: &CommandContext<'_>) -> Result<String, String> {

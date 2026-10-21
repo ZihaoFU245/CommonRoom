@@ -260,7 +260,11 @@ media rows, so SQLite remains schema v17 with no migration.
 
 Uploaded avatars use media records with conversation `@avatar` and permanent
 retention. Immutable file bytes live at `avatars/<stable-account-id>/<upload-id>`
-in private S3. Metadata references protect them during startup/daily cleanup;
-replacing/removing the avatar or deleting its account releases the reference.
+in private S3. Metadata references protect them during startup/daily cleanup. Each cleanup SQL
+statement builds one uncorrelated, non-null reference list, avoiding a per-media-row
+account JSON scan without changing schema v17. Disabled accounts intentionally keep
+those references so their avatar returns on re-enable; their images are unreadable
+while disabled. Replacing/removing the avatar or deleting its account releases the
+reference.
 They count toward existing byte quotas and rate limits; completed avatars do not
 consume pending-upload slots. Backups must include the `avatars/` prefix.

@@ -617,8 +617,10 @@ by default, with short retries for failed/incomplete sweeps. Saved
 `media.cleanup_interval` overrides remain in effect. Serve `media-cache.js` from
 the UI base path with JavaScript MIME and revalidation (`no-cache`, as in the supplied
 Nginx include); the worker scope must cover that application's API paths. The UI
-worker caches downloaded immutable bytes privately and checks current `/info`
-authorization before reuse. Keep its `connect-src` policy able to reach storage.
+worker caches downloaded immutable attachment and managed-avatar bytes privately
+and checks current `/info` authorization before reuse. Avatar redirects and signed
+storage responses remain `no-store`; do not cache them at a shared proxy. External
+URL avatars load only for viewers who enable them in Security (default off). Keep its `connect-src` policy able to reach storage.
 
 Chat deletes expired and retracted objects itself with retries. A bucket
 lifecycle rule is a backstop for objects that outlive their metadata because a process

@@ -227,11 +227,38 @@ try {
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ZkAAAAASUVORK5CYII=",
     "base64",
   );
+  const upload_id = crypto.randomUUID();
   const avatarTicketResponse = await request("/api/avatars/uploads", bob, {
     size: avatarBytes.length,
+    upload_id,
   });
   assert.equal(avatarTicketResponse.status, 200);
   const avatarTicket = await avatarTicketResponse.json();
+  assert.equal(avatarTicket.media_id, upload_id);
+  const replay = await request("/api/avatars/uploads", bob, {
+    size: avatarBytes.length,
+    upload_id,
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).media_id, upload_id);
+  assert.equal(
+    (
+      await request("/api/avatars/uploads", alice, {
+        size: avatarBytes.length,
+        upload_id,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await request("/api/avatars/uploads", bob, {
+        size: avatarBytes.length + 1,
+        upload_id,
+      })
+    ).status,
+    400,
+  );
   assert.equal(
     (
       await fetch(avatarTicket.upload.url, {
@@ -245,9 +272,22 @@ try {
   const avatarComplete = `/api/avatars/uploads/${avatarTicket.media_id}/complete`;
   assert.equal((await request(avatarComplete, alice, {})).status, 400);
   assert.equal((await request(avatarComplete, bob, {})).status, 200);
-  assert.equal((await request(avatarComplete, bob, {})).status, 200);
+  const completedAvatar = await request(avatarComplete, bob, {});
+  assert.equal(completedAvatar.status, 200);
+  assert.deepEqual(await completedAvatar.json(), {
+    ok: true,
+    media_id: upload_id,
+    path: `/api/avatars/${upload_id}/file`,
+  });
   const avatarPath = `/api/avatars/${avatarTicket.media_id}/file`;
   assert.equal((await request(avatarPath, null)).status, 401);
+  const avatarInfo = avatarPath.replace(/\/file$/u, "/info");
+  assert.equal((await request(avatarInfo, null)).status, 401);
+  assert.deepEqual(await (await request(avatarInfo, alice)).json(), {
+    size: avatarBytes.length,
+    content_type: "image/png",
+    filename: "avatar.png",
+  });
   const avatarRedirect = await request(avatarPath, alice);
   assert.equal(avatarRedirect.status, 307);
   assert.equal(avatarRedirect.headers.get("cache-control"), "no-store");
@@ -526,6 +566,7 @@ try {
     404,
     "Replacing avatar revokes new reads",
   );
+  assert.equal((await request(avatarInfo, alice)).status, 404);
   assert.equal((await request("/api/avatars", bob, { url: null })).status, 200);
   assert.equal(
     (await (await request("/api/me", alice)).json()).avatars.bob,

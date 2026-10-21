@@ -2291,7 +2291,7 @@ button:focus-visible {
   margin: 16px 0;
 }
 .avatar-crop canvas {
-  width: min(256px, 100%);
+  width: min(256px, 40dvh, 100%);
   height: auto;
   border-radius: 50%;
   background: var(--paper);

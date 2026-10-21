@@ -301,6 +301,9 @@ impl HistoryStore {
             .map_err(|_| "History storage poisoned; restart the service.")?;
         query(&db)
     }
+    pub(crate) fn has_author(&self, id: &str, author: &str) -> Result<bool, String> {
+        self.read(|db| db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND json_extract(json,'$.from')=?2)", params![id, author], |row| row.get(0)).map_err(|e| e.to_string()))
+    }
     pub(crate) fn contains_sequence(&self, id: &str, sequence: u64) -> Result<bool, String> {
         self.read(|db| {
             db.query_row(

@@ -118,6 +118,7 @@ pub fn router(app: App) -> Router {
             "/api/avatars/uploads/{id}/complete",
             post(avatars::complete),
         )
+        .route("/api/avatars/{id}/info", get(avatars::info))
         .route("/api/avatars/{id}/file", get(avatars::download))
         .route("/api/media/config", get(media::config))
         .route("/api/media/uploads", post(media::allocate))

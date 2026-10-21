@@ -42,6 +42,7 @@ pub(crate) async fn set(
 #[serde(deny_unknown_fields)]
 pub(crate) struct Upload {
     size: u64,
+    upload_id: Option<String>,
 }
 pub(crate) async fn allocate(
     State(app): State<App>,
@@ -49,41 +50,19 @@ pub(crate) async fn allocate(
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let (storage, uploader) = authenticated(&app, &headers, move |app, user| {
+    let (storage, media) = authenticated(&app, &headers, move |app, user| {
         let storage = storage(app)?;
-        if input.size == 0 || input.size > crate::engine::avatars::MAX_AVATAR_SIZE {
-            return Err(failed("Avatar must be between 1 byte and 64 KiB."));
-        }
-        let engine = app.engine_read_api()?;
-        Ok((
-            storage,
-            engine
-                .data
-                .users
-                .get(user)
-                .ok_or_else(|| failed("Account unavailable."))?
-                .id
-                .clone(),
-        ))
-    })
-    .await?;
-    storage
-        .check_reachable()
-        .await
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let media = authenticated(&app, &headers, move |app, user| {
-        let engine = app.engine_read_api()?;
-        if engine
-            .data
-            .users
-            .get(user)
-            .is_none_or(|account| account.id != uploader)
-        {
-            return Err(failed("Account changed; retry upload."));
-        }
-        engine
-            .allocate_avatar(user, input.size)
-            .map_err(|e| failed(&e))
+        let media = app
+            .engine_api()?
+            .allocate_avatar_id(
+                user,
+                input.size,
+                &input
+                    .upload_id
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            )
+            .map_err(|e| failed(&e))?;
+        Ok((storage, media))
     })
     .await?;
     let url = storage
@@ -134,7 +113,24 @@ pub(crate) async fn complete(
             .finish_avatar(user, &media)
             .map_err(|e| failed(&e))?;
         let _ = app.changes.send(Change::All);
-        Ok(Json(json!({"ok":true})))
+        Ok(Json(json!({"ok":true,"media_id":media.id,"path":crate::engine::avatars::avatar_path(&media.id)})))
+    })
+    .await
+}
+pub(crate) async fn info(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin_or_bot(&app, &headers)?;
+    authenticated(&app, &headers, move |app, user| {
+        let media = app
+            .engine_read_api()?
+            .readable_avatar(user, &id)
+            .map_err(|_| error(StatusCode::NOT_FOUND, "Avatar not found."))?;
+        Ok(Json(
+            json!({"size":media.size,"content_type":media.content_type,"filename":media.filename}),
+        ))
     })
     .await
 }
@@ -145,9 +141,9 @@ pub(crate) async fn download(
 ) -> Result<Redirect, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
-    let avatar = authenticated(&app, &headers, move |app, _| {
+    let avatar = authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
-            .readable_avatar(&id)
+            .readable_avatar(user, &id)
             .map_err(|_| error(StatusCode::NOT_FOUND, "Avatar not found."))
     })
     .await?;
@@ -155,9 +151,9 @@ pub(crate) async fn download(
         .download_url(&avatar, false)
         .await
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign avatar URL."))?;
-    authenticated(&app, &headers, move |app, _| {
+    authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
-            .readable_avatar(&avatar.id)
+            .readable_avatar(user, &avatar.id)
             .map_err(|_| error(StatusCode::NOT_FOUND, "Avatar not found."))
     })
     .await?;

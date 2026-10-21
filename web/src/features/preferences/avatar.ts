@@ -1,13 +1,19 @@
 export function avatarSource(
   value: string | undefined,
   base: string,
+  allowExternal = false,
 ): string | undefined {
   if (!value) return undefined;
   if (/^\/api\/avatars\/[a-f0-9-]{36}\/file$/u.test(value))
     return new URL(value.slice(1), base).href;
   try {
     const url = new URL(value);
-    if (url.protocol === "https:" && !url.username && !url.password)
+    if (
+      allowExternal &&
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password
+    )
       return url.href;
   } catch {
     /* Invalid profile values have no avatar. */
@@ -60,4 +66,25 @@ export async function encodeAvatar(source: HTMLCanvasElement): Promise<Blob> {
     if (blob.size > 0 && blob.size <= MAX_AVATAR_BYTES) return blob;
   }
   throw new Error("Compressed avatar exceeds 64 KiB.");
+}
+
+export interface CompletedAvatar {
+  ok: true;
+  media_id: string;
+  path: string;
+}
+export function isCompletedAvatar(value: unknown): value is CompletedAvatar {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "ok" in value &&
+    value.ok === true &&
+    "media_id" in value &&
+    typeof value.media_id === "string" &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(
+      value.media_id,
+    ) &&
+    "path" in value &&
+    value.path === `/api/avatars/${value.media_id}/file`
+  );
 }

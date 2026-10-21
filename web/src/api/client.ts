@@ -1,3 +1,4 @@
+import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { requestAbort } from "./requestAbort.ts";
 import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
 import {
@@ -67,12 +68,17 @@ async function request<T>(
 
 export const api = {
   setAvatar: (url: string | null) => request("avatars", isOk, { url }),
-  allocateAvatar: (size: number, signal: AbortSignal) =>
-    request("avatars/uploads", isUploadTicket, { size }, signal),
+  allocateAvatar: (size: number, signal: AbortSignal, uploadId: string) =>
+    request(
+      "avatars/uploads",
+      isUploadTicket,
+      { size, upload_id: uploadId },
+      signal,
+    ),
   completeAvatar: (id: string, signal: AbortSignal) =>
     request(
       `avatars/uploads/${encodeURIComponent(id)}/complete`,
-      isOk,
+      isCompletedAvatar,
       {},
       signal,
       120000,

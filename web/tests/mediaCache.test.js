@@ -6,7 +6,7 @@ import {
 } from "../src/features/conversation/mediaCache.ts";
 const base = "https://chat.test/chat/";
 const path = `${base}api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file`;
-function fixture() {
+function fixture(filePath = path) {
   const saved = new Map();
   const cache = {
     match: async (key) => saved.get(String(key.url ?? key))?.clone(),
@@ -40,7 +40,7 @@ function fixture() {
   };
   const work = [];
   const load = (instance, query = "", range) => {
-    const request = new Request(path + query, {
+    const request = new Request(filePath + query, {
       headers: range ? { Range: range } : {},
     });
     return instance.respond(request, new URL(request.url), (promise) =>
@@ -222,4 +222,23 @@ test("actual network Content-Length wins over info and cached ranges use that le
   const range = await f.load(instance, "", "bytes=-2");
   assert.equal(range.headers.get("Content-Range"), "bytes 2-3/4");
   assert.equal(await range.text(), "cd");
+});
+
+test("managed avatar bytes reuse the cache after reload but removal and logout deny reuse", async () => {
+  const avatar = path.replace("api/media/", "api/avatars/");
+  const f = fixture(avatar);
+  assert.equal(mediaCachePath(new Request(avatar), base)?.href, avatar);
+  assert.equal(
+    mediaCachePath(new Request(avatar), "https://chat.test/other/"),
+    null,
+  );
+  const first = new MediaCache(f.storage, f.network);
+  assert.equal(await (await f.load(first)).text(), "abcdef");
+  await Promise.all(f.work);
+  const reload = new MediaCache(f.storage, f.network);
+  assert.equal(await (await f.load(reload)).text(), "abcdef");
+  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+  f.deny();
+  assert.equal((await f.load(reload)).status, 403);
+  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
 });

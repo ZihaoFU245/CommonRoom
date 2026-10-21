@@ -5,6 +5,7 @@ import {
   cropSquare,
   encodeAvatar,
   MAX_AVATAR_BYTES,
+  isCompletedAvatar,
 } from "../src/features/preferences/avatar.ts";
 
 test("avatar encoding bounds bytes, requests WebP and shrinks PNG fallback", async () => {
@@ -50,8 +51,13 @@ test("avatar sources preserve base paths and reject unsafe URLs", () => {
     avatarSource(
       "https://gravatar.com/avatar/hash?s=128",
       "https://chat.example/",
+      true,
     ),
     "https://gravatar.com/avatar/hash?s=128",
+  );
+  assert.equal(
+    avatarSource("https://gravatar.com/avatar/hash", "https://chat.example/"),
+    undefined,
   );
   for (const source of [
     undefined,
@@ -62,7 +68,10 @@ test("avatar sources preserve base paths and reject unsafe URLs", () => {
     "https://user:pass@example.com/a",
     "/api/media/id/file",
   ])
-    assert.equal(avatarSource(source, "https://chat.example/"), undefined);
+    assert.equal(
+      avatarSource(source, "https://chat.example/", true),
+      undefined,
+    );
 });
 test("square crop centers landscape and portrait and respects zoom and edge positions", () => {
   assert.deepEqual(cropSquare(800, 400, 1, 50, 50), {
@@ -91,4 +100,19 @@ test("square crop centers landscape and portrait and respects zoom and edge posi
     [400, 400, 0, 50, 50],
   ])
     assert.throws(() => cropSquare(...args));
+});
+
+test("avatar completion requires a matching canonical media ID and path", () => {
+  const media_id = "12345678-1234-1234-1234-123456789abc";
+  const valid = { ok: true, media_id, path: `/api/avatars/${media_id}/file` };
+  assert.equal(isCompletedAvatar(valid), true);
+  for (const invalid of [
+    null,
+    {},
+    { ...valid, ok: false },
+    { ...valid, path: "https://tracker.test/image" },
+    { ...valid, media_id: "forged" },
+    { ...valid, path: "/api/media/other/file" },
+  ])
+    assert.equal(isCompletedAvatar(invalid), false);
 });

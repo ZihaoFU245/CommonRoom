@@ -307,8 +307,11 @@ using the existing asynchronous hashing, authority recheck and session revocatio
 Snapshots include `avatars`, a username-to-image-URL map for visible identities.
 Older servers may omit it. Only the global `avatar` metadata key is projected;
 other metadata remains private. External URLs require HTTPS, no credentials or
-controls, and at most 2048 bytes. Clients load them with no referrer and hide
-missing/failed images without reserving layout space.
+controls, and at most 2048 bytes. Clients load external URLs only after the viewer
+enables Load external avatars in Security (browser-local, default off), with no
+referrer. External bytes and pixels are not bounded by the server; opting in
+permits requests to external hosts. Missing/failed images reserve no layout space;
+a previously loaded frame stays visible while a replacement loads.
 
 All avatar writes authenticate the current session and enforce browser origin
 checks; they only update the caller's profile, independently of room upload grants.
@@ -317,9 +320,10 @@ General metadata commands retain their su requirement.
 | Endpoint | Request | Response |
 | --- | --- | --- |
 | `POST /api/avatars` | `{url:"https://…"}` or `{url:null}` | `{ok:true}`; set or remove own avatar |
-| `POST /api/avatars/uploads` | `{size}` (1 byte–64 KiB) | Existing media upload ticket shape |
-| `POST /api/avatars/uploads/{id}/complete` | `{}` | `{ok:true}`; verify bytes and set own avatar |
-| `GET /api/avatars/{id}/file` | Authenticated same-origin read | 307 to private, 60-second signed S3 GET |
+| `POST /api/avatars/uploads` | `{size,upload_id?}` (1 byte–64 KiB, optional canonical UUID) | Existing media upload ticket shape; same owned pending ID/size replays without another allocation |
+| `POST /api/avatars/uploads/{id}/complete` | `{}` | `{ok:true,media_id,path}`; verify bytes and set own avatar |
+| `GET /api/avatars/{id}/info` | Authenticated same-origin read | `{size,content_type,filename}` after current profile/visibility checks; `no-store` |
+| `GET /api/avatars/{id}/file` | Authenticated same-origin read | 307 to private, 60-second signed S3 GET; `no-store` |
 
 Upload PUTs target staging `uploads/<id>` with the returned headers and no chat
 cookies. Completion copies verified PNG/JPEG/WebP bytes to immutable
@@ -329,4 +333,14 @@ resolve it under their application base path. Active avatars have no retention
 expiry. Replaced/removed avatars stop receiving new signed reads immediately;
 already issued URLs expire within 60 seconds. Unreferenced objects use the existing
 cleanup worker, staging grace, retries, quota and allocation rate limits.
-No image bytes are stored in SQLite or streamed through chat.
+No image bytes are stored in SQLite or streamed through chat. Reads require a
+current active owner/profile reference and viewer visibility through the directory,
+a readable room's members or retained authors, or readable private peers/members/authors.
+The media worker privately caches immutable avatar bytes and rechecks `/info` before
+every reuse; removal, disablement, logout and lost visibility deny cached reads.
+The browser supplies a generated `upload_id`, replays an uncertain allocation with
+that same ID, and abandons the known reservation on cancellation/failure. A different
+owner/size, completed, expired or abandoned allocation cannot reuse the ID.
+Avatar allocation skips the preliminary storage availability probe; PUT/completion
+report storage failures. Completion retains its immutable-copy validation and
+post-I/O authorization checks.

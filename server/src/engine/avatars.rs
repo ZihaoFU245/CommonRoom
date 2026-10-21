@@ -18,12 +18,21 @@ pub(crate) fn valid_avatar_url(value: &str) -> bool {
     })
 }
 impl Engine {
+    #[cfg(test)]
     pub(crate) fn avatar_directory(&self) -> BTreeMap<String, String> {
-        self.data
-            .users
+        self.avatar_directory_for(&self.data.users.keys().map(String::as_str).collect())
+    }
+    pub(crate) fn avatar_directory_for(
+        &self,
+        visible: &BTreeSet<&str>,
+    ) -> BTreeMap<String, String> {
+        visible
             .iter()
-            .filter(|(_, account)| !account.disabled)
-            .filter_map(|(name, account)| {
+            .filter_map(|name| {
+                let account = self.data.users.get(*name)?;
+                if account.disabled {
+                    return None;
+                }
                 let value = account.metadata.get("@global")?.get("avatar")?;
                 (valid_avatar_url(value)
                     || value
@@ -32,7 +41,7 @@ impl Engine {
                         .is_some_and(|id| {
                             uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
                         }))
-                .then(|| (name.clone(), value.clone()))
+                .then(|| ((*name).to_owned(), value.clone()))
             })
             .collect()
     }
@@ -75,16 +84,35 @@ impl Engine {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn allocate_avatar(&self, user: &str, size: u64) -> Result<Media, String> {
+        self.allocate_avatar_id(user, size, &uuid::Uuid::new_v4().to_string())
+    }
+    pub(crate) fn allocate_avatar_id(
+        &self,
+        user: &str,
+        size: u64,
+        id: &str,
+    ) -> Result<Media, String> {
         if !self.active(user) {
             return Err("Account unavailable.".into());
+        }
+        if !uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id) {
+            return Err("Invalid avatar upload ID.".into());
         }
         if size == 0 || size > MAX_AVATAR_SIZE {
             return Err("Avatar must be between 1 byte and 64 KiB.".into());
         }
         let account = self.data.users.get(user).ok_or("Account unavailable.")?;
+        if let Ok(existing) = self.stored_media(id) {
+            let existing = self.avatar_owner(user, &existing.id)?;
+            if existing.size != size || existing.ready {
+                return Err("Avatar upload changed.".into());
+            }
+            return Ok(existing);
+        }
         let media = Media {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.to_owned(),
             uploader: account.id.clone(),
             conversation: "@avatar".into(),
             filename: "avatar.png".into(),
@@ -134,20 +162,59 @@ impl Engine {
         }
         self.set_avatar(user, Some(avatar_path(&media.id)), true)
     }
-    pub(crate) fn readable_avatar(&self, id: &str) -> Result<Media, String> {
+    pub(crate) fn readable_avatar(&self, viewer: &str, id: &str) -> Result<Media, String> {
         let media = self.stored_media(id)?;
+        let owner = self
+            .bot_index
+            .accounts
+            .get(&media.uploader)
+            .ok_or("Avatar not found.")?;
         if media.conversation != "@avatar"
             || !media.ready
             || media.deleting
             || media.deleted
-            || !self
-                .avatar_directory()
-                .values()
-                .any(|value| value == &avatar_path(id))
+            || !self.active(viewer)
+            || !self.active(owner)
+            || self
+                .data
+                .users
+                .get(owner)
+                .and_then(|account| account.metadata.get("@global"))
+                .and_then(|metadata| metadata.get("avatar"))
+                != Some(&avatar_path(id))
+            || !self.avatar_visible(viewer, owner)?
         {
             return Err("Avatar not found.".into());
         }
         Ok(media)
+    }
+    fn avatar_visible(&self, viewer: &str, owner: &str) -> Result<bool, String> {
+        use authorization::{Action, Scope};
+        if viewer == owner || self.allows(Some(viewer), &Scope::Server, Action::Directory) {
+            return Ok(true);
+        }
+        for room in self.data.rooms.values() {
+            let scope = Scope::Room(room.id.clone());
+            if self.allows(Some(viewer), &scope, Action::Read)
+                && ((self.allows(Some(viewer), &scope, Action::Members)
+                    && room.members.contains(owner))
+                    || self.history_store.has_author(&room.id, owner)?)
+            {
+                return Ok(true);
+            }
+        }
+        for (key, chat) in &self.data.private {
+            let scope = self.private_scope(key);
+            if self.allows(Some(viewer), &scope, Action::Read)
+                && (private_peer(key, viewer) == Some(owner)
+                    || (self.allows(Some(viewer), &scope, Action::Members)
+                        && key.split(':').any(|name| name == owner))
+                    || self.history_store.has_author(&chat.id, owner)?)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -224,19 +291,19 @@ mod tests {
                 .starts_with(&format!("avatars/{}/", e.data.users["bob"].id))
         );
         assert!(e.avatar_owner("alice", &media.id).is_err());
-        assert!(e.readable_avatar(&media.id).is_err());
+        assert!(e.readable_avatar("bob", &media.id).is_err());
         media.content_type = "text/html".into();
         assert!(e.finish_avatar("bob", &media).is_err());
         media.content_type = "image/png".into();
         e.finish_avatar("bob", &media).unwrap();
-        assert!(e.readable_avatar(&media.id).is_ok());
+        assert!(e.readable_avatar("bob", &media.id).is_ok());
         let next = e.allocate_avatar("bob", 64).unwrap();
         e.abandon_media("bob", &next.id).unwrap();
         e.expired_media().unwrap();
         e.remove_media_record(&next.id).unwrap();
         e.prepare_media_cleanup().unwrap();
         assert!(e.expired_media().unwrap().is_empty());
-        assert!(e.readable_avatar(&media.id).is_ok());
+        assert!(e.readable_avatar("bob", &media.id).is_ok());
         e.db.lock()
             .unwrap()
             .execute("UPDATE media SET unreferenced=0,created=0", [])
@@ -244,7 +311,7 @@ mod tests {
         assert!(e.expired_media().unwrap().is_empty());
         e.set_avatar("bob", Some("https://example.com/new.png".into()), false)
             .unwrap();
-        assert!(e.readable_avatar(&media.id).is_err());
+        assert!(e.readable_avatar("bob", &media.id).is_err());
         assert_eq!(e.expired_media().unwrap().len(), 1);
     }
     #[test]
@@ -276,7 +343,7 @@ mod tests {
             e.snapshot("robert").unwrap().avatars["robert"],
             avatar_path(&id)
         );
-        assert!(e.readable_avatar(&id).is_ok());
+        assert!(e.readable_avatar("robert", &id).is_ok());
         assert!(e.expired_media().unwrap().is_empty());
     }
     #[test]
@@ -294,6 +361,63 @@ mod tests {
         assert!(snapshot.users.is_empty());
         assert_eq!(snapshot.avatars.len(), 1);
         assert!(snapshot.avatars.contains_key("bob"));
+    }
+    #[test]
+    fn allocation_replays_preserve_quota_and_reject_other_owners_or_payloads() {
+        let e = super::super::tests::engine();
+        let id = uuid::Uuid::new_v4().to_string();
+        let first = e.allocate_avatar_id("bob", 64, &id).unwrap();
+        let repeated = e.allocate_avatar_id("bob", 64, &id).unwrap();
+        assert_eq!(first.id, repeated.id);
+        assert!(e.allocate_avatar_id("alice", 64, &id).is_err());
+        assert!(e.allocate_avatar_id("bob", 65, &id).is_err());
+        assert!(e.allocate_avatar_id("bob", 64, "bad").is_err());
+        assert_eq!(
+            e.db.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM media WHERE id=?1", [&id], |r| r
+                    .get::<_, u64>(0))
+                .unwrap(),
+            1
+        );
+        e.abandon_media("bob", &id).unwrap();
+        assert!(e.allocate_avatar_id("bob", 64, &id).is_err());
+    }
+    #[test]
+    fn managed_avatar_reads_follow_visibility_and_disabled_accounts_keep_bytes() {
+        let mut e = Engine::open(Path::new(":memory:")).unwrap();
+        for name in ["alice", "bob"] {
+            e.provision(name, "hash".into(), false, false).unwrap();
+        }
+        let media = ready(&e, "alice");
+        e.finish_avatar("alice", &media).unwrap();
+        assert!(e.readable_avatar("bob", &media.id).is_ok());
+        e.execute(None, None, "/revoke bob user @global").unwrap();
+        assert!(e.readable_avatar("bob", &media.id).is_err());
+        assert!(e.readable_avatar("alice", &media.id).is_ok());
+        e.execute(None, None, "/room new shared").unwrap();
+        for name in ["alice", "bob"] {
+            e.execute(None, None, &format!("/room add {name} #shared"))
+                .unwrap();
+        }
+        assert!(e.readable_avatar("bob", &media.id).is_ok());
+        e.execute(None, None, "/revoke bob user #shared").unwrap();
+        e.execute(None, None, "/grant bob #shared r:message.read")
+            .unwrap();
+        e.execute(Some("alice"), Some("shared"), "Retained author")
+            .unwrap();
+        assert!(e.snapshot("bob").unwrap().rooms[0].members.is_empty());
+        assert!(e.readable_avatar("bob", &media.id).is_ok());
+        e.execute(None, None, "/clean -1 #shared").unwrap();
+        assert!(e.readable_avatar("bob", &media.id).is_err());
+        e.execute(None, None, "/room kick bob #shared").unwrap();
+        assert!(e.readable_avatar("bob", &media.id).is_err());
+        e.execute(None, None, "/user disable alice").unwrap();
+        assert!(e.readable_avatar("alice", &media.id).is_err());
+        e.prepare_media_cleanup().unwrap();
+        assert!(e.expired_media().unwrap().is_empty());
+        e.execute(None, None, "/user enable alice").unwrap();
+        assert!(e.readable_avatar("alice", &media.id).is_ok());
     }
     #[test]
     fn expired_reservations_and_replaced_accounts_cannot_complete() {

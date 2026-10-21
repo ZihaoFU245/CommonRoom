@@ -398,6 +398,17 @@ Settings → Account shows your round avatar, name and groups. Click the avatar
 (or the plus placeholder) for Upload, Set URL and Remove. HTTPS image URLs such
 as Gravatar work without object storage. Upload accepts PNG, JPEG or WebP up to
 20 MiB/40 megapixels; position and zoom the circular preview, then confirm. The
-browser crops the selected square into a 512×512 PNG (maximum 2 MiB) before
-uploading to S3. Cancel leaves the existing avatar unchanged. Avatars appear next
-to chat authors and sidebar names only after loading successfully.
+browser crops the selected square into a 256×256 WebP (PNG fallback, resized
+further if necessary; maximum 64 KiB) before uploading to S3. Crop controls use
+a working image bounded to 1024 pixels on its longest side. Changing Settings tabs
+preserves the crop and an ongoing upload; closing Settings cancels the upload.
+Confirm shows a local preview while upload completes, with a Cancel upload action.
+Canceling the crop leaves the existing avatar unchanged. Avatars appear next
+to chat authors and sidebar names after loading successfully, retaining the last
+loaded frame while its replacement loads.
+
+Settings → Security → **Load external avatars** defaults off and is saved in this
+browser. When off, users with URL avatars show no avatar and make no image request;
+managed uploads remain visible. Enabling it lets external image hosts receive your
+IP address and serve images without the managed upload size limit. Turning it off
+immediately hides URL avatars across the current page.

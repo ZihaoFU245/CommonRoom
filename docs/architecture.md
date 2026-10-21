@@ -182,7 +182,7 @@ attachment preview state and acknowledgement-based publication; `api/media.ts` v
 Startup claims unreferenced tracked uploads before serving requests; cleanup sweeps
 immediately and daily by default, with short retries for incomplete work. Quota
 remains reserved until confirmed storage deletion. `mediaWorker.ts` intercepts only
-application media file GETs and uses `features/conversation/mediaCache.ts` for a
+application media and managed avatar file GETs and uses `features/conversation/mediaCache.ts` for a
 128-entry/256 MiB persistent byte cache with live metadata authorization and range
 support. Other API/static requests follow their normal network paths.
 See [Media uploads](media-uploads.md).
@@ -225,4 +225,12 @@ metadata projection. `web/avatars.rs` adapts authenticated HTTP requests to that
 engine and the shared S3 transport. Avatar files use the existing tracked media
 lifecycle with a dedicated `avatars/` final prefix and profile references instead
 of message references. `AvatarSettings.tsx` owns the local crop/confirm flow;
-`Avatar.tsx` reveals images only after load and removes failures from layout.
+`Avatar.tsx` keeps the last loaded frame visible while a replacement loads, uses
+explicit image dimensions and decorative alt text next to names, and hides external
+URLs until the viewer opts in through Security. Snapshot projection validates only
+visible users' avatars. Managed reads resolve the owner through the existing stable
+account ID index, check its current reference and viewer visibility, and recheck
+after signing. The existing media worker caches avatar bytes with live `/info`
+authorization. Crop controls draw from a 1024-pixel working canvas once per animation
+frame; a local blob preview covers upload and canonical image loading. Account avatar
+state stays mounted across Settings tabs.

@@ -24,8 +24,21 @@ CREATE TRIGGER IF NOT EXISTS media_reference_removed AFTER DELETE ON message_med
 END;
 ";
 
+const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (
+                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)
+                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)
+                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
+            ) ORDER BY cleanup_attempt,created LIMIT ?3";
+
+// Disabled accounts intentionally retain their avatar reference for re-enabling.
+// Uncorrelated NOT IN builds one transient lookup per statement; account JSON
+// is not reparsed for each candidate. Exclude NULLs so accounts without avatars
+// cannot suppress cleanup.
 fn delete_tombstones(db: &Connection, cutoff: u64) -> Result<(), String> {
-    db.execute("DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar')='/api/avatars/'||media.id||'/file')", [cutoff]).map_err(|e| e.to_string())?;
+    db.execute(TOMBSTONES_SQL, [cutoff])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 // Columns are authoritative for mutable state; legacy JSON copies are ignored.
@@ -95,10 +108,11 @@ impl Engine {
     // Called before accepting uploads on restart. SQLite references are authoritative;
     // recent uploads from a previous process no longer have a live reservation.
     pub(crate) fn prepare_media_cleanup(&self) -> Result<(), String> {
-        self.db.lock().map_err(|_| "Storage unavailable.")?.execute(
-            "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar')='/api/avatars/'||media.id||'/file')",
-            [],
-        ).map_err(|e| e.to_string())?;
+        self.db
+            .lock()
+            .map_err(|_| "Storage unavailable.")?
+            .execute(STARTUP_CLEANUP_SQL, [])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
     pub(crate) fn store_media_allocation(&self, media: &Media) -> Result<(), String> {
@@ -241,11 +255,7 @@ impl Engine {
         delete_tombstones(&tx, timestamp.saturating_sub(self.media_config.pending_ttl))?;
         // Sort at most 3 * batch candidates, rather than the entire live table.
         let result = {
-            let mut query = tx.prepare("SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (
-                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)
-                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)
-                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar')='/api/avatars/'||media.id||'/file') AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
-            ) ORDER BY cleanup_attempt,created LIMIT ?3").map_err(|e| e.to_string())?;
+            let mut query = tx.prepare(CLAIM_CLEANUP_SQL).map_err(|e| e.to_string())?;
             query
                 .query_map(
                     params![
@@ -334,6 +344,41 @@ impl Engine {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn avatar_cleanup_builds_one_reference_list_instead_of_a_correlated_account_scan() {
+        let engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+        let db = engine.db.lock().unwrap();
+        for sql in [TOMBSTONES_SQL, STARTUP_CLEANUP_SQL, CLAIM_CLEANUP_SQL] {
+            let mut query = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let bindings = vec![1_i64; query.parameter_count()];
+            let plan: Vec<(i64, i64, String)> = query
+                .query_map(rusqlite::params_from_iter(bindings), |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(3)?))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(
+                plan.iter()
+                    .any(|(_, _, detail)| detail.contains("LIST SUBQUERY")),
+                "{plan:?}"
+            );
+            for (_, parent, detail) in &plan {
+                if !detail.contains("entities") {
+                    continue;
+                }
+                let mut ancestor = *parent;
+                while let Some((_, parent, detail)) = plan.iter().find(|(id, _, _)| *id == ancestor)
+                {
+                    assert!(
+                        !detail.contains("CORRELATED"),
+                        "Account scan must not be correlated: {plan:?}"
+                    );
+                    ancestor = *parent;
+                }
+            }
+        }
+    }
     #[test]
     fn reconciling_media_free_message_does_not_write() {
         let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();

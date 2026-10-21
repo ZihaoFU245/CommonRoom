@@ -1330,4 +1330,51 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(app.engine_read().unwrap().avatar_directory().is_empty());
+    let media = {
+        let mut engine = app.engine_api().unwrap();
+        let mut media = engine.allocate_avatar("alice", 64).unwrap();
+        media.ready = true;
+        media.content_type = "image/png".into();
+        media.object_key = media.final_key();
+        engine.finish_avatar("alice", &media).unwrap();
+        media
+    };
+    let routes = router(app.clone());
+    let info_path = format!("/api/avatars/{}/info", media.id);
+    for (cookie, origin, status) in [
+        ("", "http://localhost:5173", StatusCode::UNAUTHORIZED),
+        ("bob", "https://evil.example", StatusCode::FORBIDDEN),
+        ("bob", "http://localhost:5173", StatusCode::OK),
+    ] {
+        let response = routes
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&info_path)
+                    .header(header::ORIGIN, origin)
+                    .header(header::COOKIE, format!("chat_session={cookie}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+    app.engine_api()
+        .unwrap()
+        .execute(None, None, "/revoke bob user @global")
+        .unwrap();
+    let response = routes
+        .oneshot(
+            Request::builder()
+                .uri(&info_path)
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::COOKIE, "chat_session=bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

@@ -24,10 +24,12 @@ function metadata(value: unknown): value is Metadata {
 export function mediaCachePath(request: Request, base: string): URL | null {
   const url = new URL(request.url);
   const root = new URL(base);
-  const prefix = new URL("api/media/", root).pathname;
+  const prefix = ["api/media/", "api/avatars/"]
+    .map((path) => new URL(path, root).pathname)
+    .find((path) => url.pathname.startsWith(path));
   return request.method === "GET" &&
     url.origin === root.origin &&
-    url.pathname.startsWith(prefix) &&
+    prefix !== undefined &&
     /^[0-9a-f-]{36}\/file$/iu.test(url.pathname.slice(prefix.length))
     ? url
     : null;

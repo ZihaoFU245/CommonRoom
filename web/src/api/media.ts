@@ -110,7 +110,7 @@ export function uploadFile(
   ticket: UploadTicket,
   file: File,
   signal: AbortSignal,
-  progress: (percent: number) => void,
+  progress?: (percent: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -128,19 +128,20 @@ export function uploadFile(
       xhr.setRequestHeader(name, value);
     let previousPercent = -1;
     let previousTime = 0;
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total <= 0) return;
-      const percent = Math.round((event.loaded * 100) / event.total);
-      const time = performance.now();
-      if (
-        percent === previousPercent ||
-        (previousPercent >= 0 && percent < 100 && time - previousTime < 100)
-      )
-        return;
-      previousPercent = percent;
-      previousTime = time;
-      progress(percent);
-    };
+    if (progress)
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return;
+        const percent = Math.round((event.loaded * 100) / event.total);
+        const time = performance.now();
+        if (
+          percent === previousPercent ||
+          (previousPercent >= 0 && percent < 100 && time - previousTime < 100)
+        )
+          return;
+        previousPercent = percent;
+        previousTime = time;
+        progress(percent);
+      };
     xhr.onload = () =>
       finish(
         xhr.status >= 200 && xhr.status < 300
