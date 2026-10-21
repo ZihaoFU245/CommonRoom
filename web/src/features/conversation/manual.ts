@@ -31,6 +31,8 @@ function listing(title: string, text: string): string {
 }
 function metadataValue(key: string, value: unknown): string {
   const raw = String(value);
+  if (key === "history.clean_min_age" && raw === "-1")
+    return "-1 (unrestricted)";
   if (
     ["media.max_size", "media.user_quota"].includes(key) &&
     /^\d+$/u.test(raw)
@@ -43,7 +45,11 @@ function metadataValue(key: string, value: unknown): string {
     ] as const)
       if (bytes > 0n && bytes % scale === 0n) return `${bytes / scale}${unit}`;
   }
-  if (key === "media.max_age" && /^\d+$/u.test(raw)) {
+  if (
+    ["media.max_age", "history.clean_min_age"].includes(key) &&
+    /^\d+$/u.test(raw)
+  ) {
+    if (key === "history.clean_min_age" && raw === "0") return "0 (disabled)";
     const seconds = Number(raw);
     for (const [unit, scale] of [
       ["w", 604800],
@@ -60,20 +66,54 @@ function metadataValue(key: string, value: unknown): string {
 function metadataList(value: object): string {
   return Object.entries(value)
     .map(([name, values]: [string, unknown]) => {
-      const rows =
-        values && typeof values === "object" ? Object.entries(values) : [];
-      return `### ${inlineCode(name)}\n\n${
-        rows.length
-          ? rows
-              .map(([key, raw]) => {
-                const text = metadataValue(key, raw);
-                return text.includes("\n")
-                  ? `- ${inlineCode(key)}:\n\n${codeBlock(text)}`
-                  : `- ${inlineCode(key)}: ${inlineCode(text)}`;
-              })
-              .join("\n")
-          : "- No metadata."
-      }`;
+      const sections =
+        values && typeof values === "object"
+          ? Object.entries(values).sort(([left], [right]) =>
+              left === "@global"
+                ? -1
+                : right === "@global"
+                  ? 1
+                  : left.localeCompare(right),
+            )
+          : [];
+      return `### ${inlineCode(name)}\n\n${sections
+        .map(([scope, entries]: [string, unknown]) => {
+          const rows =
+            entries && typeof entries === "object"
+              ? Object.entries(entries)
+              : [];
+          return `#### ${inlineCode(scope)}\n\n${
+            rows.length
+              ? rows
+                  .map(([key, entry]: [string, unknown]) => {
+                    if (
+                      !entry ||
+                      typeof entry !== "object" ||
+                      !("value" in entry) ||
+                      !("source" in entry)
+                    )
+                      return "";
+                    const text = metadataValue(key, entry.value);
+                    const source =
+                      typeof entry.source === "string"
+                        ? entry.source
+                        : "unknown";
+                    const origin =
+                      scope === "@global"
+                        ? ""
+                        : source === scope
+                          ? "set here"
+                          : "inherited";
+                    return text.includes("\n")
+                      ? `- ${inlineCode(key)}${origin ? ` (${origin})` : ""}:\n\n${codeBlock(text)}`
+                      : `- ${inlineCode(key)}: ${inlineCode(text)}${origin ? ` — ${origin}` : ""}`;
+                  })
+                  .filter(Boolean)
+                  .join("\n")
+              : "- No values in this section."
+          }`;
+        })
+        .join("\n\n")}`;
     })
     .join("\n\n");
 }

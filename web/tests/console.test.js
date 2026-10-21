@@ -62,12 +62,12 @@ test("sudo passwords stay masked and wrapped commands retain completion and UI r
     "/sudo /user new bob •••• user",
   );
   assert.equal(
-    redactCommand("/sudo /user reset bob secret"),
-    "/sudo /user reset bob ••••",
+    redactCommand("/sudo /user reset bob password secret"),
+    "/sudo /user reset bob password ••••",
   );
   assert.equal(
-    redactCommand("/sudo /sudo /user reset bob secret"),
-    "/sudo /sudo /user reset bob ••••",
+    redactCommand("/sudo /sudo /user reset bob password secret"),
+    "/sudo /sudo /user reset bob password ••••",
   );
   assert.equal(commandText(" /sudo /room new team "), "/room new team");
   assert.equal(commandText("/retract message"), "/retract message");
@@ -255,5 +255,18 @@ test("command and grant hints disclose all action requirements without granting 
       (hint) => hint.value === "/grant bob @server ",
     ),
     false,
+  );
+});
+
+test("metadata reset arguments remain visible while password reset values are masked", () => {
+  for (const command of [
+    "/user reset bob @all #a",
+    "/user reset bob media.max_age @global",
+    "/sudo /user reset @all @all #a",
+  ])
+    assert.equal(redactCommand(command), command);
+  assert.equal(
+    redactCommand("/user reset bob password secret"),
+    "/user reset bob password ••••",
   );
 });

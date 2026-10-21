@@ -32,7 +32,9 @@ bytes, retention (s/m/h/d/w or -1 for permanent), and total account bytes. Room
 values override global values, then server defaults. Size/quota remain within
 server ceilings. `/grant` clears the room upload restriction; `/revoke` persists
 it across reconnects and renames. Only su may set or remove metadata limits; admins and room managers have
-inspection access only. `/user get bob #files` shows effective limits, including inherited values and defaults.
+inspection access only. `/user get bob #files` separates the global root from the room branch. Each
+value shows whether it is set here, inherited from `@global`, or a server default.
+Account-wide `media.user_quota` appears only in the global section.
 
 Allocation persists a reservation before returning a five-minute presigned PUT
 URL, signing the exact declared size and `application/octet-stream`. Clients send
@@ -292,7 +294,7 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite is v16. Only HEAD v15 upgrades transactionally; older schemas are rejected.
+SQLite is v17. Only HEAD v16 upgrades transactionally; older schemas are rejected.
 The upgrade transfers media grant limits into scoped account metadata.
 
 ```sh

@@ -324,6 +324,19 @@ try {
     sudoTab.frames.find((frame) => frame.id === sudoTab.serial).text,
     /Name: bob\nPermission: su/,
   );
+  await send(sudoTab, "/user get bob history.clean_min_age @global");
+  assert.equal(
+    JSON.parse(sudoTab.frames.find((frame) => frame.id === sudoTab.serial).text)
+      .bob["@global"]["history.clean_min_age"].value,
+    "0",
+  );
+  await send(sudoTab, "/sudo /clean -1 @global --dry-run");
+  assert.ok(
+    sudoTab.frames
+      .find((frame) => frame.id === sudoTab.serial)
+      .text.startsWith("## Cleanup preview"),
+  );
+  await send(sudoTab, "/clean -1 @global --dry-run", null, "error");
   assert.equal(sudoTab.snapshot.admin, false);
   assert.deepEqual(sudoTab.snapshot.groups, ["user"]);
   await send(sudoTab, "/configs", null, "error");
@@ -389,7 +402,7 @@ try {
     "unmessaged accounts are not private contacts",
   );
   await send(bob, "/user new denied abc", null, "error");
-  await send(bob, "/user reset alice abc", null, "error");
+  await send(bob, "/user reset alice password abc", null, "error");
   await send(bob, "/user disable alice", null, "error");
   await send(bob, "/user enable alice", null, "error");
   await send(alice, "/user new carol abc", null);
@@ -406,7 +419,7 @@ try {
     () => alice.snapshot.online.includes("carol"),
     "new account online",
   );
-  await send(alice, "/user reset carol xyz", null);
+  await send(alice, "/user reset carol password xyz", null);
   await until(
     () => carol.ws.readyState === WebSocket.CLOSED,
     "admin password reset revokes sessions",
@@ -469,7 +482,7 @@ try {
     alice.frames.find((frame) => frame.id === alice.serial).text,
   );
   assert.deepEqual(Object.keys(metadata), ["alice", "bob"]);
-  assert.equal(metadata.bob.label, "shared");
+  assert.equal(metadata.bob["#study"].label.value, "shared");
   await send(bob, "/user ls", "study");
   assert.equal(
     bob.frames.find((frame) => frame.id === bob.serial).text,
@@ -479,8 +492,11 @@ try {
   const globalMetadata = JSON.parse(
     alice.frames.find((frame) => frame.id === alice.serial).text,
   );
-  assert.equal(globalMetadata.bob["media.user_quota"], "1073741824");
-  assert.equal(globalMetadata.bob.label, undefined);
+  assert.equal(
+    globalMetadata.bob["@global"]["media.user_quota"].value,
+    "1073741824",
+  );
+  assert.equal(globalMetadata.bob["@global"].label, undefined);
   await send(alice, "/user set bob media.user_quota 512m", "study", "error");
   child.stdin.write("/user set bob media.user_quota 512m\n");
   await until(
@@ -490,11 +506,26 @@ try {
   await send(bob, "/user get bob @all", "study");
   assert.equal(
     JSON.parse(bob.frames.find((frame) => frame.id === bob.serial).text).bob[
-      "media.user_quota"
-    ],
+      "@global"
+    ]["media.user_quota"].value,
     "536870912",
   );
   await send(alice, "/grant bob study w:message.react", "study", "error");
+  await send(alice, "/user reset bob @all #study", "study", "error");
+  child.stdin.write("/user reset bob label #study\n");
+  await until(
+    () => logs.includes("Reset metadata for 1 users at #study."),
+    "su metadata reset",
+  );
+  await send(bob, "/user get bob #study", "study");
+  const resetMetadata = JSON.parse(
+    bob.frames.find((frame) => frame.id === bob.serial).text,
+  );
+  assert.equal(resetMetadata.bob["#study"].label, undefined);
+  assert.equal(
+    resetMetadata.bob["@global"]["media.user_quota"].value,
+    "536870912",
+  );
   await send(bob, "/user get @all", "study", "error");
   await send(alice, "/grant @all #study w:message.react", "study");
   await send(alice, "/revoke @all #study w:message.react", "study");
@@ -998,7 +1029,7 @@ try {
     "independent private history",
   );
   const migratedBob = await connect(cookies.bob);
-  child.stdin.write("/user reset bob changed-long-password\n");
+  child.stdin.write("/user reset bob password changed-long-password\n");
   await until(
     () => logs.includes("Account bob password reset."),
     "password reset",

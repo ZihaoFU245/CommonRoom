@@ -45,7 +45,10 @@ pub fn route(input: &str) -> String {
         ("/user", "new") => format!("/new user {tail}"),
         ("/user", "delete") => format!("/rm user {tail}"),
         ("/user", "rename") if (3..=4).contains(&parts.len()) => format!("/rename {tail}"),
-        ("/user", "disable" | "enable" | "reset" | "passwd") => format!("/{operation} {tail}"),
+        ("/user", "reset") if parts.len() == 5 && parts[3] == "password" => {
+            format!("/reset {} {}", parts[2], parts[4])
+        }
+        ("/user", "disable" | "enable" | "passwd") => format!("/{operation} {tail}"),
         ("/room", "new") => format!("/new room {tail}"),
         ("/room", "delete") => format!("/rm room {tail}"),
         ("/room", "rename") => format!("/rename room {tail}"),
@@ -81,7 +84,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Account",
             "/user",
-            "/user ls [scope] | get who [key] [scope] | set who key value [scope] | rename [who] name | new name password [user|admin] | delete who | disable who | enable who | passwd old new | reset who password",
+            "/user ls [scope] | get who [key] [scope] | set who key value [scope] | rename [who] name | new name password [user|admin] | delete who | disable who | enable who | passwd old new | reset who key|@all [scope] | reset who password new-password",
             "List users, inspect or update metadata, and manage accounts",
             false,
         ),
@@ -151,7 +154,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Account",
             "/grant",
-            "/grant user|@all group [#room] | /grant user|@all scope permission [minimum-age]",
+            "/grant user|@all group [#room] | /grant user|@all scope permission",
             "Assign a group or add a scoped permission; /man grant explains",
             true,
         ),
@@ -308,7 +311,9 @@ pub fn requirements(command: &str) -> &'static str {
         "/add" => "x:member.add on the room + authority to delegate its full participant bundle",
         "/kick" => "x:member.remove on the room; owners must transfer ownership first",
         "/owner" => "x:room.owner.transfer on the target room",
-        "/clean" => "x:history.clean on every target; minimum-age constraints may apply",
+        "/clean" => {
+            "x:history.clean on every target; history.clean_min_age metadata limits cleanup; su bypasses both"
+        }
         "/debug" => "r:message.metadata on readable conversations",
         "/grant" | "/revoke" => {
             "x:policy.change for individual/room grants; x:group.admin.assign for global user/admin groups; su-only and delegation rules also apply"
@@ -353,7 +358,7 @@ fn form_description(command: &Command, usage: &str) -> &'static str {
         ("/user", ["disable", ..]) => "Disable an account and revoke its sessions",
         ("/user", ["enable", ..]) => "Enable an account",
         ("/user", ["passwd", ..]) => "Change your password and sign out other sessions",
-        ("/user", ["reset", ..]) => "Reset an authorized account's password",
+        ("/user", ["reset", ..]) => "Reset scoped metadata (su only), or reset a password",
         ("/room", ["ls", ..]) => "List rooms you can discover or read",
         ("/room", ["new", ..]) => "Create an invitation-only room",
         ("/room", ["delete", ..]) => "Delete a room and its messages",
@@ -431,15 +436,20 @@ pub fn provision_command<'a>(parts: &[&'a str]) -> Result<Option<ProvisionComman
         ["/new", "user", name, password, role] | ["/user", "new", name, password, role] => {
             (*name, *password, *role, false)
         }
-        ["/reset", name, password] | ["/user", "reset", name, password] => {
+        ["/reset", name, password] | ["/user", "reset", name, "password", password] => {
             (*name, *password, "user", true)
         }
         ["/new", "user", ..] | ["/user", "new", ..] => {
             return Err(format!("Usage: {NEW_USER_USAGE}"));
         }
-        ["/reset", ..] => return Err("Usage: /user reset name password".into()),
+        ["/reset", ..] | ["/user", "reset", _, "password", ..] => {
+            return Err("Usage: /user reset who password new-password".into());
+        }
         _ => return Ok(None),
     };
+    if reset && name == "@all" {
+        return Err("Password reset requires one account.".into());
+    }
     if !["user", "admin"].contains(&role) {
         return Err("Role must be admin or user.".into());
     }
@@ -455,6 +465,33 @@ pub fn provision_command<'a>(parts: &[&'a str]) -> Result<Option<ProvisionComman
 #[allow(clippy::expect_used)]
 mod output_tests {
     use super::*;
+
+    #[test]
+    fn reset_password_selector_is_explicit_and_metadata_stays_on_the_object_route() {
+        let account = provision_command(&["/user", "reset", "bob", "password", "new-secret"])
+            .expect("valid syntax")
+            .expect("password operation");
+        assert!(account.reset);
+        assert_eq!(account.password, "new-secret");
+        assert_eq!(
+            route("/user reset bob password new-secret"),
+            "/reset bob new-secret"
+        );
+        for parts in [
+            vec!["/user", "reset", "bob", "@all"],
+            vec!["/user", "reset", "bob", "media.max_age", "#a"],
+        ] {
+            assert!(
+                provision_command(&parts)
+                    .expect("metadata syntax")
+                    .is_none()
+            );
+            let input = parts.join(" ");
+            assert_eq!(route(&input), input);
+        }
+        assert!(provision_command(&["/user", "reset", "bob", "password"]).is_err());
+        assert!(provision_command(&["/user", "reset", "@all", "password", "new-secret"]).is_err());
+    }
 
     #[test]
     fn help_prints_full_subcommands_as_markdown_instead_of_pipe_chains() {

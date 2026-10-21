@@ -529,7 +529,7 @@ fn message_features_persist_and_rollback() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        16
+        17
     );
 }
 #[test]
@@ -1038,7 +1038,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 16, 99] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 99] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1250,7 +1250,6 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
                         subject: authorization::Subject::Account(e.data.users["alice"].id.clone()),
                         scope: authorization::Scope::Server,
                         permissions: BTreeSet::from(["/delete".into()]),
-                        minimum_age: 0,
                     });
                     e.db.lock()
                         .unwrap()
@@ -1284,7 +1283,7 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            16
+            17
         );
     }
 }

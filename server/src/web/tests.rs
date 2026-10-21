@@ -426,7 +426,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
             Some("Password changed. Other sessions signed out."),
         ),
         (
-            "/sudo /user reset target long-sudo-password",
+            "/sudo /user reset target password long-sudo-password",
             true,
             Some("Account target password reset."),
         ),
@@ -601,9 +601,9 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
             let text = if case == "creation" {
                 "/user new created long-fixture-password user"
             } else if case.starts_with("sudo-") {
-                "/sudo /user reset target long-fixture-password"
+                "/sudo /user reset target password long-fixture-password"
             } else {
-                "/user reset target long-fixture-password"
+                "/user reset target password long-fixture-password"
             };
             let job = tokio::spawn(async move {
                 let mut headers = HeaderMap::new();
@@ -1089,7 +1089,7 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         (None, "/bot token rm helper $token"),
         (None, "/bot rm helper @global"),
         (None, "/user new created long-created-password user"),
-        (None, "/user reset created long-reset-password"),
+        (None, "/user reset created password long-reset-password"),
         (None, "/user disable created"),
         (None, "/user enable created"),
         (None, "/user rename created renamed"),

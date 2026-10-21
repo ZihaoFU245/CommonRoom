@@ -1,6 +1,7 @@
 use super::*;
 mod command_receipts;
 mod media;
+mod metadata;
 
 impl Engine {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -33,8 +34,8 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if ![0, 15, 16].contains(&version) {
-            return Err("Unsupported database schema; only HEAD v15 and v16 are supported.".into());
+        if ![0, 16, 17].contains(&version) {
+            return Err("Unsupported database schema; only HEAD v16 and v17 are supported.".into());
         }
         if version == 0 {
             let existing: bool = db.query_row(
@@ -83,7 +84,7 @@ impl Engine {
                 .execute_batch(media::INDEXES)
                 .map_err(|e| e.to_string())?;
             transaction
-                .execute_batch("PRAGMA user_version=16;")
+                .execute_batch("PRAGMA user_version=17;")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -118,76 +119,15 @@ impl Engine {
                     .insert(view, sequence);
             }
         }
-        if version == 15 {
+        if version == 16 {
             let migration = db.unchecked_transaction().map_err(|e| e.to_string())?;
             let before = data.clone();
-            if let Some(grants) = old_state
-                .pointer("/policy/grants")
-                .and_then(|v| v.as_array())
-            {
-                for grant in grants {
-                    let Some(media) = grant.get("media").filter(|v| v.is_object()) else {
-                        continue;
-                    };
-                    let scope: super::authorization::Scope =
-                        serde_json::from_value(grant["scope"].clone())
-                            .map_err(|e| e.to_string())?;
-                    let subject: super::authorization::Subject =
-                        serde_json::from_value(grant["subject"].clone())
-                            .map_err(|e| e.to_string())?;
-                    if matches!(scope, super::authorization::Scope::Account(_)) {
-                        continue;
-                    }
-                    let key = Self::metadata_scope_key(&scope)?.to_owned();
-                    for account in data.users.values_mut() {
-                        let applies = match &subject {
-                            super::authorization::Subject::Account(id) => &account.id == id,
-                            super::authorization::Subject::Group(group) => {
-                                data.policy.assignments.iter().any(|a| {
-                                    a.account_id == account.id
-                                        && a.group == *group
-                                        && a.scope == super::authorization::Scope::Server
-                                })
-                            }
-                        };
-                        if !applies {
-                            continue;
-                        }
-                        let values = account.metadata.entry(key.clone()).or_default();
-                        for (old, new) in
-                            [("max_size", "media.max_size"), ("max_age", "media.max_age")]
-                        {
-                            if let Some(n) = media.get(old).and_then(|v| v.as_i64()) {
-                                let existing = values.get(new).and_then(|v| v.parse::<i64>().ok());
-                                if existing.is_none_or(|old| {
-                                    (if n == -1 { i64::MAX } else { n })
-                                        < (if old == -1 { i64::MAX } else { old })
-                                }) {
-                                    values.insert(new.into(), n.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            for grant in &mut data.policy.grants {
-                for permission in grant.permissions.clone() {
-                    let families: &[&str] = match permission.as_str() {
-                        "/new" | "/rm" | "/rename" | "/ls" => &["/user", "/room"],
-                        "/members" | "/passwd" | "/reset" | "/enable" | "/disable" => &["/user"],
-                        "/join" | "/leave" | "/add" | "/kick" | "/owner" => &["/room"],
-                        _ => &[],
-                    };
-                    grant
-                        .permissions
-                        .extend(families.iter().map(|name| (*name).to_owned()));
-                }
-            }
+            metadata::migrate_cleanup_limits(&mut data, &old_state)?;
             authorization = super::authorization::CompiledPolicy::compile(&data)?;
             write_map_delta(&migration, "account", &data.users, &before.users)?;
             write_state(&migration, &data)?;
             migration
-                .execute_batch("PRAGMA user_version=16;")
+                .execute_batch("PRAGMA user_version=17;")
                 .map_err(|e| e.to_string())?;
             migration.commit().map_err(|e| e.to_string())?;
         }

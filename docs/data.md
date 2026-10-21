@@ -2,19 +2,20 @@
 
 ## Database compatibility
 
-Empty databases initialize as v16. Only the immediately preceding HEAD schema
-(v15) upgrades to v16; v16 reopens directly. Pre-HEAD schemas and unversioned
-existing databases are rejected before journal, schema or data changes. Their
-upgrade paths and fixtures have been removed.
+Empty databases initialize as v17. Only the immediately preceding HEAD schema
+(v16) upgrades to v17; v17 reopens directly. Older schemas and unversioned
+existing databases are rejected before journal, schema or data changes.
 
-The v15-to-v16 transaction moves typed media grant limits into the matching
-account's scoped metadata, removes media fields from policy grants, and records
-the new version. Multiple explicit limits retain the most restrictive explicit size and retention
-per account/scope. Group-subject limits expand to the currently assigned accounts.
-History, credentials, cursors and ordinary grants remain intact. Explicit command
-grants also gain the corresponding `/user` and `/room` family grants, subject to
-the same target action checks. Failed writes
-roll back metadata and version together. Older binaries cannot open v16.
+The v16-to-v17 transaction removes cleanup age constraints from grants and moves
+them into `history.clean_min_age` metadata. Existing explicit metadata takes
+precedence. Legacy grants retain their union semantics: unrestricted grants win;
+otherwise the smallest applicable minimum age wins. Group grants expand to their
+current recipients. Admin/ownership defaults remain derived rather than copied.
+Private conversations now share the account's global limit; differing legacy
+private constraints consolidate to the strictest effective minimum at the root.
+History, credentials, cursors, permissions and media metadata remain intact.
+A failure rolls back account metadata, policy and schema version together.
+Older binaries cannot open v17.
 
 Back up the entire data folder and object store with the server stopped. Tests
 use isolated temporary data and never modify working `data/`.
@@ -46,7 +47,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v16 and upgrades HEAD v15 only. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v17 and upgrades HEAD v16 only. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -143,7 +144,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v16 and the minimal reference worker.
+independently of server SQLite schema v17 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -151,7 +152,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v16.
+keys; unsupported versions are rejected. This does not change server schema v17.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -222,8 +223,15 @@ removal trigger. SQL ready/expiry/deletion columns are authoritative when loadin
 ## Account metadata
 
 Each account entity stores `metadata`, a map from `@global` or stable room ID to
-a bounded string map. Rename keeps it on the same stable identity; room deletion
-removes that room's entries, and account deletion removes the complete map.
+a bounded string map. This is a two-level override tree, not a recursively nested
+room hierarchy: `@global` is the root, stable room IDs identify sparse branches.
+Only explicit values are persisted; reads resolve room → global → configuration
+without copying inherited/default values into a branch. Account-wide quota is
+root-only. No schema change is needed for this read projection.
+Rename keeps it on the same stable identity; room deletion
+removes that room's entries from every account in the same transaction as room
+deletion. Account deletion removes the complete map. Empty branches are removed
+on unset; reusing a room name creates a new ID and inherits no deleted overrides.
 Metadata updates save changed accounts and audit entries atomically. Values are
 never included in public snapshots. User media limits are independent of grants;
 `/user get` and `/user set` enforce current access on every selected account.
@@ -231,3 +239,11 @@ never included in public snapshots. User media limits are independent of grants;
 Metadata mutation now requires su at execution time. Global admin group bundles
 provide only metadata read access; stored direct write flags cannot override the
 su check. No metadata rows or existing values are rewritten for this policy change.
+
+`history.clean_min_age` is a typed cleanup limit: `0` disables cleanup, `-1`
+is unrestricted, and positive values store minimum message age in seconds.
+Room overrides precede global values. Missing values derive from live roles:
+admin and su default to `-1`, users to `0`, and room owners to `-1` in their room.
+Private cleanup uses the global root. Role defaults are never persisted, so role
+revocation and ownership transfer cannot leave stale unlimited values behind.
+Su and authorized sudo bypass cleanup permissions and metadata limits.

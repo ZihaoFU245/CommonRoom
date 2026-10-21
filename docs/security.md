@@ -113,7 +113,7 @@ Prefix the action with its family, for example `r:message.read`. A slash command
 name such as `/history` is a separate permission. No matching grant means denial.
 Use `/man grant`, `/man revoke`, `/man permissions`, `/man groups`, `/man scopes`
 and `/man ownership` for the built-in manuals. `/grant user group [room]` assigns
-a group; `/grant user scope permission [minimum-age]` adds an individual grant.
+a group; `/grant user scope permission` adds an individual grant.
 `/revoke` has the corresponding forms.
 
 Grants are additive, without recursive groups. Normally `/revoke` removes direct
@@ -189,14 +189,17 @@ Remove direct read access with `/revoke bob #support r:message.read`.
 A superuser can delegate cleanup without other management powers:
 
 ```text
-/grant bob #support x:history.clean 7d
+/grant bob #support x:history.clean
 /grant bob #support /clean
 ```
 
-The minimum age is a typed constraint on cleanup only. Bob can delete messages
-older than seven days in `support`, but cannot use a shorter age or clean another
-room. `/permissions #support` shows effective permissions, applicable assignments,
-and scoped direct grants with constraints when the requester can inspect policy.
+Su sets the independent limit with `/user set bob history.clean_min_age 7d #support`.
+Bob can delete messages at least seven days old, provided command and action
+grants also permit it. Metadata `0` disables cleanup; `-1` allows any age, including
+`/clean -1 #support` to wipe that scope. `/permissions #support` shows grants;
+`/user get bob #support` shows limits and their source. An unrestricted action
+grant cannot override a metadata restriction. Su and authorized `/sudo` bypass
+both grant and cleanup-limit checks.
 `/permissions @groups` lists the predefined bundles. `@audit` is restricted to `su`.
 
 ## Persistence and revocation
@@ -205,7 +208,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-The current schema is v16. New empty databases initialize transactionally; only HEAD v15 upgrades, and v16 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+The current schema is v17. New empty databases initialize transactionally; only HEAD v16 upgrades, and v17 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains

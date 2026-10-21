@@ -17,7 +17,8 @@ Passwords are masked. Enter sends, Shift+Enter adds a line, and Tab completes.
 /user disable who
 /user enable who
 /user passwd old-password new-password
-/user reset who password
+/user reset who key|@all [scope]
+/user reset who password new-password
 ```
 
 Omitted scope uses the selected room; Console/stdin use `@global`.
@@ -26,9 +27,17 @@ global listing requires `r:account.list`. `/user rename robert` renames yourself
 Names use 1–32 Unicode characters without whitespace, controls, or ASCII
 punctuation except `_` and `-`.
 
-Each account has a metadata list per scope. `/user get bob` returns Bob's list in the current scope; `/user get @all #support` returns every member's effective list in
-that room. A key narrows the result. Metadata never includes passwords, sessions,
-or grants, and is not included in broadcast snapshots. Read your own metadata;
+Each account has a global root and sparse room branches. `/user get bob #support`
+(or `/user get bob` while in that room) displays separate `@global` and `#support`
+sections. Global entries show values without hints. Room entries show `set here` or
+`inherited`. Room overrides take precedence; `@unset`
+removes the override and restores inheritance. Custom keys inherit too, but global
+custom values appear only with permission to read that account's global metadata.
+Room managers without that permission see local custom values and effective media/cleanup
+limits. `media.user_quota` appears only in the global section and is never a room
+override. `/user get @all #support` applies the same view to every member.
+Metadata never grants permissions and is absent from broadcast snapshots.
+Read your own metadata;
 other users require `r:account.metadata` at global/account scope or room policy
 management. Only su can set, remove or bulk-update metadata. Global admins
 receive `r:account.metadata` for reading; room policy managers may inspect their
@@ -87,7 +96,7 @@ reusing the name starts fresh. Browser deletion asks for confirmation before sen
 
 ```text
 /grant user|@all group [#room]
-/grant user|@all scope permission [minimum-age]
+/grant user|@all scope permission
 /revoke user|@all group [#room]
 /revoke user|@all scope permission
 ```
@@ -104,7 +113,7 @@ disabled accounts). No selector silently skips protected users.
 
 Grant/revoke only change access. Upload size, retention and byte quota belong in
 `/user set`; extra media arguments on `/grant` are rejected. Cleanup's existing
-minimum-age permission constraint remains supported. See `/man permissions`,
+limits also belong in metadata through `history.clean_min_age`. See `/man permissions`,
 `/man groups`, and `/man scopes` for action/command grants and predefined bundles.
 
 ## Other commands and browser aliases
@@ -308,7 +317,7 @@ limits with `@SimpleBot /config set model.maxToolCalls "32"`.
 Media sizes and account quotas use metadata. `k`, `m`, `g` mean powers of
 1024 (case-insensitive): `512k`, `25m`, `1g`. Config media size/quota fields
 use the same string notation. `/user get` lists effective media limits even
-when no override is stored; unrelated global custom metadata stays private.
+when no override is stored; global custom metadata requires account read authority.
 
 Room members can upload by default. Owners can block a member's uploads with
 `/revoke user #room w:media.upload`, and restore them with `/grant user #room w:media.upload`. This room restriction overrides upload grants there (except su),
@@ -322,7 +331,7 @@ subcommand on its own line. Manuals support headings, nested and numbered lists,
 tables, emphasis, links and language-labelled code fences.
 
 User/room lists and bot details receive headings and readable lists. Configuration appears as formatted JSON; user
-metadata appears as per-user key/value lists; history and credentials
+metadata appears as per-user scope sections with value/source lists; history and credentials
 remain literal code blocks. Errors and ordinary acknowledgements preserve their
 text without interpreting user-provided Markdown. HTML stays text, images do not
 load, and command output never opens an HTML or attachment preview. Code blocks
@@ -347,3 +356,31 @@ commands use the selected room and require a named room in Console/private views
 omitted; explicit room scopes cannot hold account-wide quota. For bulk quota
 updates, `@all` still selects members of the current room (all accounts in
 Console). Only su can execute these metadata updates.
+
+Cleanup limits use `/user set who history.clean_min_age value [scope]` (su only).
+`0` disables cleanup, `-1` removes the age restriction, and positive durations
+(`7d`, `30d`) set the minimum age of deletable messages. Room overrides win over
+global values. Missing values derive from current roles: admin/su `-1`, ordinary
+users `0`, and room owners `-1` in their own room. Private cleanup uses the global
+value. The wire result retains `role` as the source of a derived default; the UI labels
+room values supplied outside the displayed section as `inherited`; global
+entries have no hint.
+
+`/clean -1 #support` explicitly wipes all history in that scope. Both age and
+scope remain required. Su and authorized `/sudo` bypass command/action grants
+and cleanup metadata limits. Other callers need both grants and an allowing
+metadata limit. Bulk cleanup authorizes every target and its limit before deleting.
+`/grant` and `/revoke` accept no limit arguments.
+
+`/user reset bob media.max_size #support` removes that room override and restores
+inheritance. `/user reset bob @all #support` clears every override in that room
+branch; `/user reset bob @all @global` clears only the global root. Other branches
+remain unchanged. `@all` may also select users, as in
+`/user reset @all @all #support`. Metadata resets are su-only, use the same scope
+and bulk selection rules as `/user set`, and prune empty branches. Account-wide
+quota reset defaults to `@global` even from a room.
+
+Password reset uses `/user reset bob password new-password`; it targets one
+account, accepts no scope, and retains `x:account.password.reset` authorization.
+The literal `password` selector separates credential resets from metadata resets.
+Password changes keep the existing session-revocation and post-hash rechecks.

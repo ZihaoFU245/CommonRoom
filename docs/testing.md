@@ -60,7 +60,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v16 restart and HEAD v15 upgrade, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover v17 restart and HEAD v16 upgrade, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -74,7 +74,7 @@ Unicode names, no-op/collision validation, stable history/grants/read cursors,
 name reuse, restart persistence and cursor/metadata/audit write rollback,
 and compiled-policy rollback. Output regressions verify that @global and its
 legacy alias resolve to the same scope, command requirements do not grant actions,
-and assignment privacy and conditional cleanup limits survive formatting. The room
+and assignment privacy and cleanup limits remain separate from permission formatting. The room
 directory excludes other users' private pairs even with explicit inspection grants
 or su membership. `/console` checks scoped grants, rejects extra arguments, and
 does not change authorization or persisted state. Run
@@ -163,7 +163,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v16 restart and HEAD v15 upgrade and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v17 restart and HEAD v16 upgrade and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -570,7 +570,7 @@ backoff, exponential rests, empty results and immediate notification refresh.
 Object-command regressions cover scoped user lists, complete bulk metadata reads,
 privacy, protected accounts, media inheritance/quotas, renames, room deletion,
 read-only execution and failed-write rollback. Bulk grant/revoke tests exercise original-policy authorization, owners, protected su accounts, and the last active
-administrator. Only HEAD v15-to-v16 migration is tested; pre-HEAD upgrade fixtures
+administrator. Only HEAD v16-to-v17 migration is tested; pre-HEAD upgrade fixtures
 are removed and versions 1–14 are tested for unchanged rejection. Upload hint tests
 cover bounds/header injection, signing, replacement metadata and browser headers.
 
@@ -611,3 +611,23 @@ and roll back batches on injected storage failures. Preview preserves database
 write counts, audit and revisions. Media tests verify reference counts and shared
 object retention. Metadata-authority tests cover admin/owner reads, all mutation
 forms denied to non-su, explicit write-flag bypass rejection, and su writes.
+
+Metadata tree regressions cover separate global/room value-and-source sections,
+room override precedence, unset fallback, root-only quota, read-only resolution,
+and filtering of global custom keys from room-only readers. Persisted room deletion
+checks all account branches after restart, name reuse, preservation of other branches,
+and rollback when an account update fails inside the deletion transaction.
+
+Cleanup metadata regressions cover disabled users, live admin/owner defaults,
+role removal and ownership transfer, global/room precedence, unset inheritance,
+private cleanup, all-history requests, bulk denial atomicity, and sudo bypass of
+command/action grants and limits without retaining elevated authority. Grant limit
+arguments are rejected. HEAD migration tests verify constraint transfer and atomic
+rollback of metadata, grants and schema version.
+
+User reset regressions cover metadata key/all-key removal, inheritance fallback,
+current-scope and account-quota defaults, bulk selection, Su-only writes, storage
+rollback, branch pruning across restart, and preservation of password hashes.
+Password reset uses the explicit `password` selector throughout console/web tests,
+including authority rechecks after hashing, session revocation and UI redaction.
+Global metadata entries have no hints; room entries retain inheritance/local hints.

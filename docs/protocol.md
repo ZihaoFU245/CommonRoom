@@ -112,9 +112,11 @@ uses Markdown headings, lists, tables, fenced examples, and inline code. Every
 command reply shares a lazy Markdown renderer built from validated text nodes.
 HTML remains literal, images are disabled, and only safe HTTP/HTTPS/mail links
 are clickable. Structured JSON, history and credential wire text is preserved;
-the browser formats metadata as per-user key/value lists and configuration,
+the browser formats metadata as per-user scope sections with value/source lists and configuration,
 history and credentials in fenced code blocks. User getters include effective
-media defaults and inherit only media limits across scopes. `@all` in the key
+media defaults and resolve room overrides over global values. Global custom
+values require account-level read authority; room-only readers see local custom
+values and effective media/cleanup limits. `@all` in the key
 position requests all metadata keys; in the user position it selects all users
 in the selected scope. Explicit room scope arguments require `#name`. Plain acknowledgements and errors
 are escaped to preserve literal user input.
@@ -251,7 +253,11 @@ for bounds, partial-range caching and fallback behavior.
 
 The command catalogue advertises `/user` and `/room` families. See [Commands](commands.md)
 for scoped listing, metadata and lifecycle syntax. `/user get` returns a local JSON
-notice keyed by username; metadata is absent from broadcast snapshots. Bulk writes
+notice shaped as `{username: {scope: {key: {value, source}}}}`.
+The `@global` section always appears; a room read also includes its `#name`
+section. Sources are `config`, `role`, `@global`, or `#name`. Account-wide quota appears
+only under `@global`. A key filter applies to both sections. Metadata is absent
+from broadcast snapshots. Bulk writes
 and grant changes return one acknowledgement only after an atomic commit.
 
 Upload hints are an optional object with keys `filename`, `content-type`, `label`,
@@ -265,9 +271,22 @@ MIME/size/retention effects. Unicode hint values must be percent encoded.
 
 `/clean age scope [--dry-run]` requires an explicit room/private/global scope.
 Preview runs under the read-only command path, with identical authorization and
-age constraints but no audit, revision or database writes. Execution reports
+metadata cleanup limits but no audit, revision or database writes. Execution reports
 Markdown counts of deleted messages and removed attachment references; S3 cleanup
 and quota release follow confirmed asynchronous storage deletion.
 All `/user set` writes (including bulk, removals and media metadata) require su.
 Admins retain metadata inspection through `r:account.metadata`; write flags and
 room policy management do not override the su-only mutation rule.
+
+`history.clean_min_age` appears in metadata sections with its source and effective
+value. Values `0` and `-1` mean disabled and unrestricted; positive values are
+minimum message ages in seconds. Browser output formats positive ages as durations
+and labels room values as `set here` or `inherited`; global values have no hints.
+Source detail stays in the wire result. Cleanup accepts `-1` as an explicit all-history
+request. Su/authorized sudo bypass command/action and cleanup-limit checks;
+ordinary execution and previews use the same per-target metadata resolution.
+
+`/user reset who key|@all [scope]` removes explicit metadata overrides in one
+selected scope, atomically across bulk targets. It does not change credentials.
+`/user reset who password new-password` is the explicit password-reset form,
+using the existing asynchronous hashing, authority recheck and session revocation.

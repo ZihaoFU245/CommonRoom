@@ -107,7 +107,6 @@ pub struct Grant {
     pub subject: Subject,
     pub scope: Scope,
     pub permissions: BTreeSet<String>,
-    pub minimum_age: u64,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Audit {
@@ -383,7 +382,6 @@ pub(super) struct CompiledPolicy {
     scopes: HashMap<String, HashMap<Scope, Rights>>,
     pub(super) groups: HashMap<String, BTreeSet<Group>>,
     pub(super) media_revocations: BTreeMap<String, BTreeSet<String>>,
-    conditional: HashMap<String, HashMap<Scope, Vec<(Rights, u64)>>>,
 }
 impl CompiledPolicy {
     pub(super) fn compile(data: &Data) -> Result<Self, String> {
@@ -426,23 +424,13 @@ impl CompiledPolicy {
                     .collect(),
             };
             for id in ids {
-                if grant.minimum_age == 0 {
-                    result
-                        .scopes
-                        .entry(id)
-                        .or_default()
-                        .entry(grant.scope.clone())
-                        .or_default()
-                        .add(mask);
-                } else {
-                    result
-                        .conditional
-                        .entry(id)
-                        .or_default()
-                        .entry(grant.scope.clone())
-                        .or_default()
-                        .push((mask, grant.minimum_age));
-                }
+                result
+                    .scopes
+                    .entry(id)
+                    .or_default()
+                    .entry(grant.scope.clone())
+                    .or_default()
+                    .add(mask);
             }
         }
         Ok(result)

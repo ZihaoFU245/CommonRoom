@@ -89,31 +89,6 @@ impl Engine {
             actor.unwrap_or("su (stdin)"),
             describe_rights(self.effective(actor, &scope))
         );
-        if let Some(scopes) = self
-            .principal_id(actor)
-            .and_then(|id| self.authorization.conditional.get(id))
-        {
-            let mut ages = BTreeSet::new();
-            for candidate in [Scope::Server, scope.clone()] {
-                if let Some(grants) = scopes.get(&candidate) {
-                    ages.extend(
-                        grants
-                            .iter()
-                            .filter(|(rights, _)| rights.has(Action::Clean))
-                            .map(|(_, age)| *age),
-                    );
-                }
-            }
-            if !ages.is_empty() {
-                text.push_str("\n\n### Conditional actions");
-                for age in ages {
-                    text.push_str(&format!(
-                        "\n\n- `x:history.clean` — messages must be at least {age} seconds old."
-                    ));
-                }
-                text.push_str("\n\nThese limits apply to individual grants. Any unrestricted cleanup grant still allows cleanup without this limit.");
-            }
-        }
         if !self.can_inspect_policy(actor, &scope) {
             text.push_str("\n\n## Grant assignments\n\nViewing assignments requires `r:policy.read`. Only your effective access is shown.");
             return Ok(text);
@@ -173,7 +148,7 @@ impl Engine {
                 &assignments
             }
         ));
-        let mut grants: BTreeMap<(String, u64, bool), BTreeSet<String>> = BTreeMap::new();
+        let mut grants: BTreeMap<(String, bool), BTreeSet<String>> = BTreeMap::new();
         for grant in self
             .data
             .policy
@@ -186,7 +161,7 @@ impl Engine {
                 Subject::Group(group) => format!("group:{}", group.name()),
             };
             grants
-                .entry((subject, grant.minimum_age, grant.owner))
+                .entry((subject, grant.owner))
                 .or_default()
                 .extend(grant.permissions.iter().cloned());
         }
@@ -194,7 +169,7 @@ impl Engine {
         if grants.is_empty() {
             text.push_str("\n\nNone.");
         }
-        for ((subject, minimum_age, owner), permissions) in grants {
+        for ((subject, owner), permissions) in grants {
             text.push_str(&format!(
                 "\n\n### {subject} — {}",
                 if owner {
@@ -206,9 +181,7 @@ impl Engine {
             if owner {
                 text.push_str("\n\nGranted through room ownership.");
             }
-            if minimum_age > 0 {
-                text.push_str(&format!("\n\nCleanup minimum age: {minimum_age} seconds."));
-            }
+
             text.push_str(&format!(
                 "\n\n{}",
                 permissions
@@ -282,8 +255,11 @@ impl Engine {
         match parts[0] {
             "/permissions" => self.apply_permissions(context),
             "/grant" | "/revoke" if direct_grant(parts) => {
-                if !(4..=6).contains(&parts.len()) {
-                    return Err("Usage: /grant user scope permission [minimum-age] or /revoke user scope permission".into());
+                if parts.len() != 4 {
+                    return Err(
+                        "Usage: /grant user scope permission or /revoke user scope permission"
+                            .into(),
+                    );
                 }
                 let scope = self.policy_scope(actor, parts[2], true)?;
                 let label = self.scope_label(&scope);
@@ -332,17 +308,6 @@ impl Engine {
                         ));
                     }
                 }
-                if parts.len() > 5 || (parts.len() == 5 && parts[3] != Action::Clean.name()) {
-                    return Err("Grant/revoke operate only on permissions. Use /user set for media metadata.".into());
-                }
-                let minimum_age = parts
-                    .get(4)
-                    .map(|age| parse_age(age))
-                    .transpose()?
-                    .unwrap_or(0);
-                if minimum_age > 0 && parts[3] != Action::Clean.name() {
-                    return Err("Minimum age applies only to x:history.clean.".into());
-                }
                 let room_media = (parts[3] == Action::MediaUpload.name())
                     .then_some(&scope)
                     .and_then(|scope| {
@@ -379,17 +344,13 @@ impl Engine {
                 let subject = Subject::Account(target);
                 if parts[0] == "/grant" {
                     if !self.data.policy.grants.iter().any(|g| {
-                        g.subject == subject
-                            && g.scope == scope
-                            && g.minimum_age == minimum_age
-                            && g.permissions.contains(parts[3])
+                        g.subject == subject && g.scope == scope && g.permissions.contains(parts[3])
                     }) {
                         self.data.policy.grants.push(Grant {
                             owner: false,
                             subject,
                             scope,
                             permissions: BTreeSet::from([parts[3].into()]),
-                            minimum_age,
                         });
                     }
                 } else {

@@ -123,19 +123,31 @@ const USER: &str = r#"
 /user set bob media.max_age 7d #support
 /user set bob media.user_quota 1g
 /user set bob label @unset
+/user reset bob @all #support
+/user reset bob password new-password
 /user rename bob robert
 /user new alice temporary-password admin
 /user passwd old-password new-password
 ```
 
-- Metadata is a bounded list per account and scope.
+- Metadata is a two-level tree: a global root and sparse room override branches.
 - Omitted scope uses the selected room; Console/stdin use `@global`.
 - In private views, specify a room or `@global` for user metadata and lists.
 - Use `#name` to select a room explicitly.
 - `@all` selects every user in the scope, including the caller.
-- `get` without a key returns the effective metadata list.
+- `/user get bob #support` shows separate `@global` and `#support` sections.
+- Global values have no hints; room values show `set here` or `inherited`.
+- `get` without a key returns all visible keys in both sections.
+- Room values override global values; unset values fall back without storing copies.
+- Custom values inherit only where global account read authority allows inspection.
+- Room deletion prunes its branch from every account atomically.
 - Read your own metadata freely; other accounts require r:account.metadata (global/account) or room policy-management authority.
-- Only su can set, remove or bulk-update metadata, including media limits.
+- Only su can set, remove, reset or bulk-update metadata, including media limits.
+- `/user reset bob media.max_size #support` removes one override and restores inheritance.
+- `/user reset bob @all #support` clears only that room branch; `@global` clears only the root.
+- `/user reset @all @all #support` resets every selected member's room branch.
+- Empty branches are pruned; unrelated scopes and credentials remain unchanged.
+- `/user reset bob password new-password` resets credentials using existing password-reset permissions.
 - Only su may change a su account.
 - Global admins receive `r:account.metadata` for inspection.
 - Room policy managers may inspect members' room metadata.
@@ -145,7 +157,7 @@ const USER: &str = r#"
 
 - `media.max_size`: size per file; accepts `k`, `m`, `g` units.
 - `media.max_age`: duration, or `-1` for permanent.
-- `media.user_quota`: account-wide quota; accepts `k`, `m`, `g` units.
+- `media.user_quota`: root-only account-wide quota; accepts `k`, `m`, `g` units.
 - `/user set bob media.user_quota 1g` targets account-wide metadata when scope is omitted.
 - Explicit room scopes cannot set account-wide quota.
 - Size and quota cannot exceed server ceilings.
@@ -153,6 +165,8 @@ const USER: &str = r#"
 - `@unset` removes a value and restores inheritance.
 - Custom lowercase keys accept single-token values up to 256 bytes.
 - Use `@all` in the key position to read every key.
+- `history.clean_min_age`: `0` disables cleanup, `-1` is unrestricted, or use a positive duration.
+- Cleanup defaults follow current roles; derived defaults are never stored.
 - Metadata never grants permissions.
 - `get` shows effective media values, including inherited limits and server defaults.
 
@@ -242,7 +256,7 @@ const GRANT: &str = r#"# /grant
 ## Add one permission
 
 ```text
-/grant username scope permission [minimum-age]
+/grant username scope permission
 ```
 
 - Use an exact action name or a slash command.
@@ -284,7 +298,7 @@ const GRANT: &str = r#"# /grant
 
 ## Limit history cleanup
 
-- Only `x:history.clean` accepts minimum-age.
+- Grants contain permissions only; set cleanup limits through user metadata.
 - Use positive durations with s/m/h/d/w units.
 
 - Upload permissions contain no quotas or retention values.
@@ -295,11 +309,12 @@ const GRANT: &str = r#"# /grant
 - This example permits cleanup of messages older than seven days; su must issue these grants:
 
 ```text
-/grant bob #support x:history.clean 7d
+/grant bob #support x:history.clean
+/user set bob history.clean_min_age 7d #support
 /grant bob #support /clean
 ```
 
-- An unrestricted cleanup grant from elsewhere still applies.
+- An unrestricted action grant does not bypass metadata limits.
 
 ## Check access
 
@@ -550,12 +565,13 @@ const SUDO: &str = r#"# /sudo
 ```text
 /sudo /room new support
 /sudo /room join #support
-/sudo /user reset alice new-password
+/sudo /user reset alice password new-password
 /sudo /permissions @audit
 ```
 
 - The wrapped command receives all su command and action permissions.
 - It can manage su accounts and grant permanent privileges, so sudo delegates full superuser trust.
+- It bypasses command/action grants and cleanup metadata limits.
 - The caller keeps their name and stable identity in messages, room ownership, and audit entries.
 - Elevation does not itself change groups or persist any grants.
 - Normal validation, storage rollback, and session checks still apply.
@@ -714,7 +730,7 @@ const CLEAN: &str = r#"# /clean
 ## Examples
 
 ```text
-/clean 30d #support --dry-run
+/clean -1 #support --dry-run
 /clean 30d #support
 /clean 7d @direct:bob --dry-run
 /clean 7d @private:alice:bob
@@ -725,7 +741,13 @@ const CLEAN: &str = r#"# /clean
 ## Permissions
 
 - Require `/clean` command access in the invocation context and every target.
-- Require `x:history.clean` on every target; existing minimum-age constraints apply.
+- Require `x:history.clean` on every target and an allowing `history.clean_min_age` value.
+- `0` disables cleanup; `-1` allows any age; positive durations set a minimum message age.
+- Defaults: admin/su `-1`, ordinary users `0`, room owners `-1` within their own room.
+- Room metadata overrides global metadata, then live role defaults apply.
+- Private conversations use the global cleanup limit.
+- Su and authorized `/sudo` bypass command grants, action grants and metadata cleanup limits.
+- `/clean -1 scope` explicitly wipes all history in the selected scope.
 - Private participants do not receive cleanup authority automatically.
 - Su can delegate private cleanup through explicit grants:
 

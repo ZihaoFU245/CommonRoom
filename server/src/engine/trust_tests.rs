@@ -167,7 +167,6 @@ fn sudo_authority_is_cleared_even_when_policy_rebuilding_fails() {
             subject: authorization::Subject::Account(engine.data.users["bob"].id.clone()),
             scope: Scope::Server,
             permissions: BTreeSet::from(["x:unknown.permission".into()]),
-            minimum_age: 0,
         });
         Ok(())
     });
@@ -878,7 +877,7 @@ fn global_scope_alias_and_command_hints_preserve_separate_permission_gates() {
 }
 
 #[test]
-fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
+fn permission_output_keeps_assignment_privacy_and_limits_separate() {
     let mut e = fixture();
     e.execute(Some("alice"), Some("team"), "original").unwrap();
     let id = super::tests::room_messages(&e, "team")[0].id.clone();
@@ -903,7 +902,9 @@ fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
     assert!(error.contains("w:message.create at team"));
     e.execute(None, None, "/grant eve #team w:message.create")
         .unwrap();
-    e.execute(None, None, "/grant bob #team x:history.clean 7d")
+    e.execute(None, None, "/grant bob #team x:history.clean")
+        .unwrap();
+    e.execute(None, None, "/user set bob history.clean_min_age 7d #team")
         .unwrap();
     let before = e.data.clone();
     let own = e
@@ -911,8 +912,8 @@ fn permission_output_keeps_assignment_privacy_and_conditional_access_visible() {
         .unwrap();
     assert!(own.starts_with("# Access at #team\n"));
     assert!(own.contains("## Effective access"));
-    assert!(own.contains("### Conditional actions"));
-    assert!(own.contains("604800 seconds"));
+    assert!(!own.contains("Conditional actions"));
+    assert!(!own.contains("604800"));
     assert!(own.contains("Viewing assignments requires"));
     assert!(!own.contains("### eve"));
     let managed = e
@@ -977,7 +978,9 @@ fn readonly_grants_filter_commands_content_members_and_unread_metadata() {
 fn permissions_and_command_gates_are_independent_and_target_scoped() {
     let mut e = fixture();
     e.execute(Some("mallory"), None, "/new room other").unwrap();
-    e.execute(None, None, "/grant bob #team x:history.clean 7d")
+    e.execute(None, None, "/grant bob #team x:history.clean")
+        .unwrap();
+    e.execute(None, None, "/user set bob history.clean_min_age 7d #team")
         .unwrap();
     assert!(
         e.execute(Some("bob"), Some("team"), "/clean 7d #team")
@@ -1173,7 +1176,6 @@ fn permission_lookup_benchmark() {
             subject: authorization::Subject::Account(id.clone()),
             scope: Scope::Room(format!("benchmark-{n}")),
             permissions: BTreeSet::from([Action::Read.name().into()]),
-            minimum_age: 0,
         });
     }
     e.rebuild_authorization().unwrap();
@@ -1357,6 +1359,8 @@ fn command_view_cannot_borrow_a_command_grant_from_another_target() {
     e.execute(None, None, "/grant bob #team /clean").unwrap();
     assert!(e.execute(Some("bob"), None, "/clean 1s #other").is_err());
     e.execute(None, None, "/grant bob #other /clean").unwrap();
+    e.execute(None, None, "/user set bob history.clean_min_age -1 @global")
+        .unwrap();
     e.execute(Some("bob"), None, "/clean 1s #other").unwrap();
 }
 
@@ -1715,7 +1719,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         "/user passwd old new".into(),
         "/user ls".into(),
         "/user new created password user".into(),
-        "/user reset eve password".into(),
+        "/user reset eve password password".into(),
         "/user enable eve".into(),
         "/user disable eve".into(),
         "/user delete eve".into(),

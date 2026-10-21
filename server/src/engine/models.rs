@@ -6,6 +6,8 @@ pub struct Account {
     pub hash: String,
     pub id: String,
     pub disabled: bool,
+    /// Two-level override tree: @global root and sparse stable-room-ID branches.
+    /// Inherited/default values are resolved on reads, never copied into branches.
     #[serde(default)]
     pub metadata: BTreeMap<String, BTreeMap<String, String>>,
 }

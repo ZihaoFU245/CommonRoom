@@ -223,27 +223,25 @@ impl Engine {
         scope: &Scope,
         age: u64,
     ) -> Result<(), String> {
-        if self.allows(actor, scope, Action::Clean) {
+        if self.is_su(actor) {
             return Ok(());
         }
-        let id = self.principal_id(actor).ok_or("Account unavailable.")?;
-        let allowed = [Scope::Server, scope.clone()].iter().any(|scope| {
-            self.authorization
-                .conditional
-                .get(id)
-                .and_then(|scopes| scopes.get(scope))
-                .is_some_and(|rules| {
-                    rules
-                        .iter()
-                        .any(|(r, minimum)| age >= *minimum && r.has(Action::Clean))
-                })
-        });
-        if allowed {
+        self.require(actor, scope, Action::Clean)?;
+        let user = actor.ok_or("Account unavailable.")?;
+        let (limit, _) = self.cleanup_limit(user, scope)?;
+        if limit == -1
+            || (limit > 0 && age >= u64::try_from(limit).map_err(|_| "Invalid cleanup limit.")?)
+        {
             Ok(())
+        } else if limit == 0 {
+            Err("Cleanup disabled by history.clean_min_age metadata.".into())
         } else {
-            Err("Permission required: x:history.clean (age constraint may apply).".into())
+            Err(format!(
+                "history.clean_min_age requires messages at least {limit} seconds old."
+            ))
         }
     }
+
     pub(in crate::engine) fn command_scope(
         &self,
         actor: Option<&str>,
@@ -412,7 +410,6 @@ impl Engine {
             subject: Subject::Account(id),
             scope,
             permissions,
-            minimum_age: 0,
         });
     }
     pub(in crate::engine) fn audit(&mut self, actor: Option<&str>, operation: &str, target: &str) {

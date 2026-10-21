@@ -139,12 +139,14 @@ export function redactCommand(text: string): string {
   if (/^\/user\s+passwd(?:\s|$)/u.test(text))
     return prefix + "/user passwd •••• ••••";
   if (/^\/passwd(?:\s|$)/.test(text)) return prefix + "/passwd •••• ••••";
+  if (/^\/user\s+reset\s+\S+\s+password(?:\s|$)/u.test(text))
+    return (
+      prefix +
+      text.replace(/^(\/user\s+reset\s+\S+\s+password\s+)\S+/u, "$1••••")
+    );
   return (
     prefix +
-    text.replace(
-      /^(\/(?:user\s+(?:new|reset)|new\s+user|reset)\s+\S+\s+)\S+/,
-      "$1••••",
-    )
+    text.replace(/^(\/(?:user\s+new|new\s+user|reset)\s+\S+\s+)\S+/, "$1••••")
   );
 }
 export function commandText(text: string) {
@@ -264,17 +266,27 @@ export function suggestions(
         operation || "",
       )
     )
-      values = ["get", "set"].includes(operation || "")
+      values = ["get", "set", "reset"].includes(operation || "")
         ? ["@all", ...users]
         : users;
-    if (position === 3 && ["get", "set"].includes(operation || ""))
-      values = ["media.max_size", "media.max_age", "media.user_quota"];
-    if (position === 3 && operation === "get") values.unshift("@all");
+    if (position === 3 && ["get", "set", "reset"].includes(operation || ""))
+      values = [
+        "media.max_size",
+        "media.max_age",
+        "media.user_quota",
+        "history.clean_min_age",
+      ];
+    if (position === 3 && ["get", "reset"].includes(operation || ""))
+      values.unshift("@all");
+    if (position === 3 && operation === "reset" && parts[2] !== "@all")
+      values.unshift("password");
     if (position === 3 && operation === "get")
       values = [...values, "@global", ...rooms.map((r) => `#${r}`)];
     if (
       (position === 5 && operation === "set") ||
-      (position === 4 && operation === "get")
+      (position === 4 &&
+        (operation === "get" ||
+          (operation === "reset" && parts[3] !== "password")))
     )
       values = ["@global", ...rooms.map((r) => `#${r}`)];
     if (position === 4 && operation === "new") values = ["user", "admin"];
@@ -373,6 +385,14 @@ export function suggestions(
         ...commands.map((command) => command.name.slice(1)),
       ]),
     ];
+  if (
+    name === "/user" &&
+    parts[1] === "set" &&
+    position === 4 &&
+    parts[3] === "history.clean_min_age"
+  )
+    values = ["0", "-1", "7d", "30d", "@unset"];
+  if (name === "/clean" && position === 1) values = ["7d", "30d", "-1"];
   if (name === "/clean" && position === 2)
     values = [
       ...rooms.map((room) => `#${room}`),

@@ -176,7 +176,7 @@ impl Engine {
                 self.data.users.insert((*name).into(), Account { id: id.clone(), hash: "!no-password".into(), disabled: false, metadata: BTreeMap::new() });
                 self.data.bots.insert(id.clone(), Registration {owner_id:self.principal_id(actor).filter(|id| *id != "console").map(str::to_owned), ..Default::default()});
                 self.data.policy.grants.push(Grant {
-                    owner: false, subject: Subject::Account(id), scope: scope.clone(), minimum_age: 0,
+                    owner: false, subject: Subject::Account(id), scope: scope.clone(),
                     permissions: DEFAULT_ACTIONS.iter().map(|a| a.name().to_owned())
                         .chain(DEFAULT_COMMANDS.iter().map(|c| (*c).to_owned())).collect(),
                 });

@@ -62,11 +62,25 @@ const entries = [
   [
     "/user get @all",
     JSON.stringify({
-      alice: { label: "owner", "media.max_size": "10485760" },
+      alice: {
+        "@global": {
+          "media.user_quota": { value: "1073741824", source: "config" },
+          "media.max_size": { value: "26214400", source: "config" },
+        },
+        "#support": {
+          label: { value: "owner", source: "#support" },
+          "media.max_size": { value: "10485760", source: "#support" },
+        },
+      },
       bob: {
-        label: "member",
-        "media.user_quota": "1073741824",
-        "media.max_size": "26214400",
+        "@global": {
+          "media.user_quota": { value: "1073741824", source: "config" },
+          "media.max_size": { value: "26214400", source: "@global" },
+        },
+        "#support": {
+          label: { value: "member", source: "#support" },
+          "media.max_size": { value: "26214400", source: "@global" },
+        },
       },
     }),
   ],

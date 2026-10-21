@@ -195,26 +195,57 @@ test("browser manuals keep explanatory text in bullet points", async () => {
 test("metadata renders as per-user lists with readable effective limits", () => {
   const data = {
     bob: {
-      "media.user_quota": "1073741824",
-      "media.max_size": "26214400",
-      "media.max_age": "604800",
-      label: "__reviewer__",
+      "@global": {
+        "media.user_quota": { value: "1073741824", source: "config" },
+        "media.max_size": { value: "26214400", source: "@global" },
+      },
+      "#a": {
+        "media.max_size": { value: "26214400", source: "@global" },
+        "media.max_age": { value: "604800", source: "config" },
+        label: { value: "__reviewer__", source: "#a" },
+      },
     },
-    alice: { "media.user_quota": "536870912" },
+    alice: {
+      "@global": {
+        "media.user_quota": { value: "536870912", source: "@global" },
+      },
+    },
   };
   const nodes = output("/user get @all @all", JSON.stringify(data));
   assert.equal(nodesWithTag(nodes, "pre").length, 0);
-  assert.equal(nodesWithTag(nodes, "li").length, 5);
+  assert.equal(nodesWithTag(nodes, "li").length, 6);
   assert.deepEqual(
     nodesWithTag(nodes, "h3").map((node) => text(node.children)),
     ["bob", "alice"],
   );
   for (const value of ["1g", "25m", "1w", "512m", "__reviewer__"])
     assert.ok(text(nodes).includes(value), value);
+  assert.deepEqual(
+    nodesWithTag(nodes, "h4").map((node) => text(node.children)),
+    ["@global", "#a", "@global"],
+  );
+  for (const origin of ["inherited", "set here"])
+    assert.ok(text(nodes).includes(origin));
+  for (const label of ["server default", "role default", "inherited from"])
+    assert.equal(text(nodes).includes(label), false);
+  const rows = nodesWithTag(nodes, "li").map((node) => text(node.children));
+  assert.equal(rows[0], "media.user_quota: 1g");
+  assert.equal(rows[1], "media.max_size: 25m");
+  assert.equal(rows[2], "media.max_size: 25m — inherited");
+  assert.equal(rows[4], "label: __reviewer__ — set here");
   assert.equal(nodesWithTag(nodes, "strong").length, 0);
   const hostile = output(
     "/user get bob @all",
-    JSON.stringify({ bob: { label: "```\n# forged\n<script>bad</script>" } }),
+    JSON.stringify({
+      bob: {
+        "@global": {
+          label: {
+            value: "```\n# forged\n<script>bad</script>",
+            source: "@global",
+          },
+        },
+      },
+    }),
   );
   assert.equal(nodesWithTag(hostile, "script").length, 0);
   assert.equal(nodesWithTag(hostile, "h1").length, 0);
@@ -234,4 +265,31 @@ test("cleanup preview and execution render their Markdown reports as lists", () 
     assert.equal(nodesWithTag(nodes, "li").length, 3);
     assert.equal(nodesWithTag(nodes, "pre").length, 0);
   }
+});
+
+test("cleanup metadata distinguishes role defaults, disabled values and minimum ages", () => {
+  const nodes = output(
+    "/user get bob #a",
+    JSON.stringify({
+      bob: {
+        "@global": { "history.clean_min_age": { value: "0", source: "role" } },
+        "#a": { "history.clean_min_age": { value: "-1", source: "role" } },
+      },
+    }),
+  );
+  for (const phrase of ["0 (disabled)", "-1 (unrestricted)", "inherited"])
+    assert.ok(text(nodes).includes(phrase), phrase);
+  assert.equal(text(nodes).includes("role default"), false);
+  const limited = output(
+    "/user get bob #a",
+    JSON.stringify({
+      bob: {
+        "#a": {
+          "history.clean_min_age": { value: "604800", source: "@global" },
+        },
+      },
+    }),
+  );
+  assert.ok(text(limited).includes("1w"));
+  assert.ok(text(limited).includes("inherited"));
 });

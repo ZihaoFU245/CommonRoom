@@ -2,6 +2,13 @@
 use super::*;
 use authorization::{Action, Scope};
 
+/// Read projection only: inherited values are never persisted in room branches.
+#[derive(serde::Serialize)]
+struct MetadataEntry {
+    value: String,
+    source: String,
+}
+
 impl Engine {
     pub(super) fn object_scope(
         &self,
@@ -162,43 +169,153 @@ impl Engine {
                 let mut output = BTreeMap::new();
                 for name in self.metadata_targets(context.actor, who, &scope)? {
                     self.metadata_access(context.actor, &name, &scope, false)?;
-                    let mut values = self.data.users[&name]
-                        .metadata
-                        .get(Self::metadata_scope_key(&scope)?)
-                        .cloned()
-                        .unwrap_or_default();
-                    for (key, ceiling) in [
-                        ("media.max_size", self.media_config.max_size),
-                        ("media.user_quota", self.media_config.user_quota),
-                    ] {
-                        let effective_scope = if key == "media.user_quota" {
-                            &Scope::Server
-                        } else {
-                            &scope
-                        };
-                        let value = self
-                            .metadata_value(&name, effective_scope, key)
-                            .and_then(|value| value.parse::<u64>().ok())
-                            .unwrap_or(ceiling)
-                            .min(ceiling);
-                        values.insert(key.into(), value.to_string());
+                    // Room authority must not reveal arbitrary global account metadata.
+                    let global_read = self
+                        .metadata_access(context.actor, &name, &Scope::Server, false)
+                        .is_ok();
+                    let mut sections = BTreeMap::new();
+                    sections.insert(
+                        "@global".to_owned(),
+                        self.metadata_section(&name, &Scope::Server, key, global_read)?,
+                    );
+                    if scope != Scope::Server {
+                        sections.insert(
+                            format!("#{}", self.scope_label(&scope)),
+                            self.metadata_section(&name, &scope, key, global_read)?,
+                        );
                     }
-                    values.entry("media.max_age".into()).or_insert_with(|| {
-                        self.metadata_value(&name, &scope, "media.max_age")
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| self.media_config.max_age.to_string())
-                    });
-                    let values = if let Some(key) = key {
-                        values.into_iter().filter(|(k, _)| k == key).collect()
-                    } else {
-                        values
-                    };
-                    output.insert(name, values);
+                    output.insert(name, sections);
                 }
                 serde_json::to_string_pretty(&output).map_err(|e| e.to_string())
             }
             _ => Err("Usage: /user ls [scope] | /user get who [key] [scope] | /room ls".into()),
         }
+    }
+    /// Role defaults are resolved live; role/ownership changes leave no stored privilege.
+    pub(super) fn cleanup_limit(&self, name: &str, scope: &Scope) -> Result<(i64, String), String> {
+        let account = self.data.users.get(name).ok_or("User not found.")?;
+        let room = if let Scope::Room(id) = scope {
+            account.metadata.get(id)
+        } else {
+            None
+        };
+        for (entries, source) in [
+            (room, format!("#{}", self.scope_label(scope))),
+            (account.metadata.get("@global"), "@global".into()),
+        ] {
+            if let Some(value) = entries.and_then(|entries| entries.get("history.clean_min_age")) {
+                let limit = value
+                    .parse::<i64>()
+                    .map_err(|_| "Invalid history.clean_min_age metadata.")?;
+                if limit < -1 {
+                    return Err("Invalid history.clean_min_age metadata.".into());
+                }
+                return Ok((limit, source));
+            }
+        }
+        let admin = self.data.policy.assignments.iter().any(|a| {
+            a.account_id == account.id
+                && a.group == authorization::Group::Admin
+                && (a.scope == Scope::Server || &a.scope == scope)
+        });
+        let owner = matches!(scope, Scope::Room(id) if self.data.rooms.values().any(|r| &r.id == id && r.owner_id == account.id));
+        Ok((
+            if admin || owner || self.is_su(Some(name)) {
+                -1
+            } else {
+                0
+            },
+            "role".into(),
+        ))
+    }
+    fn metadata_section(
+        &self,
+        name: &str,
+        scope: &Scope,
+        filter: Option<&str>,
+        global_read: bool,
+    ) -> Result<BTreeMap<String, MetadataEntry>, String> {
+        let metadata = &self.data.users[name].metadata;
+        let label = if *scope == Scope::Server {
+            "@global".into()
+        } else {
+            format!("#{}", self.scope_label(scope))
+        };
+        let mut values = BTreeMap::new();
+        if global_read && let Some(root) = metadata.get("@global") {
+            for (key, value) in root {
+                if scope != &Scope::Server && key == "media.user_quota" {
+                    continue;
+                }
+                values.insert(
+                    key.clone(),
+                    MetadataEntry {
+                        value: value.clone(),
+                        source: "@global".into(),
+                    },
+                );
+            }
+        }
+        if scope != &Scope::Server
+            && let Some(branch) = metadata.get(Self::metadata_scope_key(scope)?)
+        {
+            for (key, value) in branch {
+                if key == "media.user_quota" {
+                    continue;
+                }
+                values.insert(
+                    key.clone(),
+                    MetadataEntry {
+                        value: value.clone(),
+                        source: label.clone(),
+                    },
+                );
+            }
+        }
+        for (key, default) in [
+            ("media.max_size", self.media_config.max_size.to_string()),
+            ("media.max_age", self.media_config.max_age.to_string()),
+            ("media.user_quota", self.media_config.user_quota.to_string()),
+        ] {
+            if key == "media.user_quota" && scope != &Scope::Server {
+                continue;
+            }
+            let local = metadata
+                .get(Self::metadata_scope_key(scope)?)
+                .and_then(|m| m.get(key));
+            let global = metadata.get("@global").and_then(|m| m.get(key));
+            let (raw, source) = if let Some(value) = local {
+                (value.clone(), label.clone())
+            } else if let Some(value) = global {
+                (value.clone(), "@global".into())
+            } else {
+                (default, "config".into())
+            };
+            let value = if key == "media.max_age" {
+                raw
+            } else {
+                let ceiling = if key == "media.max_size" {
+                    self.media_config.max_size
+                } else {
+                    self.media_config.user_quota
+                };
+                raw.parse::<u64>()
+                    .unwrap_or(ceiling)
+                    .min(ceiling)
+                    .to_string()
+            };
+            values.insert(key.into(), MetadataEntry { value, source });
+        }
+        let (limit, source) = self.cleanup_limit(name, scope)?;
+        values.insert(
+            "history.clean_min_age".into(),
+            MetadataEntry {
+                value: limit.to_string(),
+                source,
+            },
+        );
+        values.retain(|key, _| filter.is_none_or(|filter| key == filter));
+        Ok(values)
     }
     pub(super) fn apply_objects(
         &mut self,
@@ -254,6 +371,68 @@ impl Engine {
             );
             return Ok(format!("Updated metadata for {} users.", targets.len()));
         }
+        if let ["/user", "reset", who, key, rest @ ..] = context.parts {
+            if !self.is_su(context.actor) {
+                return Err("Only su can change user metadata.".into());
+            }
+            if rest.len() > 1 || *key == "password" {
+                return Err("Usage: /user reset who key|@all [scope] | /user reset who password new-password".into());
+            }
+            let scope = self.object_scope(
+                context.actor,
+                context.view,
+                rest.first()
+                    .copied()
+                    .or((*key == "media.user_quota").then_some("@global")),
+            )?;
+            let scope_key = Self::metadata_scope_key(&scope)?.to_owned();
+            if *key != "@all" {
+                self.validate_metadata(key, "@unset", &scope)?;
+            }
+            let selection = if *who == "@all" && *key == "media.user_quota" && rest.is_empty() {
+                self.object_scope(context.actor, context.view, None)?
+            } else {
+                scope.clone()
+            };
+            let targets = self.metadata_targets(context.actor, who, &selection)?;
+            for name in &targets {
+                self.metadata_access(context.actor, name, &scope, true)?;
+            }
+            for name in &targets {
+                let metadata = &mut self
+                    .data
+                    .users
+                    .get_mut(name)
+                    .ok_or("User not found.")?
+                    .metadata;
+                if *key == "@all" {
+                    metadata.remove(&scope_key);
+                } else if let Some(entries) = metadata.get_mut(&scope_key) {
+                    entries.remove(*key);
+                }
+                metadata.retain(|_, entries| !entries.is_empty());
+            }
+            self.audit(
+                context.actor,
+                "/user reset",
+                &format!("{who} {key} {}", self.scope_label(&scope)),
+            );
+            return Ok(format!(
+                "Reset metadata for {} users at {}.",
+                targets.len(),
+                if scope == Scope::Server {
+                    "@global".into()
+                } else {
+                    format!("#{}", self.scope_label(&scope))
+                }
+            ));
+        }
+        if context.parts.starts_with(&["/user", "reset"]) {
+            return Err(
+                "Usage: /user reset who key|@all [scope] | /user reset who password new-password"
+                    .into(),
+            );
+        }
         self.query_objects(context)
     }
     fn validate_metadata(&self, key: &str, value: &str, scope: &Scope) -> Result<String, String> {
@@ -267,6 +446,9 @@ impl Engine {
         {
             return Err("Metadata keys use 1–64 lowercase letters, digits, ., _ or -; values are at most 256 bytes without controls.".into());
         }
+        if key.starts_with("history.") && key != "history.clean_min_age" {
+            return Err("Unknown history metadata key.".into());
+        }
         if key.starts_with("media.")
             && !["media.max_size", "media.max_age", "media.user_quota"].contains(&key)
         {
@@ -279,6 +461,14 @@ impl Engine {
             return Ok(value.into());
         }
         match key {
+            "history.clean_min_age" => {
+                if matches!(value, "-1" | "0") {
+                    return Ok(value.into());
+                }
+                let age = parse_age(value)?;
+                i64::try_from(age).map_err(|_| "Cleanup age exceeds the supported range.")?;
+                Ok(age.to_string())
+            }
             "media.max_size" | "media.user_quota" => {
                 let n = crate::config::parse_byte_size(value)?;
                 let ceiling = if key == "media.max_size" {
@@ -358,7 +548,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(all.as_object().unwrap().len(), 3);
-        assert_eq!(all["bob"]["label"], "room-member");
+        assert_eq!(all["bob"]["#lobby"]["label"]["value"], "room-member");
         assert!(e.data.users["outside"].metadata.is_empty());
         let before = e.data.clone();
         assert!(
@@ -549,54 +739,51 @@ mod tests {
         assert_eq!(e.db.lock().unwrap().total_changes(), writes);
     }
     #[test]
-    fn only_head_database_upgrades_and_transfers_media_limits_atomically() {
+    fn only_head_database_upgrades_and_moves_cleanup_limits_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         let mut e = Engine::open(&path).unwrap();
-        e.provision("alice", "hash".into(), true, false).unwrap();
-        e.execute(None, None, "/grant alice @global w:media.upload")
+        e.provision("bob", "hash".into(), false, false).unwrap();
+        e.execute(None, None, "/grant bob @global x:history.clean")
             .unwrap();
-        e.execute(None, None, "/grant alice @global /rename")
-            .unwrap();
-        e.execute(None, None, "/revoke alice admin").unwrap();
-        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.grants[0].media',json('{\"max_size\":16,\"max_age\":86400}')); PRAGMA user_version=15;").unwrap();
+        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.grants[0].minimum_age',604800); PRAGMA user_version=16;").unwrap();
         drop(e);
         let db = Connection::open(&path).unwrap();
+        let original: String = db
+            .query_row("SELECT json FROM state", [], |row| row.get(0))
+            .unwrap();
         db.execute_batch("CREATE TRIGGER deny_upgrade BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(Engine::open(&path).is_err());
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            15
+            16
+        );
+        assert_eq!(
+            db.query_row("SELECT json FROM state", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            original
         );
         db.execute_batch("DROP TRIGGER deny_upgrade;").unwrap();
         let e = Engine::open(&path).unwrap();
+        assert_eq!(
+            e.data.users["bob"].metadata["@global"]["history.clean_min_age"],
+            "604800"
+        );
         assert!(
-            e.read_command(Some("alice"), None, "/user get alice")
+            !db.query_row("SELECT json FROM state", [], |r| r.get::<_, String>(0))
                 .unwrap()
-                .is_ok()
+                .contains("minimum_age")
         );
         assert_eq!(
-            e.data.users["alice"].metadata["@global"]["media.max_size"],
-            "16"
-        );
-        assert!(
-            !serde_json::to_string(&e.data.policy)
-                .unwrap()
-                .contains("\"media\"")
+            db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            17
         );
         drop(e);
-        for version in 1..=14 {
+        for version in 1..=15 {
             db.pragma_update(None, "user_version", version).unwrap();
-            let before: String = db
-                .query_row("SELECT json FROM state", [], |r| r.get(0))
-                .unwrap();
             assert!(Engine::open(&path).is_err());
-            assert_eq!(
-                db.query_row("SELECT json FROM state", [], |r| r.get::<_, String>(0))
-                    .unwrap(),
-                before
-            );
             assert_eq!(
                 db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                     .unwrap(),
@@ -604,12 +791,6 @@ mod tests {
             );
         }
     }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod room_interface_tests {
-
     #[test]
     fn room_owner_can_invite_with_implicit_or_explicit_scope_and_errors_use_public_syntax() {
         let mut e = crate::engine::tests::engine();
@@ -779,6 +960,234 @@ mod metadata_interface_tests {
     use super::*;
 
     #[test]
+    fn metadata_reset_restores_inheritance_and_clears_only_the_selected_branch() {
+        let mut e = crate::engine::tests::engine();
+        let room = e.room_scope("lobby").unwrap();
+        let id = e.data.rooms["lobby"].id.clone();
+        e.execute(None, None, "/user set bob media.max_size 10m @global")
+            .unwrap();
+        e.execute(None, None, "/user set bob media.max_size 5m #lobby")
+            .unwrap();
+        e.execute(None, None, "/user set bob label local #lobby")
+            .unwrap();
+        e.execute(None, None, "/user reset bob media.max_size #lobby")
+            .unwrap();
+        assert_eq!(
+            e.metadata_value("bob", &room, "media.max_size"),
+            Some("10485760")
+        );
+        assert_eq!(e.data.users["bob"].metadata[&id]["label"], "local");
+        e.execute(None, Some("lobby"), "/user reset bob @all")
+            .unwrap();
+        assert!(!e.data.users["bob"].metadata.contains_key(&id));
+        assert_eq!(
+            e.data.users["bob"].metadata["@global"]["media.max_size"],
+            "10485760"
+        );
+        e.execute(None, None, "/user set bob label local #lobby")
+            .unwrap();
+        e.execute(None, None, "/user set bob media.user_quota 512m")
+            .unwrap();
+        e.execute(None, Some("lobby"), "/user reset bob media.user_quota")
+            .unwrap();
+        assert!(!e.data.users["bob"].metadata["@global"].contains_key("media.user_quota"));
+        e.execute(None, None, "/user reset bob @all @global")
+            .unwrap();
+        assert!(!e.data.users["bob"].metadata.contains_key("@global"));
+        assert_eq!(e.data.users["bob"].metadata[&id]["label"], "local");
+        let before = e.data.clone();
+        for command in [
+            "/user reset bob media.user_quota #lobby",
+            "/user reset bob @all lobby",
+            "/user reset bob media.unknown #lobby",
+            "/user reset bob label #lobby extra",
+        ] {
+            assert!(e.execute(None, None, command).is_err(), "{command}");
+            assert!(e.data == before);
+        }
+    }
+
+    #[test]
+    fn bulk_metadata_reset_is_su_only_scoped_and_rolls_back_failed_writes() {
+        let mut e = crate::engine::tests::engine();
+        e.provision("outside", "hash".into(), false, false).unwrap();
+        e.execute(None, None, "/user set @all label root @global")
+            .unwrap();
+        e.execute(None, None, "/user set @all label local #lobby")
+            .unwrap();
+        e.execute(None, None, "/user set @all media.user_quota 512m @global")
+            .unwrap();
+        let before = e.data.clone();
+        for actor in ["alice", "bob"] {
+            for command in [
+                "/user reset bob label #lobby",
+                "/user reset @all @all #lobby",
+            ] {
+                assert!(
+                    e.execute(Some(actor), Some("lobby"), command)
+                        .unwrap_err()
+                        .contains("Only su")
+                );
+                assert!(e.data == before);
+            }
+        }
+        e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_reset BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='bob' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(
+            e.execute(None, None, "/user reset @all @all #lobby")
+                .is_err()
+        );
+        assert!(e.data == before);
+        e.db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER deny_reset;")
+            .unwrap();
+        let hash = e.data.users["bob"].hash.clone();
+        e.execute(None, Some("lobby"), "/user reset @all @all")
+            .unwrap();
+        let id = &e.data.rooms["lobby"].id;
+        assert!(
+            e.data
+                .users
+                .values()
+                .all(|user| !user.metadata.contains_key(id))
+        );
+        assert_eq!(e.data.users["outside"].metadata["@global"]["label"], "root");
+        assert_eq!(e.data.users["bob"].hash, hash);
+        e.execute(None, Some("lobby"), "/user reset @all media.user_quota")
+            .unwrap();
+        assert!(!e.data.users["bob"].metadata["@global"].contains_key("media.user_quota"));
+        assert_eq!(
+            e.data.users["outside"].metadata["@global"]["media.user_quota"],
+            "536870912"
+        );
+    }
+
+    #[test]
+    fn metadata_reset_persists_pruned_branches_without_touching_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("bob", "hash".into(), false, false).unwrap();
+        e.execute(None, None, "/user set bob label root").unwrap();
+        e.execute(None, None, "/user reset bob @all").unwrap();
+        drop(e);
+        let e = Engine::open(&path).unwrap();
+        assert!(e.data.users["bob"].metadata.is_empty());
+        assert_eq!(e.data.users["bob"].hash, "hash");
+    }
+
+    #[test]
+    fn metadata_tree_reads_resolve_sources_without_materializing_inheritance() {
+        let mut e = crate::engine::tests::engine();
+        e.execute(None, None, "/user set bob media.max_age 2d @global")
+            .unwrap();
+        e.execute(None, None, "/user set bob label root @global")
+            .unwrap();
+        let id = e.data.rooms["lobby"].id.clone();
+        let get = |e: &Engine| -> serde_json::Value {
+            serde_json::from_str(
+                &e.read_command(Some("bob"), Some("lobby"), "/user get bob #lobby")
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let before = e.data.clone();
+        let initial = get(&e);
+        assert_eq!(initial["bob"]["#lobby"]["media.max_age"]["value"], "172800");
+        assert_eq!(
+            initial["bob"]["#lobby"]["media.max_age"]["source"],
+            "@global"
+        );
+        assert_eq!(
+            initial["bob"]["#lobby"]["media.max_size"]["source"],
+            "config"
+        );
+        assert_eq!(initial["bob"]["#lobby"]["label"]["value"], "root");
+        assert!(initial["bob"]["#lobby"].get("media.user_quota").is_none());
+        assert!(!e.data.users["bob"].metadata.contains_key(&id));
+        assert!(e.data == before);
+        e.execute(None, None, "/user set bob media.max_age 1d #lobby")
+            .unwrap();
+        let local = get(&e);
+        assert_eq!(local["bob"]["#lobby"]["media.max_age"]["value"], "86400");
+        assert_eq!(local["bob"]["#lobby"]["media.max_age"]["source"], "#lobby");
+        assert_eq!(local["bob"]["@global"]["media.max_age"]["value"], "172800");
+        e.execute(None, None, "/user set bob media.max_age @unset #lobby")
+            .unwrap();
+        assert_eq!(
+            get(&e)["bob"]["#lobby"]["media.max_age"]["source"],
+            "@global"
+        );
+        assert!(!e.data.users["bob"].metadata.contains_key(&id));
+        e.execute(None, None, "/user set bob secret hidden @global")
+            .unwrap();
+        e.execute(None, None, "/grant eve #lobby x:policy.change")
+            .unwrap();
+        let restricted = e
+            .read_command(Some("eve"), Some("lobby"), "/user get bob #lobby")
+            .unwrap()
+            .unwrap();
+        assert!(!restricted.contains("hidden"));
+    }
+
+    #[test]
+    fn deleting_room_prunes_all_persisted_branches_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.sqlite");
+        let mut e = Engine::open(&path).unwrap();
+        for name in ["alice", "bob"] {
+            e.provision(name, "hash".into(), false, false).unwrap();
+        }
+        for room in ["a", "b"] {
+            e.execute(None, None, &format!("/room new {room}")).unwrap();
+            for name in ["alice", "bob"] {
+                e.execute(None, None, &format!("/room add {name} #{room}"))
+                    .unwrap();
+                e.execute(
+                    None,
+                    None,
+                    &format!("/user set {name} label {room} #{room}"),
+                )
+                .unwrap();
+            }
+        }
+        e.execute(None, None, "/user set bob label root @global")
+            .unwrap();
+        let id = e.data.rooms["a"].id.clone();
+        let other = e.data.rooms["b"].id.clone();
+        e.execute(None, None, "/room kick bob #a").unwrap();
+        e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_prune BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='bob' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let before = e.data.clone();
+        assert!(e.execute(None, None, "/room delete #a").is_err());
+        assert!(e.data == before);
+        e.db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER deny_prune;")
+            .unwrap();
+        e.execute(None, None, "/room delete #a").unwrap();
+        drop(e);
+        let mut e = Engine::open(&path).unwrap();
+        assert!(!e.data.rooms.contains_key("a"));
+        for user in e.data.users.values() {
+            assert!(!user.metadata.contains_key(&id));
+            assert_eq!(user.metadata[&other]["label"], "b");
+        }
+        assert_eq!(e.data.users["bob"].metadata["@global"]["label"], "root");
+        let db = e.db.lock().unwrap();
+        let stale: u64 = db.query_row("SELECT count(*) FROM entities WHERE kind='account' AND json_type(json, '$.metadata.' || ?) IS NOT NULL", [&id], |row| row.get(0)).unwrap();
+        assert_eq!(stale, 0);
+        drop(db);
+        e.execute(None, None, "/room new a").unwrap();
+        assert_ne!(e.data.rooms["a"].id, id);
+        assert!(
+            !e.data.users["bob"]
+                .metadata
+                .contains_key(&e.data.rooms["a"].id)
+        );
+    }
+
+    #[test]
     fn metadata_all_includes_effective_defaults_and_quota_shorthand_is_account_wide() {
         let mut e = crate::engine::tests::engine();
         e.execute(None, None, "/user set bob secret global-only")
@@ -792,9 +1201,15 @@ mod metadata_interface_tests {
             .unwrap()
         };
         let initial = get(&e, "/user get bob @all");
-        assert_eq!(initial["bob"]["media.user_quota"], "1073741824");
-        assert_eq!(initial["bob"]["media.max_size"], "26214400");
-        assert!(initial["bob"].get("secret").is_none());
+        assert_eq!(
+            initial["bob"]["@global"]["media.user_quota"]["value"],
+            "1073741824"
+        );
+        assert_eq!(
+            initial["bob"]["@global"]["media.max_size"]["value"],
+            "26214400"
+        );
+        assert_eq!(initial["bob"]["@global"]["secret"]["value"], "global-only");
         e.execute(None, Some("lobby"), "/user set bob media.user_quota 1g")
             .unwrap();
         assert_eq!(
@@ -804,13 +1219,13 @@ mod metadata_interface_tests {
         e.execute(None, Some("lobby"), "/user set bob media.user_quota 512m")
             .unwrap();
         assert_eq!(
-            get(&e, "/user get bob @all")["bob"]["media.user_quota"],
+            get(&e, "/user get bob @all")["bob"]["@global"]["media.user_quota"]["value"],
             "536870912"
         );
         e.execute(None, Some("lobby"), "/user set bob media.max_size 512k")
             .unwrap();
         assert_eq!(
-            get(&e, "/user get bob @all #lobby")["bob"]["media.max_size"],
+            get(&e, "/user get bob @all #lobby")["bob"]["#lobby"]["media.max_size"]["value"],
             "524288"
         );
         e.provision("outside", "hash".into(), false, false).unwrap();
@@ -829,12 +1244,15 @@ mod metadata_interface_tests {
         let all: serde_json::Value =
             serde_json::from_str(&e.execute(None, None, "/user get @all @all").unwrap()).unwrap();
         for name in ["alice", "bob", "eve"] {
-            assert_eq!(all[name]["media.user_quota"], "268435456");
+            assert_eq!(
+                all[name]["@global"]["media.user_quota"]["value"],
+                "268435456"
+            );
         }
         e.execute(None, None, "/user set bob media.user_quota @unset")
             .unwrap();
         assert_eq!(
-            get(&e, "/user get bob media.user_quota")["bob"]["media.user_quota"],
+            get(&e, "/user get bob media.user_quota")["bob"]["@global"]["media.user_quota"]["value"],
             "1073741824"
         );
         for value in ["0g", "2g", "1.5g", "18446744073709551615g"] {

@@ -696,8 +696,8 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-The server accepts schema v16 and upgrades only HEAD v15 transactionally. Older
-schemas are unsupported, and a v16 database cannot be opened by an older binary. Back up before
+The server accepts schema v17 and upgrades only HEAD v16 transactionally. Older
+schemas are unsupported, and a v17 database cannot be opened by an older binary. Back up before
 upgrading, keeping the database and object store consistent ([Data](data.md)).
 
 Stop the old process before starting the new one; only one process may use a data

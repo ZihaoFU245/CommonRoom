@@ -16,13 +16,18 @@ impl CleanupPlan {
         let messages: usize = self.targets.iter().map(|(_, count, _)| count).sum();
         let references: usize = self.targets.iter().map(|(_, _, count)| count).sum();
         format!(
-            "## {}\n\n- Scope: `{}`\n- Older than: `{}`\n- Conversations checked: {}\n- Messages {}: {}\n- Attachment references {}: {}\n\n- {}",
+            "## {}\n\n- Scope: `{}`\n- {}: `{}`\n- Conversations checked: {}\n- Messages {}: {}\n- Attachment references {}: {}\n\n- {}",
             if self.preview {
                 "Cleanup preview"
             } else {
                 "Cleanup complete"
             },
             self.scope,
+            if self.age == "all history" {
+                "History"
+            } else {
+                "Older than"
+            },
             self.age,
             self.targets.len(),
             if self.preview { "matching" } else { "deleted" },
@@ -45,10 +50,19 @@ impl Engine {
             ["/clean", _, _, "--dry-run"] => true,
             _ => return Err(format!("Usage: {USAGE}")),
         };
-        let age = parse_age(parts[1])?;
-        let cutoff = now()
-            .checked_sub(age)
-            .ok_or("Age is older than the clock permits.")?;
+        // Zero is an internal all-history request; normal durations stay positive.
+        let age = if parts[1] == "-1" {
+            0
+        } else {
+            parse_age(parts[1])?
+        };
+        let cutoff = if age == 0 {
+            u64::try_from(i64::MAX).map_err(|_| "Invalid clock range.")?
+        } else {
+            now()
+                .checked_sub(age)
+                .ok_or("Age is older than the clock permits.")?
+        };
         let value = parts[2];
         let scope = if value == "@all" { "@global" } else { value };
         let private_error = "Private conversation not found or access denied.";
@@ -113,7 +127,11 @@ impl Engine {
         }
         Ok(CleanupPlan {
             scope: scope.into(),
-            age: parts[1].into(),
+            age: if age == 0 {
+                "all history".into()
+            } else {
+                parts[1].into()
+            },
             cutoff,
             preview,
             targets: counts,
@@ -177,6 +195,176 @@ mod tests {
         age_first(e, &e.data.private["alice:eve"].id);
     }
     #[test]
+    fn cleanup_metadata_defaults_follow_live_roles_and_ownership() {
+        let mut e = engine();
+        let room = e.room_scope("lobby").unwrap();
+        assert_eq!(e.cleanup_limit("alice", &Scope::Server).unwrap().0, -1);
+        assert_eq!(e.cleanup_limit("bob", &room).unwrap().0, 0);
+        e.execute(None, None, "/room new owned").unwrap();
+        e.execute(None, None, "/room owner bob #owned").unwrap();
+        let owned = e.room_scope("owned").unwrap();
+        assert_eq!(e.cleanup_limit("bob", &owned).unwrap(), (-1, "role".into()));
+        e.execute(Some("bob"), Some("owned"), "/clean -1 #owned --dry-run")
+            .unwrap();
+        e.execute(None, None, "/room owner eve #owned").unwrap();
+        assert_eq!(e.cleanup_limit("bob", &owned).unwrap().0, 0);
+        assert_eq!(e.cleanup_limit("eve", &owned).unwrap().0, -1);
+        assert!(e.data.users["bob"].metadata.is_empty());
+        e.execute(None, None, "/grant bob admin").unwrap();
+        assert_eq!(e.cleanup_limit("bob", &Scope::Server).unwrap().0, -1);
+        e.execute(None, None, "/revoke bob admin").unwrap();
+        assert_eq!(e.cleanup_limit("bob", &Scope::Server).unwrap().0, 0);
+    }
+
+    #[test]
+    fn cleanup_metadata_limits_require_grants_and_resolve_room_over_global() {
+        let mut e = engine();
+        for permission in ["/clean", "x:history.clean"] {
+            e.execute(None, None, &format!("/grant bob #lobby {permission}"))
+                .unwrap();
+        }
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/clean 7d #lobby --dry-run")
+                .unwrap_err()
+                .contains("disabled")
+        );
+        e.execute(None, None, "/user set bob history.clean_min_age 7d @global")
+            .unwrap();
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/clean 1d #lobby")
+                .is_err()
+        );
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/clean -1 #lobby --dry-run")
+                .is_err()
+        );
+        e.execute(Some("bob"), Some("lobby"), "/clean 7d #lobby --dry-run")
+            .unwrap();
+        e.execute(None, None, "/user set bob history.clean_min_age -1 #lobby")
+            .unwrap();
+        e.execute(Some("bob"), Some("lobby"), "/clean -1 #lobby --dry-run")
+            .unwrap();
+        e.execute(
+            None,
+            None,
+            "/user set bob history.clean_min_age @unset #lobby",
+        )
+        .unwrap();
+        assert_eq!(
+            e.cleanup_limit("bob", &e.room_scope("lobby").unwrap())
+                .unwrap(),
+            (604800, "@global".into())
+        );
+        e.execute(None, None, "/user set bob history.clean_min_age 0 #lobby")
+            .unwrap();
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/clean 30d #lobby")
+                .is_err()
+        );
+        for input in [
+            "/grant bob #lobby x:history.clean 7d",
+            "/revoke bob #lobby x:history.clean 7d",
+            "/user set bob history.clean_min_age -2 #lobby",
+            "/user set bob history.clean_min_age 0d #lobby",
+            "/user set bob history.clean_min_age abc #lobby",
+            "/user set bob history.clean_min_age 18446744073709551615w #lobby",
+            "/user set bob history.unknown @unset #lobby",
+        ] {
+            let before = e.data.clone();
+            assert!(e.execute(None, None, input).is_err(), "{input}");
+            assert!(e.data == before);
+        }
+        e.execute(None, None, "/user set bob history.clean_min_age -1 #lobby")
+            .unwrap();
+        e.execute(None, None, "/revoke bob #lobby x:history.clean")
+            .unwrap();
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/clean -1 #lobby")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn sudo_bypasses_cleanup_metadata_and_both_command_and_action_grants_temporarily() {
+        let mut e = engine();
+        seed_private(&mut e);
+        e.execute(Some("eve"), Some("lobby"), "room message")
+            .unwrap();
+        for permission in ["/sudo", "x:command.sudo"] {
+            e.execute(None, None, &format!("/grant bob @global {permission}"))
+                .unwrap();
+        }
+        e.execute(None, None, "/user set bob history.clean_min_age 0 @global")
+            .unwrap();
+        e.execute(None, None, "/user set bob history.clean_min_age 0 #lobby")
+            .unwrap();
+        let scope = e.room_scope("lobby").unwrap();
+        assert!(!e.effective(Some("bob"), &scope).command("/clean"));
+        assert!(!e.allows(Some("bob"), &scope, authorization::Action::Clean));
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/clean -1 #lobby")
+                .is_err()
+        );
+        let before = e.data.clone();
+        let writes = e.db.lock().unwrap().total_changes();
+        e.execute(
+            Some("bob"),
+            Some("lobby"),
+            "/sudo /clean -1 @global --dry-run",
+        )
+        .unwrap();
+        assert!(e.data == before);
+        assert_eq!(e.db.lock().unwrap().total_changes(), writes);
+        assert!(!e.is_su(Some("bob")));
+        e.execute(Some("bob"), Some("lobby"), "/sudo /clean -1 @global")
+            .unwrap();
+        assert!(room_messages(&e, "lobby").is_empty());
+        assert!(private_messages(&e, "bob:eve").is_empty());
+        assert!(private_messages(&e, "alice:eve").is_empty());
+        assert_eq!(
+            e.data.users["bob"].metadata["@global"]["history.clean_min_age"],
+            "0"
+        );
+        assert!(!e.is_su(Some("bob")));
+        assert!(!e.effective(Some("bob"), &scope).command("/clean"));
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/sudo /clean -1")
+                .is_err()
+        );
+        assert!(!e.is_su(Some("bob")));
+        e.execute(None, None, "/revoke bob @global x:command.sudo")
+            .unwrap();
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/sudo /clean -1 #lobby")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bulk_cleanup_rejects_a_metadata_limit_before_deleting_any_target() {
+        let mut e = engine();
+        seed_private(&mut e);
+        e.execute(Some("alice"), Some("lobby"), "keep room")
+            .unwrap();
+        e.execute(None, None, "/user set alice history.clean_min_age 0 #lobby")
+            .unwrap();
+        let before = e.data.clone();
+        for suffix in ["", " --dry-run"] {
+            assert!(
+                e.execute(
+                    Some("alice"),
+                    Some("lobby"),
+                    &format!("/clean -1 @global{suffix}")
+                )
+                .is_err()
+            );
+            assert!(e.data == before);
+            assert_eq!(private_messages(&e, "bob:eve").len(), 2);
+            assert_eq!(room_messages(&e, "lobby").len(), 1);
+        }
+    }
+
+    #[test]
     fn cleanup_requires_an_explicit_scope_in_every_view() {
         let mut e = engine();
         seed_private(&mut e);
@@ -207,7 +395,7 @@ mod tests {
     fn private_cleanup_supports_peer_and_pair_targets_with_read_only_preview() {
         let mut e = engine();
         seed_private(&mut e);
-        for permission in ["x:history.clean 7d", "/clean"] {
+        for permission in ["x:history.clean", "/clean"] {
             e.execute(
                 None,
                 None,
@@ -215,6 +403,8 @@ mod tests {
             )
             .unwrap();
         }
+        e.execute(None, None, "/user set bob history.clean_min_age 7d @global")
+            .unwrap();
         let before = e.data.clone();
         let revision = e.revision;
         let writes = e.db.lock().unwrap().total_changes();

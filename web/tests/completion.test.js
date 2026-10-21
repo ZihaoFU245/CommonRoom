@@ -224,3 +224,28 @@ test("cleanup suggests explicit private targets and a preview flag after the sco
     [],
   );
 });
+
+test("cleanup metadata and all-history syntax have concise completions", () => {
+  assert.deepEqual(values("/user set bob history."), [
+    "/user set bob history.clean_min_age ",
+  ]);
+  assert.deepEqual(values("/user set bob history.clean_min_age -"), [
+    "/user set bob history.clean_min_age -1 ",
+  ]);
+  assert.deepEqual(values("/clean -"), ["/clean -1 "]);
+  assert.deepEqual(values("/grant bob #team x:history.clean "), []);
+});
+
+test("user reset completes metadata, scopes and the explicit password selector", () => {
+  assert.deepEqual(values("/user reset @"), ["/user reset @all "]);
+  assert.deepEqual(values("/user reset bob p"), ["/user reset bob password "]);
+  assert.deepEqual(values("/user reset bob @"), ["/user reset bob @all "]);
+  assert.deepEqual(values("/user reset bob media.max_age #"), [
+    "/user reset bob media.max_age #team ",
+  ]);
+  assert.deepEqual(values("/user reset bob password "), []);
+  assert.equal(
+    values("/user reset @all ").includes("/user reset @all password "),
+    false,
+  );
+});
