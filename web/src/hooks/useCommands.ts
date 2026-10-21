@@ -1,4 +1,5 @@
 import { mediaMarkdown } from "../api/media.ts";
+import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { useMediaUploads } from "./useMediaUploads.ts";
 import {
   loadMarkdown,
@@ -228,7 +229,7 @@ export function useCommands({
         (message.from !== state.username ||
           !permissions.includes("w:message.edit.own"))) ||
       !canExecute("/edit") ||
-      !value.trim() ||
+      !hasMessageContent(value) ||
       Array.from(value.trim()).length > 4000 ||
       lifecycle.pending ||
       socket.current?.readyState !== WebSocket.OPEN
@@ -300,7 +301,7 @@ export function useCommands({
       ? [attachmentMarkdown, plainText].filter(Boolean).join("\n\n")
       : plainText;
     if (
-      !text ||
+      !hasMessageContent(text) ||
       (text.startsWith("/") ? lifecycle.pending : !lifecycle.canSubmitMessage())
     )
       return;

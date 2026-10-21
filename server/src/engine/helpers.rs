@@ -66,6 +66,25 @@ pub(super) fn require_len(parts: &[&str], len: usize, usage: &str) -> Result<(),
         Err(format!("Usage: {usage}"))
     }
 }
+/// Match the browser's blank-content check without modifying Unicode text.
+pub(super) fn has_message_content(text: &str) -> bool {
+    text.chars().any(|ch| {
+        !ch.is_whitespace()
+            && !ch.is_control()
+            // Unicode Default_Ignorable_Code_Point, plus blank braille and the
+            // object placeholder copied from rich text (U+FFFC).
+            && !matches!(ch,
+                '\u{ad}' | '\u{34f}' | '\u{61c}' | '\u{115f}'..='\u{1160}'
+                | '\u{17b4}'..='\u{17b5}' | '\u{180b}'..='\u{180f}'
+                | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}' | '\u{2800}' | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fff8}' | '\u{fffc}'
+                | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e0fff}')
+    })
+}
+
 pub(super) fn new_message(from: &str, to: Option<&str>, text: &str) -> Message {
     Message {
         id: uuid::Uuid::new_v4().to_string(),

@@ -166,6 +166,9 @@ impl Engine {
         text: &str,
         markdown: bool,
     ) -> Result<Message, String> {
+        if !has_message_content(text) {
+            return Err("Messages cannot be blank.".into());
+        }
         self.data.next_sequence = self
             .data
             .next_sequence
@@ -323,6 +326,9 @@ impl Engine {
                 let value = value.trim();
                 if value.is_empty() {
                     return Err("A reaction, reply or edit cannot be empty.".into());
+                }
+                if parts[0] != "/react" && !has_message_content(value) {
+                    return Err("Messages cannot be blank.".into());
                 }
                 let edit_room = (parts[0] == "/edit" && room.is_none())
                     .then(|| self.message_action_room(actor, room, &context.scope, id))

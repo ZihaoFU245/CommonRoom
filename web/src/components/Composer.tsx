@@ -2,6 +2,7 @@ import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
 import { useEffect, useRef } from "preact/hooks";
+import { hasMessageContent } from "../features/conversation/messageContent.ts";
 interface Props {
   mediaUpload?: {
     enabled: boolean;
@@ -252,7 +253,7 @@ export function Composer({
               pending ||
               mediaUpload?.busy ||
               (!!mediaUpload?.attachment && !mediaUpload.enabled) ||
-              (!draft.trim() && !mediaUpload?.attachment) ||
+              (!hasMessageContent(draft) && !mediaUpload?.attachment) ||
               (!canWrite && !draft.trim().startsWith("/"))
             }
             aria-label="Send message"

@@ -50,6 +50,11 @@ rtk pnpm --dir web format
 
 ## Coverage
 
+Blank-message regressions share Unicode cases between the browser and server.
+They reject whitespace, control, invisible-format and placeholder-only text on
+room/private sends, replies, edits and bot sends, preserve real Unicode text,
+and verify that previously stored blank messages remain readable and replyable.
+
 Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
 
 Web helper tests cover the shared request lifecycle (success, rejection, mismatched acknowledgements, send failure, disconnect and account promises), captured confirmations, private command routing, browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Markdown tests cover browser-local HTML opt-in persistence, mixed HTML/Markdown, literal code, malformed markup and blocking active content, arbitrary attributes, unsafe links and images. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.

@@ -252,6 +252,81 @@ fn unicode_messages_round_trip_and_count_characters() {
         4000
     );
 }
+
+#[test]
+fn blank_messages_are_rejected_on_send_reply_and_edit() {
+    let cases: Vec<(String, bool)> = serde_json::from_str(include_str!(
+        "../../../web/tests/fixtures/messageContent.json"
+    ))
+    .unwrap();
+    let mut e = engine();
+    e.execute(Some("alice"), Some("lobby"), "original").unwrap();
+    let original = room_messages(&e, "lobby")[0].clone();
+    let sequence = e.data.next_sequence;
+    for (text, expected) in cases {
+        assert_eq!(has_message_content(&text), expected, "{text:?}");
+        if expected {
+            continue;
+        }
+        for input in [
+            text.clone(),
+            format!("/tell bob {text}"),
+            format!("/reply {} {text}", original.id),
+            format!("/edit {} {text}", original.id),
+        ] {
+            assert!(e.execute(Some("alice"), Some("lobby"), &input).is_err());
+            assert_eq!(e.data.next_sequence, sequence);
+            assert_eq!(room_messages(&e, "lobby")[0].text, "original");
+        }
+    }
+    assert!(e.data.private.is_empty());
+    assert_eq!(room_messages(&e, "lobby").len(), 1);
+    for text in ["می\u{200c}روم", "👩\u{200d}💻", "❤\u{fe0f}", "hi\u{fffc}"] {
+        e.execute(Some("alice"), Some("lobby"), text).unwrap();
+        assert_eq!(room_messages(&e, "lobby").back().unwrap().text, text);
+    }
+}
+
+#[test]
+fn existing_blank_messages_remain_readable_and_can_be_replied_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.provision("alice", "hash".into(), true, false).unwrap();
+        e.execute(Some("alice"), None, "/new room lobby").unwrap();
+        e.execute(Some("alice"), Some("lobby"), "old message")
+            .unwrap();
+        e.execute(Some("alice"), Some("lobby"), "another old message")
+            .unwrap();
+    }
+    // Model data written before validation was introduced, without a migration.
+    let db = Connection::open(&path).unwrap();
+    db.execute(
+        "UPDATE messages SET json=json_set(json,'$.text',CASE WHEN sequence=(SELECT min(sequence) FROM messages) THEN '' ELSE ?1 END)",
+        ["\u{fffc}"],
+    )
+    .unwrap();
+    drop(db);
+    let mut e = Engine::open(&path).unwrap();
+    let original = room_messages(&e, "lobby")[1].clone();
+    assert_eq!(original.text, "\u{fffc}");
+    assert_eq!(
+        e.snapshot("alice").unwrap().rooms[0].messages[1].text,
+        "\u{fffc}"
+    );
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/reply {} hello", original.id),
+    )
+    .unwrap();
+    let messages = room_messages(&e, "lobby");
+    assert_eq!(messages[0].text, "");
+    assert_eq!(messages[1].text, "\u{fffc}");
+    assert_eq!(messages[2].reply.as_ref().unwrap().text, "\u{fffc}");
+    assert!(e.execute(Some("alice"), Some("lobby"), "\u{fffc}").is_err());
+}
 #[test]
 fn new_accounts_have_no_rooms() {
     let mut e = Engine::open(Path::new(":memory:")).unwrap();

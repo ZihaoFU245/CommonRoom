@@ -1,0 +1,27 @@
+[
+  ["", false],
+  [" \t\r\n\u00a0\u3000", false],
+  ["\ufffc", false],
+  [" \ufffc\ufffc\n", false],
+  ["\u200b\u200c\u200d\u2060\ufeff", false],
+  ["\u0000\b\u001b\u007f", false],
+  ["\u00ad\u034f\u061c", false],
+  ["\u115f\u1160\u3164\uffa0", false],
+  ["\u17b4\u17b5\u180b\u180e\u180f", false],
+  ["\u202a\u202e\u206f", false],
+  ["\ufe0f\udb40\udd00", false],
+  ["\ud82f\udca0\ud834\udd73\udb40\udc67", false],
+  ["\u2800", false],
+  ["hello", true],
+  [
+    "\u4f60\u597d \u0645\u0631\u062d\u0628\u0627 \u0928\u092e\u0938\u094d\u0924\u0947",
+    true
+  ],
+  ["\u0645\u06cc\u200c\u0631\u0648\u0645", true],
+  ["\ud83d\udc69\u200d\ud83d\udcbb", true],
+  ["\u2764\ufe0f", true],
+  ["e\u0301", true],
+  [" \ufffcHello\ufffc ", true],
+  ["![image](/api/media/id/file)", true],
+  ["0", true]
+]

@@ -431,7 +431,7 @@ impl Engine {
     }
     fn validate_bot_send(&self, user: &str, input: &models::MessageInput) -> Result<Target, Error> {
         let text = input.text.trim();
-        if text.is_empty() || input.text.chars().count() > 4000 {
+        if !has_message_content(text) || input.text.chars().count() > 4000 {
             return Err(Error::new(
                 Code::InvalidRequest,
                 "Messages support 1–4000 characters.",

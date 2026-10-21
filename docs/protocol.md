@@ -155,6 +155,11 @@ The Edit button appears between Reply and Delete on messages you have permission
 inline editor offers Save and Cancel; Escape cancels. Failed saves retain the
 draft for retry. The editor fits its full text and grows or shrinks as you type
 or resize the view. Edits support nonempty text of at most 4,000 Unicode characters.
+New messages, replies and edits must contain content beyond whitespace, control
+characters, Unicode default-ignorable characters, blank braille (U+2800) and the
+object replacement placeholder (U+FFFC). The browser and server enforce this;
+bot submissions use the same rule. Characters within accepted text are preserved.
+Existing blank messages remain readable and are not migrated or removed.
 They preserve message identity, original time, sequence, Markdown format,
 reactions, and existing reply quotes, and recalculate mentions. An `edited`
 boolean marks edited messages; absent values default to false. Changes persist

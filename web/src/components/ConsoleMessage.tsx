@@ -1,4 +1,5 @@
 import { CollapsibleMessage } from "./CollapsibleMessage.tsx";
+import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { memo } from "preact/compat";
 import { MarkdownMessage as Markdown } from "./MarkdownMessage.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -98,7 +99,9 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   }, [reactionOpen, placement.anchor]);
   const editValue = editText.trim();
   const validEdit =
-    editing && !!editValue && Array.from(editValue).length <= 4000;
+    editing &&
+    hasMessageContent(editValue) &&
+    Array.from(editValue).length <= 4000;
   const reply = message.reply;
   const text = mentionedText(message.text, message.mentions);
   const invocation = mentionedCommand(message.text, message.mentions);

@@ -12,6 +12,24 @@ fn new_bot(e: &mut Engine) {
     e.execute(Some("admin"), Some("support"), "/bot new helper")
         .unwrap();
 }
+
+#[test]
+fn bot_sends_reject_blank_content_without_mutating_history() {
+    let mut e = fixture();
+    new_bot(&mut e);
+    let sequence = e.data.next_sequence;
+    for text in ["", " \n\t", "\u{fffc}", "\u{200b}\u{200d}", "\u{2800}"] {
+        let error = e.send_literal("helper", "support", text).err().unwrap();
+        assert_eq!(error.code, crate::bots::error::Code::InvalidRequest);
+        assert_eq!(e.data.next_sequence, sequence);
+    }
+    assert!(e.history("helper", "support").unwrap().messages.is_empty());
+    let text = "👩\u{200d}💻";
+    assert_eq!(
+        e.send_literal("helper", "support", text).unwrap().text,
+        text
+    );
+}
 fn token(e: &mut Engine, name: &str, label: &str) -> String {
     e.execute(
         Some("admin"),
