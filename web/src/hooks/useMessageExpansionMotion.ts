@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { messageExpansionMotion } from "../features/conversation/messageExpansion.ts";
+import { observedBorderBox } from "../features/conversation/observedBorderBox.ts";
 
 /** Start before the expansion state changes, so virtual rows measure the animation. */
 export function useMessageExpansionMotion() {
@@ -12,15 +13,18 @@ export function useMessageExpansionMotion() {
     const element = content.current;
     const clip = panel.current;
     if (!element || !clip) return;
-    const measure = () => {
+    const measure = (height: number) => {
       const limit = parseFloat(
         getComputedStyle(clip).getPropertyValue("--message-preview-height"),
       );
-      setOverflows(element.getBoundingClientRect().height > limit + 1);
+      setOverflows(height > limit + 1);
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
+    measure(element.getBoundingClientRect().height);
+    const observer = new ResizeObserver((records) => {
+      const record = records[0];
+      if (record) measure(observedBorderBox(record).height);
+    });
+    observer.observe(element, { box: "border-box" });
     return () => observer.disconnect();
   }, []);
   useEffect(() => () => stop.current?.(), []);

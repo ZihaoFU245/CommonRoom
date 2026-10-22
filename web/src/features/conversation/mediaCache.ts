@@ -2,6 +2,7 @@
 const cacheName = "commonroom-media-v2";
 const byteLimit = 256 * 1024 * 1024;
 const entryLimit = 128;
+const touchInterval = 60_000;
 interface Metadata {
   size: number;
   content_type: string;
@@ -51,7 +52,9 @@ function headers(info: Metadata, download: boolean): Headers {
 }
 export class MediaCache {
   private writes: Promise<void> = Promise.resolve();
+  private readonly touched = new Map<string, number>();
   private readonly pending = new Map<string, Promise<void>>();
+  private index: { sizes: Map<string, number>; bytes: number } | null = null;
   private readonly storage: CacheStorage;
   private readonly network: typeof fetch;
   constructor(
@@ -61,19 +64,64 @@ export class MediaCache {
     this.storage = storage;
     this.network = network;
   }
+  // Accessed only by serialized maintenance, and rebuilt after storage errors.
+  private async accounting(cache: Cache) {
+    if (!this.index) {
+      const sizes = new Map<string, number>();
+      let bytes = 0;
+      for (const key of await cache.keys()) {
+        const saved = await cache.match(key);
+        if (!saved) continue;
+        const size = Number(saved.headers.get("Content-Length")) || 0;
+        sizes.set(key.url, size);
+        bytes += size;
+      }
+      this.index = { sizes, bytes };
+    }
+    return this.index;
+  }
+  private forget(key: string) {
+    if (!this.index) return;
+    this.index.bytes -= this.index.sizes.get(key) ?? 0;
+    this.index.sizes.delete(key);
+  }
+  private remember(key: string, size: number) {
+    if (!this.index) return;
+    this.forget(key);
+    this.index.sizes.set(key, size);
+    this.index.bytes += size;
+  }
   private touch(
     cache: Cache,
     key: string,
     keepAlive: (work: Promise<void>) => void,
   ): void {
+    // Keep approximate persisted LRU order without rewriting immutable bytes on
+    // every virtual-row remount or player Range request. Authorization stays live.
+    const now = Date.now();
+    const previous = this.touched.get(key);
+    if (previous !== undefined && now - previous < touchInterval) return;
+    this.touched.delete(key);
+    this.touched.set(key, now);
+    if (this.touched.size > entryLimit) {
+      const oldest = this.touched.keys().next().value;
+      if (oldest !== undefined) this.touched.delete(oldest);
+    }
     const work = this.writes
       .then(async () => {
         const saved = await cache.match(key);
-        if (!saved) return;
+        if (!saved) {
+          this.forget(key);
+          return;
+        }
         await cache.delete(key);
+        this.forget(key);
         await cache.put(key, saved);
+        this.remember(key, Number(saved.headers.get("Content-Length")) || 0);
       })
       .catch(() => {
+        this.index = null;
+        if (this.touched.get(key) === now) this.touched.delete(key);
         /* Cache maintenance cannot interrupt playback. */
       });
     this.writes = work;
@@ -206,25 +254,24 @@ export class MediaCache {
       const copy = new Response(result.clone().body, { headers: output });
       const work = this.writes
         .then(async () => {
+          const index = await this.accounting(target);
           // Concurrent misses may already have filled this key.
           await target.delete(key.href);
-          const keys = [...(await target.keys())];
-          let bytes = 0;
-          for (const stored of keys)
-            bytes += Number(
-              (await target.match(stored))?.headers.get("Content-Length") ?? 0,
-            );
-          while (keys.length >= entryLimit || bytes + size > byteLimit) {
-            const oldest = keys.shift();
-            if (!oldest) break;
-            bytes -= Number(
-              (await target.match(oldest))?.headers.get("Content-Length") ?? 0,
-            );
+          this.forget(key.href);
+          while (
+            index.sizes.size >= entryLimit ||
+            index.bytes + size > byteLimit
+          ) {
+            const oldest = index.sizes.keys().next().value;
+            if (oldest === undefined) break;
             await target.delete(oldest);
+            this.forget(oldest);
           }
           await target.put(key.href, copy);
+          this.remember(key.href, size);
         })
         .catch(() => {
+          this.index = null;
           /* Quota/eviction failures must not break a download. */
         });
       this.writes = work;

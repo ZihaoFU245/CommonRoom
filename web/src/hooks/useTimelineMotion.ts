@@ -328,6 +328,8 @@ export function useTimelineMotion(
       for (const row of rows.current.values()) row.top -= delta;
     };
     const interrupt = () => {
+      // Ordinary scrolling already shifts cached positions in the scroll handler.
+      if (!pending.current && !animations.current.size) return;
       scheduled.current++;
       stop();
       pending.current = null;

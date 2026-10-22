@@ -8,11 +8,20 @@ const base = "https://chat.test/chat/";
 const path = `${base}api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file`;
 function fixture(filePath = path) {
   const saved = new Map();
+  let puts = 0;
+  const reads = { keys: 0, matches: 0 };
   const cache = {
-    match: async (key) => saved.get(String(key.url ?? key))?.clone(),
-    keys: async () => [...saved.keys()].map((key) => new Request(key)),
+    match: async (key) => {
+      reads.matches++;
+      return saved.get(String(key.url ?? key))?.clone();
+    },
+    keys: async () => {
+      reads.keys++;
+      return [...saved.keys()].map((key) => new Request(key));
+    },
     delete: async (key) => saved.delete(String(key.url ?? key)),
     put: async (key, response) => {
+      puts++;
       const body = await response.arrayBuffer();
       saved.set(
         String(key.url ?? key),
@@ -54,6 +63,8 @@ function fixture(filePath = path) {
     work,
     load,
     saved,
+    reads,
+    puts: () => puts,
     deny: () => {
       status = 403;
     },
@@ -62,6 +73,30 @@ function fixture(filePath = path) {
     },
   };
 }
+test("repeated full and range hits rate-limit recency writes while checking live access", async (t) => {
+  let now = 100_000;
+  t.mock.method(Date, "now", () => now);
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  await (await f.load(instance)).text();
+  await Promise.all(f.work);
+  await (await f.load(instance)).text();
+  await Promise.all(f.work);
+  const writes = f.puts();
+  for (const range of [undefined, "bytes=1-3", "bytes=-2"]) {
+    await (await f.load(instance, "", range)).text();
+    await Promise.all(f.work);
+  }
+  assert.equal(f.puts(), writes);
+  assert.equal(f.calls.filter((call) => call.url.endsWith("/info")).length, 5);
+  now += 60_000;
+  await (await f.load(instance)).text();
+  await Promise.all(f.work);
+  assert.equal(f.puts(), writes + 1);
+  f.deny();
+  assert.equal((await f.load(instance)).status, 403);
+  assert.equal(f.puts(), writes + 1);
+});
 test("immutable bytes survive reloads, queries share bytes and authorization stays live", async () => {
   const f = fixture();
   assert.equal(
@@ -241,4 +276,67 @@ test("managed avatar bytes reuse the cache after reload but removal and logout d
   f.deny();
   assert.equal((await f.load(reload)).status, 403);
   assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+});
+
+test("cache accounting scans once per worker and enforces byte limits after restart", async () => {
+  const f = fixture();
+  const bytes = 150 * 1024 * 1024;
+  const network = (url, options) =>
+    String(url).endsWith("/info")
+      ? f.network(url, options)
+      : new Response("abcdef", {
+          headers: { "Content-Length": String(bytes) },
+        });
+  const first = new MediaCache(f.storage, network);
+  async function load(instance, index) {
+    const url = new URL(
+      path.replace("06178/file", `${String(index).padStart(5, "0")}/file`),
+    );
+    await (
+      await instance.respond(new Request(url), url, (p) => f.work.push(p))
+    ).text();
+    await Promise.all(f.work);
+    return url.href;
+  }
+  const a = await load(first, 1);
+  const b = await load(first, 2);
+  assert.equal(f.saved.has(a), false);
+  assert.equal(f.saved.has(b), true);
+  assert.equal(f.reads.keys, 1);
+  assert.equal(f.reads.matches, 2, "inserts must not rescan cached responses");
+  const restarted = new MediaCache(f.storage, network);
+  const c = await load(restarted, 3);
+  assert.equal(f.reads.keys, 2);
+  assert.equal(f.saved.has(b), false);
+  assert.equal(f.saved.has(c), true);
+  assert.equal(f.saved.size, 1);
+});
+
+test("failed maintenance rebuilds accounting and external eviction stays bounded", async (t) => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  await (await f.load(instance)).text();
+  await Promise.all(f.work);
+  const cache = await f.storage.open();
+  const put = cache.put;
+  let fail = true;
+  t.mock.method(cache, "put", (...args) => {
+    if (fail) {
+      fail = false;
+      throw new Error("quota");
+    }
+    return put(...args);
+  });
+  // A failed hit touch deletes the entry before put fails; the next miss must
+  // recover its accounting and download normally, without stale byte totals.
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
+  await Promise.all(f.work);
+  assert.equal(f.saved.size, 0);
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
+  await Promise.all(f.work);
+  assert.equal(f.reads.keys, 2);
+  f.saved.clear();
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
+  await Promise.all(f.work);
+  assert.equal(f.saved.size, 1);
 });

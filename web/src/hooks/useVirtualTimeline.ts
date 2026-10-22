@@ -1,6 +1,7 @@
 import type { RefObject } from "preact";
 import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { TimelineEntry } from "../api/protocol.ts";
+import { observedBorderBox } from "../features/conversation/observedBorderBox.ts";
 import {
   indexAt,
   timelineOffsets,
@@ -29,12 +30,21 @@ export function useVirtualTimeline(
     renderVersion: number;
   } | null>(null);
   const [measurements, setMeasurements] = useState(0);
-  const [viewport, setViewport] = useState({ top: 0, height: 600 });
+  const viewportTop = useRef(0);
+  const currentOffsets = useRef<number[]>([]);
+  const renderedWindow = useRef<{ start: number; end: number } | null>(null);
+  const [viewport, setViewport] = useState({ start: 0, end: 0, height: 600 });
   function updateViewport(top: number, height: number) {
+    viewportTop.current = top;
+    const next = virtualWindow(currentOffsets.current, top, height);
     setViewport((previous) =>
-      previous.top === top && previous.height === height
+      previous.start === next.start &&
+      previous.end === next.end &&
+      previous.height === height &&
+      renderedWindow.current?.start === next.start &&
+      renderedWindow.current.end === next.end
         ? previous
-        : { top, height },
+        : { start: next.start, end: next.end, height },
     );
   }
   const offsets = useMemo(() => {
@@ -43,6 +53,7 @@ export function useVirtualTimeline(
       sizes.current,
     );
   }, [entries, measurements]);
+  currentOffsets.current = offsets;
   const previous = useRef<{ keys: string[]; offsets: number[] } | null>(null);
   useLayoutEffect(() => {
     handle.current = {
@@ -128,7 +139,7 @@ export function useVirtualTimeline(
           record.target instanceof HTMLElement
             ? record.target.dataset.virtualKey
             : undefined;
-        const height = record.target.getBoundingClientRect().height;
+        const height = observedBorderBox(record).height;
         if (
           key &&
           height > 0 &&
@@ -151,7 +162,10 @@ export function useVirtualTimeline(
       element.removeEventListener("scroll", refresh);
     };
   }, []);
-  const window = virtualWindow(offsets, viewport.top, viewport.height);
+  const window = virtualWindow(offsets, viewportTop.current, viewport.height);
+  // Anchoring can restore the previous window after this render computed a
+  // different one from new sizes/entries. Compare against what was just mounted.
+  renderedWindow.current = window;
   useLayoutEffect(() => {
     const currentObserver = observer.current;
     if (!currentObserver) return;
@@ -189,7 +203,8 @@ export function useVirtualTimeline(
           changed = true;
         }
       }
-      if (!observed.current.has(element)) currentObserver.observe(element);
+      if (!observed.current.has(element))
+        currentObserver.observe(element, { box: "border-box" });
     }
     observed.current = liveElements;
     // Resolve new/edited row sizes before motion captures the final positions.

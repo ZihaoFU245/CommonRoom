@@ -249,6 +249,14 @@ The sample assumes `/commonroom/` and assets in `/srv/commonroom/dist/`. If `bas
 changes, update the location prefixes to match; if the install root changes, update the
 `alias` paths.
 
+The `/assets/` location caches Vite content-hashed files for one year with
+`immutable`. HTML and `media-cache.js` use `max-age=0, stale-while-revalidate=7200`
+so supporting caches can serve stale content while refreshing in the background.
+Cloudflare must make HTML eligible for caching and respect this origin policy;
+keep authenticated API paths excluded. Purge the HTML and worker when a deployment
+must take effect immediately. Preserve the security headers in both static
+locations when adapting the sample.
+
 ### Paths and routing
 
 - `/commonroom` redirects with 308 to `/commonroom/`, so relative asset URLs resolve.
@@ -615,8 +623,9 @@ requires the public endpoint to be HTTPS.
 Chat sweeps expired and unreferenced tracked objects at startup and every 24 hours
 by default, with short retries for failed/incomplete sweeps. Saved
 `media.cleanup_interval` overrides remain in effect. Serve `media-cache.js` from
-the UI base path with JavaScript MIME and revalidation (`no-cache`, as in the supplied
-Nginx include); the worker scope must cover that application's API paths. The UI
+the UI base path with JavaScript MIME and background revalidation
+(`max-age=0, stale-while-revalidate=7200`, as in the supplied Nginx include);
+the worker scope must cover that application's API paths. The UI
 worker caches downloaded immutable attachment and managed-avatar bytes privately
 and checks current `/info` authorization before reuse. Avatar redirects and signed
 storage responses remain `no-store`; do not cache them at a shared proxy. External
@@ -648,8 +657,8 @@ objects never disappear. Use a dedicated prefix (or bucket) per deployment.
 The HTML document is served by Nginx, so its CSP must name the storage origin; the
 server's CSP additions only cover API responses.
 
-Edit the sample's single `add_header Content-Security-Policy` line in the asset
-location: append the public storage origin to both `connect-src 'self' wss://$http_host`
+Edit the sample's `add_header Content-Security-Policy` lines in both general UI
+and hashed-asset locations: append the public storage origin to both `connect-src 'self' wss://$http_host`
 and `media-src 'self'`. `img-src` already allows `https:` and `blob:` for previews, so
 images need no change. For AWS S3 the origin is
 `https://<bucket>.s3.<region>.amazonaws.com`; for R2 it is

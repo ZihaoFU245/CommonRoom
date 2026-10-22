@@ -58,10 +58,10 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mut
 `web/src/main.tsx` boots the app and selects login or chat. `components/Chat.tsx` composes the screen and connects feature hooks; individual components render navigation, messages, composer, local output, login, and settings.
 
 - `api/protocol.ts` declares wire types and validates untrusted JSON. `api/client.ts` owns relative URLs, cookie-based requests, response validation, and outbound frames.
-- `hooks/useConnection.ts` owns WebSocket lifetime, reconnect backoff, current snapshot, and HTTP resynchronization. Callback refs avoid stale state without reopening sockets on every render.
+- `hooks/useConnection.ts` owns WebSocket lifetime, reconnect backoff, current snapshot, and HTTP resynchronization. Callback refs avoid stale state without reopening sockets on every render. Resume events share a 100ms debounce; reconnecting sockets supply their baseline without an extra resume HTTP snapshot. Hidden pages, disconnects and cleanup cancel queued resume work.
 - `hooks/useHistory.ts` loads 100-message pages and keeps sliding conversation windows, rejecting stale responses.
 - `features/conversation/historyCache.ts` bounds each window to 1,000 messages/approximately 4 MiB and the shared browser history cache to 5,000 messages/16 MiB/32 views. Oldest views are evicted.
-- `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move.
+- `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move. Scroll position stays in a ref; scrolling schedules a render only when the mounted window or viewport height changes. Size/entry changes still recompute the window using the latest position. Resize callbacks reuse border-box observer sizes, with geometry fallbacks when unavailable; synchronous mount/edit and painted-position measurements remain explicit.
 - `hooks/useReadTracking.ts` owns visible-message acknowledgements, scroll placement, and jump-to-unread.
 - `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns exclusive commands, bounded overlapping ordinary sends and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
 - `hooks/useLocalConsole.ts` owns the tab-local command ledger and clearing. It never persists command output.
@@ -234,3 +234,12 @@ after signing. The existing media worker caches avatar bytes with live `/info`
 authorization. Crop controls draw from a 1024-pixel working canvas once per animation
 frame; a local blob preview covers upload and canonical image loading. Account avatar
 state stays mounted across Settings tabs.
+
+Media-cache recency rewrites are limited to once per object per minute within a
+worker lifetime, with a bounded in-memory timestamp map. Persisted eviction order
+is approximate LRU; every byte reuse still checks live `/info` authorization.
+Serialized cache maintenance builds an ordered size index lazily once per worker,
+then maintains its byte total on insertion, deletion and recency rewrites instead
+of scanning every cached response on each insertion. Storage failures discard
+the index for rebuilding on the next write. Browser-evicted entries can leave
+conservative overcounts until removal/rebuild; they cannot increase cache limits.

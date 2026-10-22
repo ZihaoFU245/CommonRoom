@@ -50,6 +50,13 @@ rtk pnpm --dir web format
 
 ## Coverage
 
+`virtualTimelineHook.test.js` checks render suppression within a virtual window,
+latest-position paging anchors, observer-based row resizing and bottom following.
+`observedBorderBox.test.js` checks border/padding accounting and geometry fallbacks.
+`connectionHook.test.js` covers resume-event coalescing, hidden-page cancellation,
+socket-baseline recovery and revoked-session handling. Media-cache tests cover
+one-time size scans, byte limits after restart, recency and storage-error recovery.
+
 Blank-message regressions share Unicode cases between the browser and server.
 They reject whitespace, control, invisible-format and placeholder-only text on
 room/private sends, replies, edits and bot sends, preserve real Unicode text,

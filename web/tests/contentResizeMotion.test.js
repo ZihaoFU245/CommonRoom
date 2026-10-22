@@ -39,12 +39,13 @@ function fixture() {
   let notify,
     disconnected = false;
   globalThis.window = { matchMedia: () => preference };
-  let frame;
+  const frames = new Map();
+  let nextFrame = 0;
   globalThis.requestAnimationFrame = (callback) => {
-    frame = callback;
-    return 1;
+    frames.set(++nextFrame, callback);
+    return nextFrame;
   };
-  globalThis.cancelAnimationFrame = () => {};
+  globalThis.cancelAnimationFrame = (id) => frames.delete(id);
   const viewportEvents = new Map();
   const viewport = {
     scrollHeight: 1000,
@@ -101,10 +102,20 @@ function fixture() {
     hook,
     viewport,
     viewportEvents,
-    tick: () => frame?.(),
+    pendingFrames: () => frames.size,
+    tick: () => {
+      const current = [...frames.values()];
+      frames.clear();
+      for (const callback of current) callback();
+    },
     resize(height) {
       rect.height = height;
-      notify();
+      notify([
+        {
+          target: hook.content.current,
+          borderBoxSize: [{ inlineSize: rect.width, blockSize: rect.height }],
+        },
+      ]);
     },
     paint(height) {
       painted = height;
@@ -224,11 +235,27 @@ test("manual scrolling releases bottom ownership without snapping to the end", (
   try {
     f.viewport.scrollTop = 220;
     f.resize(210);
+    assert.equal(f.pendingFrames(), 1);
     f.viewportEvents.get("wheel")();
+    assert.equal(f.pendingFrames(), 0);
     f.viewport.scrollTop = 100;
     f.tick();
     assert.equal(f.viewport.scrollTop, 100);
     assert.equal(f.hook.panel.current.dataset.contentResizing, undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test("content still animates away from the bottom without a follow frame loop", () => {
+  const f = fixture();
+  try {
+    f.resize(210);
+    assert.equal(f.animations.length, 1);
+    assert.equal(f.pendingFrames(), 0);
+    assert.equal(f.viewport.scrollTop, 0);
+    f.animations[0].finish();
+    assert.equal(f.animations[0].cancelled, true);
   } finally {
     f.close();
   }

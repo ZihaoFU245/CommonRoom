@@ -1,6 +1,7 @@
 import { createContext, type RefObject } from "preact";
 import { useContext, useLayoutEffect, useRef } from "preact/hooks";
 import { messageMotion } from "../features/conversation/timelineMotion.ts";
+import { observedBorderBox } from "../features/conversation/observedBorderBox.ts";
 
 export const ContentMotionContext = createContext<RefObject<boolean> | null>(
   null,
@@ -25,10 +26,13 @@ export function useContentResizeMotion() {
     const natural = content.current;
     if (!clip || !natural) return;
     const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let previous = natural.getBoundingClientRect();
+    let previous: { width: number; height: number } =
+      natural.getBoundingClientRect();
     let explicitResize = false;
-    const observer = new ResizeObserver(() => {
-      const next = natural.getBoundingClientRect();
+    const observer = new ResizeObserver((records) => {
+      const record = records[0];
+      if (!record) return;
+      const next = observedBorderBox(record);
       const before = previous;
       previous = next;
       const folding = natural.querySelector("[data-message-resizing]") !== null;
@@ -83,7 +87,7 @@ export function useContentResizeMotion() {
       const follow = () => {
         if (pinned.current && viewport)
           viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
-        if (animation.current === current)
+        if (pinned.current && viewport && animation.current === current)
           frame.current = requestAnimationFrame(follow);
       };
       follow();
@@ -99,11 +103,12 @@ export function useContentResizeMotion() {
       // Virtual row measurements follow the animated height, preserving either
       // the chat bottom or the reader's existing message anchor on each frame.
     });
-    observer.observe(natural);
+    observer.observe(natural, { box: "border-box" });
     preference.addEventListener("change", stop);
     const viewport = clip.closest<HTMLElement>(".message-list");
     const release = () => {
       pinned.current = false;
+      cancelAnimationFrame(frame.current);
       delete clip.dataset.contentResizing;
     };
     const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;

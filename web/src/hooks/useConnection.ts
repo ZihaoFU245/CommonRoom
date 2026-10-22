@@ -33,11 +33,14 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
   useEffect(() => {
     let stopped = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+    let awaitingBaseline = true;
     let attempts = 0;
     const handleSyncError = (error: unknown) => {
       if (isUnauthorized(error)) {
         stopped = true;
         clearTimeout(retry);
+        clearTimeout(resumeTimer);
         socket.current?.close();
         callbacks.current.onLogout();
       }
@@ -55,12 +58,26 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       olderSnapshot,
     );
     const resume = () => {
-      if (document.hidden) return;
+      clearTimeout(resumeTimer);
+      if (stopped || document.hidden) return;
       if (socket.current?.readyState === WebSocket.CLOSED) {
         clearTimeout(retry);
         connect();
-      } else if (socket.current?.readyState === WebSocket.OPEN) {
-        sync.refresh().catch(handleSyncError);
+      } else if (
+        socket.current?.readyState === WebSocket.OPEN &&
+        !awaitingBaseline
+      ) {
+        // Browsers emit focus/visibility/pageshow together. Let that burst settle;
+        // an opening/reconnecting socket already supplies a complete baseline.
+        resumeTimer = setTimeout(() => {
+          if (
+            !stopped &&
+            !document.hidden &&
+            !awaitingBaseline &&
+            socket.current?.readyState === WebSocket.OPEN
+          )
+            sync.refresh().catch(handleSyncError);
+        }, 100);
       }
     };
     document.addEventListener("visibilitychange", resume);
@@ -69,6 +86,8 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
     window.addEventListener("online", resume);
     function connect() {
       if (stopped) return;
+      clearTimeout(resumeTimer);
+      awaitingBaseline = true;
       setStatus("connecting");
       const url = new URL("ws", document.baseURI);
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -110,6 +129,8 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
           return;
         }
         if (data.kind === "snapshot") {
+          awaitingBaseline = false;
+          clearTimeout(resumeTimer);
           const ids = new Set([
             ...data.rooms.map((room) => room.id),
             ...Object.values(data.private_access).map((access) => access.id),
@@ -139,6 +160,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       };
       ws.onclose = () => {
         if (stopped || socket.current !== ws) return;
+        clearTimeout(resumeTimer);
         setStatus("offline");
         setBotActivities([]);
         callbacks.current.onDisconnect();
@@ -160,6 +182,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       window.removeEventListener("pageshow", resume);
       window.removeEventListener("online", resume);
       clearTimeout(retry);
+      clearTimeout(resumeTimer);
       socket.current?.close();
     };
   }, []);
