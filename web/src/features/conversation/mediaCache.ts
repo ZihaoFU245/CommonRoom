@@ -64,20 +64,22 @@ export class MediaCache {
     this.storage = storage;
     this.network = network;
   }
-  // Accessed only by serialized maintenance, and rebuilt after storage errors.
+  // Reconcile keys across overlapping worker lifetimes, reusing known sizes.
+  // Listing keys is cheap compared with reading every cached response on insert.
   private async accounting(cache: Cache) {
-    if (!this.index) {
-      const sizes = new Map<string, number>();
-      let bytes = 0;
-      for (const key of await cache.keys()) {
+    const sizes = new Map<string, number>();
+    let bytes = 0;
+    for (const key of await cache.keys()) {
+      let size = this.index?.sizes.get(key.url);
+      if (size === undefined) {
         const saved = await cache.match(key);
         if (!saved) continue;
-        const size = Number(saved.headers.get("Content-Length")) || 0;
-        sizes.set(key.url, size);
-        bytes += size;
+        size = Number(saved.headers.get("Content-Length")) || 0;
       }
-      this.index = { sizes, bytes };
+      sizes.set(key.url, size);
+      bytes += size;
     }
+    this.index = { sizes, bytes };
     return this.index;
   }
   private forget(key: string) {

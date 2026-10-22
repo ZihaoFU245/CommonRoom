@@ -48,8 +48,8 @@ export function useReadTracking({
   const restoreAttempt = useRef<string | null>(null);
   const rememberPosition = useEvent(() => {
     if (enteredView.current !== identity) return;
-    const position = virtualTimeline.current?.position?.();
-    const sequence = position?.sequence ?? virtualTimeline.current?.anchor();
+    const position = virtualTimeline.current?.position();
+    const sequence = position?.sequence;
     positions.current.delete(identity);
     positions.current.set(identity, {
       bottom: atBottom.current === true,

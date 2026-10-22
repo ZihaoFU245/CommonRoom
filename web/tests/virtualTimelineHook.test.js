@@ -146,6 +146,15 @@ function fixture(t) {
         if (!nodes.has(e.key)) nodes.set(e.key, new Row(e.key));
         return nodes.get(e.key);
       });
+      // Browsers clamp scrollTop during DOM commit, before layout effects run.
+      const committedHeight =
+        result.top +
+        result.bottom +
+        rendered.reduce((sum, row) => sum + row.height, 0);
+      viewport.scrollTop = Math.min(
+        viewport.scrollTop,
+        Math.max(0, committedHeight - viewport.clientHeight),
+      );
       for (const effect of harness.effects) effect();
     }
     assert.equal(harness.dirty, false, "virtual timeline must settle");
@@ -189,6 +198,14 @@ function fixture(t) {
       harness.dirty = true;
       settle();
     },
+    replace(start, end) {
+      entries = entries.filter(
+        (entry) =>
+          entry.message.sequence >= start && entry.message.sequence <= end,
+      );
+      harness.dirty = true;
+      settle();
+    },
     resize(key, height) {
       const target = nodes.get(key);
       target.height = height;
@@ -223,6 +240,22 @@ test("pixel scrolling avoids renders until the mounted window changes", (t) => {
     "paging anchors the latest real scroll position",
   );
   assert.deepEqual(f.handle.current.position(), { sequence: 2, offset: -50 });
+});
+
+test("background history replacement preserves its anchor before DOM scroll clamping", (t) => {
+  const f = fixture(t);
+  f.scroll(4917);
+  assert.deepEqual(f.handle.current.position(), { sequence: 50, offset: -17 });
+  f.replace(40, 60);
+  assert.deepEqual(f.handle.current.position(), { sequence: 50, offset: -17 });
+  assert.equal(f.viewport.scrollTop, 1017);
+});
+
+test("shrinking a history window cannot jump backward to an older retained message", (t) => {
+  const f = fixture(t);
+  f.scroll(4917);
+  f.replace(10, 60);
+  assert.deepEqual(f.handle.current.position(), { sequence: 50, offset: -17 });
 });
 
 test("observer dimensions anchor resized rows without extra rect reads and retain bottom following", (t) => {

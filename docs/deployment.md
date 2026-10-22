@@ -256,6 +256,8 @@ Cloudflare must make HTML eligible for caching and respect this origin policy;
 keep authenticated API paths excluded. Purge the HTML and worker when a deployment
 must take effect immediately. Preserve the security headers in both static
 locations when adapting the sample.
+Publish hashed assets before the HTML and retain previous hashed assets while stale
+HTML or existing tabs can still reference them, including lazy-loaded chunks.
 
 ### Paths and routing
 

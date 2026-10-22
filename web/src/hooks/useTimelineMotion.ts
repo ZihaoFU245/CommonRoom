@@ -341,16 +341,17 @@ export function useTimelineMotion(
     });
     resize.observe(viewport);
     viewport.addEventListener("scroll", scroll, { passive: true });
-    viewport.addEventListener("wheel", interrupt, { passive: true });
-    viewport.addEventListener("touchstart", interrupt, { passive: true });
+    const inputs = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    for (const input of inputs)
+      viewport.addEventListener(input, interrupt, { passive: true });
     preference.addEventListener("change", interrupt);
     return () => {
       scheduled.current++;
       stop();
       resize.disconnect();
       viewport.removeEventListener("scroll", scroll);
-      viewport.removeEventListener("wheel", interrupt);
-      viewport.removeEventListener("touchstart", interrupt);
+      for (const input of inputs)
+        viewport.removeEventListener(input, interrupt);
       preference.removeEventListener("change", interrupt);
     };
   }, []);

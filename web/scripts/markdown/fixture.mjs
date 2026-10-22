@@ -3,6 +3,7 @@ import { snakeSource } from "./snake.mjs";
 import { h, render } from "preact";
 import { useRef, useState } from "preact/hooks";
 import { MessageList } from "../../src/components/MessageList.tsx";
+import { timelineAtBottom } from "../../src/features/conversation/timelineScroll.ts";
 import "../../src/style.css";
 const image =
   "![pixel](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=)";
@@ -45,6 +46,11 @@ function Fixture() {
   const [compact, setCompact] = useState(false);
   const [scope, setScope] = useState("demo");
   const [diagnostics, setDiagnostics] = useState("");
+  const revision = useRef({ entries: null, value: 0 });
+  if (revision.current.entries !== entries) {
+    revision.current.entries = entries;
+    revision.current.value++;
+  }
   const container = useRef(null),
     handle = useRef(null),
     end = useRef(null),
@@ -138,6 +144,97 @@ function Fixture() {
           },
           label,
         ),
+      ),
+      h(
+        "button",
+        {
+          onClick: async () => {
+            const frame = () => new Promise(requestAnimationFrame);
+            setEntries(initial);
+            for (let i = 0; i < 5; i++) await frame();
+            jump(500);
+            for (let i = 0; i < 10; i++) await frame();
+            const before = handle.current?.position();
+            setEntries((rows) =>
+              rows.filter(
+                (row) =>
+                  row.message.sequence >= 450 && row.message.sequence <= 550,
+              ),
+            );
+            for (let i = 0; i < 30; i++) await frame();
+            setDiagnostics(
+              JSON.stringify({
+                kind: "history replacement",
+                before,
+                after: handle.current?.position(),
+                pinned: atBottom.current,
+              }),
+            );
+          },
+        },
+        "Check history replacement stability",
+      ),
+      h(
+        "button",
+        {
+          onClick: async () => {
+            const viewport = container.current;
+            if (!viewport) return;
+            const frame = () => new Promise(requestAnimationFrame);
+            setEntries(initial);
+            for (let i = 0; i < 5; i++) await frame();
+            jump(1000);
+            for (let i = 0; i < 5; i++) await frame();
+            const gaps = [];
+            for (let i = 0; i < 80; i++) {
+              setEntries((rows) => {
+                const next =
+                  i % 4 === 0
+                    ? [
+                        ...rows.slice(1),
+                        entry(rows.at(-1).message.sequence + 1, "Live arrival"),
+                      ]
+                    : rows.map((row, index) =>
+                        index === rows.length - 1
+                          ? {
+                              ...row,
+                              message: {
+                                ...row.message,
+                                text: "Live update\n\n".repeat(i % 3 ? 20 : 1),
+                              },
+                            }
+                          : row,
+                      );
+                return next;
+              });
+              await frame();
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              gaps.push(
+                viewport.scrollHeight -
+                  viewport.clientHeight -
+                  viewport.scrollTop,
+              );
+            }
+            for (let i = 0; i < 20; i++) {
+              await frame();
+              gaps.push(
+                viewport.scrollHeight -
+                  viewport.clientHeight -
+                  viewport.scrollTop,
+              );
+            }
+            setDiagnostics(
+              JSON.stringify({
+                kind: "room updates",
+                compact,
+                maxBottomGap: Math.max(...gaps),
+                finalBottomGap: gaps.at(-1),
+                pinned: atBottom.current,
+              }),
+            );
+          },
+        },
+        "Check room update stability",
       ),
       h(
         "button",
@@ -390,7 +487,7 @@ function Fixture() {
       { style: { display: "flex", height: "550px", marginTop: "12px" } },
       h(MessageList, {
         motionScope: scope,
-        revision: entries[0].message.text.length,
+        revision: revision.current.value,
         historyReady: true,
         atBottom,
         entries,
@@ -412,11 +509,7 @@ function Fixture() {
         onScroll: () => {
           const viewport = container.current;
           if (viewport)
-            atBottom.current =
-              viewport.scrollHeight -
-                viewport.clientHeight -
-                viewport.scrollTop <
-              24;
+            atBottom.current = timelineAtBottom(viewport, atBottom.current, 24);
         },
       }),
     ),

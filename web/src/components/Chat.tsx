@@ -1,6 +1,7 @@
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
 import { useCommands } from "../hooks/useCommands.ts";
 import { useReadTracking } from "../hooks/useReadTracking.ts";
+import { timelineAtBottom } from "../features/conversation/timelineScroll.ts";
 import { useEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
@@ -364,8 +365,7 @@ export function Chat({
   const handleScroll = useEvent(() => {
     const element = historyElement.current;
     if (element)
-      atBottom.current =
-        element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+      atBottom.current = timelineAtBottom(element, atBottom.current === true);
     rememberPosition();
     acknowledgeVisible();
     const prediction = element

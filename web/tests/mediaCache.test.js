@@ -278,7 +278,7 @@ test("managed avatar bytes reuse the cache after reload but removal and logout d
   assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
 });
 
-test("cache accounting scans once per worker and enforces byte limits after restart", async () => {
+test("cache accounting reuses response sizes and enforces byte limits after restart", async () => {
   const f = fixture();
   const bytes = 150 * 1024 * 1024;
   const network = (url, options) =>
@@ -302,11 +302,11 @@ test("cache accounting scans once per worker and enforces byte limits after rest
   const b = await load(first, 2);
   assert.equal(f.saved.has(a), false);
   assert.equal(f.saved.has(b), true);
-  assert.equal(f.reads.keys, 1);
+  assert.equal(f.reads.keys, 2);
   assert.equal(f.reads.matches, 2, "inserts must not rescan cached responses");
   const restarted = new MediaCache(f.storage, network);
   const c = await load(restarted, 3);
-  assert.equal(f.reads.keys, 2);
+  assert.equal(f.reads.keys, 3);
   assert.equal(f.saved.has(b), false);
   assert.equal(f.saved.has(c), true);
   assert.equal(f.saved.size, 1);
@@ -339,4 +339,26 @@ test("failed maintenance rebuilds accounting and external eviction stays bounded
   assert.equal(await (await f.load(instance)).text(), "abcdef");
   await Promise.all(f.work);
   assert.equal(f.saved.size, 1);
+});
+
+test("overlapping worker lifetimes cannot leave cache accounting undercounted", async () => {
+  const f = fixture();
+  const first = new MediaCache(f.storage, f.network);
+  const replacement = new MediaCache(f.storage, f.network);
+  async function load(worker, index) {
+    const url = new URL(
+      path.replace(
+        /d5cd8a44-d8b7-4c63-91fe-3cc63f106178/u,
+        `d5cd8a44-d8b7-4c63-91fe-${String(index).padStart(12, "0")}`,
+      ),
+    );
+    await (
+      await worker.respond(new Request(url), url, (p) => f.work.push(p))
+    ).text();
+    await Promise.all(f.work);
+  }
+  for (let index = 0; index < 128; index++) await load(first, index);
+  await load(replacement, 128);
+  await load(first, 129);
+  assert.equal(f.saved.size, 128);
 });

@@ -52,10 +52,14 @@ rtk pnpm --dir web format
 
 `virtualTimelineHook.test.js` checks render suppression within a virtual window,
 latest-position paging anchors, observer-based row resizing and bottom following.
+Its DOM-commit simulation clamps scroll offsets before layout effects to cover
+history replacement jumping forward or backward to a different retained message.
 `observedBorderBox.test.js` checks border/padding accounting and geometry fallbacks.
 `connectionHook.test.js` covers resume-event coalescing, hidden-page cancellation,
 socket-baseline recovery and revoked-session handling. Media-cache tests cover
-one-time size scans, byte limits after restart, recency and storage-error recovery.
+reuse of cached response sizes, byte limits after restart, overlapping worker
+lifetimes, recency and storage-error recovery. `timelineScroll.test.js` covers
+temporary animation overflow retaining bottom intent and manual release.
 
 Blank-message regressions share Unicode cases between the browser and server.
 They reject whitespace, control, invisible-format and placeholder-only text on
@@ -103,6 +107,11 @@ After changes to components/hooks, inspect both a wide desktop and compact view.
 The isolated browser fixture at `/scripts/markdown/` on the Vite dev server
 mounts 1,000 messages with counter, snake, safe HTML and isolation-check payloads.
 Allow HTML and LaTeX start off. It does not access account data.
+
+- Check history replacement stability must retain message 500 after narrowing the
+  cached history to messages 450–550, with at most 1px offset drift. Check room
+  update stability exercises rolling arrivals and repeated last-message resizing
+  while following the bottom. Repeat both checks in desktop and compact layouts.
 
 - With all options off, HTML is text; optional HTML/TeX/KaTeX/frame modules do not
   load. Plain-text chats also leave Markdown-it unloaded. Markdown images remain

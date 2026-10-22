@@ -10,7 +10,7 @@ import {
 } from "../features/conversation/virtualTimeline.ts";
 export interface VirtualTimelineHandle {
   anchor: () => number | undefined;
-  position?: () => { sequence: number; offset: number } | undefined;
+  position: () => { sequence: number; offset: number } | undefined;
   scrollToSequence: (sequence: number, offset?: number) => void;
 }
 export function useVirtualTimeline(
@@ -23,12 +23,6 @@ export function useVirtualTimeline(
   const sizes = useRef(new Map<string, number>());
   const observed = useRef(new Set<HTMLElement>());
   const observer = useRef<ResizeObserver | null>(null);
-  const measuredWindow = useRef<{
-    entries: TimelineEntry[];
-    start: number;
-    end: number;
-    renderVersion: number;
-  } | null>(null);
   const [measurements, setMeasurements] = useState(0);
   const viewportTop = useRef(0);
   const currentOffsets = useRef<number[]>([]);
@@ -55,6 +49,9 @@ export function useVirtualTimeline(
   }, [entries, measurements]);
   currentOffsets.current = offsets;
   const previous = useRef<{ keys: string[]; offsets: number[] } | null>(null);
+  // Replacing a history window can shrink the scroll extent during DOM commit.
+  // Keep the old coordinate before the browser clamps scrollTop to that extent.
+  const beforeCommitTop = container.current?.scrollTop ?? viewportTop.current;
   useLayoutEffect(() => {
     handle.current = {
       anchor: () => {
@@ -104,13 +101,13 @@ export function useVirtualTimeline(
     if (!resizing) {
       if (atBottom.current) {
         element.scrollTop = element.scrollHeight - element.clientHeight;
-      } else if (old && element.scrollTop > 0) {
+      } else if (old && beforeCommitTop > 0) {
         element.scrollTop = anchoredScrollTop(
           old.keys,
           old.offsets,
           entries.map((entry) => entry.key),
           offsets,
-          element.scrollTop,
+          beforeCommitTop,
         );
       }
     }
@@ -177,31 +174,17 @@ export function useVirtualTimeline(
     for (const element of observed.current) {
       if (!liveElements.has(element)) currentObserver.unobserve(element);
     }
-    const measured = measuredWindow.current;
-    const measure =
-      measured?.entries !== entries ||
-      measured.renderVersion !== renderVersion ||
-      measured.start !== window.start ||
-      measured.end !== window.end;
-    measuredWindow.current = {
-      entries,
-      start: window.start,
-      end: window.end,
-      renderVersion,
-    };
     let changed = false;
     for (const element of liveElements) {
-      if (measure) {
-        const key = element.dataset.virtualKey;
-        const height = element.getBoundingClientRect().height;
-        if (
-          key &&
-          height > 0 &&
-          Math.abs((sizes.current.get(key) ?? 100) - height) > 0.5
-        ) {
-          sizes.current.set(key, height);
-          changed = true;
-        }
+      const key = element.dataset.virtualKey;
+      const height = element.getBoundingClientRect().height;
+      if (
+        key &&
+        height > 0 &&
+        Math.abs((sizes.current.get(key) ?? 100) - height) > 0.5
+      ) {
+        sizes.current.set(key, height);
+        changed = true;
       }
       if (!observed.current.has(element))
         currentObserver.observe(element, { box: "border-box" });

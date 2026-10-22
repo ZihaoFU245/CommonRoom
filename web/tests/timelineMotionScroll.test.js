@@ -83,6 +83,8 @@ test("idle wheel/touch events do not measure rows and scrolling keeps the cached
     events.get("scroll")();
   }
   events.get("touchstart")();
+  events.get("pointerdown")();
+  events.get("keydown")();
   assert.equal(measurements, 1);
   resized();
   assert.equal(measurements, 2);

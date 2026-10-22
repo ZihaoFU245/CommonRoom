@@ -61,7 +61,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mut
 - `hooks/useConnection.ts` owns WebSocket lifetime, reconnect backoff, current snapshot, and HTTP resynchronization. Callback refs avoid stale state without reopening sockets on every render. Resume events share a 100ms debounce; reconnecting sockets supply their baseline without an extra resume HTTP snapshot. Hidden pages, disconnects and cleanup cancel queued resume work.
 - `hooks/useHistory.ts` loads 100-message pages and keeps sliding conversation windows, rejecting stale responses.
 - `features/conversation/historyCache.ts` bounds each window to 1,000 messages/approximately 4 MiB and the shared browser history cache to 5,000 messages/16 MiB/32 views. Oldest views are evicted.
-- `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move. Scroll position stays in a ref; scrolling schedules a render only when the mounted window or viewport height changes. Size/entry changes still recompute the window using the latest position. Resize callbacks reuse border-box observer sizes, with geometry fallbacks when unavailable; synchronous mount/edit and painted-position measurements remain explicit.
+- `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move. Scroll position stays in a ref; scrolling schedules a render only when the mounted window or viewport height changes. Size/entry changes still recompute the window using the latest position. History anchoring captures the scroll coordinate before DOM commit, so a shorter replacement cannot use the browser's already-clamped offset as the old anchor. Resize callbacks reuse border-box observer sizes, with geometry fallbacks when unavailable; synchronous mount/edit and painted-position measurements remain explicit.
 - `hooks/useReadTracking.ts` owns visible-message acknowledgements, scroll placement, and jump-to-unread.
 - `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns exclusive commands, bounded overlapping ordinary sends and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
 - `hooks/useLocalConsole.ts` owns the tab-local command ledger and clearing. It never persists command output.
@@ -240,6 +240,12 @@ worker lifetime, with a bounded in-memory timestamp map. Persisted eviction orde
 is approximate LRU; every byte reuse still checks live `/info` authorization.
 Serialized cache maintenance builds an ordered size index lazily once per worker,
 then maintains its byte total on insertion, deletion and recency rewrites instead
-of scanning every cached response on each insertion. Storage failures discard
-the index for rebuilding on the next write. Browser-evicted entries can leave
-conservative overcounts until removal/rebuild; they cannot increase cache limits.
+of scanning every cached response on each insertion. Before insertion it reconciles
+the live key list, reading sizes only for unfamiliar keys, so overlapping worker
+lifetimes and browser eviction cannot leave stale accounting indefinitely. Storage
+failures discard the index for rebuilding on the next write.
+
+Bottom-following intent survives temporary scroll-height growth from animated
+rows and delayed content. Wheel, touch, pointer and keyboard input cancel timeline
+motion before scroll tracking evaluates the new position; readers of older
+messages are never repinned just because another row is animating.
