@@ -147,13 +147,19 @@ fn real_ip_requires_trusted_peer_and_one_valid_address() {
     let client: std::net::IpAddr = "198.51.100.7".parse().unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
-    assert_eq!(security::client_ip(&config, proxy, &headers), client);
     assert_eq!(
-        security::client_ip(&config, "::ffff:127.0.0.1".parse().unwrap(), &headers),
+        security::client_ip(&config, proxy, &headers).unwrap(),
+        client
+    );
+    assert_eq!(
+        security::client_ip(&config, "::ffff:127.0.0.1".parse().unwrap(), &headers).unwrap(),
         client
     );
     let untrusted: std::net::IpAddr = "198.51.100.8".parse().unwrap();
-    assert_eq!(security::client_ip(&config, untrusted, &headers), untrusted);
+    assert_eq!(
+        security::client_ip(&config, untrusted, &headers).unwrap(),
+        untrusted
+    );
     for value in [
         "",
         "unknown",
@@ -161,27 +167,39 @@ fn real_ip_requires_trusted_peer_and_one_valid_address() {
         "198.51.100.7, 198.51.100.8",
     ] {
         headers.insert("x-forwarded-for", HeaderValue::from_str(value).unwrap());
-        assert_eq!(security::client_ip(&config, proxy, &headers), proxy);
+        assert!(security::client_ip(&config, proxy, &headers).is_err());
     }
     headers.insert(
         "x-forwarded-for",
         HeaderValue::from_static("::ffff:198.51.100.7"),
     );
-    assert_eq!(security::client_ip(&config, proxy, &headers), client);
+    assert_eq!(
+        security::client_ip(&config, proxy, &headers).unwrap(),
+        client
+    );
     headers.insert("x-forwarded-for", HeaderValue::from_static("2001:db8::7"));
     assert_eq!(
-        security::client_ip(&config, proxy, &headers),
+        security::client_ip(&config, proxy, &headers).unwrap(),
         "2001:db8::7".parse::<std::net::IpAddr>().unwrap()
     );
     headers.append("x-forwarded-for", HeaderValue::from_static("198.51.100.8"));
-    assert_eq!(security::client_ip(&config, proxy, &headers), proxy);
+    assert!(security::client_ip(&config, proxy, &headers).is_err());
     headers.clear();
-    assert_eq!(security::client_ip(&config, proxy, &headers), proxy);
+    assert_eq!(
+        security::client_ip(&config, proxy, &headers).unwrap(),
+        proxy
+    );
     headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
     config.set_real_ip_from = Some("X-Real-IP".into());
-    assert_eq!(security::client_ip(&config, proxy, &headers), client);
+    assert_eq!(
+        security::client_ip(&config, proxy, &headers).unwrap(),
+        client
+    );
     config.set_real_ip_from = None;
-    assert_eq!(security::client_ip(&config, proxy, &headers), proxy);
+    assert_eq!(
+        security::client_ip(&config, proxy, &headers).unwrap(),
+        proxy
+    );
 }
 
 #[tokio::test]
@@ -345,8 +363,10 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
             HeaderValue::from_static("http://localhost:5173"),
         );
         headers.insert("x-forwarded-for", HeaderValue::from_str(forwarded).unwrap());
-        let input =
-            serde_json::from_value(json!({"username":"missing","password":"invalid"})).unwrap();
+        let input = serde_json::from_value(
+            json!({"username":uuid::Uuid::new_v4().simple().to_string(),"password":"invalid"}),
+        )
+        .unwrap();
         auth::login(
             axum::extract::State(app.clone()),
             axum::extract::ConnectInfo(peer.parse().unwrap()),
@@ -1377,4 +1397,164 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+fn login_test_app() -> App {
+    let (changes, _) = broadcast::channel(16);
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision(
+            "alice",
+            crate::engine::hash_password("correct-password").unwrap(),
+            false,
+            false,
+        )
+        .unwrap();
+    App {
+        media: None,
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+        shutdown: Default::default(),
+    }
+}
+async fn routed_login(app: &App, password: &str, forwarded: &str) -> axum::response::Response {
+    use axum::{body::Body, extract::ConnectInfo, http::Request};
+    use tower::ServiceExt;
+    router(app.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .extension(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()))
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-forwarded-for", forwarded)
+                .body(Body::from(
+                    json!({"username":"alice","password":password}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+#[tokio::test]
+async fn repeated_successful_logins_do_not_spend_failure_allowance_or_need_general_workers() {
+    let app = login_test_app();
+    let _general = app.io_jobs.clone().acquire_many_owned(64).await.unwrap();
+    for _ in 0..12 {
+        let response = routed_login(&app, "correct-password", "198.51.100.1").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key(header::SET_COOKIE));
+    }
+    for _ in 0..10 {
+        assert_eq!(
+            routed_login(&app, "wrong", "198.51.100.1").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        routed_login(&app, "correct-password", "198.51.100.1")
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+#[tokio::test]
+async fn login_account_budget_survives_rotating_client_addresses() {
+    let app = login_test_app();
+    for n in 1..=20 {
+        assert_eq!(
+            routed_login(&app, "wrong", &format!("198.51.100.{n}"))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        routed_login(&app, "wrong", "198.51.100.99").await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+#[tokio::test]
+async fn busy_password_workers_and_malformed_forwarding_do_not_spend_login_allowance() {
+    let app = login_test_app();
+    let jobs = app
+        .password_jobs
+        .clone()
+        .acquire_many_owned(2)
+        .await
+        .unwrap();
+    for _ in 0..12 {
+        assert_eq!(
+            routed_login(&app, "wrong", "198.51.100.1").await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+    drop(jobs);
+    for _ in 0..12 {
+        assert_eq!(
+            routed_login(&app, "wrong", "198.51.100.1, 10.0.0.1")
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        routed_login(&app, "correct-password", "198.51.100.1")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+#[tokio::test]
+async fn production_ingress_rejections_always_have_security_headers() {
+    use axum::{body::Body, extract::ConnectInfo, http::Request};
+    use tower::ServiceExt;
+    let mut app = login_test_app();
+    app.config = Arc::new(Config {
+        production: true,
+        origins: vec!["https://chat.example.com".into()],
+        ..Config::default()
+    });
+    for (peer, proto, status) in [
+        ("127.0.0.2:1234", "https", StatusCode::FORBIDDEN),
+        ("127.0.0.1:1234", "http", StatusCode::BAD_REQUEST),
+        ("127.0.0.1:1234", "https", StatusCode::OK),
+    ] {
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .extension(ConnectInfo(peer.parse::<SocketAddr>().unwrap()))
+                    .header("x-forwarded-proto", proto)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+            "nosniff"
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(
+            response.headers()[header::STRICT_TRANSPORT_SECURITY],
+            "max-age=31536000"
+        );
+        assert!(
+            response
+                .headers()
+                .contains_key(header::CONTENT_SECURITY_POLICY)
+        );
+    }
 }

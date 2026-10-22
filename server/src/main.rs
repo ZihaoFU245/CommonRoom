@@ -10,10 +10,9 @@ mod web;
 use config::Config;
 use engine::Engine;
 use std::{
-    collections::HashMap,
     io,
     path::Path,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
 };
 use tokio::sync::broadcast;
 use web::App;
@@ -63,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App {
         media,
         engine: Arc::new(RwLock::new(engine)),
-        attempts: Arc::new(Mutex::new(HashMap::new())),
+        attempts: Default::default(),
         changes,
         config: Arc::new(config),
         connections: Arc::new(tokio::sync::Semaphore::new(128)),

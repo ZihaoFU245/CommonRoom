@@ -10,6 +10,7 @@ use axum::{
     response::Response,
 };
 use std::time::Duration;
+use std::time::Instant;
 
 pub(crate) async fn upgrade(
     State(app): State<App>,

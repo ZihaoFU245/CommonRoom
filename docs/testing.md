@@ -705,3 +705,19 @@ preview, cancellation/deadlines, avatar canvas/WebP encoding and worker activati
 passed at desktop 1440×1000 and compact 390×844 with no page errors. Storage was disabled; S3 transfers were not part of
 this browser compatibility smoke. Unit tests cover the shared request path used
 by avatar/media uploads and completion.
+
+Login hardening regressions cover bounded tracking and expiry, pending reservations,
+late completion across window rollover, account limits across rotating IPs, repeated
+successful logins, independent login worker admission, malformed forwarding and
+busy-worker refunds. Configuration tests reject unknown top-level and nested keys
+without rewriting files and preserve unchanged formatting/mtime. Production ingress
+tests require security headers on accepted, untrusted-peer and insecure requests.
+
+On 2026-10-22, an isolated Chrome profile against the real Vite `web/` UI and
+updated backend passed invalid-password and rate-limit display, login/socket
+startup, room selection, Unicode message send, reload persistence, 390×844
+layout without horizontal overflow, twelve successful logins, and logout. No
+uncaught browser exceptions occurred. The five existing `test:browser` scenarios
+also passed. The full HTTP/WebSocket smoke harness passed against rebuilt debug
+and release binaries. Browser checks used temporary accounts/data with media
+storage disabled.

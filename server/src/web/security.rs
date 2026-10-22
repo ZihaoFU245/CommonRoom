@@ -7,41 +7,57 @@ use axum::{
 };
 
 pub(crate) async fn security(State(app): State<App>, request: Request, next: Next) -> Response {
-    // Production ingress must be the configured trusted socket peer.
-    // Bot endpoints additionally allow direct bearer-authenticated local/private HTTP.
-    if app.config.production
-        && !request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .is_some_and(|peer| trusted_proxy(&app.config, peer.0.ip()))
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            "Request must come from the trusted proxy.",
-        )
-            .into_response();
-    }
-    let direct_bot = request
-        .uri()
-        .path()
-        .starts_with(&format!("{}api/bot/v1/", app.config.base_url))
-        && super::auth::bearer(request.headers()).is_some()
-        && !request.headers().contains_key("x-forwarded-proto");
-    if app.config.production
-        && !direct_bot
-        && request
-            .headers()
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            != Some("https")
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            "HTTPS is required through the trusted reverse proxy.",
-        )
-            .into_response();
-    }
-    let mut response = next.run(request).await;
+    let rejection = {
+        // Production ingress must be the configured trusted socket peer.
+        // Bot endpoints additionally allow direct bearer-authenticated local/private HTTP.
+        if app.config.production
+            && !request
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .is_some_and(|peer| trusted_proxy(&app.config, peer.0.ip()))
+        {
+            Some(
+                (
+                    StatusCode::FORBIDDEN,
+                    "Request must come from the trusted proxy.",
+                )
+                    .into_response(),
+            )
+        } else {
+            let direct_bot = request
+                .uri()
+                .path()
+                .starts_with(&format!("{}api/bot/v1/", app.config.base_url))
+                && super::auth::bearer(request.headers()).is_some()
+                && !request.headers().contains_key("x-forwarded-proto");
+            if app.config.production
+                && !direct_bot
+                && request
+                    .headers()
+                    .get("x-forwarded-proto")
+                    .and_then(|v| v.to_str().ok())
+                    != Some("https")
+            {
+                Some(
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "HTTPS is required through the trusted reverse proxy.",
+                    )
+                        .into_response(),
+                )
+            } else {
+                None
+            }
+        }
+    };
+    let response = match rejection {
+        Some(response) => response,
+        None => next.run(request).await,
+    };
+    with_security_headers(&app, response)
+}
+
+fn with_security_headers(app: &App, mut response: Response) -> Response {
     let h = response.headers_mut();
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -104,26 +120,28 @@ pub(crate) fn client_ip(
     config: &Config,
     peer: std::net::IpAddr,
     headers: &HeaderMap,
-) -> std::net::IpAddr {
+) -> Result<std::net::IpAddr, &'static str> {
+    const INVALID: &str = "The trusted proxy must supply one valid client IP address.";
     let peer = peer.to_canonical();
     if !trusted_proxy(config, peer) {
-        return peer;
+        return Ok(peer);
     }
     let Some(name) = config.set_real_ip_from.as_deref() else {
-        return peer;
+        return Ok(peer);
     };
     let mut values = headers.get_all(name).iter();
     let Some(value) = values.next() else {
-        return peer;
+        return Ok(peer);
     };
     if values.next().is_some() {
-        return peer;
+        return Err(INVALID);
     }
     value
         .to_str()
         .ok()
         .and_then(|value| value.trim().parse::<std::net::IpAddr>().ok())
-        .map_or(peer, |ip| ip.to_canonical())
+        .map(|ip| ip.to_canonical())
+        .ok_or(INVALID)
 }
 
 pub(crate) fn check_origin_or_bot(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {

@@ -187,8 +187,20 @@ are written back to `config.json`. Release builds cannot be downgraded to
 non-production, and pointing a fresh release build at old development data requires
 `CHAT_ORIGIN` once.
 
-Login throttling allows 10 attempts per client IP per minute. When a proxy hides client
+Login throttling allows 10 failed attempts per client IP and 20 per username per minute. When a proxy hides client
 IPs, see [Cloudflare in front](#cloudflare-in-front).
+
+Unknown configuration keys, including keys within `media` and `s3`, stop startup
+with an error so misspellings cannot silently change security settings. Startup
+preserves the file and its formatting when normalized values are unchanged.
+Changes are saved through an exclusive temporary file, synced before atomic
+replacement; Unix also syncs the parent directory.
+
+Login rejects malformed or repeated configured client-IP headers from the trusted
+proxy with 400. The proxy must overwrite the header with one verified IP rather
+than append a forwarding chain. Set `set_real_ip_from` to `null` when using socket
+addresses directly. Failure windows are shared across connections and limit both
+IP addresses and usernames; see [Protocol](protocol.md).
 
 ## Run as a service
 
@@ -343,7 +355,7 @@ listener stays private.
 - With Cloudflare in front, `$remote_addr` at Nginx is a Cloudflare edge address.
   Configure `ngx_http_realip_module` with Cloudflare's published ranges only if
   per-client login throttling and logging matter; otherwise every user shares one IP for
-  the 10-attempts-per-minute limit. Never trust ranges you do not control.
+  the 10-failures-per-minute IP limit. Never trust ranges you do not control.
 - WebSocket clients reconnect after a tunnel restart and resynchronize instead of
   replaying missed events.
 
@@ -744,6 +756,6 @@ storage and backups around them.
 | `403 SignatureDoesNotMatch` on upload or download | A proxy rewrote the signed host, path, or query, or `public_endpoint` differs from the URL users open. Preserve `Host` and the raw request target. |
 | Upload completion is rejected | The `PUT` did not finish or sent a different size; check that the storage proxy body limit is at least `media.max_size` (default 25 MiB) and that any provider ingress limit allows it. |
 | Browser console reports a CSP violation for media | Add the public storage origin to `connect-src` and `media-src` in the Nginx asset location; backend headers do not apply to static files. |
-| Logins are throttled for everyone at once | The server sees one client IP (a proxy or Cloudflare edge). Configure real-IP handling on Nginx and keep `trust` on the actual socket peer. The limit is 10 attempts per IP per minute. |
+| Logins are throttled for everyone at once | The server sees one client IP (a proxy or Cloudflare edge). Configure real-IP handling on Nginx and keep `trust` on the actual socket peer. The limits are 10 failures per IP and 20 per username per minute. Successful logins do not consume the allowance. |
 | Login or API calls fail with a forwarded-header or origin error | `X-Forwarded-Proto` must be `https` (except direct bot calls from `trust`), and `origins` must match the browser origin without a path. |
 | Assets or the WebSocket 404 after changing `base_url` | Update both the Nginx locations and `base_url`; they must agree, including the trailing slash. |

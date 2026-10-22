@@ -7,7 +7,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
-use std::time::Duration;
 
 // Valid PHC encoding with the default Argon2 work parameters. Its verification
 // result is discarded: missing and disabled accounts must never authenticate.
@@ -64,28 +63,6 @@ pub(crate) async fn login(
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> Result<Response, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        runtime.block_on(login_inner(
-            State(app),
-            ConnectInfo(peer),
-            headers,
-            Json(input),
-        ))
-    })
-    .await
-    .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Login worker unavailable."))?
-}
-async fn login_inner(
-    State(app): State<App>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(input): Json<Login>,
-) -> Result<Response, ApiError> {
     check_origin(&app, &headers)?;
     if !valid_name(&input.username) || input.password.len() > 128 {
         return Err(error(
@@ -93,25 +70,47 @@ async fn login_inner(
             "Invalid username or password.",
         ));
     }
-    {
-        let mut attempts = app.attempts.lock().map_err(|_| {
-            error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Login state unavailable; restart the service.",
-            )
-        })?;
-        attempts.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
-        // Key on IP, never the client's ephemeral TCP port.
-        let key = SocketAddr::new(client_ip(&app.config, peer.ip(), &headers), 0);
-        let entry = attempts.entry(key).or_insert((Instant::now(), 0));
-        if entry.1 >= 10 {
-            return Err(error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many login attempts. Wait a minute.",
-            ));
+    let ip = client_ip(&app.config, peer.ip(), &headers)
+        .map_err(|message| error(StatusCode::BAD_REQUEST, message))?;
+    // Admit password work before reserving attempts. Busy workers must not spend
+    // the caller's allowance, and login never occupies the general HTTP pool.
+    let permit = app.password_jobs.clone().try_acquire_owned().map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Login busy. Please try again shortly.",
+        )
+    })?;
+    let reservation = app
+        .attempts
+        .lock()
+        .map_err(|_| login_state_unavailable())?
+        .admit(ip, &input.username, std::time::Instant::now())
+        .map_err(|message| error(StatusCode::TOO_MANY_REQUESTS, message))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let result = login_inner(&app, &headers, &input);
+        // Pending attempts count until completion, so concurrent requests cannot
+        // overshoot a limit. Cancelled HTTP futures still finish this bookkeeping.
+        let failed = matches!(&result, Err((StatusCode::UNAUTHORIZED, _)));
+        app.attempts
+            .lock()
+            .map_err(|_| login_state_unavailable())?
+            .finish(reservation, failed);
+        if failed {
+            tracing::warn!(client = %ip, "Login rejected");
         }
-        entry.1 += 1;
-    }
+        result
+    })
+    .await
+    .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Login worker unavailable."))?
+}
+fn login_state_unavailable() -> ApiError {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Login state unavailable; restart the service.",
+    )
+}
+fn login_inner(app: &App, headers: &HeaderMap, input: &Login) -> Result<Response, ApiError> {
     let account = app
         .engine_read_api()?
         .data
@@ -119,20 +118,7 @@ async fn login_inner(
         .get(&input.username)
         .cloned()
         .filter(|u| !u.disabled);
-    let expected = account.as_ref().map(|a| a.hash.clone());
-    let password = input.password;
-    let permit = app.password_jobs.clone().try_acquire_owned().map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Login busy. Please try again shortly.",
-        )
-    })?;
-    let valid = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        verify_login_password(&password, expected.as_deref())
-    })
-    .await
-    .unwrap_or(false);
+    let valid = verify_login_password(&input.password, account.as_ref().map(|a| a.hash.as_str()));
     if !valid {
         return Err(error(
             StatusCode::UNAUTHORIZED,
@@ -152,14 +138,14 @@ async fn login_inner(
                 .as_ref()
                 .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid username or password."))?
                 .hash,
-            token(&headers),
+            token(headers),
         )
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     tracing::info!(user = %input.username, "Login succeeded");
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_str(&cookie(&app, &value, 43200)).map_err(|_| {
+        HeaderValue::from_str(&cookie(app, &value, 43200)).map_err(|_| {
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Invalid session cookie configuration.",

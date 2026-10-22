@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub bind: String,
     pub origins: Vec<String>,
@@ -17,7 +17,7 @@ pub struct Config {
 }
 /// Provider-neutral connection settings. Credentials are environment-only.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct S3Config {
     pub endpoint: String,
     pub public_endpoint: Option<String>,
@@ -82,7 +82,7 @@ mod byte_size {
 }
 /// Admission and retention policy, independent of the S3 provider.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
     #[serde(with = "byte_size")]
     pub max_size: u64,
@@ -161,9 +161,14 @@ impl Config {
     }
     pub fn load(data: &std::path::Path) -> Result<Self, String> {
         let path = data.join("config.json");
-        let saved: Option<Self> = if path.exists() {
+        let raw = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        let saved: Option<Self> = if let Some(bytes) = raw.as_ref() {
             Some(
-                serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
+                serde_json::from_slice(bytes)
                     .map_err(|e| format!("Invalid data/config.json: {e}"))?,
             )
         } else {
@@ -244,16 +249,49 @@ impl Config {
             .bind
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "bind must be an IP address and port, such as 127.0.0.1:3000.")?;
-        let temp = data.join("config.json.tmp");
-        std::fs::write(
-            &temp,
-            serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        std::fs::rename(temp, path).map_err(|e| e.to_string())?;
+        let normalized = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
+        // Preserve operator formatting and mtime when normalization changes no values.
+        let unchanged = raw.as_ref().is_some_and(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(bytes).ok()
+                == serde_json::from_slice::<serde_json::Value>(&normalized).ok()
+        });
+        if !unchanged {
+            persist_config(data, &path, &normalized)?;
+        }
         Ok(config)
     }
 }
+fn persist_config(
+    data: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    use std::io::Write;
+    // A unique, exclusive sibling avoids following a stale temporary symlink.
+    let temp = data.join(format!("config.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(data)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result.map_err(|e| format!("Could not save configuration: {e}"))
+}
+
 fn normalize_base_url(value: &str) -> Result<String, String> {
     if value == "/" {
         return Ok(value.into());
@@ -288,6 +326,43 @@ pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Re
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_configuration_fields_fail_without_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for raw in [
+            r#"{"produciton":true}"#,
+            r#"{"media":{"max_szie":123}}"#,
+            r#"{"s3":{"buckte":"private"}}"#,
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(
+                Config::load(dir.path())
+                    .err()
+                    .unwrap()
+                    .contains("unknown field")
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+    #[test]
+    fn normalized_configuration_keeps_operator_formatting_and_file_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        Config::load(dir.path()).unwrap();
+        let path = dir.path().join("config.json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let raw = serde_json::to_vec(&value).unwrap();
+        std::fs::write(&path, &raw).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        Config::load(dir.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
     #[test]
     fn zero_limits_are_rejected_before_saving() {
         let dir = tempfile::tempdir().unwrap();

@@ -18,8 +18,18 @@ Browser API errors contain `{error:string}`. Bot API errors contain `{error:{cod
 
 Login throttling uses the client address from the configured `set_real_ip_from`
 header (default `X-Forwarded-For`) only when the socket peer matches `trust`.
-The proxy must overwrite it with one verified IP; invalid or absent values use
-the peer address. The allowance is 10 login attempts per IP per minute.
+The proxy must overwrite it with one verified IP. Missing values use the peer
+address; malformed, multi-address or repeated headers from a trusted peer reject
+login with 400. Headers from other peers are ignored. Set `set_real_ip_from` to
+`null` to use socket addresses only.
+
+Login allows 10 failed attempts per IP and 20 per username in fixed 60-second
+windows. Pending attempts reserve capacity; successful logins and internal
+failures refund only their reservation. Successful logins do not clear earlier
+failures. Tracking is bounded to 4,096 IP/username entries; saturation rejects
+new entries with 429 until windows expire. Password work has its own two-worker
+limit, independent of the general HTTP pool; busy password workers return 503.
+Failed verification logs the client IP without credentials or request bodies.
 
 ## Frames
 

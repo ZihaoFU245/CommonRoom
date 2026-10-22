@@ -1,6 +1,7 @@
 //! Share serialized socket baselines while the engine remains unchanged.
 use super::*;
 use axum::extract::ws::Utf8Bytes;
+use std::collections::HashMap;
 use std::{collections::VecDeque, sync::OnceLock};
 
 type Key = (String, bool, u64, u64, u64);

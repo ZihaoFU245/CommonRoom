@@ -3,6 +3,7 @@ mod avatars;
 mod bot_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
+pub(crate) mod login_limits;
 pub(crate) mod media;
 pub(crate) mod security;
 pub(crate) mod snapshots;
@@ -20,10 +21,8 @@ use axum::{
 };
 use serde_json::json;
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     sync::{Arc, Mutex, RwLock},
-    time::Instant,
 };
 use tokio::sync::broadcast;
 
@@ -40,7 +39,7 @@ pub enum Change {
 pub struct App {
     pub media: Option<Arc<crate::media::MediaStorage>>,
     pub engine: Arc<RwLock<Engine>>,
-    pub attempts: Arc<Mutex<HashMap<SocketAddr, (Instant, u32)>>>,
+    pub attempts: Arc<Mutex<login_limits::LoginLimits>>,
     pub changes: broadcast::Sender<Change>,
     pub config: Arc<Config>,
     pub connections: Arc<tokio::sync::Semaphore>,
