@@ -1,56 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHooks } from "node:module";
+import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api } from "../src/api/client.ts";
 
-let index = 0;
-const slots = [];
-const effects = [];
-globalThis.readTestHooks = {
-  ref(value) {
-    return (slots[index++] ??= { current: value });
-  },
-  state(value) {
-    const i = index++;
-    if (!(i in slots)) slots[i] = value;
-    return [
-      slots[i],
-      (v) => {
-        slots[i] = v;
-      },
-    ];
-  },
-  callback(fn) {
-    return (slots[index++] ??= fn);
-  },
-  effect(fn, deps) {
-    const i = index++;
-    const previous = slots[i];
-    if (!previous || deps.some((v, j) => !Object.is(v, previous.deps[j]))) {
-      effects.push(() => {
-        previous?.cleanup?.();
-        slots[i] = { deps, cleanup: fn() };
-      });
-    }
-  },
-};
-const registration = registerHooks({
-  resolve(specifier, context, next) {
-    return specifier === "preact/hooks"
-      ? { url: "test:read-hooks", shortCircuit: true }
-      : next(specifier, context);
-  },
-  load(url, context, next) {
-    return url === "test:read-hooks"
-      ? {
-          format: "module",
-          shortCircuit: true,
-          source:
-            "export const useRef=(...a)=>globalThis.readTestHooks.ref(...a); export const useState=(...a)=>globalThis.readTestHooks.state(...a); export const useCallback=(...a)=>globalThis.readTestHooks.callback(...a); export const useEffect=(...a)=>globalThis.readTestHooks.effect(...a); export const useLayoutEffect=useEffect;",
-        }
-      : next(url, context);
-  },
-});
+const harness = createHookHarness();
+const { slots, effects } = harness;
+const registration = mockHooks();
 const { useReadTracking } = await import("../src/hooks/useReadTracking.ts");
 registration.deregister();
 
@@ -118,7 +73,7 @@ test("continuous snapshots retain one read timer and acknowledge the latest visi
     historyElement: { current: viewport },
   };
   for (sequence = 1; sequence <= 20; sequence++) {
-    index = 0;
+    useHarness(harness);
     effects.length = 0;
     useReadTracking({ ...context, messages: [{ sequence }] });
     for (const effect of effects) effect();
@@ -133,7 +88,7 @@ test("continuous snapshots retain one read timer and acknowledge the latest visi
 });
 
 test("conversation positions restore sequence and pixel offset by stable identity", (t) => {
-  index = 0;
+  useHarness(harness);
   slots.length = 0;
   effects.length = 0;
   const originals = {
@@ -183,7 +138,7 @@ test("conversation positions restore sequence and pixel offset by stable identit
     },
   };
   function render() {
-    index = 0;
+    useHarness(harness);
     effects.length = 0;
     const result = useReadTracking(context);
     for (const effect of effects) effect();
@@ -225,5 +180,106 @@ test("conversation positions restore sequence and pixel offset by stable identit
     calls,
     [],
     "a recreated conversation must not inherit the old position",
+  );
+});
+
+test("read requested while another view is in flight is eventually sent", async (t) => {
+  const originals = {
+    window: globalThis.window,
+    document: globalThis.document,
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+  };
+  const originalRead = api.read;
+  slots.length = 0;
+  effects.length = 0;
+  t.after(() => {
+    for (const slot of slots) slot?.cleanup?.();
+    Object.assign(globalThis, originals);
+    api.read = originalRead;
+  });
+  const timers = new Map();
+  let serial = 0,
+    sequence = 10,
+    resolveRead;
+  globalThis.setTimeout = (fn) => {
+    timers.set(++serial, fn);
+    return serial;
+  };
+  globalThis.clearTimeout = (id) => timers.delete(id);
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.document = {
+    hidden: false,
+    hasFocus: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const reads = [];
+  api.read = (view, through) => {
+    reads.push([view, through]);
+    return new Promise((resolve) => (resolveRead = resolve));
+  };
+  const viewport = {
+    querySelectorAll: () => [
+      {
+        dataset: { sequence: String(sequence) },
+        getBoundingClientRect: () => ({ top: 10, bottom: 20 }),
+      },
+    ],
+    getBoundingClientRect: () => ({ top: 0, bottom: 100 }),
+    scrollTop: 0,
+    scrollHeight: 100,
+    clientHeight: 100,
+  };
+  const context = {
+    selected: "a",
+    conversationId: "a-id",
+    unread: { first: null },
+    messages: [],
+    historyReady: true,
+    output: [],
+    cleared: {},
+    resetCleared() {},
+    settingsOpen: false,
+    menu: false,
+    status: "online",
+    loadSequence() {},
+    virtualTimeline: { current: null },
+    atBottom: { current: true },
+    historyElement: { current: viewport },
+  };
+  function render() {
+    useHarness(harness);
+    effects.length = 0;
+    useReadTracking(context);
+    for (const effect of effects) effect();
+  }
+  function tick() {
+    const callbacks = [...timers.values()];
+    timers.clear();
+    for (const fn of callbacks) fn();
+  }
+  render();
+  tick();
+  await Promise.resolve();
+  context.selected = "b";
+  context.conversationId = "b-id";
+  sequence = 20;
+  render();
+  tick();
+  await Promise.resolve();
+  resolveRead();
+  await Promise.resolve();
+  await Promise.resolve();
+  tick();
+  await Promise.resolve();
+
+  assert.deepEqual(
+    reads,
+    [
+      ["a", 10],
+      ["b", 20],
+    ],
+    "read for b must be drained after a completes",
   );
 });

@@ -3,10 +3,49 @@ const cacheName = "commonroom-media-v2";
 const byteLimit = 256 * 1024 * 1024;
 const entryLimit = 128;
 const touchInterval = 60_000;
+const fillLimit = 4;
+// Bound cloned response bodies waiting for serialized Cache writes as well as disk use.
+const fillByteLimit = 256 * 1024 * 1024;
+interface Fill {
+  done: Promise<void>;
+  size: number;
+  release: () => void;
+}
 interface Metadata {
   size: number;
   content_type: string;
   filename: string;
+}
+async function waitForWrite(
+  work: Promise<void> | undefined,
+  signal: AbortSignal,
+) {
+  signal.throwIfAborted();
+  if (!work) return;
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      const reason: unknown = signal.reason;
+      reject(
+        reason instanceof Error
+          ? reason
+          : new DOMException("Request aborted", "AbortError"),
+      );
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      () => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(
+          error instanceof Error ? error : new Error("Cache write failed."),
+        );
+      },
+    );
+  });
 }
 function metadata(value: unknown): value is Metadata {
   return (
@@ -52,6 +91,8 @@ function headers(info: Metadata, download: boolean): Headers {
 }
 export class MediaCache {
   private writes: Promise<void> = Promise.resolve();
+  private readonly fills = new Map<string, Fill>();
+  private fillingBytes = 0;
   private readonly touched = new Map<string, number>();
   private readonly pending = new Map<string, Promise<void>>();
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
@@ -63,6 +104,30 @@ export class MediaCache {
   ) {
     this.storage = storage;
     this.network = network;
+  }
+  private reserve(key: string, size: number): Fill | undefined {
+    if (
+      this.fills.size >= fillLimit ||
+      this.fillingBytes + size > fillByteLimit
+    )
+      return undefined;
+    let finish = () => {};
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const fill: Fill = {
+      done,
+      size,
+      release: () => {
+        if (this.fills.get(key) !== fill) return;
+        this.fills.delete(key);
+        this.fillingBytes -= fill.size;
+        finish();
+      },
+    };
+    this.fills.set(key, fill);
+    this.fillingBytes += size;
+    return fill;
   }
   // Reconcile keys across overlapping worker lifetimes, reusing known sizes.
   // Listing keys is cheap compared with reading every cached response on insert.
@@ -156,10 +221,23 @@ export class MediaCache {
     const range = request.headers.get("Range");
     const key = new URL(url.pathname, url);
     let cache: Cache | undefined;
+    let reservation: Fill | undefined;
     try {
       cache = await this.storage.open(cacheName);
-      await this.pending.get(key.href);
-      const saved = await cache.match(key.href);
+      await waitForWrite(this.pending.get(key.href), request.signal);
+      let saved = await cache.match(key.href);
+      if (!saved && !range) {
+        // Reserve before the network await so simultaneous misses share the fill.
+        // Every waiter has already performed its own live authorization check.
+        const filling = this.fills.get(key.href);
+        if (filling) {
+          await waitForWrite(filling.done, request.signal);
+          request.signal.throwIfAborted();
+          saved = await cache.match(key.href);
+        } else if (info.size <= byteLimit) {
+          reservation = this.reserve(key.href, info.size);
+        }
+      }
       if (saved && !range) {
         this.touch(cache, key.href, keepAlive);
         const size = saved.headers.get("Content-Length");
@@ -208,83 +286,97 @@ export class MediaCache {
     } catch {
       /* Storage-disabled/private browsers still load from the network. */
     }
-    const response = await this.network(url.href, {
-      credentials: "same-origin",
-      cache: "no-store",
-      mode: "cors",
-      headers: range ? { Range: range } : {},
-      signal: request.signal,
-    });
-    if (!response.ok || (response.status !== 200 && response.status !== 206))
-      return response;
-    let contentRange = response.headers.get("Content-Range");
-    // Content-Length is CORS-safelisted; older bucket CORS policies may hide
-    // Content-Range. Reconstruct only an unambiguous single-byte-range response.
-    if (response.status === 206 && !contentRange && range) {
-      const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
-      const length = Number(response.headers.get("Content-Length"));
-      if (match && (match[1] || match[2]) && length > 0) {
-        const start = match[1]
-          ? Number(match[1])
-          : Math.max(0, info.size - Number(match[2]));
-        const end = start + length - 1;
-        if (Number.isSafeInteger(start) && start >= 0 && end < info.size)
-          contentRange = `bytes ${start}-${end}/${info.size}`;
+    try {
+      request.signal.throwIfAborted();
+      const response = await this.network(url.href, {
+        credentials: "same-origin",
+        cache: "no-store",
+        mode: "cors",
+        headers: range ? { Range: range } : {},
+        signal: request.signal,
+      });
+      if (!response.ok || (response.status !== 200 && response.status !== 206))
+        return response;
+      let contentRange = response.headers.get("Content-Range");
+      // Content-Length is CORS-safelisted; older bucket CORS policies may hide
+      // Content-Range. Reconstruct only an unambiguous single-byte-range response.
+      if (response.status === 206 && !contentRange && range) {
+        const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
+        const length = Number(response.headers.get("Content-Length"));
+        if (match && (match[1] || match[2]) && length > 0) {
+          const start = match[1]
+            ? Number(match[1])
+            : Math.max(0, info.size - Number(match[2]));
+          const end = start + length - 1;
+          if (Number.isSafeInteger(start) && start >= 0 && end < info.size)
+            contentRange = `bytes ${start}-${end}/${info.size}`;
+        }
       }
+      if (response.status === 206 && !contentRange) return response;
+      const size =
+        Number(response.headers.get("Content-Length")) ||
+        (response.status === 200 ? info.size : 0);
+      if (Number.isSafeInteger(size) && size > 0)
+        output.set("Content-Length", String(size));
+      if (contentRange) output.set("Content-Range", contentRange);
+      const result = new Response(response.body, {
+        status: response.status,
+        headers: output,
+      });
+      if (
+        cache &&
+        reservation &&
+        !range &&
+        response.status === 200 &&
+        size > 0 &&
+        this.fillingBytes + size - reservation.size <= fillByteLimit
+      ) {
+        const target = cache;
+        const fill = reservation;
+        // Cache only whole objects: seeking cannot fill the cache with overlapping
+        // fragments. Serialized writes and recency touches share one order.
+        const copy = new Response(result.clone().body, { headers: output });
+        this.fillingBytes += size - fill.size;
+        fill.size = size;
+        reservation = undefined;
+        const work = this.writes
+          .then(async () => {
+            const index = await this.accounting(target);
+            // Concurrent misses may already have filled this key.
+            await target.delete(key.href);
+            this.forget(key.href);
+            while (
+              index.sizes.size >= entryLimit ||
+              index.bytes + size > byteLimit
+            ) {
+              const oldest = index.sizes.keys().next().value;
+              if (oldest === undefined) break;
+              await target.delete(oldest);
+              this.forget(oldest);
+            }
+            await target.put(key.href, copy);
+            this.remember(key.href, size);
+          })
+          .catch(() => {
+            this.index = null;
+            // Discard the tee branch if Cache rejects before reading its body.
+            // Otherwise the continuing download can buffer into an unused copy.
+            if (!copy.bodyUsed) copy.body?.cancel().catch(() => {});
+            /* Quota/eviction failures must not break a download. */
+          });
+        this.writes = work;
+        this.pending.set(key.href, work);
+        keepAlive(
+          work.finally(() => {
+            fill.release();
+            if (this.pending.get(key.href) === work)
+              this.pending.delete(key.href);
+          }),
+        );
+      }
+      return result;
+    } finally {
+      reservation?.release();
     }
-    if (response.status === 206 && !contentRange) return response;
-    const size =
-      Number(response.headers.get("Content-Length")) ||
-      (response.status === 200 ? info.size : 0);
-    if (Number.isSafeInteger(size) && size > 0)
-      output.set("Content-Length", String(size));
-    if (contentRange) output.set("Content-Range", contentRange);
-    const result = new Response(response.body, {
-      status: response.status,
-      headers: output,
-    });
-    if (
-      cache &&
-      !range &&
-      response.status === 200 &&
-      size > 0 &&
-      size <= byteLimit
-    ) {
-      const target = cache;
-      // Cache only whole objects: seeking cannot fill the cache with overlapping
-      // fragments. Serialized writes and recency touches share one order.
-      const copy = new Response(result.clone().body, { headers: output });
-      const work = this.writes
-        .then(async () => {
-          const index = await this.accounting(target);
-          // Concurrent misses may already have filled this key.
-          await target.delete(key.href);
-          this.forget(key.href);
-          while (
-            index.sizes.size >= entryLimit ||
-            index.bytes + size > byteLimit
-          ) {
-            const oldest = index.sizes.keys().next().value;
-            if (oldest === undefined) break;
-            await target.delete(oldest);
-            this.forget(oldest);
-          }
-          await target.put(key.href, copy);
-          this.remember(key.href, size);
-        })
-        .catch(() => {
-          this.index = null;
-          /* Quota/eviction failures must not break a download. */
-        });
-      this.writes = work;
-      this.pending.set(key.href, work);
-      keepAlive(
-        work.finally(() => {
-          if (this.pending.get(key.href) === work)
-            this.pending.delete(key.href);
-        }),
-      );
-    }
-    return result;
   }
 }

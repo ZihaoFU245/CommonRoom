@@ -1,52 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHooks } from "node:module";
+import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api } from "../src/api/client.ts";
 
-let index = 0;
-const slots = [],
-  effects = [];
-globalThis.mediaTestHooks = {
-  ref(value) {
-    return (slots[index++] ??= { current: value });
-  },
-  state(value) {
-    const slot = index++;
-    if (!(slot in slots)) slots[slot] = value;
-    return [
-      slots[slot],
-      (next) => {
-        slots[slot] = next;
-      },
-    ];
-  },
-  effect(callback, deps) {
-    const slot = index++,
-      old = slots[slot];
-    if (!old || deps.some((value, i) => !Object.is(value, old.deps[i])))
-      effects.push(() => {
-        old?.cleanup?.();
-        slots[slot] = { deps, cleanup: callback() };
-      });
-  },
-};
-const registration = registerHooks({
-  resolve(specifier, context, next) {
-    return specifier === "preact/hooks"
-      ? { url: "test:media-hooks", shortCircuit: true }
-      : next(specifier, context);
-  },
-  load(url, context, next) {
-    return url === "test:media-hooks"
-      ? {
-          format: "module",
-          shortCircuit: true,
-          source:
-            "export const useRef=(...a)=>globalThis.mediaTestHooks.ref(...a); export const useState=(...a)=>globalThis.mediaTestHooks.state(...a); export const useEffect=(...a)=>globalThis.mediaTestHooks.effect(...a); export const useLayoutEffect=useEffect;",
-        }
-      : next(url, context);
-  },
-});
+const harness = createHookHarness();
+const { slots, effects } = harness;
+const registration = mockHooks();
 const { useMediaUploads } = await import("../src/hooks/useMediaUploads.ts");
 registration.deregister();
 
@@ -103,7 +62,7 @@ test("late completion never inserts into a replacement conversation; cancellatio
     }
   };
   function render(conversation) {
-    index = 0;
+    useHarness(harness);
     const hook = useMediaUploads(conversation);
     while (effects.length) effects.shift()();
     return hook;
@@ -188,7 +147,7 @@ test("verified attachments stay separate from text and release only on acknowled
     }
   };
   function render(instance = "server-a") {
-    index = 0;
+    useHarness(harness);
     const hook = useMediaUploads("room", instance);
     while (effects.length) effects.shift()();
     return hook;

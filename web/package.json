@@ -13,7 +13,8 @@
     "lint": "eslint src vite.config.ts --max-warnings 0",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check",
     "format": "prettier --write src tests scripts vite.config.ts eslint.config.mjs tsconfig.json package.json",
-    "format:check": "prettier --check src tests scripts vite.config.ts eslint.config.mjs tsconfig.json package.json"
+    "format:check": "prettier --check src tests scripts vite.config.ts eslint.config.mjs tsconfig.json package.json",
+    "test:browser": "node scripts/browser-test.mjs"
   },
   "dependencies": {
     "@formkit/auto-animate": "^0.10.0",

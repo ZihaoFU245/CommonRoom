@@ -63,6 +63,8 @@ export function useReadTracking({
   });
   const readSent = useRef(new Map<string, number>());
   const readBusy = useRef(false);
+  const readQueued = useRef(false);
+  const mounted = useRef(true);
   const readTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -143,7 +145,6 @@ export function useReadTracking({
   }
   const recordVisibleRead = useEvent(async () => {
     if (
-      readBusy.current ||
       !historyReady ||
       document.hidden ||
       !document.hasFocus() ||
@@ -151,6 +152,10 @@ export function useReadTracking({
       (menu && window.matchMedia("(max-width: 700px)").matches)
     )
       return;
+    if (readBusy.current) {
+      readQueued.current = true;
+      return;
+    }
     const viewport = historyElement.current;
     if (!viewport) return;
     const elements = [
@@ -167,16 +172,26 @@ export function useReadTracking({
         ? null
         : (unread?.first ?? null),
     );
-    if (!through || (readSent.current.get(selected) || 0) >= through) return;
+    if (!through || (readSent.current.get(identity) || 0) >= through) return;
     const view = selected;
+    const readIdentity = identity;
     readBusy.current = true;
     try {
       await api.read(view, through);
-      readSent.current.set(view, through);
+      readSent.current.delete(readIdentity);
+      readSent.current.set(readIdentity, through);
+      if (readSent.current.size > 32) {
+        const oldest = readSent.current.keys().next().value;
+        if (oldest !== undefined) readSent.current.delete(oldest);
+      }
     } catch {
       /* Retry on the next snapshot, focus, or scroll. */
     } finally {
       readBusy.current = false;
+      if (readQueued.current && mounted.current) {
+        readQueued.current = false;
+        acknowledgeVisible();
+      }
     }
   });
   useEffect(() => {
@@ -188,7 +203,14 @@ export function useReadTracking({
       document.removeEventListener("visibilitychange", acknowledgeVisible);
     };
   }, [selected, messages, unread, historyReady, menu, settingsOpen, status]);
-  useEffect(() => () => clearTimeout(readTimer.current), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      readQueued.current = false;
+      clearTimeout(readTimer.current);
+    };
+  }, []);
   function jumpToUnread() {
     if (!unread?.first) return;
     if (

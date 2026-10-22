@@ -1,38 +1,29 @@
+import { useMessageActions } from "./useMessageActions.ts";
+import { useCommandNavigation } from "./useCommandNavigation.ts";
+import { useCommandRequests } from "./useCommandRequests.ts";
+import { useDeleteConfirmation } from "./useDeleteConfirmation.ts";
+import { useOutgoingMessages } from "./useOutgoingMessages.ts";
+import { useCommandPreferences } from "./useCommandPreferences.ts";
 import { mediaMarkdown } from "../api/media.ts";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { useMediaUploads } from "./useMediaUploads.ts";
-import {
-  loadMarkdown,
-  setMarkdown,
-  saveMarkdown,
-  markdownManual,
-} from "../features/preferences/markdown.ts";
 import type { RefObject } from "preact";
-import { useEffect, useRef, useMemo, useState } from "preact/hooks";
+import { useMemo } from "preact/hooks";
 import type {
   Snapshot,
-  Message,
   Room,
   PendingCommand,
   Acknowledgement,
   BotCommands,
-  ReplyTarget,
 } from "../api/protocol.ts";
-import { privatePeers, commandText } from "../features/conversation/console.ts";
-import { sendFrame } from "../api/client.ts";
+import { commandText } from "../features/conversation/console.ts";
 import type { ValueRef } from "./refs.ts";
 import {
-  loadAliases,
-  saveAlias,
   expandAlias,
   browserCommands,
   aliasHelp,
   aliasManual,
-  setAlias,
-  removeAlias,
 } from "../features/conversation/aliases.ts";
-import { createRequestLifecycle } from "../features/conversation/requestLifecycle.ts";
-import { debugAccess } from "../features/conversation/permissions.ts";
 import {
   captureSubmission,
   deletionKind,
@@ -41,15 +32,6 @@ import {
 import type { ComposerSubmission } from "../features/conversation/submission.ts";
 
 import { useCommandComposer } from "./useCommandComposer.ts";
-
-interface Outgoing {
-  key: string;
-  view: string;
-  draft: string;
-  text: string;
-  reply: ReplyTarget | null;
-  error?: string;
-}
 
 interface Context {
   botCommands: BotCommands[];
@@ -92,17 +74,14 @@ export function useCommands({
   clearView,
   logout,
 }: Context) {
-  const [markdown, updateMarkdown] = useState(loadMarkdown);
-  function changeMarkdown(enabled: boolean) {
-    updateMarkdown(saveMarkdown(enabled));
-  }
-  const [aliases, setAliases] = useState(loadAliases);
-  function saveAliasMapping(name: string, target: string) {
-    setAliases(setAlias(aliases, name, target));
-  }
-  function removeAliasMapping(name: string) {
-    setAliases(removeAlias(aliases, name));
-  }
+  const preferences = useCommandPreferences(append);
+  const {
+    markdown,
+    changeMarkdown,
+    aliases,
+    saveAliasMapping,
+    removeAliasMapping,
+  } = preferences;
   const permissions =
     room?.permissions ??
     state.private_access[selected]?.permissions ??
@@ -117,23 +96,17 @@ export function useCommands({
   );
   const canExecute = (name: string) =>
     serverCommands.some((command) => command.name === name);
-  const [debug, setDebug] = useState(false);
-  const [sudoDebug, setSudoDebug] = useState(false);
-  const canDebug = debugAccess(
+  const navigation = useCommandNavigation({
     permissions,
-    sudoDebug,
-    state.permissions,
-    state.commands,
-  );
-  useEffect(() => {
-    if (!canDebug) {
-      setDebug(false);
-      setSudoDebug(false);
-    }
-  }, [canDebug]);
-  const [pending, setPending] = useState(false);
-  const [outgoing, setOutgoing] = useState<Outgoing[]>([]);
-  const outgoingSerial = useRef(0);
+    state,
+    currentState,
+    desiredRoom,
+    setSelected,
+    clearView,
+    logout,
+  });
+  const outbox = useOutgoingMessages();
+  const { lifecycle, pending, accountCommand } = useCommandRequests(socket);
   const {
     draft,
     draftRef,
@@ -167,111 +140,21 @@ export function useCommands({
       (direct && peer ? `@direct:${peer}` : state.private_access[selected]?.id),
     state.sync?.instance,
   );
-  const lifecycleRef = useRef<ReturnType<typeof createRequestLifecycle> | null>(
-    null,
-  );
-  if (!lifecycleRef.current)
-    lifecycleRef.current = createRequestLifecycle((frame) => {
-      const connection = socket.current;
-      if (connection?.readyState !== WebSocket.OPEN)
-        throw new Error("Disconnected. Wait for the connection to recover.");
-      sendFrame(connection, frame);
-    }, setPending);
-  const lifecycle = lifecycleRef.current;
-  function accountCommand(text: string): Promise<Acknowledgement> {
-    if (lifecycle.pending)
-      return Promise.reject(new Error("Another command is pending."));
-    return new Promise((resolve) => {
-      lifecycle.submit({
-        command: { text, room: "@command", key: null, action: true },
-        frame: { room: null, text },
-        complete: resolve,
-      });
-    });
-  }
-  const [deleteConfirmation, setDeleteConfirmation] = useState<
-    "message" | "resource" | null
-  >(null);
-  const deleteAction = useRef<(() => void) | null>(null);
-  function requestDelete(
-    action: () => void,
-    kind: "message" | "resource" = "message",
-  ) {
-    deleteAction.current = action;
-    setDeleteConfirmation(kind);
-  }
-  function cancelDelete() {
-    deleteAction.current = null;
-    setDeleteConfirmation(null);
-  }
-  function confirmDelete() {
-    const action = deleteAction.current;
-    cancelDelete();
-    action?.();
-  }
-  function retract(message: Message, confirmed = false) {
-    if (
-      (!permissions.includes("w:message.retract.any") &&
-        (message.from !== state.username ||
-          !permissions.includes("w:message.retract.own"))) ||
-      !canExecute("/retract") ||
-      lifecycle.pending ||
-      socket.current?.readyState !== WebSocket.OPEN
-    )
-      return;
-    if (!confirmed) return requestDelete(() => retract(message, true));
-    sendAction(`/retract ${message.id}`);
-    if (replyTarget?.id === message.id) setReplyTarget(null);
-  }
-  function editMessage(message: Message, value: string): Promise<boolean> {
-    if (
-      (!permissions.includes("w:message.edit.any") &&
-        (message.from !== state.username ||
-          !permissions.includes("w:message.edit.own"))) ||
-      !canExecute("/edit") ||
-      !hasMessageContent(value) ||
-      Array.from(value.trim()).length > 4000 ||
-      lifecycle.pending ||
-      socket.current?.readyState !== WebSocket.OPEN
-    )
-      return Promise.resolve(false);
-    return new Promise((resolve) => {
-      lifecycle.submit({
-        command: {
-          text: `/edit ${message.id} ${value.trim()}`,
-          room: selected,
-          key: null,
-          action: true,
-        },
-        frame: {
-          room: consoleView ? null : selected,
-          text: `/edit ${message.id} ${value.trim()}`,
-        },
-        complete: (result, current) => {
-          handleAcknowledgement(result, current);
-          resolve(result.kind !== "error");
-        },
-      });
-    });
-  }
-  function reactTo(message: Message, value: string) {
-    if (
-      !permissions.includes("w:message.react") ||
-      !canExecute("/react") ||
-      !value.trim() ||
-      lifecycle.pending ||
-      socket.current?.readyState !== WebSocket.OPEN
-    )
-      return;
-    sendAction(`/react ${message.id} ${value.trim()}`);
-  }
-  function sendAction(text: string) {
-    lifecycle.submit({
-      command: { text, room: selected, key: null, action: true },
-      frame: { room: consoleView ? null : selected, text },
-      complete: handleAcknowledgement,
-    });
-  }
+  const { deleteConfirmation, requestDelete, cancelDelete, confirmDelete } =
+    useDeleteConfirmation();
+  const { retract, editMessage, reactTo } = useMessageActions({
+    permissions,
+    username: state.username,
+    canExecute,
+    lifecycle,
+    socket,
+    selected,
+    consoleView,
+    replyTarget,
+    setReplyTarget,
+    requestDelete,
+    handleAcknowledgement,
+  });
   function send(event: Event) {
     event.preventDefault();
     if (mediaUpload.busy) return;
@@ -305,38 +188,9 @@ export function useCommands({
       (text.startsWith("/") ? lifecycle.pending : !lifecycle.canSubmitMessage())
     )
       return;
-    if (text.split(/\s+/u)[0] === "/markdown") {
-      try {
-        const enabled = setMarkdown(text.replace(/\s+/gu, " "));
-        updateMarkdown(enabled);
-        append(text, `Markdown ${enabled ? "on" : "off"} for future messages.`);
-        setDraft("");
-      } catch (error: unknown) {
-        append(
-          text,
-          error instanceof Error ? error.message : "Could not update Markdown.",
-          true,
-        );
-      }
-      return;
-    }
-    if (/^\/man\s+\/?markdown$/u.test(text)) {
-      append(text, markdownManual);
-      setDraft("");
-      return;
-    }
-    if (text.split(/\s+/u)[0] === "/alias") {
-      try {
-        setAliases(saveAlias(aliases, text));
-        append(text, "Alias saved in this browser.");
-        setDraft("");
-      } catch (error: unknown) {
-        append(
-          text,
-          error instanceof Error ? error.message : "Alias could not be saved.",
-          true,
-        );
-      }
+    const local = preferences.handleLocalCommand(text);
+    if (local) {
+      if (local === "done") setDraft("");
       return;
     }
     if (!text.startsWith("/") && Array.from(text).length > 4000) {
@@ -402,21 +256,9 @@ export function useCommands({
     if (message ? !lifecycle.canSubmitMessage() : lifecycle.pending) return;
     const attached = message ? mediaUpload.attachment : null;
     const outgoingKey =
-      message && !attached ? `outgoing-${++outgoingSerial.current}` : null;
+      message && !attached ? outbox.add(submission, replyTarget) : null;
     const submittedVersion = draftVersion.current;
     if (outgoingKey) {
-      setOutgoing((items) => [
-        ...items.filter(
-          (item, index) => !item.error || index >= items.length - 48,
-        ),
-        {
-          key: outgoingKey,
-          view,
-          draft: submission.draft,
-          text,
-          reply: replyTarget,
-        },
-      ]);
       setDraft("");
       setReplyTarget(null);
     }
@@ -434,15 +276,7 @@ export function useCommands({
         if (attached && data.kind !== "error")
           mediaUpload.published(attached.media.media_id);
         if (outgoingKey) {
-          setOutgoing((items) =>
-            data.kind === "error"
-              ? items.map((item) =>
-                  item.key === outgoingKey
-                    ? { ...item, error: data.text }
-                    : item,
-                )
-              : items.filter((item) => item.key !== outgoingKey),
-          );
+          outbox.complete(outgoingKey, data);
         } else
           handleAcknowledgement(
             data,
@@ -474,45 +308,7 @@ export function useCommands({
       )
         setDraft("");
       if (current.reply) setReplyTarget(null);
-      const [command, argument, name] = commandText(current.text).split(/\s+/u);
-      const target =
-        command === "/room"
-          ? name?.replace(/^#/u, "")
-          : command === "/new"
-            ? argument === "room"
-              ? name
-              : undefined
-            : argument;
-      if (command === "/clear") clearView();
-      if (command === "/logout") logout();
-      if (command === "/console") {
-        desiredRoom.current = null;
-        setSelected("@command");
-      }
-      if (
-        (["/new", "/join"].includes(command || "") ||
-          (command === "/room" && ["new", "join"].includes(argument || ""))) &&
-        target
-      ) {
-        desiredRoom.current = target;
-        if (currentState.current.rooms.some((room) => room.name === target)) {
-          setSelected(target);
-          desiredRoom.current = null;
-        }
-      }
-      if (command === "/debug") {
-        setDebug(target === "on");
-        setSudoDebug(
-          target === "on" && current.text.trim().split(/\s+/u)[0] === "/sudo",
-        );
-      }
-      if (command === "/tell" && target) {
-        desiredRoom.current = `@direct:${target}`;
-        if (privatePeers(currentState.current).includes(target)) {
-          setSelected(desiredRoom.current);
-          desiredRoom.current = null;
-        }
-      }
+      navigation.acknowledge(current.text);
     }
   }
   return {
@@ -528,21 +324,21 @@ export function useCommands({
     accountCommand,
     permissions,
     serverCommands,
-    debug: debug && canDebug,
+    debug: navigation.debug,
     draft,
     pending:
       pending ||
       (draft.trim().startsWith("/")
         ? lifecycle.pending
         : !lifecycle.canSubmitMessage()),
-    outgoing,
+    outgoing: outbox.outgoing,
     restoreOutgoing: (key: string) => {
-      const item = outgoing.find((entry) => entry.key === key);
-      if (!item || !item.error || draftRef.current) return;
+      if (draftRef.current) return;
+      const item = outbox.take(key);
+      if (!item) return;
       setSelected(item.view);
       setDraft(item.draft);
       setReplyTarget(item.reply);
-      setOutgoing((items) => items.filter((entry) => entry.key !== key));
     },
     replyTarget,
     setReplyTarget,

@@ -362,3 +362,178 @@ test("overlapping worker lifetimes cannot leave cache accounting undercounted", 
   await load(first, 129);
   assert.equal(f.saved.size, 128);
 });
+
+test("concurrent cold reads coalesce one media fill", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  const responses = await Promise.all(
+    Array.from({ length: 16 }, () => f.load(instance)),
+  );
+  await Promise.all(responses.map((response) => response.text()));
+  await Promise.all(f.work);
+  const downloads = f.calls.filter(
+    (call) => !call.url.endsWith("/info"),
+  ).length;
+
+  assert.equal(
+    downloads,
+    1,
+    "concurrent identical misses should share one fill",
+  );
+});
+
+test("cold-fill admission bounds concurrent cache copies and releases slots", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  const cache = await f.storage.open();
+  const put = cache.put;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  cache.put = async (...args) => {
+    await gate;
+    return put(...args);
+  };
+  const urls = Array.from(
+    { length: 16 },
+    (_, index) =>
+      new URL(
+        path.replace("06178/file", `${String(index).padStart(5, "0")}/file`),
+      ),
+  );
+  const responses = await Promise.all(
+    urls.map((url) =>
+      instance.respond(new Request(url), url, (work) => f.work.push(work)),
+    ),
+  );
+  await Promise.all(responses.map((response) => response.text()));
+  assert.equal(
+    f.puts(),
+    0,
+    "network downloads remain usable while cache writes wait",
+  );
+  release();
+  await Promise.all(f.work);
+  assert.equal(f.puts(), 4, "only four response copies can await cache writes");
+  const url = new URL(path.replace("06178/file", "99999/file"));
+  await (
+    await instance.respond(new Request(url), url, (work) => f.work.push(work))
+  ).text();
+  await Promise.all(f.work);
+  assert.equal(f.puts(), 5, "completed fills return their admission slots");
+});
+
+test("cold-fill byte reservations bound large copies independently of entry count", async () => {
+  const f = fixture();
+  const size = 150 * 1024 * 1024;
+  const instance = new MediaCache(f.storage, async (url, options) =>
+    String(url).endsWith("/info")
+      ? Response.json({
+          size,
+          content_type: "image/png",
+          filename: "large.png",
+        })
+      : new Response("abcdef", { headers: { "Content-Length": String(size) } }),
+  );
+  const cache = await f.storage.open();
+  const put = cache.put;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  cache.put = async (...args) => {
+    await gate;
+    return put(...args);
+  };
+  const urls = [
+    new URL(path),
+    new URL(path.replace("06178/file", "00000/file")),
+  ];
+  const responses = await Promise.all(
+    urls.map((url) =>
+      instance.respond(new Request(url), url, (work) => f.work.push(work)),
+    ),
+  );
+  await Promise.all(responses.map((response) => response.text()));
+  release();
+  await Promise.all(f.work);
+  assert.equal(
+    f.puts(),
+    1,
+    "two 150 MiB copies must not enter a 256 MiB fill budget",
+  );
+});
+
+test("a cancelled fill waiter exits without cancelling another caller's download", async () => {
+  const f = fixture();
+  let release, started;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const downloading = new Promise((resolve) => {
+    started = resolve;
+  });
+  const instance = new MediaCache(f.storage, async (url, options) => {
+    if (!String(url).endsWith("/info")) {
+      started();
+      await gate;
+    }
+    return f.network(url, options);
+  });
+  const first = f.load(instance);
+  await downloading;
+  const cancellation = new AbortController();
+  const waiter = instance.respond(
+    new Request(path, { signal: cancellation.signal }),
+    new URL(path),
+    (work) => f.work.push(work),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  cancellation.abort(new DOMException("cancelled", "AbortError"));
+  await assert.rejects(waiter, { name: "AbortError" });
+  release();
+  assert.equal(await (await first).text(), "abcdef");
+  await Promise.all(f.work);
+  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+});
+
+test("failed fills release waiters and every caller still checks authorization", async () => {
+  const f = fixture();
+  let release, started;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const downloading = new Promise((resolve) => {
+    started = resolve;
+  });
+  let firstDownload = true;
+  const instance = new MediaCache(f.storage, async (url, options) => {
+    if (!String(url).endsWith("/info") && firstDownload) {
+      firstDownload = false;
+      started();
+      await gate;
+      throw new Error("storage offline");
+    }
+    return f.network(url, options);
+  });
+  const first = assert.rejects(f.load(instance), /storage offline/);
+  await downloading;
+  const waiter = f.load(instance);
+  await new Promise((resolve) => setImmediate(resolve));
+  f.deny();
+  assert.equal(
+    (await f.load(instance)).status,
+    403,
+    "a denied caller cannot join an authorized fill",
+  );
+  release();
+  await first;
+  assert.equal(await (await waiter).text(), "abcdef");
+  await Promise.all(f.work);
+  assert.equal(
+    (await f.load(instance)).status,
+    403,
+    "persisted bytes do not bypass authorization",
+  );
+});

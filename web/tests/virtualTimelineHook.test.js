@@ -1,71 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHooks } from "node:module";
-let active;
-const registration = registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === "preact/hooks")
-      return { url: "test:virtual-hooks", shortCircuit: true };
-    return next(specifier, context);
-  },
-  load(url, context, next) {
-    if (url === "test:virtual-hooks")
-      return {
-        format: "module",
-        shortCircuit: true,
-        source:
-          "export const useState = (...a) => globalThis.virtualTestHooks.state(...a); export const useRef = (...a) => globalThis.virtualTestHooks.ref(...a); export const useLayoutEffect = (...a) => globalThis.virtualTestHooks.effect(...a); export const useMemo = (...a) => globalThis.virtualTestHooks.memo(...a);",
-      };
-    return next(url, context);
-  },
-});
-globalThis.virtualTestHooks = {
-  memo(callback, deps) {
-    const index = active.index++;
-    const previous = active.slots[index];
-    if (
-      !previous ||
-      deps === undefined ||
-      deps.some((value, i) => !Object.is(value, previous.deps[i]))
-    )
-      active.slots[index] = { deps, value: callback() };
-    return active.slots[index].value;
-  },
-  state(initial) {
-    const index = active.index++;
-    if (!(index in active.slots)) active.slots[index] = initial;
-    const owner = active;
-    return [
-      owner.slots[index],
-      (update) => {
-        const value =
-          typeof update === "function" ? update(owner.slots[index]) : update;
-        if (!Object.is(value, owner.slots[index])) {
-          owner.slots[index] = value;
-          owner.dirty = true;
-        }
-      },
-    ];
-  },
-  ref(initial) {
-    const index = active.index++;
-    return (active.slots[index] ??= { current: initial });
-  },
-  effect(callback, deps) {
-    const index = active.index++;
-    const previous = active.slots[index];
-    if (
-      !previous ||
-      deps === undefined ||
-      deps.some((value, i) => !Object.is(value, previous.deps[i]))
-    ) {
-      active.effects.push(() => {
-        previous?.cleanup?.();
-        active.slots[index] = { deps, cleanup: callback() };
-      });
-    }
-  },
-};
+import { mockHooks, useHarness } from "./helpers/hooks.js";
+const registration = mockHooks();
 const { useVirtualTimeline } =
   await import("../src/hooks/useVirtualTimeline.ts");
 registration.deregister();
@@ -136,7 +72,7 @@ function fixture(t) {
   let result;
   function settle() {
     for (let i = 0; harness.dirty && i < 20; i++) {
-      active = harness;
+      useHarness(harness);
       harness.index = 0;
       harness.effects = [];
       harness.dirty = false;

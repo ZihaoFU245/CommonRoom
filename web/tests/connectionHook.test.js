@@ -1,36 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHooks } from "node:module";
+import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api, ApiError } from "../src/api/client.ts";
-let effects = [];
-globalThis.connectionTestHooks = {
-  state(value) {
-    return [typeof value === "function" ? value() : value, () => {}];
-  },
-  ref(value) {
-    return { current: value };
-  },
-  effect(callback) {
-    effects.push(callback);
-  },
-};
-const registration = registerHooks({
-  resolve(specifier, context, next) {
-    return specifier === "preact/hooks"
-      ? { url: "test:connection-hooks", shortCircuit: true }
-      : next(specifier, context);
-  },
-  load(url, context, next) {
-    return url === "test:connection-hooks"
-      ? {
-          format: "module",
-          shortCircuit: true,
-          source:
-            "export const useState=(...a)=>globalThis.connectionTestHooks.state(...a); export const useRef=(...a)=>globalThis.connectionTestHooks.ref(...a); export const useEffect=(...a)=>globalThis.connectionTestHooks.effect(...a);",
-        }
-      : next(url, context);
-  },
-});
+const registration = mockHooks();
 const { useConnection } = await import("../src/hooks/useConnection.ts");
 registration.deregister();
 const snapshot = {
@@ -109,7 +81,8 @@ function fixture(t) {
     if (refreshError) throw refreshError;
     return snapshot;
   };
-  effects = [];
+  const harness = createHookHarness();
+  useHarness(harness);
   useConnection(snapshot, {
     onSnapshot(previous, next) {
       snapshots.push(next);
@@ -120,9 +93,9 @@ function fixture(t) {
       loggedOut++;
     },
   });
-  const cleanups = effects.map((effect) => effect());
+  for (const effect of harness.effects) effect();
   t.after(() => {
-    for (const cleanup of cleanups) cleanup?.();
+    for (const slot of harness.slots) slot?.cleanup?.();
     Object.assign(globalThis, originals);
     api.session = session;
     api.me = me;

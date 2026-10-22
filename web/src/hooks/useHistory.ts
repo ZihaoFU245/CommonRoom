@@ -99,6 +99,11 @@ export function useHistory(
     setLoaded(page);
     ingest(currentState.current, ledger.current, page.messages);
   }
+  function cancelRequest() {
+    request.current?.abort();
+    request.current = null;
+    setLoading(false);
+  }
   async function fetchPage(range: HistoryRange, direction?: "older" | "newer") {
     paused.current = false;
     lastRange.current =
@@ -109,7 +114,7 @@ export function useHistory(
       snapshot.private_access[view]?.id ??
       snapshot.rooms.find((room) => room.name === view)?.id;
     if (!conversationId || !snapshot.unread[view]) return;
-    request.current?.abort();
+    cancelRequest();
     const controller = new AbortController();
     request.current = controller;
     setLoading(true);
@@ -202,8 +207,7 @@ export function useHistory(
     lookahead.current.reset();
     setJump(undefined);
     setHistoryError("");
-    request.current?.abort();
-    request.current = null;
+    cancelRequest();
     return () => {
       request.current?.abort();
       request.current = null;
@@ -320,8 +324,7 @@ export function useHistory(
         );
     },
     loadLatest: () => {
-      request.current?.abort();
-      request.current = null;
+      cancelRequest();
       paused.current = false;
       setJump(undefined);
       setLoaded(null);
@@ -331,8 +334,7 @@ export function useHistory(
     },
     loadSequence: (sequence: number) => {
       paused.current = false;
-      request.current?.abort();
-      request.current = null;
+      cancelRequest();
       setJump({ view: active.current, sequence });
       setRetry((value) => value + 1);
     },

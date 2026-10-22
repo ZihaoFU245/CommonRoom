@@ -1,72 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHooks } from "node:module";
+import { mockHooks, useHarness } from "./helpers/hooks.js";
 import { api } from "../src/api/client.ts";
 
-// Run the real hook with deterministic state/effect scheduling and mocked HTTP.
-let active;
-const registration = registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === "preact/hooks")
-      return { url: "test:history-hooks", shortCircuit: true };
-    return next(specifier, context);
-  },
-  load(url, context, next) {
-    if (url === "test:history-hooks")
-      return {
-        format: "module",
-        shortCircuit: true,
-        source:
-          "export const useState = (...a) => globalThis.historyTestHooks.state(...a); export const useRef = (...a) => globalThis.historyTestHooks.ref(...a); export const useEffect = (...a) => globalThis.historyTestHooks.effect(...a); export const useMemo = (...a) => globalThis.historyTestHooks.memo(...a);",
-      };
-    return next(url, context);
-  },
-});
-globalThis.historyTestHooks = {
-  memo(callback, deps) {
-    const index = active.index++;
-    const previous = active.slots[index];
-    if (
-      !previous ||
-      deps.some((value, i) => !Object.is(value, previous.deps[i]))
-    )
-      active.slots[index] = { deps, value: callback() };
-    return active.slots[index].value;
-  },
-  state(initial) {
-    const index = active.index++;
-    if (!(index in active.slots)) active.slots[index] = initial;
-    const owner = active;
-    return [
-      owner.slots[index],
-      (update) => {
-        const value =
-          typeof update === "function" ? update(owner.slots[index]) : update;
-        if (!Object.is(value, owner.slots[index])) {
-          owner.slots[index] = value;
-          owner.dirty = true;
-        }
-      },
-    ];
-  },
-  ref(initial) {
-    const index = active.index++;
-    return (active.slots[index] ??= { current: initial });
-  },
-  effect(callback, deps) {
-    const index = active.index++;
-    const previous = active.slots[index];
-    if (
-      !previous ||
-      deps.some((value, i) => !Object.is(value, previous.deps[i]))
-    ) {
-      active.effects.push(() => {
-        previous?.cleanup?.();
-        active.slots[index] = { deps, cleanup: callback() };
-      });
-    }
-  },
-};
+const registration = mockHooks();
 const { useHistory } = await import("../src/hooks/useHistory.ts");
 registration.deregister();
 
@@ -111,7 +48,7 @@ test("completed jumps allow live merging and refresh around the current anchor",
   async function settle() {
     for (let round = 0; round < 20; round++) {
       if (harness.dirty) {
-        active = harness;
+        useHarness(harness);
         harness.index = 0;
         harness.effects = [];
         harness.dirty = false;
@@ -201,7 +138,7 @@ test("busy history preserves explicit paging, bounds retries and keeps live tail
   async function settle() {
     for (let round = 0; round < 20; round++) {
       if (harness.dirty) {
-        active = harness;
+        useHarness(harness);
         harness.index = 0;
         harness.effects = [];
         harness.dirty = false;
@@ -300,7 +237,7 @@ test("returning to a cached conversation paints history before a delayed refresh
     has_after: true,
   });
   function render(flush = true) {
-    active = harness;
+    useHarness(harness);
     harness.index = 0;
     harness.effects = [];
     harness.dirty = false;
@@ -403,7 +340,7 @@ test("a complete snapshot tail renders immediately without a redundant HTTP page
   };
   const harness = { slots: [], index: 0, effects: [], dirty: true };
   try {
-    active = harness;
+    useHarness(harness);
     const result = useHistory(
       state,
       "team",
@@ -420,4 +357,81 @@ test("a complete snapshot tail renders immediately without a redundant HTTP page
     api.history = original;
     for (const slot of harness.slots) slot?.cleanup?.();
   }
+});
+
+test("switching from an in-flight page to a complete cached tail clears loading", async (t) => {
+  const original = api.history;
+  t.after(() => {
+    api.history = original;
+    for (const slot of harness.slots) slot?.cleanup?.();
+  });
+  const message = {
+    id: "m",
+    sequence: 1,
+    time: 1,
+    from: "alice",
+    to: null,
+    text: "hello",
+    reactions: {},
+    reply: null,
+    mentions: [],
+  };
+  const state = {
+    rooms: [
+      { name: "a", id: "a-id", messages: [] },
+      { name: "b", id: "b-id", messages: [message] },
+    ],
+    direct: [],
+    private_access: {},
+    unread: {
+      a: { revision: 1, through: 100, oldest: 1 },
+      b: { revision: 1, through: 1, oldest: 1 },
+    },
+    policy_revision: 0,
+  };
+  const snapshot = { current: state },
+    ledger = { current: { sequence: 0, messages: new Map() } },
+    harness = { slots: [], index: 0, effects: [], dirty: true };
+  let selected = "a",
+    result;
+  api.history = (_view, signal) => {
+    return new Promise((_, reject) =>
+      signal.addEventListener("abort", () => reject(new Error("aborted")), {
+        once: true,
+      }),
+    );
+  };
+  async function settle() {
+    for (let n = 0; n < 20; n++) {
+      if (harness.dirty) {
+        useHarness(harness);
+        harness.index = 0;
+        harness.effects = [];
+        harness.dirty = false;
+        result = useHistory(
+          state,
+          selected,
+          state.rooms.find((r) => r.name === selected).messages,
+          snapshot,
+          ledger,
+          { current: null },
+          { current: true },
+        );
+        for (const effect of harness.effects) effect();
+      }
+      await new Promise((r) => setImmediate(r));
+      if (!harness.dirty) return;
+    }
+    assert.fail("did not settle");
+  }
+  await settle();
+  assert.equal(result.loading, true);
+  selected = "b";
+  harness.dirty = true;
+  await settle();
+  assert.equal(
+    result.loading,
+    false,
+    "complete cached conversation must not remain loading",
+  );
 });
