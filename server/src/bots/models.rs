@@ -20,7 +20,7 @@ pub struct SendResult {
     pub replayed: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Snapshot {
     pub kind: &'static str,
     pub account: Account,
@@ -29,12 +29,12 @@ pub struct Snapshot {
     pub server_instance: String,
     pub conversations: Vec<Conversation>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Account {
     pub id: String,
     pub username: String,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Conversation {
     pub id: String,
     pub view: String,
@@ -43,7 +43,7 @@ pub struct Conversation {
     pub unread: Option<crate::engine::Unread>,
     pub content_revision: u64,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Permissions {
     pub send: bool,
     pub reply: bool,

@@ -17,7 +17,7 @@ fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -40,7 +40,7 @@ fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
         header::COOKIE,
         HeaderValue::from_static("chat_session=fixture"),
     );
-    let (status, _) = auth::authenticate(&app, &headers).unwrap_err();
+    let ApiError(status, _) = auth::authenticate(&app, &headers).unwrap_err();
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(app.engine.is_poisoned());
 }
@@ -64,7 +64,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
     engine
         .login("fixture".into(), "alice", "hash", None)
         .unwrap();
-    let store = engine.history_store.clone();
+    let store = engine.history_store().clone();
     assert!(
         std::thread::spawn(move || store.read::<()>(|_| panic!("poison reader")))
             .join()
@@ -76,7 +76,7 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -121,7 +121,7 @@ fn cookies_are_http_only_and_secure_in_production() {
         attempts: Default::default(),
         changes,
         config: Arc::new(config),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -233,7 +233,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -303,7 +303,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -348,7 +348,7 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -432,7 +432,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -494,7 +494,13 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         .await
         .unwrap();
     assert_eq!(reply, "Joined #team.");
-    assert!(matches!(mutation, Some(Change::All)));
+    let actor_id = app
+        .engine_read()
+        .unwrap()
+        .account_id("actor")
+        .unwrap()
+        .to_owned();
+    assert!(matches!(mutation, Some(Change::Metadata(notice)) if notice.targets(&actor_id)));
     let snapshot = app.engine().unwrap().snapshot("actor").unwrap();
     let room = snapshot.rooms.iter().find(|r| r.name == "team").unwrap();
     assert!(room.members.contains("actor"));
@@ -610,7 +616,7 @@ fn password_jobs_recheck_authority_session_and_target_after_hashing() {
                 attempts: Default::default(),
                 changes,
                 config: Arc::new(Config::default()),
-                connections: Arc::new(tokio::sync::Semaphore::new(128)),
+                admission: Default::default(),
                 io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
                 password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
                 snapshots: Default::default(),
@@ -743,7 +749,7 @@ fn engine_readers_overlap_and_io_admission_is_bounded() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -780,6 +786,58 @@ fn configs_with_cache_statistics_remain_one_json_document() {
 }
 
 #[test]
+fn baselines_survive_unrelated_history_and_sessions_but_refresh_visible_changes() {
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .provision("bob", "hash".into(), false, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/room new visible")
+        .unwrap();
+    engine
+        .execute(Some("alice"), Some("visible"), "/room add bob")
+        .unwrap();
+    engine.execute(None, None, "/room new hidden").unwrap();
+    engine.login("bob".into(), "bob", "hash", None).unwrap();
+    let mut app = login_test_app();
+    app.engine = Arc::new(RwLock::new(engine));
+    let mut headers = HeaderMap::new();
+    headers.insert(header::COOKIE, HeaderValue::from_static("chat_session=bob"));
+    let baseline = snapshots::value(&app, &headers, false).unwrap();
+    {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(None, Some("hidden"), "hidden content")
+            .unwrap();
+        engine
+            .login("temporary".into(), "alice", "hash", None)
+            .unwrap();
+        engine.logout("temporary").unwrap();
+    }
+    let unchanged = snapshots::value(&app, &headers, false).unwrap();
+    assert_eq!(baseline.as_str().as_ptr(), unchanged.as_str().as_ptr());
+    assert!(!unchanged.contains("hidden content"));
+    app.engine()
+        .unwrap()
+        .execute(Some("alice"), Some("visible"), "visible content")
+        .unwrap();
+    let changed = snapshots::value(&app, &headers, false).unwrap();
+    assert_ne!(baseline.as_str().as_ptr(), changed.as_str().as_ptr());
+    assert!(changed.contains("visible content"));
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/revoke bob user #visible")
+        .unwrap();
+    let revoked = snapshots::value(&app, &headers, false).unwrap();
+    assert!(!revoked.contains("visible content"));
+    let parsed: serde_json::Value = serde_json::from_str(&revoked).unwrap();
+    assert!(parsed["rooms"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutations() {
     let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
     engine
@@ -807,7 +865,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -846,7 +904,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
             .all(|value| value.as_str().as_ptr() == values[0].as_str().as_ptr())
     );
     assert_eq!(
-        app.engine_read().unwrap().history_store.stats().unwrap()["misses"],
+        app.engine_read().unwrap().history_store().stats().unwrap()["misses"],
         1
     );
     let mut headers = HeaderMap::new();
@@ -890,7 +948,7 @@ fn socket_baselines_share_concurrent_builds_and_recheck_credentials_and_mutation
         .unwrap()
         .data
         .sessions
-        .get_mut("one")
+        .get_mut(&crate::engine::session_digest("one"))
         .unwrap()
         .expires = 0;
     let mut expired = HeaderMap::new();
@@ -972,7 +1030,7 @@ async fn stalled_media_io_does_not_occupy_api_jobs_or_serialize_other_files() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -1059,7 +1117,7 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -1221,7 +1279,7 @@ async fn unauthenticated_uploads_do_not_reveal_storage_configuration_or_hint_val
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -1261,13 +1319,14 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
         engine.login(name.into(), name, "hash", None).unwrap();
     }
     let (changes, mut notifications) = broadcast::channel(8);
+    engine.set_avatar_hosts(["example.com".into()].into());
     let app = App {
         media: None,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -1324,7 +1383,28 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
             .unwrap();
         assert_eq!(response.status(), status);
     }
-    assert!(matches!(notifications.try_recv(), Ok(Change::All)));
+    assert!(matches!(notifications.try_recv(), Ok(Change::Avatar(_))));
+    let revision = app.engine_read().unwrap().revision;
+    let repeated = routes
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/avatars")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::COOKIE, "chat_session=alice")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"url":"https://example.com/a.png"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated.status(), StatusCode::OK);
+    assert_eq!(app.engine_read().unwrap().revision, revision);
+    assert!(matches!(
+        notifications.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
     assert_eq!(
         app.engine_read().unwrap().avatar_directory()["alice"],
         "https://example.com/a.png"
@@ -1399,7 +1479,7 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-fn login_test_app() -> App {
+pub(super) fn login_test_app() -> App {
     let (changes, _) = broadcast::channel(16);
     let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
     engine
@@ -1416,7 +1496,7 @@ fn login_test_app() -> App {
         attempts: Default::default(),
         changes,
         config: Arc::new(Config::default()),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -1454,12 +1534,10 @@ async fn repeated_successful_logins_do_not_spend_failure_allowance_or_need_gener
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key(header::SET_COOKIE));
     }
-    for _ in 0..10 {
-        assert_eq!(
-            routed_login(&app, "wrong", "198.51.100.1").await.status(),
-            StatusCode::UNAUTHORIZED
-        );
-    }
+    assert_eq!(
+        routed_login(&app, "wrong", "198.51.100.1").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         routed_login(&app, "correct-password", "198.51.100.1")
             .await
@@ -1470,14 +1548,10 @@ async fn repeated_successful_logins_do_not_spend_failure_allowance_or_need_gener
 #[tokio::test]
 async fn login_account_budget_survives_rotating_client_addresses() {
     let app = login_test_app();
-    for n in 1..=20 {
-        assert_eq!(
-            routed_login(&app, "wrong", &format!("198.51.100.{n}"))
-                .await
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-    }
+    assert_eq!(
+        routed_login(&app, "wrong", "198.51.100.1").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         routed_login(&app, "wrong", "198.51.100.99").await.status(),
         StatusCode::TOO_MANY_REQUESTS
@@ -1557,4 +1631,289 @@ async fn production_ingress_rejections_always_have_security_headers() {
                 .contains_key(header::CONTENT_SECURITY_POLICY)
         );
     }
+}
+
+#[tokio::test]
+async fn http_account_admission_preserves_other_accounts_and_releases_capacity() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let app = login_test_app();
+    let alice = app.engine_read().unwrap().data.users["alice"].clone();
+    {
+        let mut engine = app.engine().unwrap();
+        engine
+            .login("alice-session".into(), "alice", &alice.hash, None)
+            .unwrap();
+        engine
+            .provision("bob", "hash".into(), false, false)
+            .unwrap();
+        engine
+            .login("bob-session".into(), "bob", "hash", None)
+            .unwrap();
+    }
+    let mut leases: Vec<_> = (0..8)
+        .map(|_| app.admission.http(alice.id.clone()).unwrap())
+        .collect();
+    for (token, status) in [
+        ("alice-session", StatusCode::TOO_MANY_REQUESTS),
+        ("bob-session", StatusCode::OK),
+    ] {
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .header(header::COOKIE, format!("chat_session={token}"))
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+    leases.pop();
+    let response = router(app.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/session")
+                .header(header::COOKIE, "chat_session=alice-session")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn media_and_avatar_storage_failures_are_retryable_instead_of_invalid_requests() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut engine = Engine::open(&path).unwrap();
+    engine
+        .provision("alice", "hash".into(), false, false)
+        .unwrap();
+    engine
+        .login("fixture".into(), "alice", "hash", None)
+        .unwrap();
+    let mut app = login_test_app();
+    app.engine = Arc::new(RwLock::new(engine));
+    app.media = Some(crate::media::tests::test_storage("http://127.0.0.1:1"));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_upload BEFORE INSERT ON media BEGIN SELECT RAISE(FAIL,'injected database failure'); END;").unwrap();
+    for (method, path, body, status, code) in [
+        (
+            "POST",
+            "/api/avatars/uploads",
+            r#"{"size":8}"#,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+        (
+            "POST",
+            "/api/avatars/uploads",
+            r#"{"size":0}"#,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+    ] {
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header(header::COOKIE, "chat_session=fixture")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(value["code"], code);
+        assert!(!value["error"].as_str().unwrap().contains("injected"));
+    }
+    db.execute_batch("DROP TABLE media;").unwrap();
+    for path in ["/api/media/missing/info", "/api/avatars/missing/info"] {
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header(header::COOKIE, "chat_session=fixture")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(value["code"], "unavailable");
+        assert_eq!(value["retryable"], true);
+    }
+}
+
+#[tokio::test]
+async fn real_login_logout_and_failure_write_only_bounded_auth_event_fields() {
+    use axum::{body::Body, extract::ConnectInfo, http::Request};
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut engine = Engine::open(&path).unwrap();
+    engine
+        .provision(
+            "alice",
+            crate::engine::hash_password("correct-password").unwrap(),
+            false,
+            false,
+        )
+        .unwrap();
+    let mut app = login_test_app();
+    app.engine = Arc::new(RwLock::new(engine));
+    let response = routed_login(&app, "correct-password", "198.51.100.1").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let mut changes = app.changes.subscribe();
+    let response = router(app.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/logout")
+                .extension(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()))
+                .header(header::COOKIE, &cookie)
+                .header("x-forwarded-for", "198.51.100.1")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(matches!(changes.try_recv(),Ok(Change::Account(name)) if name=="alice"));
+    assert_eq!(
+        routed_login(&app, "wrong-password", "198.51.100.1")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let rows = db
+        .prepare("SELECT username,client,outcome FROM auth_events ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.iter().map(|row| row.2.as_str()).collect::<Vec<_>>(),
+        ["success", "logout", "failure"]
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.0 == "alice" && row.1 == "198.51.100.1")
+    );
+    let mut changes = app.changes.subscribe();
+    let response = router(app.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/logout")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(matches!(
+        changes.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+    assert_eq!(
+        db.query_row::<usize, _, _>("SELECT count(*) FROM auth_events", [], |row| row.get(0))
+            .unwrap(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn avatar_http_budget_preserves_noops_other_accounts_and_committed_profile() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let app = login_test_app();
+    {
+        let mut engine = app.engine_api().unwrap();
+        engine.set_avatar_hosts(["example.com".into()].into());
+        for name in ["alice", "bob"] {
+            engine
+                .provision(name, "hash".into(), false, name == "alice")
+                .unwrap();
+            engine.login(name.into(), name, "hash", None).unwrap();
+        }
+    }
+    let routes = router(app.clone());
+    for (user, index, expected) in [
+        ("alice", 0, 200),
+        ("alice", 1, 200),
+        ("alice", 2, 200),
+        ("alice", 3, 200),
+        ("alice", 4, 429),
+        ("alice", 3, 200),
+        ("bob", 0, 200),
+    ] {
+        let response = routes
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/avatars")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::COOKIE, format!("chat_session={user}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"url":format!("https://example.com/{index}.png")}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), expected);
+        if expected == 429 {
+            let value: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap())
+                    .unwrap();
+            assert_eq!(value["code"], "rate_limited");
+            assert_eq!(value["retryable"], true);
+        }
+    }
+    assert_eq!(
+        app.engine_read().unwrap().avatar_directory()["alice"],
+        "https://example.com/3.png"
+    );
 }

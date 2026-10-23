@@ -33,7 +33,7 @@ impl Engine {
         key: &str,
     ) -> Result<Option<(String, CommandOutcome)>, Error> {
         use rusqlite::OptionalExtension;
-        let db = self.db.lock().map_err(Error::storage)?;
+        let db = self.store.db.lock().map_err(Error::storage)?;
         let row: Option<(String,String)> = db.query_row("SELECT digest,outcome FROM bot_command_receipts WHERE account_id=?1 AND key=?2 AND created>?3",params![account,key,now().saturating_sub(TTL)],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(Error::storage)?;
         row.map(|(digest, raw)| {
             serde_json::from_str(&raw)
@@ -64,7 +64,7 @@ impl Engine {
         }
         let created = now();
         {
-            let db = self.db.lock().map_err(Error::storage)?;
+            let db = self.store.db.lock().map_err(Error::storage)?;
             let (count,bytes):(usize,usize)=db.query_row("SELECT count(*),coalesce(sum(length(CAST(outcome AS BLOB))),0) FROM bot_command_receipts WHERE account_id=?1 AND created>?2",params![account,created.saturating_sub(TTL)],|r|Ok((r.get(0)?,r.get(1)?))).map_err(Error::storage)?;
             if count >= crate::bots::models::RECEIPT_LIMIT || bytes + MAX_RESULT > MAX_BYTES {
                 return Err(Error::new(
@@ -88,14 +88,21 @@ impl Engine {
         });
         // SQLITE_FULL/IOERR and RAISE(ROLLBACK) may abort the whole outer
         // transaction. Restore memory even when there is no savepoint left.
-        if self.db.lock().map_err(Error::storage)?.is_autocommit() {
+        if self
+            .store
+            .db
+            .lock()
+            .map_err(Error::storage)?
+            .is_autocommit()
+        {
             self.restore_command_state(revision, changed)?;
             return Err(Error::storage("Command transaction aborted."));
         }
         // A command may have touched multiple savepoints. Roll back the complete
         // effect on rejection, then persist the rejected outcome in the receipt.
         if outcome.is_err() {
-            self.db
+            self.store
+                .db
                 .lock()
                 .map_err(Error::storage)?
                 .execute_batch("ROLLBACK TO bot_command_receipt;")
@@ -106,7 +113,8 @@ impl Engine {
         if let Err(error) = &outcome
             && error.code == Code::Unavailable
         {
-            self.db
+            self.store
+                .db
                 .lock()
                 .map_err(Error::storage)?
                 .execute_batch("RELEASE bot_command_receipt;")
@@ -128,7 +136,7 @@ impl Engine {
                     "Command receipt is too large.",
                 ));
             }
-            let db = self.db.lock().map_err(Error::storage)?;
+            let db = self.store.db.lock().map_err(Error::storage)?;
             db.execute(
                 "DELETE FROM bot_command_receipts WHERE created<=?1",
                 [created.saturating_sub(TTL)],
@@ -144,7 +152,7 @@ impl Engine {
         })();
         if let Err(error) = persist {
             let rollback = {
-                let db = self.db.lock().map_err(Error::storage)?;
+                let db = self.store.db.lock().map_err(Error::storage)?;
                 if db.is_autocommit() {
                     Ok(())
                 } else {
@@ -169,7 +177,7 @@ impl Engine {
         // Rollback is rare. Recover authoritative metadata/cursors after SQLite
         // rollback instead of cloning the whole instance for every native call.
         let (data, cursors) = {
-            let db = self.db.lock().map_err(Error::storage)?;
+            let db = self.store.db.lock().map_err(Error::storage)?;
             let raw: String = db
                 .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
                 .map_err(Error::storage)?;
@@ -197,10 +205,11 @@ impl Engine {
         self.authorization =
             authorization::CompiledPolicy::compile(&data).map_err(Error::storage)?;
         self.bot_index = crate::bots::models::Index::build(&data);
+        self.read_model.advance();
         self.data = data;
         self.revision = revision;
         self.changed_conversation = changed;
-        self.read_positions = cursors;
+        self.store.read_positions = cursors;
         self.clear_working_messages();
         self.recovery_failed = false;
         Ok(())
@@ -259,7 +268,7 @@ mod tests {
             .unwrap();
         assert!(replay.replayed);
         assert_eq!(replay.result, first.result);
-        engine.db.lock().unwrap().execute_batch("CREATE TEMP TRIGGER fail_command_receipt BEFORE INSERT ON bot_command_receipts BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+        engine.store.db.lock().unwrap().execute_batch("CREATE TEMP TRIGGER fail_command_receipt BEFORE INSERT ON bot_command_receipts BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
         let revision = engine.revision;
         let before = engine.data.clone();
         assert!(
@@ -278,6 +287,7 @@ mod tests {
                 .is_none()
         );
         let stored: bool = engine
+            .store
             .db
             .lock()
             .unwrap()
@@ -304,7 +314,7 @@ mod tests {
         );
         assert_eq!(engine.data.next_sequence, sequence);
         assert!(engine.data.private.is_empty());
-        engine.db.lock().unwrap().execute_batch("DROP TRIGGER fail_command_receipt; CREATE TEMP TRIGGER abort_command_receipt BEFORE INSERT ON bot_command_receipts BEGIN SELECT RAISE(ROLLBACK,'injected full transaction abort'); END;").unwrap();
+        engine.store.db.lock().unwrap().execute_batch("DROP TRIGGER fail_command_receipt; CREATE TEMP TRIGGER abort_command_receipt BEFORE INSERT ON bot_command_receipts BEGIN SELECT RAISE(ROLLBACK,'injected full transaction abort'); END;").unwrap();
         let before = engine.data.clone();
         let revision = engine.revision;
         assert!(
@@ -317,7 +327,7 @@ mod tests {
         assert!(engine.data == before);
         assert_eq!(engine.revision, revision);
         assert!(!engine.data.rooms.contains_key("aborted"));
-        assert!(engine.db.lock().unwrap().is_autocommit());
+        assert!(engine.store.db.lock().unwrap().is_autocommit());
         drop(engine);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -336,11 +346,12 @@ mod limits_tests {
             .unwrap();
         let account = engine.data.users["helper"].id.clone();
         let created = now();
-        engine.db.lock().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<4096) INSERT INTO bot_command_receipts SELECT ?1,CAST(x AS TEXT),'digest',?2,'{}' FROM n",params![account,created]).unwrap();
+        engine.store.db.lock().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<4096) INSERT INTO bot_command_receipts SELECT ?1,CAST(x AS TEXT),'digest',?2,'{}' FROM n",params![account,created]).unwrap();
         let result =
             engine.bot_command_once(&account, "new", "digest", |_| Ok("should never run".into()));
         assert_eq!(result.unwrap_err().code, Code::IdempotencyCapacity);
         engine
+            .store
             .db
             .lock()
             .unwrap()
@@ -357,6 +368,7 @@ mod limits_tests {
                 .replayed
         );
         let count: usize = engine
+            .store
             .db
             .lock()
             .unwrap()

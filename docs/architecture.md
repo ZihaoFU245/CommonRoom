@@ -6,7 +6,15 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 
 `server/src/main.rs` wires process lifecycle, configuration, shared application state, and graceful shutdown. `console.rs` owns the stdin superuser interface. `config.rs` loads and validates saved settings; settings require a restart.
 
-`engine/mod.rs` defines the engine and module boundary. Domain modules extend that owner rather than creating separate copies of application state:
+`engine/mod.rs` defines the engine and module boundary. `Engine` coordinates domain changes through separate owners: `Store` holds the SQLite
+writer, history readers, process lock, persisted cursors and pending maintenance;
+`Presence` owns transient connections; `CompiledPolicy` owns compiled authorization;
+and media state owns limits and avatar-host policy. Raw `Data` is private in production.
+Transport adapters use stable account identity, password verification material and
+credential lookup methods, and borrow a history handle for off-lock reads.
+Regression fixtures retain test-only raw state access for rollback assertions.
+
+Domain modules extend that coordinator rather than creating separate copies of application state:
 
 | Module | Responsibility |
 | --- | --- |
@@ -19,10 +27,14 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 | `rooms.rs` | Room creation, deletion, invitations, joining, and leaving |
 | `messages.rs` | Message construction, private queues, reactions and replies |
 | `cleanup.rs` | Explicit history cleanup scopes, authorization and read-only previews |
-| `queries.rs` | Authorization-filtered snapshots, history, directories, and unread calculations |
+| `queries.rs` | Snapshot authorization, visible-conversation and directory helpers; history/read queries |
+| `read_model.rs` | Metadata epoch, bounded browser/bot templates and viewer-specific snapshot stamps |
+| `notices.rs` | Committed metadata audiences using stable principals, resolved keys and old/new access |
+| `snapshot.rs` | Owned browser/bot plans; history loading, unread collection and snapshot assembly |
+| `presence.rs` | Connection counts and shared active-directory/frame projections |
 | `dispatch.rs` | Input validation, command routing, and rollback on rejected/failed mutations |
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
-| `tests.rs` | Engine regression tests using isolated storage |
+| `tests/` | Engine regression tests using isolated storage |
 
 `server/src/bots/` owns the machine profile, credential management and
 transient activity and command discovery. `bots/control.rs` owns the native command and verified source-context HTTP adapters.
@@ -49,9 +61,9 @@ checkpoint/outbox, not a server-side agent runtime.
 
 `commands.rs` outside the engine owns help/completion metadata and the shared account-provisioning syntax used by stdin and web password jobs. `manual.rs` provides read-only command and grant-system manuals. The domain dispatcher executes commands; the registry does not authorize them.
 
-`web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` handles asynchronous account commands and configuration output. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.
+`web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` routes commands and configuration output; `credential_commands.rs` handles password/provisioning in the existing blocking command worker. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.
 
-One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mutations. Database/lock work runs on blocking workers; HTTP work admission is capped at 64 jobs. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for SQLite I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
+One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mutations. Database/lock work runs on blocking workers; HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for SQLite I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
 
 ## Web ownership
 
@@ -93,11 +105,11 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v17; only HEAD v16 upgrades transactionally. Earlier schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v18; only the supported v17 baseline upgrades transactionally. Earlier schemas are rejected.
 
-The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. `/configs` exposes page-cache hits, misses and usage to authorized operators.
+The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. Both caches use four conversation-hashed mutex shards; each shard receives one quarter of the global message, byte, page and unread-entry budgets. One hot shard cannot borrow another shard’s allowance. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
-History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback snapshots only the maps a command family can change, omits message bodies, and uses an explicit mutation flag instead of whole-state comparison. Read commands share one fast path across browser, stdin and sudo. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
+History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback captures resolved keys, omits message bodies, and uses explicit mutations instead of whole-state comparison. Persistence keys are selected explicitly, without pointer identity; every metadata write requires a captured baseline and there is no full-rewrite fallback. Read commands share one fast path across browser, stdin and sudo. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
 
 New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy changes use a full snapshot. Presence changes send only the authorized online directory, and extra tabs do not broadcast unchanged presence. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
 
@@ -122,7 +134,7 @@ and skips sorting when no new message IDs arrive.
 `engine/storage/command_receipts.rs` owns atomic native command outcomes. An outer
 SQLite savepoint encloses ordinary command storage savepoints and its receipt;
 receipt failure rolls back SQLite and reloads authoritative metadata/cursors
-before broadcasting. The receipt wrapper does not clone metadata/cursors on success; administrative commands inside it retain family-scoped metadata snapshots.
+before broadcasting. The receipt wrapper does not clone metadata/cursors on success; administrative commands inside it retain snapshots of their resolved metadata keys.
 
 Browser API failures retain HTTP status; 401 responses return the user to login.
 Requests have a 15-second client deadline. Login sessions are capped at eight per
@@ -174,7 +186,7 @@ measurement and reuses computed styles until layout/font changes.
 `web/media.rs` owns browser upload/config/completion/download HTTP adapters and
 background cleanup orchestration. `engine/media.rs` owns scoped authorization,
 scoped user metadata limits, configured quotas and media lifecycle; `engine/storage/media.rs` owns all media SQL,
-transactional message references, deletion claims and schema v17. `media.rs`
+transactional message references, deletion claims and schema v18. `media.rs`
 provides the S3 transport through rust-s3. Storage network calls run outside engine
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
@@ -249,3 +261,101 @@ Bottom-following intent survives temporary scroll-height growth from animated
 rows and delayed content. Wheel, touch, pointer and keyboard input cancel timeline
 motion before scroll tracking evaluates the new position; readers of older
 messages are never repinned just because another row is animating.
+
+Browser and bot sockets share transport lifecycle, heartbeat, idle timeout and
+frame-budget helpers. Stable-account admission allows four sockets per profile
+and cancels the oldest on replacement. Separate browser/bot pools hold 128/64
+leases. Shutdown wakes every transport before checkpointing. Bot control frames
+use the same account-wide budget as HTTP writes, except correlated discovery
+responses to bounded server-owned requests.
+
+Browser and bot baselines capture an owned authorized plan while holding an engine
+read guard. History reads, unread queries, response assembly and serialization run
+after releasing it. Before delivery, transports recheck live credentials and the
+captured revision key, retrying at most three times. A stalled WAL reader therefore
+cannot block account revocation. Snapshot caches share complete frames by profile
+and revision; incomplete/error builds remain retryable.
+
+Unread caches update exact counts from append/cursor deltas when the conversation
+revision difference equals the number of new retained rows and retained bounds
+remain compatible. Edits, reactions, retraction, cleanup and retention eviction
+fall back to an exact indexed query. Global sequence gaps do not imply message
+counts. `unread_full` and `unread_incremental` expose these paths in history stats.
+
+Presence owns transient connection counts and shares the active directory and
+serialized frame until account/connection state changes. Socket event queues drain
+at most 64 changes per batch, coalescing repeated invalidations and recovering lag
+with an authorized baseline. Presence and command discovery survive baseline
+coalescing. Logout/password notifications target the affected account; unchanged
+avatar writes perform no persistence or broadcast.
+
+Metadata and content use separate invalidation domains. Administrative commits,
+identity changes, avatar-host policy changes and recovery advance the metadata
+epoch. Browser/bot metadata templates hold only authorized directories/access and
+owned query descriptors, never retained history. They share a 128-profile/32 MiB
+conservative allocation budget; oversized templates are rebuilt rather than cached.
+Ordinary sends, reactions, cleanup, sessions, presence and read acknowledgements
+refresh dynamic revisions/cursors without rebuilding metadata. Serialized baseline
+keys include the metadata epoch, exact visible conversation IDs/revisions, the
+viewer's read revision and authorized presence revision. Unrelated history/session
+activity therefore preserves the shared frame. Every caller still rechecks live
+credentials and the complete stamp before delivery. History pages remain shared by
+stable conversation ID, content revision and range across viewers.
+
+Administrative rollback and persistence carry explicit resolved keys for account,
+session, room, private-conversation and bot-registration maps. Commands validate
+bulk selections before mutation. Creation/rename includes missing destination keys;
+rollback removes new keys and restores selected originals without replacing unrelated
+maps. Room removal selects only account metadata branches referencing that room.
+Account rename expands keys through indexed message references; account deletion
+intentionally touches every conversation revision for anonymization. Bot commands
+use the same keyed commit instead of cloning all Data. Full-data delta fixtures are
+test-only. Policy/audit serialization retains its existing transactional layout.
+
+Engine domain, authorization, command, persistence and history operations retain
+`EngineError` classes. SQLite/filesystem/serialization failures are sanitized at
+source; transports map classes centrally instead of guessing a status from the
+operation. The history pager retains its checked range/revision error type and
+converts it explicitly. Native bot commands preserve failure classes through their
+receipt transaction. Browser command frames and console output format errors only
+at the final text boundary. Hidden policy/catalogue resources return the same
+failure class for missing and inaccessible targets.
+
+Avatar changes broadcast a stable-account invalidation and render compact profile
+frames. Owned visibility plans capture allowed conversation IDs; historical-author
+visibility uses one indexed reader query outside the engine guard. Delivery rechecks
+live credentials and the engine revision, retrying at most three times. It does not
+load message tails or unread counts. Frames coalesce by account, and full baselines
+subsume them. Browser updates preserve all existing history references; bots skip
+profile invalidations. A bounded, independent per-account avatar mutation budget
+limits actual changes while preserving idempotent replay.
+
+Browser and bot sockets render coalesced notifications in batches of at most eight
+per blocking worker. Browser capture authenticates once and owns conversation,
+unread and avatar plans; SQLite reads and serialization run after releasing the
+engine guard. Final delivery checks the live identity, metadata epoch, viewer read
+revision, relevant conversation revisions and presence when needed. Bot compact
+notifications share one credential/scope check and guard per batch; full baselines
+retain off-lock reads and final credential/stamp validation for every frame.
+
+Each socket keeps at most 4096 readable conversation IDs as negative routing hints.
+Unrelated conversation/discovery/activity events skip worker admission. Hints never
+authorize a delivery. A read-only shared metadata clock disables stale exclusions
+immediately, including private conversations created silently by media reservation.
+The next worker refreshes the hints under live authorization. Baselines also refresh
+them; oversized projections fall back to live routing rather than growing the cache.
+Read acknowledgements coalesce per viewer, and full baselines subsume content updates
+while preserving presence and discovery. Heartbeat rename accounting runs in its
+blocking worker. All locks are released before socket sends.
+
+
+Metadata commits derive notification audiences from resolved entity keys and old/new
+compiled authorization. Newly authorized and revoked viewers both receive baselines;
+unrelated viewers skip metadata workers before authentication or history I/O.
+Bot credential/registration changes refresh the bot and owners, with compact command
+catalogue invalidations for other current readers. Coalescing unions account and
+catalogue audiences, including catalogue invalidations alongside forced recovery.
+Directory identity changes target authorized directory viewers. Su-only generic avatar
+metadata changes conservatively invalidate all profiles; self-service avatar APIs
+continue to use compact profile events. The global policy revision is a version of
+captured authority, not a promise that unrelated clients receive every server mutation.

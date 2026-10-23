@@ -4,6 +4,7 @@ import type {
   Acknowledgement,
   BotActivity,
 } from "../api/protocol.ts";
+import { applyAvatar } from "../features/preferences/avatar.ts";
 import { parseFrame } from "../api/protocol.ts";
 import { api, isUnauthorized } from "../api/client.ts";
 import {
@@ -150,6 +151,8 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
             return;
           }
           sync.receive(next, false);
+        } else if (data.kind === "avatar") {
+          sync.receive(applyAvatar(currentState.current, data), true);
         } else if (data.kind === "presence") {
           sync.receive({ ...currentState.current, online: data.online }, true);
         } else if (data.kind === "read") {

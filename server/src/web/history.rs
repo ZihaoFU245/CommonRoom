@@ -39,33 +39,25 @@ pub(crate) async fn history(
             around: input.around,
             limit: input.limit,
         };
-        range
-            .validate()
-            .map_err(|e| error(StatusCode::BAD_REQUEST, &e))?;
+        range.validate().map_err(ApiError::from)?;
         let user = authenticate(&app, &headers)?;
         let (id, revision, store) = {
             let engine = app.engine_read_api()?;
             let (_, id, revision) = engine
                 .conversation(&user, &input.view)
-                .map_err(|e| error(StatusCode::FORBIDDEN, &e))?;
-            (id, revision, engine.history_store.clone())
+                .map_err(ApiError::from)?;
+            (id, revision, engine.history_store().clone())
         };
         // WAL readers overlap the writer without holding the engine lock across disk I/O.
         let page = store
             .page_checked(&id, revision, range, &input.view)
-            .map_err(|e| {
-                let status = match &e {
-                    crate::engine::HistoryError::Changed => StatusCode::CONFLICT,
-                    crate::engine::HistoryError::InvalidRange(_) => StatusCode::BAD_REQUEST,
-                    crate::engine::HistoryError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-                };
-                error(status, &e.to_string())
-            })?;
+            .map_err(crate::engine::EngineError::from)
+            .map_err(ApiError::from)?;
         let current = authenticate(&app, &headers)?;
         let engine = app.engine_read_api()?;
         let (_, current_id, _) = engine
             .conversation(&current, &input.view)
-            .map_err(|e| error(StatusCode::FORBIDDEN, &e))?;
+            .map_err(ApiError::from)?;
         if current != user || current_id != id {
             return Err(error(
                 StatusCode::CONFLICT,
@@ -102,7 +94,7 @@ pub(crate) async fn read(
         let changed = app
             .engine_api()?
             .mark_read(&user, &input.view, input.through)
-            .map_err(|e| error(StatusCode::BAD_REQUEST, &e))?;
+            .map_err(ApiError::from)?;
         if changed {
             let _ = app.changes.send(Change::Read(user));
         }

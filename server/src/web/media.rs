@@ -24,7 +24,7 @@ fn storage(app: &App) -> Result<std::sync::Arc<crate::media::MediaStorage>, ApiE
         )
     })
 }
-fn failed(message: &str) -> ApiError {
+fn invalid(message: &str) -> ApiError {
     error(StatusCode::BAD_REQUEST, message)
 }
 fn unavailable() -> ApiError {
@@ -94,14 +94,11 @@ pub(crate) async fn allocate(
                 input.hints.clone(),
                 true,
             )
-            .map_err(|e| failed(&e))?;
+            .map_err(ApiError::from)?;
         let uploader = engine
-            .data
-            .users
-            .get(user)
-            .ok_or_else(|| failed("Account unavailable."))?
-            .id
-            .clone();
+            .active_account_id(user)
+            .ok_or_else(|| invalid("Account unavailable."))?
+            .to_owned();
         Ok((storage, uploader, input))
     })
     .await?;
@@ -112,8 +109,8 @@ pub(crate) async fn allocate(
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let media = authenticated(&app, &headers, move |app, user| {
         let mut engine = app.engine_api()?;
-        if engine.data.users.get(user).is_none_or(|u| u.id != uploader) {
-            return Err(failed("Account changed; retry upload."));
+        if engine.active_account_id(user) != Some(uploader.as_str()) {
+            return Err(invalid("Account changed; retry upload."));
         }
         engine
             .allocate_media_target(
@@ -124,18 +121,18 @@ pub(crate) async fn allocate(
                 input.hints,
                 false,
             )
-            .map_err(|e| failed(&e))?
-            .ok_or_else(|| failed("Upload not found."))
+            .map_err(ApiError::from)?
+            .ok_or_else(|| invalid("Upload not found."))
     })
     .await?;
-    let hint_headers = crate::media::hint_headers(&media.hints).map_err(|e| failed(&e))?;
+    let hint_headers = crate::media::hint_headers(&media.hints).map_err(|e| invalid(&e))?;
     let mut upload_headers = hint_headers
         .iter()
         .map(|(key, value)| {
             value
                 .to_str()
                 .map(|value| (key.as_str().to_owned(), value.to_owned()))
-                .map_err(|_| failed("Invalid hint value."))
+                .map_err(|_| invalid("Invalid hint value."))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
     upload_headers.insert("Content-Type".into(), "application/octet-stream".into());
@@ -163,7 +160,7 @@ pub(crate) async fn complete(
     authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
             .media_owner(user, &media_id)
-            .map_err(|e| failed(&e))
+            .map_err(ApiError::from)
     })
     .await?;
     let _lock = storage
@@ -172,7 +169,7 @@ pub(crate) async fn complete(
     let mut media = authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
             .media_owner(user, &id)
-            .map_err(|e| failed(&e))
+            .map_err(ApiError::from)
     })
     .await?;
     if !media.ready {
@@ -192,7 +189,7 @@ pub(crate) async fn complete(
         authenticated(&app, &headers, move |app, user| {
             app.engine_read_api()?
                 .finish_media(user, &verified)
-                .map_err(|e| failed(&e))
+                .map_err(ApiError::from)
         })
         .await?;
     }
@@ -209,7 +206,7 @@ pub(crate) async fn info(
         let media = app
             .engine_read_api()?
             .readable_media(user, &id)
-            .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))?;
+            .map_err(|e| super::error::hidden(e, "Attachment not found."))?;
         Ok(media_json(app, &media))
     })
     .await
@@ -227,23 +224,23 @@ pub(crate) async fn download(
 ) -> Result<Redirect, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
-    let media = authenticated(&app, &headers, move |app, user| {
+    let ticket = authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
-            .readable_media(user, &id)
-            .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))
+            .prepare_media_download(user, &id)
+            .map_err(|e| super::error::hidden(e, "Attachment not found."))
     })
     .await?;
     let url = storage
-        .download_url(&media, options.download)
+        .download_url(&ticket.media, options.download)
         .await
         .map_err(|cause| {
-            tracing::warn!(media_id = %media.id, error = %cause, "Download signing failed");
+            tracing::warn!(media_id = %ticket.media.id, error = %cause, "Download signing failed");
             error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign download URL.")
         })?;
     authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
-            .readable_media(user, &media.id)
-            .map_err(|_| error(StatusCode::NOT_FOUND, "Attachment not found."))
+            .validate_media_download(user, &ticket)
+            .map_err(|e| super::error::hidden(e, "Attachment not found."))
     })
     .await?;
     Ok(Redirect::temporary(&url))
@@ -316,7 +313,7 @@ async fn delete_media(app: App, media: crate::engine::media::Media) -> Result<()
         {
             engine.media_staging_cleaned(&media.id)?;
         }
-        engine.remove_media_record(&media.id)
+        engine.remove_media_record(&media.id).map_err(String::from)
     })
     .await
 }
@@ -330,7 +327,9 @@ async fn cleanup(app: &App) -> Result<bool, String> {
     let mut failed = 0;
     loop {
         let rows = cleanup_db(app, move |app| {
-            app.engine_read()?.expired_media_before(attempted_before)
+            app.engine_read()?
+                .expired_media_before(attempted_before)
+                .map_err(String::from)
         })
         .await?;
         let count = rows.len();
@@ -358,7 +357,9 @@ async fn cleanup(app: &App) -> Result<bool, String> {
     }
     loop {
         let ids = cleanup_db(app, move |app| {
-            app.engine_read()?.media_staging_cleanup(attempted_before)
+            app.engine_read()?
+                .media_staging_cleanup(attempted_before)
+                .map_err(String::from)
         })
         .await?;
         let count = ids.len();
@@ -373,7 +374,9 @@ async fn cleanup(app: &App) -> Result<bool, String> {
                 continue;
             }
             cleanup_db(app, move |app| {
-                app.engine_read()?.media_staging_cleaned(&id)
+                app.engine_read()?
+                    .media_staging_cleaned(&id)
+                    .map_err(String::from)
             })
             .await?;
         }
@@ -399,7 +402,7 @@ pub(crate) async fn abandon(
     authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
             .abandon_media(user, &id)
-            .map_err(|e| failed(&e))?;
+            .map_err(ApiError::from)?;
         Ok(Json(json!({"ok":true})))
     })
     .await

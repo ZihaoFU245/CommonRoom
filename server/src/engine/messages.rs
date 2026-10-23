@@ -31,11 +31,13 @@ impl Engine {
         text: &str,
         markdown: bool,
         reply: Option<Reply>,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         let recipient = if let Some(key) = view.strip_prefix("@private:") {
             let (_, fallback) = key.split_once(':').ok_or("Invalid private conversation.")?;
             if !self.data.private.contains_key(key) {
-                return Err("Private conversation not found.".into());
+                return Err(EngineError::NotFound(
+                    "Private conversation not found.".into(),
+                ));
             }
             Some(
                 actor
@@ -56,14 +58,18 @@ impl Engine {
             self.push_room_message(view, message)
         }
     }
-    fn push_room_message(&mut self, name: &str, mut message: Message) -> Result<(), String> {
+    fn push_room_message(&mut self, name: &str, mut message: Message) -> Result<(), EngineError> {
         self.authorize_media_text(
             Some(&message.from),
             &self.room_scope(name)?,
             &message.text,
             "",
         )?;
-        let room = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
+        let room = self
+            .data
+            .rooms
+            .get_mut(name)
+            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
         message.mentions.retain(|name| room.members.contains(name));
         if room.messages.len() == self.max_messages {
             room.messages.pop_front();
@@ -79,7 +85,7 @@ impl Engine {
         scope: &Scope,
         command: &str,
         action: Action,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         self.require_command(actor, view, command)?;
         self.require_target_command(actor, scope, command)?;
         self.require(actor, scope, Action::Read)?;
@@ -159,13 +165,44 @@ impl Engine {
         })
     }
 
+    fn message_action_scope(
+        &self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        context: &Scope,
+        id: &str,
+        search_rooms: bool,
+    ) -> Result<(Option<String>, Scope), EngineError> {
+        let room = if search_rooms {
+            self.message_action_room(actor, room, context, id)
+        } else {
+            room.map(str::to_owned)
+        };
+        let scope = if let Some(name) = &room {
+            self.room_scope(name)?
+        } else {
+            let key = self
+                .data
+                .private
+                .iter()
+                .find(|(key, chat)| {
+                    self.allows(actor, &self.private_scope(key), Action::Read)
+                        && !matches!(context,Scope::Private(id) if *id!=chat.id)
+                        && chat.messages.iter().any(|message| message.id == id)
+                })
+                .map(|(key, _)| key)
+                .ok_or("Message not found in this conversation.")?;
+            self.private_scope(key)
+        };
+        Ok((room, scope))
+    }
     pub(super) fn message(
         &mut self,
         actor: Option<&str>,
         to: Option<&str>,
         text: &str,
         markdown: bool,
-    ) -> Result<Message, String> {
+    ) -> Result<Message, EngineError> {
         if !has_message_content(text) {
             return Err("Messages cannot be blank.".into());
         }
@@ -183,7 +220,7 @@ impl Engine {
         message.sequence = self.data.next_sequence;
         Ok(message)
     }
-    pub(super) fn push_private(&mut self, message: Message) -> Result<(), String> {
+    pub(super) fn push_private(&mut self, message: Message) -> Result<(), EngineError> {
         let key = private_key(
             &message.from,
             message
@@ -197,7 +234,7 @@ impl Engine {
         &mut self,
         key: &str,
         mut message: Message,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         let Scope::Private(id) = self.private_scope(key) else {
             return Err("Invalid private scope.".into());
         };
@@ -226,7 +263,7 @@ impl Engine {
     pub(super) fn apply_messages(
         &mut self,
         context: &CommandContext<'_>,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         let CommandContext {
             actor,
             room,
@@ -239,23 +276,8 @@ impl Engine {
             "/retract" => {
                 require_len(parts, 2, "/retract message-id")?;
                 let id = parts[1];
-                let room = self.message_action_room(actor, room, &context.scope, id);
-                let scope = if let Some(name) = &room {
-                    self.room_scope(name)?
-                } else {
-                    let key = self
-                        .data
-                        .private
-                        .iter()
-                        .find(|(key, chat)| {
-                            self.allows(actor, &self.private_scope(key), Action::Read)
-                                && (!matches!(&context.scope, Scope::Private(id) if *id != chat.id))
-                                && chat.messages.iter().any(|m| m.id == id)
-                        })
-                        .map(|(key, _)| key.clone())
-                        .ok_or("Message not found in this conversation.")?;
-                    self.private_scope(&key)
-                };
+                let (room, scope) =
+                    self.message_action_scope(actor, room, &context.scope, id, true)?;
                 self.require_target_command(actor, &scope, parts[0])?;
                 self.require(actor, &scope, Action::Read)?;
                 let can_delete_any = self.allows(actor, &scope, Action::RetractAny);
@@ -268,11 +290,13 @@ impl Engine {
                     .to_owned();
                 let (messages, revision) = match &scope {
                     Scope::Room(_) => {
-                        let target = self
-                            .data
-                            .rooms
-                            .get_mut(room.as_deref().ok_or("Room not found.")?)
-                            .ok_or("Room not found.")?;
+                        let target =
+                            self.data
+                                .rooms
+                                .get_mut(room.as_deref().ok_or_else(|| {
+                                    EngineError::NotFound("Room not found.".into())
+                                })?)
+                                .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                         (&mut target.messages, &mut target.revision)
                     }
                     Scope::Private(id) => {
@@ -281,7 +305,9 @@ impl Engine {
                             .private
                             .values_mut()
                             .find(|chat| chat.id == *id)
-                            .ok_or("Private conversation not found.")?;
+                            .ok_or_else(|| {
+                                EngineError::NotFound("Private conversation not found.".into())
+                            })?;
                         (&mut chat.messages, &mut chat.revision)
                     }
                     _ => return Err("Invalid message scope.".into()),
@@ -291,14 +317,17 @@ impl Engine {
                     .find(|m| m.id == id)
                     .ok_or("Message not found in this conversation (it may have expired).")?;
                 if !can_delete_any && original.author_id != actor_id {
-                    return Err("You can only delete your own messages.".into());
+                    return Err(EngineError::Forbidden(
+                        "You can only delete your own messages.".into(),
+                    ));
                 }
                 let deleted_sequence = original.sequence;
                 let conversation_id = match &scope {
                     Scope::Room(id) | Scope::Private(id) => id.clone(),
                     _ => return Err("Invalid message scope.".into()),
                 };
-                self.pending_deletes
+                self.store
+                    .pending_deletes
                     .push((conversation_id, deleted_sequence));
                 messages.retain(|m| m.id != id);
                 for message in messages {
@@ -330,27 +359,14 @@ impl Engine {
                 if parts[0] != "/react" && !has_message_content(value) {
                     return Err("Messages cannot be blank.".into());
                 }
-                let edit_room = (parts[0] == "/edit" && room.is_none())
-                    .then(|| self.message_action_room(actor, room, &context.scope, id))
-                    .flatten();
-                let room = room.or(edit_room.as_deref());
-                let scope = if let Some(name) = room {
-                    self.room_scope(name)?
-                } else {
-                    self.private_scope(
-                        &self
-                            .data
-                            .private
-                            .iter()
-                            .find(|(key, chat)| {
-                                self.allows(actor, &self.private_scope(key), Action::Read)
-                                    && (!matches!(&context.scope, Scope::Private(id) if *id != chat.id))
-                                    && chat.messages.iter().any(|m| m.id == id)
-                            })
-                            .map(|(key, _)| key.clone())
-                            .ok_or("Message not found in this conversation.")?,
-                    )
-                };
+                let (target_room, scope) = self.message_action_scope(
+                    actor,
+                    room,
+                    &context.scope,
+                    id,
+                    parts[0] == "/edit",
+                )?;
+                let room = target_room.as_deref();
                 self.require_message_action(
                     actor,
                     context.view,
@@ -369,40 +385,46 @@ impl Engine {
                     },
                 )?;
                 let original = if let Some(name) = room {
-                    let target = self.data.rooms.get(name).ok_or("Room not found.")?;
+                    let target = self
+                        .data
+                        .rooms
+                        .get(name)
+                        .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                     target.messages.iter().find(|m| m.id == id)
                 } else {
                     self.data
                         .private
-                        .iter()
-                        .filter(|(key, chat)| {
-                            self.allows(actor, &self.private_scope(key), Action::Read)
-                                && (!matches!(&context.scope, Scope::Private(id) if *id != chat.id))
-                        })
-                        .flat_map(|(_, chat)| &chat.messages)
-                        .find(|m| m.id == id)
+                        .values()
+                        .find(|chat| matches!(&scope,Scope::Private(id) if *id==chat.id))
+                        .and_then(|chat| chat.messages.iter().find(|message| message.id == id))
                 }
                 .cloned()
                 .ok_or("Message not found in this conversation (it may have expired).")?;
                 if parts[0] == "/react" {
-                    if value.chars().count() > 128 || value.chars().any(char::is_control) {
+                    if value.chars().count() > crate::limits::MAX_REACTION_CHARS
+                        || value.chars().any(char::is_control)
+                    {
                         return Err(
                             "Reactions support 1–128 characters without control characters.".into(),
                         );
                     }
                     self.update_reaction(&scope, user, id, value, None)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(EngineError::unavailable)?;
                     return Ok("Reaction updated.".into());
                 }
-                if value.chars().count() > 4000 {
+                if value.chars().count() > crate::limits::MAX_MESSAGE_CHARS {
                     return Err("Messages support at most 4000 characters.".into());
                 }
                 if parts[0] == "/edit" {
-                    let actor_id = self.principal_id(actor).ok_or("Account unavailable.")?;
+                    let actor_id = self
+                        .principal_id(actor)
+                        .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
                     if original.author_id != actor_id
                         && !self.allows(actor, &scope, Action::EditAny)
                     {
-                        return Err("You can only edit your own messages.".into());
+                        return Err(EngineError::Forbidden(
+                            "You can only edit your own messages.".into(),
+                        ));
                     }
                     self.authorize_media_text(actor, &scope, value, &original.text)?;
                     if original.text == value {
@@ -410,7 +432,11 @@ impl Engine {
                     }
                     let mut mentions = mentioned_names(value);
                     let (messages, revision) = if let Some(name) = room {
-                        let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
+                        let target = self
+                            .data
+                            .rooms
+                            .get_mut(name)
+                            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                         mentions.retain(|name| target.members.contains(name));
                         (&mut target.messages, &mut target.revision)
                     } else {
@@ -422,7 +448,9 @@ impl Engine {
                             .private
                             .values_mut()
                             .find(|chat| matches!(&scope, Scope::Private(id) if chat.id == *id))
-                            .ok_or("Private conversation not found.")?;
+                            .ok_or_else(|| {
+                                EngineError::NotFound("Private conversation not found.".into())
+                            })?;
                         (&mut chat.messages, &mut chat.revision)
                     };
                     let target = messages
@@ -445,7 +473,7 @@ impl Engine {
                         &original.from
                     };
                     if !self.active(peer) {
-                        return Err("User not found.".into());
+                        return Err(EngineError::NotFound("User not found.".into()));
                     }
                     Some(peer)
                 } else {
@@ -465,7 +493,9 @@ impl Engine {
                         .iter()
                         .find(|(_, chat)| Scope::Private(chat.id.clone()) == scope)
                         .map(|(key, _)| key.clone())
-                        .ok_or("Private conversation not found.")?;
+                        .ok_or_else(|| {
+                            EngineError::NotFound("Private conversation not found.".into())
+                        })?;
                     self.push_private_to(&key, message)?;
                 }
                 Ok(String::new())
@@ -486,11 +516,11 @@ impl Engine {
                 if text.is_empty() {
                     return Err("Usage: /tell user message".into());
                 }
-                if text.chars().count() > 4000 {
+                if text.chars().count() > crate::limits::MAX_MESSAGE_CHARS {
                     return Err("Messages support at most 4000 characters.".into());
                 }
                 if !self.active(recipient) {
-                    return Err("User not found.".into());
+                    return Err(EngineError::NotFound("User not found.".into()));
                 }
                 let key = private_key(author, recipient);
                 self.require_target_command(actor, &self.private_scope(&key), parts[0])?;

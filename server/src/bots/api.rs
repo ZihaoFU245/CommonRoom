@@ -65,11 +65,7 @@ pub(super) async fn work<T: Serialize + Send + 'static>(
 }
 async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
     let Json(value) = work(app, headers, |app, context| {
-        let engine = app.engine_read().map_err(Error::storage)?;
-        context.user(&engine)?;
-        crate::web::snapshots::bot_value(app, &engine, context)
-            .map(|v| v.to_string())
-            .map_err(Error::storage)
+        crate::web::snapshots::bot_value(app, context).map(|v| v.to_string())
     })
     .await?;
     Ok((
@@ -105,7 +101,7 @@ async fn history(
             let engine = app.engine_read().map_err(Error::storage)?;
             let user = context.user(&engine)?;
             context.permits(&engine, "read", Some(&input.conversation_id))?;
-            (engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision, engine.history_store.clone())
+            (engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision, engine.history_store().clone())
         };
         if input.content_revision.is_some_and(|expected| expected != revision) { return Err(Error::new(Code::Conflict, "Content revision changed; rescan history.")); }
         if let Some(message_id) = input.message_id {
@@ -136,7 +132,7 @@ pub(super) fn inspect<T>(
     app: &App,
     context: &Context,
     id: &str,
-    read: impl FnOnce(&crate::engine::HistoryStore) -> Result<T, String>,
+    read: impl FnOnce(&crate::engine::HistoryStore) -> Result<T, crate::engine::EngineError>,
 ) -> Result<(u64, T), Error> {
     let (revision, store) = {
         let engine = app.engine_read().map_err(Error::storage)?;
@@ -144,7 +140,7 @@ pub(super) fn inspect<T>(
         context.permits(&engine, "read", Some(id))?;
         (
             engine.bot_target(&user, id, Action::Read)?.revision,
-            engine.history_store.clone(),
+            engine.history_store().clone(),
         )
     };
     read(&store)
@@ -247,7 +243,7 @@ async fn react(
 ) -> Result<Json<Value>, Error> {
     if input.reaction.trim() != input.reaction
         || input.reaction.is_empty()
-        || input.reaction.chars().count() > 128
+        || input.reaction.chars().count() > crate::limits::MAX_REACTION_CHARS
         || input.reaction.chars().any(char::is_control)
     {
         return Err(Error::new(
@@ -299,7 +295,9 @@ async fn credential(
     work(app, headers, move |app, context| {
         let mut engine = app.engine().map_err(Error::storage)?;
         admit(&mut engine, context)?;
-        engine.issue_bot_credential(context, input)
+        let result = engine.issue_bot_credential(context, input)?;
+        let _ = app.changes.send(Change::Metadata(engine.metadata_change()));
+        Ok(result)
     })
     .await
 }
@@ -319,7 +317,7 @@ async fn conversation(
             ));
         }
         let id = engine.create_bot_conversation(&user, input)?;
-        let _ = app.changes.send(Change::All);
+        let _ = app.changes.send(Change::Metadata(engine.metadata_change()));
         Ok(json!({"conversation_id":id}))
     })
     .await
@@ -383,6 +381,7 @@ pub(crate) async fn contract(
                 StatusCode::FORBIDDEN => Code::Forbidden,
                 StatusCode::NOT_FOUND => Code::NotFound,
                 StatusCode::METHOD_NOT_ALLOWED => Code::MethodNotAllowed,
+                StatusCode::TOO_MANY_REQUESTS => Code::RateLimited,
                 StatusCode::PAYLOAD_TOO_LARGE => Code::PayloadTooLarge,
                 StatusCode::BAD_REQUEST
                 | StatusCode::UNSUPPORTED_MEDIA_TYPE
@@ -413,5 +412,5 @@ pub(crate) async fn contract(
 }
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;

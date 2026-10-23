@@ -301,7 +301,7 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite is v17. Only HEAD v16 upgrades transactionally; older schemas are rejected.
+SQLite is v18. Only the supported v17 baseline upgrades transactionally; earlier schemas are rejected.
 The upgrade transfers media grant limits into scoped account metadata.
 
 ```sh
@@ -395,3 +395,11 @@ startup/daily cleanup, and stop receiving new download URLs when replaced or
 removed. Browser loads and updates propagate through the public avatar projection
 in snapshots. External HTTPS avatar URLs work even with storage disabled.
 See [Protocol](protocol.md#user-avatars).
+
+Failed S3 availability probes are reused for at most one second so repeated
+allocations fail promptly during an outage. Concurrent probes share in-flight
+results; successful probes are not reused by later requests. Downloads sign once
+and carry a stable-account ticket through signing. Before redirecting, the server
+rechecks credentials, current read permission, expiry and a writer-change stamp;
+it reloads metadata/references when that stamp changes. Shared-reader media
+cleanup writes also invalidate the stamp. No global API permit spans S3 I/O.

@@ -467,7 +467,7 @@ fn sudo_join_storage_failure_restores_membership_and_authority() {
     }
     let before = e.data.clone();
     let revision = e.revision;
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_join BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_join BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
     assert!(
         e.execute(Some("eve"), None, "/sudo /join #team")
             .unwrap_err()
@@ -487,14 +487,16 @@ fn sudo_restores_authority_after_storage_failure_and_preserves_policy_updates() 
             .unwrap();
     }
     let before = e.data.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_sudo BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_sudo BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
     assert!(
         e.execute(Some("bob"), None, "/sudo /new room rejected")
             .is_err()
     );
     assert!(e.data == before);
     assert!(!e.is_su(Some("bob")));
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER reject_sudo;")
         .unwrap();
@@ -1138,7 +1140,9 @@ fn owner_transfer_and_deleted_resources_do_not_leave_inherited_grants() {
 fn policy_save_failures_preserve_compiled_permissions_and_creation_is_atomic() {
     let mut e = fixture();
     let before = e.data.clone();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON;")
         .unwrap();
@@ -1154,7 +1158,9 @@ fn policy_save_failures_preserve_compiled_permissions_and_creation_is_atomic() {
         assert!(!e.allows(Some("bob"), &Scope::Server, Action::CreateRoom));
     }
     assert!(!e.data.rooms.contains_key("lost"));
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=OFF;")
         .unwrap();
@@ -1758,7 +1764,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         "Every new command needs an explicit denial probe."
     );
     let before = e.data.clone();
-    let cursors = e.read_positions.clone();
+    let cursors = e.store.read_positions.clone();
     for context in [None, Some("team"), Some("@direct:eve")] {
         for text in &probes {
             assert!(
@@ -1772,7 +1778,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         assert!(e.history("bob", view).is_err());
         assert!(e.mark_read("bob", view, sequence).is_err());
     }
-    assert_eq!(e.read_positions, cursors);
+    assert_eq!(e.store.read_positions, cursors);
     let snapshot = e.snapshot("bob").unwrap();
     assert!(snapshot.rooms.is_empty() && snapshot.direct.is_empty() && snapshot.unread.is_empty());
     assert!(snapshot.commands.is_empty());
@@ -1839,7 +1845,10 @@ fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
                 .as_deref(),
             Some("新名字🚀")
         );
-        assert_eq!(e.read_positions["新名字🚀"]["dm:新名字🚀:管理员"], sequence);
+        assert_eq!(
+            e.store.read_positions["新名字🚀"]["dm:新名字🚀:管理员"],
+            sequence
+        );
         e.execute(Some("新名字🚀"), None, "/tell 管理员 renamed")
             .unwrap();
         e.provision("用户🙂", "replacement".into(), false, false)
@@ -1849,7 +1858,10 @@ fn unicode_names_and_rename_preserve_identity_history_sessions_and_cursors() {
     let e = Engine::open(&path).unwrap();
     assert_eq!(e.data.users["新名字🚀"].id, id);
     assert_eq!(e.session("session").as_deref(), Some("新名字🚀"));
-    assert_eq!(e.read_positions["新名字🚀"]["dm:新名字🚀:管理员"], sequence);
+    assert_eq!(
+        e.store.read_positions["新名字🚀"]["dm:新名字🚀:管理员"],
+        sequence
+    );
     assert_eq!(e.data.private["新名字🚀:管理员"].id, private_id);
 }
 
@@ -1915,12 +1927,14 @@ fn rename_storage_failure_rolls_back_account_and_read_positions() {
     let sequence = super::tests::private_messages(&e, "bob:eve")[0].sequence;
     e.mark_read("bob", "@direct:eve", sequence).unwrap();
     let before = e.data.clone();
-    let positions = e.read_positions.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_rename BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
+    let positions = e.store.read_positions.clone();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_rename BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
     assert!(e.execute(Some("bob"), None, "/rename 改名").is_err());
     assert!(e.data == before);
-    assert_eq!(e.read_positions, positions);
-    e.db.lock()
+    assert_eq!(e.store.read_positions, positions);
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER fail_rename;")
         .unwrap();
@@ -2095,7 +2109,7 @@ fn rename_explicit_targets_validation_and_noops_preserve_account_shortcuts() {
         );
         assert!(e.data == before);
     }
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'no writes'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'no writes'); END;").unwrap();
     assert_eq!(
         e.execute(Some("alice"), None, "/rename room team team")
             .unwrap(),
@@ -2103,7 +2117,9 @@ fn rename_explicit_targets_validation_and_noops_preserve_account_shortcuts() {
     );
     assert!(e.data == before);
     assert_eq!(e.revision, revision);
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER reject_noop;")
         .unwrap();
@@ -2148,7 +2164,8 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
     // Exercise orphan cursor cleanup without letting name reuse inherit it.
     e.store_read_position("bob", "room:改名🚀", u64::from(u32::MAX))
         .unwrap();
-    e.read_positions
+    e.store
+        .read_positions
         .get_mut("bob")
         .unwrap()
         .insert("room:改名🚀".into(), u64::from(u32::MAX));
@@ -2170,10 +2187,13 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
     assert!(*e.history("bob", "改名🚀").unwrap().messages == *history);
     assert!(e.history("bob", "team").is_err());
     for user in ["alice", "bob"] {
-        assert_eq!(e.read_positions[user]["room:改名🚀"], message.sequence);
-        assert!(!e.read_positions[user].contains_key("room:team"));
+        assert_eq!(
+            e.store.read_positions[user]["room:改名🚀"],
+            message.sequence
+        );
+        assert!(!e.store.read_positions[user].contains_key("room:team"));
     }
-    assert_eq!(e.read_positions["bob"]["dm:alice:bob"], dm_sequence);
+    assert_eq!(e.store.read_positions["bob"]["dm:alice:bob"], dm_sequence);
     assert_eq!(e.unreads("bob").unwrap()["改名🚀"].count, unread);
     assert!(
         e.snapshot("bob")
@@ -2193,7 +2213,10 @@ fn room_rename_preserves_history_grants_cursors_and_identity_across_restart_and_
     let mut e = Engine::open(&path).unwrap();
     assert_eq!(e.data.rooms["改名🚀"].id, room.id);
     assert!(*e.history("bob", "改名🚀").unwrap().messages == *history);
-    assert_eq!(e.read_positions["bob"]["room:改名🚀"], message.sequence);
+    assert_eq!(
+        e.store.read_positions["bob"]["room:改名🚀"],
+        message.sequence
+    );
     assert_eq!(e.unreads("bob").unwrap()["改名🚀"].count, unread);
     assert_eq!(e.unreads("bob").unwrap()["team"].count, 1);
     e.execute(
@@ -2211,13 +2234,14 @@ fn existing_owner_grants_are_preserved_and_room_rename_can_be_explicitly_delegat
     let mut e = Engine::open(&path).unwrap();
     e.provision("alice", "hash".into(), true, false).unwrap();
     e.execute(Some("alice"), None, "/new room team").unwrap();
+    let before = e.data.clone();
     // An existing owner grant may omit room rename; inspection cannot add authority.
     for grant in e.data.policy.grants.iter_mut().filter(|grant| grant.owner) {
         grant.permissions.remove("x:room.rename");
         grant.permissions.remove("/rename");
     }
     e.data.policy.revision = e.data.policy.revision.wrapping_add(1);
-    e.save().unwrap();
+    e.save_delta(&before).unwrap();
     let policy = e.data.policy.clone();
     drop(e);
     let mut e = Engine::open(&path).unwrap();
@@ -2246,21 +2270,21 @@ fn room_rename_storage_failures_roll_back_disk_memory_cursors_and_authority() {
     let sequence = e.history("alice", "team").unwrap().messages[0].sequence;
     e.mark_read("alice", "team", sequence).unwrap();
     let before = e.data.clone();
-    let positions = e.read_positions.clone();
+    let positions = e.store.read_positions.clone();
     let revision = e.revision;
     for trigger in [
         "CREATE TRIGGER fail_rename BEFORE UPDATE ON read_positions BEGIN SELECT RAISE(ABORT,'cursor failure'); END;",
         "CREATE TRIGGER fail_rename BEFORE INSERT ON entities WHEN NEW.kind='room' AND NEW.key='new' BEGIN SELECT RAISE(ABORT,'metadata failure'); END;",
         "CREATE TRIGGER fail_rename BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(ABORT,'audit failure'); END;",
     ] {
-        e.db.lock().unwrap().execute_batch(trigger).unwrap();
+        e.store.db.lock().unwrap().execute_batch(trigger).unwrap();
         assert!(
             e.execute(Some("alice"), Some("team"), "/rename room team new")
                 .unwrap_err()
                 .contains("Storage unavailable")
         );
         assert!(e.data == before);
-        assert_eq!(e.read_positions, positions);
+        assert_eq!(e.store.read_positions, positions);
         assert_eq!(e.revision, revision);
         assert!(e.allows(
             Some("alice"),
@@ -2287,14 +2311,16 @@ fn room_rename_storage_failures_roll_back_disk_memory_cursors_and_authority() {
             .unwrap();
         assert_eq!(count, 1);
         drop(disk);
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("DROP TRIGGER fail_rename;")
             .unwrap();
     }
     e.execute(Some("alice"), Some("team"), "/rename room team new")
         .unwrap();
-    assert_eq!(e.read_positions["alice"]["room:new"], sequence);
+    assert_eq!(e.store.read_positions["alice"]["room:new"], sequence);
 }
 
 #[test]
@@ -2611,7 +2637,7 @@ fn private_edit_any_rolls_back_on_revision_write_failure() {
         .unwrap();
     }
     let revision = e.data.private["alice:bob"].revision;
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_edit_revision BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_edit_revision BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
     assert!(
         e.execute(
             Some("eve"),

@@ -239,3 +239,22 @@ test("avatar directory accepts optional string maps and rejects malformed profil
   for (const avatars of [null, [], "url", { alice: 42 }, { alice: null }])
     assert.equal(isSnapshot({ ...snapshot, avatars }), false);
 });
+
+test("avatar frames accept explicit removals and reject malformed profiles", () => {
+  for (const url of [
+    "https://example.com/a.png",
+    "/api/avatars/id/file",
+    null,
+  ]) {
+    const value = { kind: "avatar", username: "alice", url };
+    assert.deepEqual(parseFrame(JSON.stringify(value)), value);
+  }
+  for (const value of [
+    { kind: "avatar", username: "alice" },
+    { kind: "avatar", username: "", url: null },
+    { kind: "avatar", username: 1, url: null },
+    { kind: "avatar", username: "alice", url: {} },
+  ]) {
+    assert.equal(parseFrame(JSON.stringify(value)), null);
+  }
+});

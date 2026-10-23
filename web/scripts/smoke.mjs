@@ -42,10 +42,12 @@ async function start(data, release = false, trust, baseUrl) {
   delete env.CHAT_BIND;
   delete env.CHAT_TRUST;
   delete env.CHAT_BASE_URL;
+  delete env.CHAT_DIRECT_BOT_HTTP;
   if (baseUrl) env.CHAT_BASE_URL = baseUrl;
   if (trust) env.CHAT_TRUST = trust;
   if (release) {
     env.CHAT_ORIGIN = publicOrigin;
+    env.CHAT_DIRECT_BOT_HTTP = "1";
     env.CHAT_BIND = "127.0.0.1:0";
   }
   child = spawn(
@@ -254,6 +256,8 @@ try {
     ).status,
     403,
   );
+  // A rejected password starts the documented one-second account backoff.
+  await pause(1100);
   const cookies = {};
   for (const name of ["alice", "bob", "eve"]) cookies[name] = await login(name);
   const alice = await connect(cookies.alice),
@@ -458,6 +462,9 @@ try {
     "commands must not enter persisted chat history",
   );
   await send(bob, "/room new forbidden", null, "error");
+  const outsiderBaselines = eve.frames.filter(
+    (frame) => frame.kind === "snapshot",
+  ).length;
   await send(alice, "/room new study");
   await send(alice, "/room new overflow", null, "error");
   child.stdin.write("/room new overflow\n");
@@ -470,6 +477,23 @@ try {
   await until(
     () => bob.snapshot.rooms.some((r) => r.name === "study"),
     "membership delivery",
+  );
+  await send(alice, "/room kick bob #study");
+  await until(
+    () => !bob.snapshot.rooms.some((room) => room.name === "study"),
+    "targeted metadata removes revoked room access",
+  );
+  assert.ok(!Object.hasOwn(bob.snapshot.unread, "study"));
+  await send(alice, "/room add bob #study");
+  await until(
+    () => bob.snapshot.rooms.some((room) => room.name === "study"),
+    "targeted metadata restores granted room access",
+  );
+  await pause(150);
+  assert.equal(
+    eve.frames.filter((frame) => frame.kind === "snapshot").length,
+    outsiderBaselines,
+    "hidden room mutations must not rebuild an unrelated viewer's baseline",
   );
   await send(alice, "/user set @all label shared", "study", "error");
   child.stdin.write("/user set @all label shared #study\n");
@@ -875,7 +899,7 @@ try {
   );
   assert.equal(
     (await request("history?view=%40direct%3Abob", cookies.eve)).status,
-    403,
+    404,
   );
   assert.equal(
     (
@@ -884,7 +908,7 @@ try {
         through: readState.through,
       })
     ).status,
-    400,
+    403,
   );
   assert.equal(
     (
@@ -1840,6 +1864,105 @@ try {
     403,
     "forwarded headers cannot impersonate a trusted socket peer",
   );
+  await stop();
+  await start(join(temporary, "admission"), true);
+  child.stdin.write(
+    "/user new alice alice-long-password admin\n/user new bob bob-long-password user\n",
+  );
+  await until(
+    () => logs.includes("Account bob created."),
+    "admission accounts",
+  );
+  const admissionCookie = await login("alice");
+  const browserTabs = [];
+  for (let n = 0; n < 5; n++) browserTabs.push(await connect(admissionCookie));
+  await until(
+    () => browserTabs[0].ws.readyState === WebSocket.CLOSED,
+    "oldest account socket eviction",
+  );
+  assert.ok(
+    browserTabs
+      .slice(1)
+      .every((client) => client.ws.readyState === WebSocket.OPEN),
+  );
+  const independent = await connect(await login("bob"));
+  const operator = browserTabs.at(-1);
+  await send(operator, "/room new pressure", null);
+  await send(operator, "/room add bob #pressure", null);
+  await send(operator, "/bot new helper #pressure", null);
+  await send(operator, "/bot token new helper controls", null);
+  const controlToken = operator.frames
+    .find((frame) => frame.id === operator.serial)
+    .text.split("\n")
+    .at(-1);
+  const controls = [
+    await connect(null, controlToken),
+    await connect(null, controlToken),
+  ];
+  const pressureId = controls[0].snapshot.conversations.find(
+    (item) => item.view === "pressure",
+  ).id;
+  for (let n = 0; n < 31; n++) {
+    const client = controls[n % 2];
+    const start = client.frames.length;
+    client.ws.send(
+      JSON.stringify({
+        kind: "activity",
+        conversation_id: pressureId,
+        state: "idle",
+      }),
+    );
+    await until(
+      () =>
+        client.frames
+          .slice(start)
+          .some(
+            (frame) => frame.kind === "config_ack" || frame.kind === "error",
+          ),
+      "shared account control admission",
+    );
+    const result = client.frames
+      .slice(start)
+      .find((frame) => frame.kind === "config_ack" || frame.kind === "error");
+    if (n < 30) assert.equal(result.kind, "config_ack");
+    else assert.equal(result.error.code, "rate_limited");
+  }
+  const chargedHttp = await fetch(`${base}/api/bot/v1/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${controlToken}`,
+      "X-Forwarded-Proto": "https",
+      "Content-Type": "application/json",
+      "Idempotency-Key": "shared-controls",
+    },
+    body: JSON.stringify({
+      conversation_id: pressureId,
+      text: "must be throttled",
+    }),
+  });
+  assert.equal(
+    chargedHttp.status,
+    429,
+    "socket and HTTP input budgets must be shared",
+  );
+  assert.equal((await chargedHttp.json()).error.code, "rate_limited");
+  assert.equal(independent.ws.readyState, WebSocket.OPEN);
+  const shutdownStarted = Date.now();
+  child.kill("SIGTERM");
+  await until(
+    () =>
+      child.exitCode !== null &&
+      [...browserTabs, independent, ...controls].every(
+        (client) => client.ws.readyState === WebSocket.CLOSED,
+      ),
+    "immediate socket shutdown",
+  );
+  assert.equal(child.exitCode, 0, logs);
+  assert.ok(
+    Date.now() - shutdownStarted < 3000,
+    "shutdown must not wait for the next heartbeat",
+  );
+  child = null;
   console.log(
     "PASS: v1 bot API, durable keyed sends, Markdown, reference-worker live/reconnect recovery, bot bearer API, mentions, replies, scoped permissions, credential revocation, reconnect recovery, base paths, bounded range/cursor/around history, concurrent page requests, cache statistics, invalid bounds, online presence across tabs, message editing and room/private message retraction, account deletion and username reuse, login, cross-device unread syncing, partial reads beyond snapshot tails, independent private retention, second-device directories, roles, privacy, revocation, folder migration, API-only routing, production HTTPS, secure cookies, and proxy IP trust.",
   );

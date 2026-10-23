@@ -24,13 +24,13 @@ pub(crate) async fn get(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let engine = app.engine_read_api()?;
-        let user = super::auth::identity(&engine, &headers)
+        let user = super::auth::identity(&engine, &app.config, &headers)
             .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))?;
         let bots = app
             .bot_runtimes
             .commands
             .visible(&engine, &user, &input.conversation_id)
-            .map_err(|e| error(StatusCode::FORBIDDEN, &e))?;
+            .map_err(ApiError::from)?;
         Ok(Json(
             json!({"conversation_id":input.conversation_id,"bots":bots}),
         ))

@@ -168,7 +168,8 @@ impl MediaStorage {
             .probe_result
             .lock()
             .map_err(|_| "Storage health unavailable.")?
-            && *finished >= requested
+            && (*finished >= requested
+                || (result.is_err() && finished.elapsed() < Duration::from_secs(1)))
         {
             return result.clone();
         }
@@ -749,6 +750,32 @@ pub(crate) mod tests {
         assert!(storage.check_reachable().await.is_err());
     }
 
+    #[tokio::test]
+    async fn failed_probes_back_off_briefly_and_recover_without_caching_success() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let storage = test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            for status in [503, 404] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            }
+        });
+        assert!(storage.check_reachable().await.is_err());
+        let first = storage.probe_result.lock().unwrap().as_ref().unwrap().0;
+        assert!(storage.check_reachable().await.is_err());
+        assert_eq!(
+            storage.probe_result.lock().unwrap().as_ref().unwrap().0,
+            first
+        );
+        storage.probe_result.lock().unwrap().as_mut().unwrap().0 -= Duration::from_secs(2);
+        assert!(storage.check_reachable().await.is_ok());
+        server.await.unwrap();
+        // Successful health is not cached after the server goes away.
+        assert!(storage.check_reachable().await.is_err());
+    }
     #[tokio::test]
     async fn reachability_accepts_private_bucket_responses_but_rejects_outages() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -8,7 +8,7 @@ impl Engine {
         name: &str,
         new_name: &str,
         command: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         let scope = self.room_scope(name)?;
         self.require_target_command(actor, &scope, command)?;
         self.require(actor, &scope, Action::RenameRoom)?;
@@ -19,32 +19,55 @@ impl Engine {
             return Ok("Room name unchanged.".into());
         }
         if self.data.rooms.contains_key(new_name) {
-            return Err("Room already exists.".into());
+            return Err(EngineError::Conflict("Room already exists.".into()));
         }
-        let before = MetadataChange::capture(&self.data, ChangeFamily::RoomRename);
+        let before = MetadataChange::keyed(
+            &self.data,
+            changes::DirtyKeys {
+                rooms: [name.to_owned(), new_name.to_owned()].into(),
+                ..Default::default()
+            },
+        );
         self.audit(actor, "/rename room", &format!("{name} -> {new_name}"));
-        let mut room = self.data.rooms.remove(name).ok_or("Room not found.")?;
+        let mut room = self
+            .data
+            .rooms
+            .remove(name)
+            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
         room.revision = room.revision.wrapping_add(1);
         self.data.rooms.insert(new_name.into(), room);
         if let Err(error) = self.store_room_rename(name, new_name, &before) {
             before.restore(&mut self.data);
             tracing::error!(error = %error, "Room rename failed");
-            return Err("Storage unavailable; rename was not applied.".into());
+            return Err(EngineError::Unavailable(
+                "Storage unavailable; rename was not applied.".into(),
+            ));
         }
         let old_key = format!("room:{name}");
         let new_key = format!("room:{new_name}");
-        for positions in self.read_positions.values_mut() {
+        for positions in self.store.read_positions.values_mut() {
             positions.remove(&new_key);
             if let Some(sequence) = positions.remove(&old_key) {
                 positions.insert(new_key.clone(), sequence);
             }
         }
         self.bot_index = crate::bots::models::Index::build(&self.data);
+        let notice = MetadataNotice::between(
+            &self.data,
+            before.view(),
+            &self.authorization,
+            &self.authorization,
+        );
+        self.read_model.advance();
         self.revision = self.revision.wrapping_add(1);
+        self.record_metadata(notice);
         Ok(format!("Renamed #{name} to #{new_name}."))
     }
 
-    pub(super) fn apply_rooms(&mut self, context: &CommandContext<'_>) -> Result<String, String> {
+    pub(super) fn apply_rooms(
+        &mut self,
+        context: &CommandContext<'_>,
+    ) -> Result<String, EngineError> {
         let CommandContext {
             actor,
             room,
@@ -62,10 +85,13 @@ impl Engine {
                     return Err("Invalid room name.".into());
                 }
                 if self.data.rooms.contains_key(name) {
-                    return Err("Room already exists.".into());
+                    return Err(EngineError::Conflict("Room already exists.".into()));
                 }
                 if self.data.rooms.len() >= self.max_rooms {
-                    return Err(format!("Room limit reached ({}).", self.max_rooms));
+                    return Err(EngineError::Invalid(format!(
+                        "Room limit reached ({}).",
+                        self.max_rooms
+                    )));
                 }
                 let owner_id = actor
                     .and_then(|n| self.data.users.get(n))
@@ -87,10 +113,10 @@ impl Engine {
             }
             "/add" | "/kick" => {
                 if !(2..=3).contains(&parts.len()) {
-                    return Err(format!(
+                    return Err(EngineError::Invalid(format!(
                         "Usage: /room {} user [#room]",
                         parts[0].trim_start_matches('/')
-                    ));
+                    )));
                 }
                 let name = parts[1];
                 let id = self
@@ -98,7 +124,7 @@ impl Engine {
                     .users
                     .get(name)
                     .filter(|u| !u.disabled)
-                    .ok_or("User not found.")?
+                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .id
                     .clone();
                 let room = parts
@@ -125,7 +151,11 @@ impl Engine {
                 {
                     return Err("Transfer ownership before removing the owner.".into());
                 }
-                let target = self.data.rooms.get_mut(room).ok_or("Room not found.")?;
+                let target = self
+                    .data
+                    .rooms
+                    .get_mut(room)
+                    .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                 if parts[0] == "/add" {
                     target.members.insert(name.into());
                     self.assign(id, Group::User, scope);
@@ -173,14 +203,14 @@ impl Engine {
                             .data
                             .users
                             .get(user)
-                            .ok_or("Account unavailable.")?
+                            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
                             .id
                             .clone();
                         self.metadata_dirty |= self
                             .data
                             .rooms
                             .get_mut(name)
-                            .ok_or("Room not found.")?
+                            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
                             .members
                             .insert(user.into());
                         self.assign(id, Group::User, scope);
@@ -190,7 +220,7 @@ impl Engine {
                         .data
                         .users
                         .get(user)
-                        .ok_or("Account unavailable.")?
+                        .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
                         .id
                         .clone();
                     if self.data.rooms.get(name).is_some_and(|r| r.owner_id == id) {
@@ -200,7 +230,7 @@ impl Engine {
                         .data
                         .rooms
                         .get_mut(name)
-                        .ok_or("Room not found.")?
+                        .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
                         .members
                         .remove(user);
                     let assignment_count = self.data.policy.assignments.len();
@@ -241,7 +271,7 @@ impl Engine {
                     .users
                     .get(parts[1])
                     .filter(|u| !u.disabled)
-                    .ok_or("User not found.")?
+                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .id
                     .clone();
                 self.data
@@ -250,7 +280,11 @@ impl Engine {
                     .retain(|g| !(g.owner && g.scope == scope));
                 self.add_owner_grants(target_id.clone(), scope.clone());
                 self.assign(target_id.clone(), Group::User, scope);
-                let target = self.data.rooms.get_mut(name).ok_or("Room not found.")?;
+                let target = self
+                    .data
+                    .rooms
+                    .get_mut(name)
+                    .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                 target.owner_id = target_id;
                 target.members.insert(parts[1].into());
                 self.audit(actor, "/owner", &format!("{} {name}", parts[1]));
@@ -261,7 +295,10 @@ impl Engine {
                 let scope = self.room_scope(parts[1])?;
                 self.require_target_command(actor, &scope, context.command)?;
                 self.require(actor, &scope, Action::DeleteRoom)?;
-                self.data.rooms.remove(parts[1]).ok_or("Room not found.")?;
+                self.data
+                    .rooms
+                    .remove(parts[1])
+                    .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                 self.data.policy.assignments.retain(|a| a.scope != scope);
                 self.data.policy.grants.retain(|g| g.scope != scope);
                 if let Scope::Room(id) = &scope {

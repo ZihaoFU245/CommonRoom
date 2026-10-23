@@ -70,8 +70,11 @@ All routes are relative to the configured `base_url`. Each requires
 `Authorization: Bearer bot_...`; cookies alone do not authenticate bots.
 Responses include `Bot-Api-Version: 1`. Use HTTPS/WSS through the configured
 proxy. Production always requires the trusted socket-peer IP. Direct HTTP/WS
-without `X-Forwarded-Proto` is allowed only from that IP under `/api/bot/v1/`;
-forwarded requests must indicate HTTPS. A browser Origin is unnecessary.
+without a forwarded protocol header requires explicit `direct_bot_http` opt-in
+(default false) and a private/loopback trusted peer. Forwarded requests must
+indicate HTTPS, including when direct mode is enabled. A browser Origin is
+unnecessary. See [Deployment](deployment.md#explicit-direct-bot-http).
+
 
 | Method and endpoint                                                | Payload / result                                                                                                      |
 | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |

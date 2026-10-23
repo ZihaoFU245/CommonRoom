@@ -1,8 +1,11 @@
 mod accounts;
+mod auth_events;
+pub(crate) use auth_events::{AuthEvent, AuthOutcome};
 pub mod authorization;
 pub(crate) mod avatars;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "tests/benchmarks.rs"]
 mod benchmarks;
 #[path = "../bots/engine.rs"]
 mod bot_api;
@@ -10,32 +13,44 @@ mod bot_api;
 mod bots;
 mod cleanup;
 mod dispatch;
+mod error;
 mod helpers;
+pub use error::EngineError;
 mod history;
 pub(crate) mod media;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "tests/media.rs"]
 mod media_tests;
 mod messages;
 mod models;
+mod notices;
+pub(crate) use notices::MetadataNotice;
+mod presence;
 mod queries;
+mod read_model;
 mod rooms;
+pub(crate) mod snapshot;
 mod storage;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test assertions fail the test on purpose.
 mod tests;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "tests/trust.rs"]
 mod trust_tests;
 
-use changes::{ChangeFamily, MetadataChange};
+use changes::MetadataChange;
+pub(crate) use dispatch::CommandChange;
 use dispatch::CommandContext;
 pub use dispatch::sudo_command;
+pub(crate) use helpers::session_digest;
 use helpers::*;
 pub use helpers::{hash_password, valid_name, verify_password};
 pub(crate) use history::HistoryStore;
 pub use history::{HistoryError, HistoryRange};
 pub use models::*;
+pub(crate) use read_model::{MetadataClock, SnapshotStamp};
 use rusqlite::{Connection, params};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -45,11 +60,15 @@ use std::{
 const VISIBLE_HISTORY: usize = 50;
 
 pub struct Engine {
-    pub data: Data,
+    #[cfg(not(test))]
+    data: Data,
+    #[cfg(test)]
+    pub(crate) data: Data,
     pub revision: u64,
     recovery_failed: bool,
     metadata_dirty: bool,
-    pub(crate) presence_revision: u64,
+    read_model: read_model::ReadModel,
+    presence: presence::Presence,
     pub(crate) read_clock: u64,
     pub(crate) instance: String,
     pub(crate) read_revisions: BTreeMap<String, u64>,
@@ -57,23 +76,19 @@ pub struct Engine {
     max_users: usize,
     max_rooms: usize,
     max_messages: usize,
-    pub(crate) media_config: crate::config::MediaConfig,
-    db: std::sync::Arc<std::sync::Mutex<Connection>>,
-    pub(crate) history_store: std::sync::Arc<history::HistoryStore>,
-    pending_deletes: Vec<(String, u64)>,
-    pending_cleanups: Vec<(String, u64)>,
-    online_connections: BTreeMap<String, usize>,
+    media: media::State,
+    store: storage::Store,
     pub(crate) bot_index: crate::bots::models::Index,
     bot_budgets: BTreeMap<String, (std::time::Instant, u32)>,
-    read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     authorization: authorization::CompiledPolicy,
-    _lock: Option<std::fs::File>,
 }
 
 impl Engine {
-    pub(crate) fn ensure_recovered(&self) -> Result<(), String> {
+    pub(crate) fn ensure_recovered(&self) -> Result<(), EngineError> {
         if self.recovery_failed {
-            return Err("Server state recovery failed; restart the service.".into());
+            return Err(EngineError::Unavailable(
+                "Server state recovery failed; restart the service.".into(),
+            ));
         }
         Ok(())
     }
@@ -84,4 +99,5 @@ mod objects;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[path = "tests/review.rs"]
 mod review_tests;

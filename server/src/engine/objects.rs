@@ -15,7 +15,7 @@ impl Engine {
         actor: Option<&str>,
         view: Option<&str>,
         value: Option<&str>,
-    ) -> Result<Scope, String> {
+    ) -> Result<Scope, EngineError> {
         let scope = match value {
             Some(value) if value.starts_with('#') || value.starts_with('@') => {
                 self.policy_scope(actor, value, false)
@@ -34,7 +34,7 @@ impl Engine {
         &self,
         actor: Option<&str>,
         scope: &Scope,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, EngineError> {
         match scope {
             Scope::Server => {
                 self.require(actor, scope, Action::Directory)?;
@@ -47,7 +47,7 @@ impl Engine {
                     .rooms
                     .values()
                     .find(|r| &r.id == id)
-                    .ok_or("Room not found.")?
+                    .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
                     .members
                     .iter()
                     .cloned()
@@ -61,13 +61,13 @@ impl Engine {
         actor: Option<&str>,
         who: &str,
         scope: &Scope,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, EngineError> {
         if who == "@all" {
             return self.scope_users(actor, scope);
         }
         let name = who.strip_prefix('@').unwrap_or(who);
         if !self.data.users.contains_key(name) {
-            return Err("User not found.".into());
+            return Err(EngineError::NotFound("User not found.".into()));
         }
         if let Scope::Room(id) = scope
             && !self
@@ -86,8 +86,12 @@ impl Engine {
         name: &str,
         scope: &Scope,
         write: bool,
-    ) -> Result<(), String> {
-        let account = self.data.users.get(name).ok_or("User not found.")?;
+    ) -> Result<(), EngineError> {
+        let account = self
+            .data
+            .users
+            .get(name)
+            .ok_or_else(|| EngineError::NotFound("User not found.".into()))?;
         let target = if *scope == Scope::Server {
             Scope::Account(account.id.clone())
         } else {
@@ -98,7 +102,9 @@ impl Engine {
             return Ok(());
         }
         if write {
-            return Err("Only su can change user metadata.".into());
+            return Err(EngineError::Forbidden(
+                "Only su can change user metadata.".into(),
+            ));
         }
         if actor == Some(name) {
             return Ok(());
@@ -113,7 +119,7 @@ impl Engine {
             self.require(actor, scope, action)
         }
     }
-    pub(super) fn metadata_scope_key(scope: &Scope) -> Result<&str, String> {
+    pub(super) fn metadata_scope_key(scope: &Scope) -> Result<&str, EngineError> {
         match scope {
             Scope::Server => Ok("@global"),
             Scope::Room(id) | Scope::Private(id) => Ok(id),
@@ -131,7 +137,7 @@ impl Engine {
     pub(super) fn query_objects(
         &self,
         context: &dispatch::CommandContext<'_>,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         let parts = context.parts;
         if parts == ["/room", "ls"] {
             return Ok(self
@@ -188,14 +194,22 @@ impl Engine {
                     }
                     output.insert(name, sections);
                 }
-                serde_json::to_string_pretty(&output).map_err(|e| e.to_string())
+                serde_json::to_string_pretty(&output).map_err(EngineError::unavailable)
             }
             _ => Err("Usage: /user ls [scope] | /user get who [key] [scope] | /room ls".into()),
         }
     }
     /// Role defaults are resolved live; role/ownership changes leave no stored privilege.
-    pub(super) fn cleanup_limit(&self, name: &str, scope: &Scope) -> Result<(i64, String), String> {
-        let account = self.data.users.get(name).ok_or("User not found.")?;
+    pub(super) fn cleanup_limit(
+        &self,
+        name: &str,
+        scope: &Scope,
+    ) -> Result<(i64, String), EngineError> {
+        let account = self
+            .data
+            .users
+            .get(name)
+            .ok_or_else(|| EngineError::NotFound("User not found.".into()))?;
         let room = if let Scope::Room(id) = scope {
             account.metadata.get(id)
         } else {
@@ -236,7 +250,7 @@ impl Engine {
         scope: &Scope,
         filter: Option<&str>,
         global_read: bool,
-    ) -> Result<BTreeMap<String, MetadataEntry>, String> {
+    ) -> Result<BTreeMap<String, MetadataEntry>, EngineError> {
         let metadata = &self.data.users[name].metadata;
         let label = if *scope == Scope::Server {
             "@global".into()
@@ -275,9 +289,9 @@ impl Engine {
             }
         }
         for (key, default) in [
-            ("media.max_size", self.media_config.max_size.to_string()),
-            ("media.max_age", self.media_config.max_age.to_string()),
-            ("media.user_quota", self.media_config.user_quota.to_string()),
+            ("media.max_size", self.media.config.max_size.to_string()),
+            ("media.max_age", self.media.config.max_age.to_string()),
+            ("media.user_quota", self.media.config.user_quota.to_string()),
         ] {
             if key == "media.user_quota" && scope != &Scope::Server {
                 continue;
@@ -297,9 +311,9 @@ impl Engine {
                 raw
             } else {
                 let ceiling = if key == "media.max_size" {
-                    self.media_config.max_size
+                    self.media.config.max_size
                 } else {
-                    self.media_config.user_quota
+                    self.media.config.user_quota
                 };
                 raw.parse::<u64>()
                     .unwrap_or(ceiling)
@@ -322,10 +336,12 @@ impl Engine {
     pub(super) fn apply_objects(
         &mut self,
         context: &dispatch::CommandContext<'_>,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         if let ["/user", "set", who, key, value, rest @ ..] = context.parts {
             if !self.is_su(context.actor) {
-                return Err("Only su can change user metadata.".into());
+                return Err(EngineError::Forbidden(
+                    "Only su can change user metadata.".into(),
+                ));
             }
             if rest.len() > 1 {
                 return Err("Usage: /user set who key value [scope]".into());
@@ -357,12 +373,13 @@ impl Engine {
                     return Err("At most 32 metadata keys per scope.".into());
                 }
             }
+            let before = MetadataChange::accounts(&self.data, targets.iter().cloned(), false);
             for name in &targets {
                 let metadata = &mut self
                     .data
                     .users
                     .get_mut(name)
-                    .ok_or("User not found.")?
+                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .metadata;
                 let entries = metadata.entry(scope_key.clone()).or_default();
                 if value == "@unset" {
@@ -377,11 +394,14 @@ impl Engine {
                 "/user set",
                 &format!("{who} {key} {}", self.scope_label(&scope)),
             );
+            self.commit_account_metadata(before)?;
             return Ok(format!("Updated metadata for {} users.", targets.len()));
         }
         if let ["/user", "reset", who, key, rest @ ..] = context.parts {
             if !self.is_su(context.actor) {
-                return Err("Only su can change user metadata.".into());
+                return Err(EngineError::Forbidden(
+                    "Only su can change user metadata.".into(),
+                ));
             }
             if rest.len() > 1 || *key == "password" {
                 return Err("Usage: /user reset who key|@all [scope] | /user reset who password new-password".into());
@@ -408,12 +428,13 @@ impl Engine {
             for name in &targets {
                 self.metadata_access(context.actor, name, &scope, true)?;
             }
+            let before = MetadataChange::accounts(&self.data, targets.iter().cloned(), false);
             for name in &targets {
                 let metadata = &mut self
                     .data
                     .users
                     .get_mut(name)
-                    .ok_or("User not found.")?
+                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .metadata;
                 if *key == "@all" {
                     metadata.remove(&scope_key);
@@ -427,6 +448,7 @@ impl Engine {
                 "/user reset",
                 &format!("{who} {key} {}", self.scope_label(&scope)),
             );
+            self.commit_account_metadata(before)?;
             return Ok(format!(
                 "Reset metadata for {} users at {}.",
                 targets.len(),
@@ -445,7 +467,19 @@ impl Engine {
         }
         self.query_objects(context)
     }
-    fn validate_metadata(&self, key: &str, value: &str, scope: &Scope) -> Result<String, String> {
+    fn commit_account_metadata(&mut self, before: MetadataChange) -> Result<(), EngineError> {
+        if let Err(error) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
+            before.restore(&mut self.data);
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn validate_metadata(
+        &self,
+        key: &str,
+        value: &str,
+        scope: &Scope,
+    ) -> Result<String, EngineError> {
         if key.is_empty()
             || key.len() > 64
             || !key
@@ -480,11 +514,11 @@ impl Engine {
                 Ok(age.to_string())
             }
             "media.max_size" | "media.user_quota" => {
-                let n = crate::config::parse_byte_size(value)?;
+                let n = crate::config::parse_byte_size(value).map_err(EngineError::Invalid)?;
                 let ceiling = if key == "media.max_size" {
-                    self.media_config.max_size
+                    self.media.config.max_size
                 } else {
-                    self.media_config.user_quota
+                    self.media.config.user_quota
                 };
                 if n == 0 || n > ceiling {
                     return Err("Media limit exceeds the server ceiling or is zero.".into());
@@ -608,10 +642,10 @@ mod tests {
     fn metadata_and_grants_bulk_writes_rollback_on_storage_failure() {
         let mut e = engine();
         let before = e.data.clone();
-        e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_metadata BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='eve' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_metadata BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='eve' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(e.execute(None, None, "/user set @all label test").is_err());
         assert!(e.data == before);
-        e.db.lock().unwrap().execute_batch("DROP TRIGGER deny_metadata; CREATE TRIGGER deny_policy BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        e.store.db.lock().unwrap().execute_batch("DROP TRIGGER deny_metadata; CREATE TRIGGER deny_policy BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(
             e.execute(None, None, "/grant @all #lobby r:message.metadata")
                 .is_err()
@@ -739,67 +773,14 @@ mod tests {
             .unwrap();
         drop(e);
         let e = Engine::open(&path).unwrap();
-        let writes = e.db.lock().unwrap().total_changes();
+        let writes = e.store.db.lock().unwrap().total_changes();
         let result = e
             .read_command(Some("alice"), None, "/user get @all")
             .unwrap()
             .unwrap();
         assert!(result.contains("saved"));
         assert!(!result.contains("hash"));
-        assert_eq!(e.db.lock().unwrap().total_changes(), writes);
-    }
-    #[test]
-    fn only_head_database_upgrades_and_moves_cleanup_limits_atomically() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.sqlite");
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("bob", "hash".into(), false, false).unwrap();
-        e.execute(None, None, "/grant bob @global x:history.clean")
-            .unwrap();
-        e.db.lock().unwrap().execute_batch("UPDATE state SET json=json_set(json,'$.policy.grants[0].minimum_age',604800); PRAGMA user_version=16;").unwrap();
-        drop(e);
-        let db = Connection::open(&path).unwrap();
-        let original: String = db
-            .query_row("SELECT json FROM state", [], |row| row.get(0))
-            .unwrap();
-        db.execute_batch("CREATE TRIGGER deny_upgrade BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
-        assert!(Engine::open(&path).is_err());
-        assert_eq!(
-            db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
-                .unwrap(),
-            16
-        );
-        assert_eq!(
-            db.query_row("SELECT json FROM state", [], |row| row.get::<_, String>(0))
-                .unwrap(),
-            original
-        );
-        db.execute_batch("DROP TRIGGER deny_upgrade;").unwrap();
-        let e = Engine::open(&path).unwrap();
-        assert_eq!(
-            e.data.users["bob"].metadata["@global"]["history.clean_min_age"],
-            "604800"
-        );
-        assert!(
-            !db.query_row("SELECT json FROM state", [], |r| r.get::<_, String>(0))
-                .unwrap()
-                .contains("minimum_age")
-        );
-        assert_eq!(
-            db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
-                .unwrap(),
-            17
-        );
-        drop(e);
-        for version in 1..=15 {
-            db.pragma_update(None, "user_version", version).unwrap();
-            assert!(Engine::open(&path).is_err());
-            assert_eq!(
-                db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
-                    .unwrap(),
-                version
-            );
-        }
+        assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
     }
     #[test]
     fn room_owner_can_invite_with_implicit_or_explicit_scope_and_errors_use_public_syntax() {
@@ -824,12 +805,15 @@ mod tests {
         ] {
             assert_eq!(
                 e.execute(Some("alice"), Some("support"), command)
-                    .unwrap_err(),
+                    .unwrap_err()
+                    .message(),
                 expected
             );
         }
         assert_eq!(
-            e.execute(Some("alice"), None, "/room add bob").unwrap_err(),
+            e.execute(Some("alice"), None, "/room add bob")
+                .unwrap_err()
+                .message(),
             "Specify a room."
         );
         e.execute(Some("alice"), Some("support"), "/room kick bob")
@@ -1041,13 +1025,15 @@ mod metadata_interface_tests {
                 assert!(e.data == before);
             }
         }
-        e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_reset BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='bob' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_reset BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='bob' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(
             e.execute(None, None, "/user reset @all @all #lobby")
                 .is_err()
         );
         assert!(e.data == before);
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("DROP TRIGGER deny_reset;")
             .unwrap();
@@ -1167,11 +1153,13 @@ mod metadata_interface_tests {
         let id = e.data.rooms["a"].id.clone();
         let other = e.data.rooms["b"].id.clone();
         e.execute(None, None, "/room kick bob #a").unwrap();
-        e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_prune BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='bob' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_prune BEFORE UPDATE ON entities WHEN NEW.kind='account' AND NEW.key='bob' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         let before = e.data.clone();
         assert!(e.execute(None, None, "/room delete #a").is_err());
         assert!(e.data == before);
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("DROP TRIGGER deny_prune;")
             .unwrap();
@@ -1184,7 +1172,7 @@ mod metadata_interface_tests {
             assert_eq!(user.metadata[&other]["label"], "b");
         }
         assert_eq!(e.data.users["bob"].metadata["@global"]["label"], "root");
-        let db = e.db.lock().unwrap();
+        let db = e.store.db.lock().unwrap();
         let stale: u64 = db.query_row("SELECT count(*) FROM entities WHERE kind='account' AND json_type(json, '$.metadata.' || ?) IS NOT NULL", [&id], |row| row.get(0)).unwrap();
         assert_eq!(stale, 0);
         drop(db);
@@ -1349,7 +1337,7 @@ mod metadata_authority_tests {
         e.execute(None, None, "/grant alice @global x:account.metadata")
             .unwrap();
         let before = e.data.clone();
-        let writes = e.db.lock().unwrap().total_changes();
+        let writes = e.store.db.lock().unwrap().total_changes();
         for actor in ["alice", "bob"] {
             for command in [
                 "/user set bob label changed",
@@ -1364,7 +1352,7 @@ mod metadata_authority_tests {
                     "{actor}: {command}"
                 );
                 assert!(e.data == before);
-                assert_eq!(e.db.lock().unwrap().total_changes(), writes);
+                assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
             }
         }
         e.execute(None, None, "/grant bob su").unwrap();

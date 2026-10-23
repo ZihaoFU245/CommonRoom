@@ -130,6 +130,8 @@ are read at startup.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `direct_bot_http` | `false` | Opt in to direct versioned bot HTTP only from a private/loopback `trust` peer. |
+| `avatar_hosts` | `[]` | Exact canonical HTTPS avatar hosts; no wildcards, schemes, paths or ports. |
 | `production` | `false` | Production security. Release binaries enforce it regardless. |
 | `bind` | `127.0.0.1:3000` | HTTP listener for `/api/` and `/ws`; static files are not served here. |
 | `trust` | `127.0.0.1` | The single proxy IP allowed to connect. Enforced in production. |
@@ -152,7 +154,7 @@ override it. Configs written before the field existed use `127.0.0.1`.
 
 `set_real_ip_from` names the header that carries the client IP. It is a header name, not
 the Nginx directive of the same name. It accepts exactly one IPv4 or IPv6 address (a
-malformed value, duplicate, or comma list falls back to the socket peer). IPv4-mapped
+malformed value, duplicate, or comma list rejects login with 400). IPv4-mapped
 IPv6 addresses share one throttle bucket. The value is read at startup, so restart after
 changing it.
 
@@ -288,8 +290,8 @@ locations `/api/`, `/ws`, and `/`, and remove the prefix redirect. Keep `/api/` 
 
 ### Forwarded headers and trust
 
-The release server rejects requests without `X-Forwarded-Proto: https`, except direct
-bot calls from the trusted socket IP. The proxy must set all three headers on every
+The release server rejects requests without `X-Forwarded-Proto: https`, except explicitly enabled direct
+bot calls from the private trusted socket IP (`direct_bot_http`). The proxy must set all three headers on every
 proxied path:
 
 ```nginx
@@ -305,8 +307,8 @@ pointing only at the socket peer Nginx actually sees.
 
 Set `trust` to Nginx's address (loopback when Nginx is local), bind the Rust listener to
 a private interface, and never expose it directly; it does not terminate TLS. A trusted
-same-machine bot may call `/api/bot/v1/` over plain HTTP because its socket IP is the
-authorization, but browsers always need the forwarded HTTPS signal.
+same-machine bot may call `/api/bot/v1/` over plain HTTP only with
+`direct_bot_http` enabled. Browsers always need the forwarded HTTPS signal.
 
 ### Headers and previews
 
@@ -723,8 +725,11 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-The server accepts schema v17 and upgrades only HEAD v16 transactionally. Older
-schemas are unsupported, and a v17 database cannot be opened by an older binary. Back up before
+The server accepts schema v18 and upgrades only the v17 baseline at commit
+`793f9bb65683f63130c234f78856b8813362f45f` transactionally. Earlier schemas
+are unsupported, and a v18 database cannot be opened by an older binary.
+Root-path production deployments require one sign-in to obtain the new
+`__Host-chat_session` cookie. Back up before
 upgrading, keeping the database and object store consistent ([Data](data.md)).
 
 Stop the old process before starting the new one; only one process may use a data
@@ -756,6 +761,25 @@ storage and backups around them.
 | `403 SignatureDoesNotMatch` on upload or download | A proxy rewrote the signed host, path, or query, or `public_endpoint` differs from the URL users open. Preserve `Host` and the raw request target. |
 | Upload completion is rejected | The `PUT` did not finish or sent a different size; check that the storage proxy body limit is at least `media.max_size` (default 25 MiB) and that any provider ingress limit allows it. |
 | Browser console reports a CSP violation for media | Add the public storage origin to `connect-src` and `media-src` in the Nginx asset location; backend headers do not apply to static files. |
-| Logins are throttled for everyone at once | The server sees one client IP (a proxy or Cloudflare edge). Configure real-IP handling on Nginx and keep `trust` on the actual socket peer. The limits are 10 failures per IP and 20 per username per minute. Successful logins do not consume the allowance. |
+| Logins are throttled for everyone at once | The server sees one client IP (a proxy or Cloudflare edge). Configure real-IP handling on Nginx and keep `trust` on the actual socket peer. The limits are 10 failures per IP and 20 per username per minute. Successful logins do not consume the allowance. Account failures also apply exponential backoff up to 32 seconds. |
 | Login or API calls fail with a forwarded-header or origin error | `X-Forwarded-Proto` must be `https` (except direct bot calls from `trust`), and `origins` must match the browser origin without a path. |
 | Assets or the WebSocket 404 after changing `base_url` | Update both the Nginx locations and `base_url`; they must agree, including the trailing slash. |
+
+### Explicit direct bot HTTP
+
+Production requires forwarded HTTPS for bot requests by default. For intentional
+same-host/private bot access, set `direct_bot_http` to true or start with
+`CHAT_DIRECT_BOT_HTTP=1` (`0` disables it). This requires a loopback/private `trust`
+address and applies only to bearer requests under `/api/bot/v1/` when the protocol
+header is absent. Explicit `X-Forwarded-Proto: http` is always rejected. Keep the
+listener private and make the proxy overwrite `X-Forwarded-Proto` on every
+request; enabling this mode is unsafe with a proxy that omits that header.
+
+External avatar URLs are denied unless their exact hostname is listed in
+`avatar_hosts`, for example `["www.gravatar.com"]`. Up to 32 canonical hosts are
+accepted. Existing disallowed URLs remain stored but are hidden from snapshots;
+managed image uploads do not need an external host allowance.
+
+Deploy the rebuilt web bundle with backend changes that introduce compact avatar
+profile frames. Existing open tabs obtain the new client when reloaded; normal
+HTTP resynchronization continues to return the full current avatar directory.

@@ -26,13 +26,14 @@ fn mutation_persistence_benchmark() {
                 .unwrap();
             }
         }
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("PRAGMA wal_autocheckpoint=0;")
             .unwrap();
-        e.save().unwrap();
         e.checkpoint().unwrap();
-        let changes = e.db.lock().unwrap().total_changes();
+        let changes = e.store.db.lock().unwrap().total_changes();
         let mut send = Vec::new();
         let mut reaction = Vec::new();
         let mut private_send = Vec::new();
@@ -93,7 +94,7 @@ fn mutation_persistence_benchmark() {
             private_send[28],
             private_reaction[15],
             private_reaction[28],
-            e.db.lock().unwrap().total_changes() - changes
+            e.store.db.lock().unwrap().total_changes() - changes
         );
     }
 }

@@ -26,7 +26,7 @@ fn media_permissions_ownership_and_reference_transactions() {
     e.execute(Some("alice"), None, "/new room other").unwrap();
     let other = e.data.rooms["other"].id.clone();
     assert!(e.allocate_media("bob", &other, "file", 8).is_err());
-    for size in [0, e.media_config.max_size + 1] {
+    for size in [0, e.media.config.max_size + 1] {
         assert!(e.allocate_media("alice", &room, "file", size).is_err());
     }
     let media = ready(&e, "alice", &room);
@@ -78,11 +78,13 @@ fn media_retention_revocation_and_cleanup_claims() {
     e.execute(Some("alice"), Some("lobby"), "replace").unwrap();
     assert!(!e.media_attached(&media.id).unwrap());
     e.expired_media().unwrap();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute(
             "UPDATE media SET unreferenced=?1,created=?1,json=json_set(json,'$.created',?1)",
-            [now() - e.media_config.pending_ttl - 1],
+            [now() - e.media.config.pending_ttl - 1],
         )
         .unwrap();
     assert_eq!(e.expired_media().unwrap().len(), 1);
@@ -120,7 +122,7 @@ fn media_quota_and_failed_attachment_writes_are_atomic() {
     let mut e = engine();
     let room = e.data.rooms["lobby"].id.clone();
     let media = ready(&e, "alice", &room);
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_attachment BEFORE INSERT ON message_media BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_attachment BEFORE INSERT ON message_media BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
     assert!(
         e.execute(Some("alice"), Some("lobby"), &link(&media))
             .is_err()
@@ -198,7 +200,7 @@ fn media_metadata_overrides_defaults_and_is_rechecked() {
 #[test]
 fn verified_unsent_uploads_reserve_slots_until_publication() {
     let mut e = engine();
-    e.media_config.pending_limit = 1;
+    e.media.config.pending_limit = 1;
     let room = e.data.rooms["lobby"].id.clone();
     let media = ready(&e, "alice", &room);
     assert!(e.allocate_media("alice", &room, "file", 1).is_err());
@@ -222,7 +224,9 @@ fn published_media_expires_while_referenced_and_surrounding_text_remains_editabl
     let media = ready(&e, "alice", &room);
     e.execute(Some("alice"), Some("lobby"), &link(&media))
         .unwrap();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute(
             "UPDATE media SET expires=?2,json=json_set(json,'$.expires',?2) WHERE id=?1",
@@ -257,7 +261,7 @@ fn cancelled_uploads_cannot_be_published_and_cleanup_does_not_starve() {
     assert!(e.abandon_media("bob", &first.id).is_err());
     e.abandon_media("alice", &first.id).unwrap();
     e.abandon_media("alice", &second.id).unwrap();
-    e.media_config.cleanup_batch = 1;
+    e.media.config.cleanup_batch = 1;
     let batch = e.expired_media().unwrap();
     assert_eq!(batch.len(), 1);
     let next = e.expired_media().unwrap();
@@ -338,7 +342,7 @@ fn room_upload_defaults_can_be_revoked_without_removing_text_or_read_access() {
     let room = e.data.rooms["lobby"].id.clone();
     assert_eq!(
         e.allocate_media("eve", &room, "file", 8).unwrap().max_age,
-        e.media_config.max_age
+        e.media.config.max_age
     );
     let published = ready(&e, "bob", &room);
     e.execute(Some("bob"), Some("lobby"), &link(&published))
@@ -474,7 +478,7 @@ fn failed_room_media_revocation_and_restore_leave_compiled_authority_unchanged()
             .unwrap();
         }
         let before = e.data.clone();
-        e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_media_policy BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_media_policy BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         let command = if blocked {
             "/grant bob #lobby w:media.upload"
         } else {
@@ -483,7 +487,9 @@ fn failed_room_media_revocation_and_restore_leave_compiled_authority_unchanged()
         assert!(e.execute(Some("alice"), Some("lobby"), command).is_err());
         assert!(e.data == before);
         assert_eq!(e.allocate_media("bob", &room, "file", 8).is_err(), blocked);
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("DROP TRIGGER fail_media_policy;")
             .unwrap();
@@ -502,19 +508,21 @@ fn media_reference_removal_tracks_orphans_and_columns_override_legacy_json() {
     let message = e.history("alice", "lobby").unwrap().messages[0].id.clone();
     e.execute(Some("alice"), Some("lobby"), &format!("/retract {message}"))
         .unwrap();
-    let unreferenced: Option<u64> =
-        e.db.lock()
-            .unwrap()
-            .query_row(
-                "SELECT unreferenced FROM media WHERE id=?1",
-                [&media.id],
-                |row| row.get(0),
-            )
-            .unwrap();
+    let unreferenced: Option<u64> = e
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT unreferenced FROM media WHERE id=?1",
+            [&media.id],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert!(unreferenced.is_some());
     e.abandon_media("alice", &media.id).unwrap();
     assert!(!e.stored_media(&media.id).unwrap().deleting);
-    e.db.lock().unwrap().execute("UPDATE media SET deleting=1,json=json_set(json,'$.deleting',json('false'),'$.ready',json('false')) WHERE id=?1",[&media.id]).unwrap();
+    e.store.db.lock().unwrap().execute("UPDATE media SET deleting=1,json=json_set(json,'$.deleting',json('false'),'$.ready',json('false')) WHERE id=?1",[&media.id]).unwrap();
     let restored = e.stored_media(&media.id).unwrap();
     assert!(restored.deleting && restored.ready);
 }
@@ -539,7 +547,7 @@ fn restart_cleanup_preserves_shared_references_and_releases_quota_only_after_del
         .unwrap();
     drop(e);
     let mut e = Engine::open(&path).unwrap();
-    e.media_config.user_quota = 24;
+    e.media.config.user_quota = 24;
     e.prepare_media_cleanup().unwrap();
     let claimed = e.expired_media().unwrap();
     assert_eq!(claimed.len(), 2);
@@ -568,11 +576,13 @@ fn restart_cleanup_preserves_shared_references_and_releases_quota_only_after_del
             .unwrap()
             .contains(&orphan.id)
     );
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute(
             "UPDATE media SET created=?2 WHERE id=?1",
-            params![orphan.id, now() - e.media_config.pending_ttl - 1],
+            params![orphan.id, now() - e.media.config.pending_ttl - 1],
         )
         .unwrap();
     assert!(
@@ -580,4 +590,38 @@ fn restart_cleanup_preserves_shared_references_and_releases_quota_only_after_del
             .unwrap()
             .contains(&orphan.id)
     );
+}
+
+#[test]
+fn media_download_tickets_recheck_owner_permissions_expiry_and_shared_sql_changes() {
+    let mut e = engine();
+    let room = e.data.rooms["lobby"].id.clone();
+    let media = ready(&e, "alice", &room);
+    e.execute(Some("alice"), Some("lobby"), &link(&media))
+        .unwrap();
+    let mut ticket = e.prepare_media_download("bob", &media.id).unwrap();
+    assert!(e.validate_media_download("bob", &ticket).is_ok());
+    assert!(e.validate_media_download("alice", &ticket).is_err());
+    let expiry = ticket.media.expires;
+    ticket.media.expires = Some(now());
+    assert!(e.validate_media_download("bob", &ticket).is_err());
+    ticket.media.expires = expiry;
+    let revision = e.revision;
+    e.store
+        .db
+        .lock()
+        .unwrap()
+        .execute("UPDATE media SET deleting=1 WHERE id=?1", [&media.id])
+        .unwrap();
+    assert_eq!(e.revision, revision);
+    assert!(e.validate_media_download("bob", &ticket).is_err());
+    e.store
+        .db
+        .lock()
+        .unwrap()
+        .execute("UPDATE media SET deleting=0 WHERE id=?1", [&media.id])
+        .unwrap();
+    let ticket = e.prepare_media_download("bob", &media.id).unwrap();
+    e.execute(None, None, "/room kick bob #lobby").unwrap();
+    assert!(e.validate_media_download("bob", &ticket).is_err());
 }

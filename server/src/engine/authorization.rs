@@ -72,7 +72,7 @@ impl Group {
             Self::Su => "su",
         }
     }
-    pub fn parse(name: &str) -> Result<Self, String> {
+    pub fn parse(name: &str) -> Result<Self, EngineError> {
         match name {
             "user" => Ok(Self::User),
             "admin" => Ok(Self::Admin),
@@ -126,7 +126,7 @@ pub struct Policy {
     pub media_revocations: BTreeMap<String, BTreeSet<String>>,
     pub audit: VecDeque<Audit>,
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rights {
     actions: u64,
     commands: u64,
@@ -142,13 +142,13 @@ impl Rights {
     pub(in crate::engine) fn command(self, command: &str) -> bool {
         command_bit(command).is_some_and(|b| self.commands & b != 0)
     }
-    fn insert(&mut self, name: &str) -> Result<(), String> {
+    fn insert(&mut self, name: &str) -> Result<(), EngineError> {
         if let Some(action) = Action::parse(name) {
             self.actions |= action.bit();
         } else if let Some(bit) = command_bit(name) {
             self.commands |= bit;
         } else {
-            return Err(format!("Unknown permission: {name}"));
+            return Err(EngineError::Invalid(format!("Unknown permission: {name}")));
         }
         Ok(())
     }
@@ -384,7 +384,67 @@ pub(super) struct CompiledPolicy {
     pub(super) media_revocations: BTreeMap<String, BTreeSet<String>>,
 }
 impl CompiledPolicy {
-    pub(super) fn compile(data: &Data) -> Result<Self, String> {
+    pub(super) fn effective_for(&self, id: &str, scope: &Scope) -> Rights {
+        let mut r = self
+            .scopes
+            .get(id)
+            .and_then(|scopes| scopes.get(&Scope::Server))
+            .copied()
+            .unwrap_or_default();
+        if scope != &Scope::Server {
+            r.add(
+                self.scopes
+                    .get(id)
+                    .and_then(|scopes| scopes.get(scope))
+                    .copied()
+                    .unwrap_or_default(),
+            );
+        }
+        if let Scope::Private(key) = scope
+            && key.split_once(':').is_some_and(|(a, b)| a == id || b == id)
+            && self.groups.get(id).is_some_and(|groups| !groups.is_empty())
+        {
+            r.add(member_rights());
+            if self
+                .groups
+                .get(id)
+                .is_some_and(|groups| groups.contains(&Group::Admin))
+            {
+                r.add(rights(&[Action::Metadata], &["/debug"]));
+            }
+        }
+
+        if let Scope::Room(room_id) = scope
+            && !self
+                .groups
+                .get(id)
+                .is_some_and(|groups| groups.contains(&Group::Su))
+            && self
+                .media_revocations
+                .get(id)
+                .is_some_and(|rooms| rooms.contains(room_id))
+        {
+            r.actions &= !Action::MediaUpload.bit();
+        }
+        r
+    }
+    pub(super) fn changed_profiles(&self, other: &Self) -> BTreeSet<String> {
+        self.scopes
+            .keys()
+            .chain(other.scopes.keys())
+            .chain(self.groups.keys())
+            .chain(other.groups.keys())
+            .chain(self.media_revocations.keys())
+            .chain(other.media_revocations.keys())
+            .filter(|id| {
+                self.scopes.get(*id) != other.scopes.get(*id)
+                    || self.groups.get(*id) != other.groups.get(*id)
+                    || self.media_revocations.get(*id) != other.media_revocations.get(*id)
+            })
+            .cloned()
+            .collect()
+    }
+    pub(super) fn compile(data: &Data) -> Result<Self, EngineError> {
         let mut result = Self {
             revision: data.policy.revision,
             media_revocations: data.policy.media_revocations.clone(),

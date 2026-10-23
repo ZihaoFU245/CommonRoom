@@ -9,6 +9,7 @@ Start with [Development](development.md), then read [Architecture](architecture.
 - [Agent development](agent-development.md): minimal reference worker and checkpoint responsibilities.
 - [Protocol](protocol.md): HTTP/WebSocket contracts and synchronization rules.
 - [Testing](testing.md): required checks and regression coverage.
+- [Backend review implementation](backend-review.md): finding-by-finding work and verification ledger.
 - [Commands](commands.md): command syntax, permissions, and behavior.
 - [Media uploads (draft)](media-uploads.md): private S3 uploads, setup, limits, cleanup and verification.
 - [Data](data.md): persistence, upgrades, backups, and moving the service.

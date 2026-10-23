@@ -1,3 +1,4 @@
+import type { Snapshot, AvatarUpdate } from "../../api/protocol.ts";
 export function avatarSource(
   value: string | undefined,
   base: string,
@@ -87,4 +88,19 @@ export function isCompletedAvatar(value: unknown): value is CompletedAvatar {
     "path" in value &&
     value.path === `/api/avatars/${value.media_id}/file`
   );
+}
+
+/** Profile changes replace only this public field and preserve loaded history. */
+export function applyAvatar(
+  snapshot: Snapshot,
+  update: AvatarUpdate,
+): Snapshot {
+  if (update.url !== null)
+    return {
+      ...snapshot,
+      avatars: { ...snapshot.avatars, [update.username]: update.url },
+    };
+  const avatars = { ...snapshot.avatars };
+  delete avatars[update.username];
+  return { ...snapshot, avatars };
 }

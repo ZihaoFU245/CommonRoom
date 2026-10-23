@@ -76,7 +76,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v17 restart and HEAD v16 upgrade, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover v18 restart and baseline v17 upgrade, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -185,7 +185,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v17 restart and HEAD v16 upgrade and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v18 restart and baseline v17 upgrade and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -592,8 +592,8 @@ backoff, exponential rests, empty results and immediate notification refresh.
 Object-command regressions cover scoped user lists, complete bulk metadata reads,
 privacy, protected accounts, media inheritance/quotas, renames, room deletion,
 read-only execution and failed-write rollback. Bulk grant/revoke tests exercise original-policy authorization, owners, protected su accounts, and the last active
-administrator. Only HEAD v16-to-v17 migration is tested; pre-HEAD upgrade fixtures
-are removed and versions 1–14 are tested for unchanged rejection. Upload hint tests
+administrator. Only baseline v17-to-v18 migration is tested; pre-HEAD upgrade fixtures
+are removed and versions 1–16 are tested for unchanged rejection. Upload hint tests
 cover bounds/header injection, signing, replacement metadata and browser headers.
 
 Command-output regressions cover full subcommand paths, permission-filtered help,
@@ -656,10 +656,10 @@ Global metadata entries have no hints; room entries retain inheritance/local hin
 
 ## Static-review regressions
 
-`engine/review_tests.rs` covers room-only metadata projection, explicit global
+`engine/tests/review.rs` covers room-only metadata projection, explicit global
 group grants and batch audit, membership invitation authority, uniform attachment
 errors and edit ownership ordering, atomic first-DM reservations, no-op cleanup,
-bulk key-cap prevalidation, family-scoped snapshots, and indexed batched cleanup
+bulk key-cap prevalidation, resolved-key snapshots, and indexed batched cleanup
 counts. Query-plan assertions inspect index selection without benchmarking.
 Web tests cover portable Markdown attachment paths, complete Unicode hints, full
 object cache bounds/recency/ranges, actual content lengths, and restart invalidation
@@ -721,3 +721,61 @@ uncaught browser exceptions occurred. The five existing `test:browser` scenarios
 also passed. The full HTTP/WebSocket smoke harness passed against rebuilt debug
 and release binaries. Browser checks used temporary accounts/data with media
 storage disabled.
+
+Backend admission regressions cover socket eviction and pool isolation, stable
+account HTTP limits, cancelled-request worker ownership, typed bot 429 responses,
+shared transport shutdown and exponential login backoff across rotating IPs.
+Large Rust suites live under `server/src/{engine,web,bots}/tests/`; private module
+access and test-only compilation are preserved. Obsolete whole-store save helpers
+and pointer-alias assertions were removed; persistence tests use captured deltas.
+Concurrent same-key bot sends now deterministically replay the committed receipt;
+unrelated stale preparations and revoked permissions still fail.
+
+Media regressions verify one-second failed-probe backoff and recovery without
+positive health caching. Download tickets recheck stable account identity, live
+permissions, expiry and media SQL changes even when engine revision is unchanged.
+History cache concurrency holds one shard’s page/unread locks while another
+conversation completes both reads; shard and aggregate budgets remain bounded.
+
+External avatar regressions cover denial by default, exact-host allowance,
+suffix/subdomain/userinfo lookalikes and hiding previously allowed stored URLs
+after policy changes. Direct bot ingress tests cover explicit opt-in, private
+trust validation, default denial and rejection of forwarded HTTP even with opt-in.
+
+Backend review regressions additionally cover atomic baseline v17-to-v18 session
+hashing (including digest-key collisions and migration rollback), bounded durable
+authentication events, retained-row counters, typed retryable storage errors,
+duplicate cookies across headers, and idempotent avatar broadcasts. Incremental
+unreads are compared to an exact SQL oracle across global sequence gaps, cursor
+advances, retention, retraction, cleanup and failed writes. Blocked-reader tests
+verify both browser and bot snapshots release engine guards and discard frames
+after permission or credential revocation. Transport tests cover bounded queued
+coalescing, lag recovery, discovery/presence preservation and shutdown priority.
+
+Metadata-template regressions compare reused browser/bot projections against cold
+builds after sends and cursor advances, and verify invalidation after policy,
+identity, directory, private-conversation and avatar-host changes and recovery.
+Whole-frame tests prove unrelated room messages and another account's sessions
+preserve the same shared buffer while visible content and revocation refresh it.
+Cache resource tests bound profiles and conservative allocation accounting.
+Resolved-key regressions check room/account selection, referenced metadata cleanup,
+new-key rollback, password/session restoration and identity-index correctness.
+Existing restart, bot-credential, rename, bulk-reset, room-removal and failed-write
+tests run through the same keyed production commit path.
+
+Socket batching regressions cover bounded eight-event worker chunks, mixed target
+filtering, credential scopes, stale positive routing hints and oversized routing
+fallback. Blocked-reader tests exercise conversation/unread batches and mixed
+baseline/presence batches: writers revoke permissions, directory access or credentials
+while reads wait, and every stale frame is discarded. Media smoke warms a recipient's
+routing cache before silently reserving a private upload, then verifies that the
+first private message still arrives without a baseline broadcast.
+
+
+Metadata notification regressions compare changed viewers against independent cold
+snapshots across room/account lifecycle and policy changes, cover old and new access,
+and verify outsiders perform no history reads or baseline work. Transport tests union
+coalesced audiences and retain bot command catalogue invalidations during forced
+recovery. Bot credential API tests assert committed notifications. The real socket
+harness checks hidden room creation, grants, revocation and regrant while an unrelated
+viewer receives no baseline.

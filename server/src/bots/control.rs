@@ -171,18 +171,13 @@ pub(super) async fn message_context(
                 "Source message changed; retry authorization.",
             ));
         }
-        let (author, account) = engine
-            .data
-            .users
-            .iter()
-            .find(|(_, account)| account.id == message.author_id)
-            .filter(|(actor,_)| engine.active(actor))
+        let author = engine.active_account_name(&message.author_id)
             .ok_or_else(||Error::new(Code::Forbidden,"Source account unavailable."))?;
         let target = engine.bot_target(&user,&input.conversation_id,Action::Read)?;
         let permissions = engine.allows(Some(&user),&target.scope,Action::PolicyRead)
             .then(||engine.effective(Some(author),&target.scope).names());
-        let owner_id = engine.data.bots.get(&context.account).and_then(|bot|bot.owner_id.as_ref());
-        Ok(json!({"author":{"id":account.id,"username":author,"groups":engine.groups(Some(author)),"permissions":permissions},"bot":{"id":context.account,"groups":engine.groups(Some(&user)),"owner_id":owner_id,"owner":engine.bot_owner(&context.account)}}))
+        let owner_id = engine.bot_owner_id(&context.account);
+        Ok(json!({"author":{"id":message.author_id,"username":author,"groups":engine.groups(Some(author)),"permissions":permissions},"bot":{"id":context.account,"groups":engine.groups(Some(&user)),"owner_id":owner_id,"owner":engine.bot_owner(&context.account)}}))
     })
     .await
 }
@@ -229,12 +224,12 @@ pub(super) async fn command(
             execute_command(engine, app, context, &input)
         })?;
         if before != engine.revision {
-            let _ = app.changes.send(
-                engine
-                    .changed_conversation
-                    .as_ref()
-                    .map_or(Change::All, |id| Change::Conversation(id.clone())),
-            );
+            let _ = app
+                .changes
+                .send(engine.changed_conversation.as_ref().map_or_else(
+                    || Change::Metadata(engine.metadata_change()),
+                    |id| Change::Conversation(id.clone()),
+                ));
         }
         outcome.into_result()
     })
@@ -304,7 +299,7 @@ fn execute_command(
     }
     engine
         .require_command(Some(&user), Some(&view), parts[0])
-        .map_err(|e| Error::new(Code::Forbidden, e))?;
+        .map_err(Error::from)?;
     let result = if inner.as_slice() == ["/help"] {
         engine
             .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
@@ -313,7 +308,7 @@ fn execute_command(
                     engine, &user, &view,
                 )))
             })
-            .map_err(|e| Error::new(Code::Forbidden, e))?
+            .map_err(Error::from)?
     } else if inner.as_slice() == ["/configs"] {
         engine
             .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
@@ -322,13 +317,14 @@ fn execute_command(
                 engine.require_target_command(Some(&user), &Scope::Server, "/configs")?;
                 engine.require(Some(&user), &Scope::Server, Action::Config)?;
                 app.config
-                    .display_with_history(engine.history_store.stats()?)
+                    .display_with_history(engine.history_store().stats()?)
+                    .map_err(crate::engine::EngineError::Invalid)
             })
-            .map_err(|e| Error::new(Code::Forbidden, e))?
+            .map_err(Error::from)?
     } else {
         engine
             .execute_formatted(Some(&user), Some(&view), &input.command, true)
-            .map_err(|e| Error::new(Code::Forbidden, e))?
+            .map_err(Error::from)?
     };
     Ok(result)
 }

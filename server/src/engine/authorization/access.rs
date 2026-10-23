@@ -9,8 +9,8 @@ impl Engine {
         actor: Option<&str>,
         view: Option<&str>,
         sudo: bool,
-        operation: impl FnOnce(&mut Self) -> Result<T, String>,
-    ) -> Result<T, String> {
+        operation: impl FnOnce(&mut Self) -> Result<T, EngineError>,
+    ) -> Result<T, EngineError> {
         if !sudo {
             return operation(self);
         }
@@ -19,8 +19,9 @@ impl Engine {
         self.require(actor, &Scope::Server, Action::Sudo)?;
         let id = self
             .principal_id(actor)
-            .ok_or("Account unavailable.")?
+            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
             .to_owned();
+        self.read_model.suspend();
         self.authorization
             .groups
             .entry(id.clone())
@@ -34,13 +35,14 @@ impl Engine {
             .or_default()
             .add(rights(Action::ALL, COMMANDS));
         let result = operation(self);
+        self.read_model.resume();
         // Rebuild from the actual persisted assignments, including policy
         // changes performed by the command, on success and on rejection.
         self.rebuild_authorization()?;
         result
     }
 
-    pub(in crate::engine) fn rebuild_authorization(&mut self) -> Result<(), String> {
+    pub(in crate::engine) fn rebuild_authorization(&mut self) -> Result<(), EngineError> {
         match CompiledPolicy::compile(&self.data) {
             Ok(policy) => {
                 self.authorization = policy;
@@ -48,7 +50,8 @@ impl Engine {
             }
             Err(error) => {
                 self.authorization = CompiledPolicy::default();
-                Err(error)
+                self.read_model.advance();
+                Err(EngineError::unavailable(error))
             }
         }
     }
@@ -87,12 +90,12 @@ impl Engine {
     pub fn is_su(&self, actor: Option<&str>) -> bool {
         self.has_group(actor, Group::Su)
     }
-    pub(in crate::engine) fn room_scope(&self, name: &str) -> Result<Scope, String> {
+    pub(in crate::engine) fn room_scope(&self, name: &str) -> Result<Scope, EngineError> {
         self.data
             .rooms
             .get(name)
             .map(|r| Scope::Room(r.id.clone()))
-            .ok_or("Room not found.".into())
+            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))
     }
     pub(in crate::engine) fn private_scope(&self, key: &str) -> Scope {
         if let Some(chat) = self.data.private.get(key) {
@@ -111,48 +114,7 @@ impl Engine {
         let Some(id) = self.principal_id(actor) else {
             return Rights::default();
         };
-        let mut r = self
-            .authorization
-            .scopes
-            .get(id)
-            .and_then(|scopes| scopes.get(&Scope::Server))
-            .copied()
-            .unwrap_or_default();
-        if scope != &Scope::Server {
-            r.add(
-                self.authorization
-                    .scopes
-                    .get(id)
-                    .and_then(|scopes| scopes.get(scope))
-                    .copied()
-                    .unwrap_or_default(),
-            );
-        }
-        if let Scope::Private(key) = scope
-            && key.split_once(':').is_some_and(|(a, b)| a == id || b == id)
-            && self
-                .authorization
-                .groups
-                .get(id)
-                .is_some_and(|groups| !groups.is_empty())
-        {
-            r.add(member_rights());
-            if self.has_group(actor, Group::Admin) {
-                r.add(rights(&[Action::Metadata], &["/debug"]));
-            }
-        }
-
-        if let Scope::Room(room_id) = scope
-            && !self.is_su(actor)
-            && self
-                .authorization
-                .media_revocations
-                .get(id)
-                .is_some_and(|rooms| rooms.contains(room_id))
-        {
-            r.actions &= !Action::MediaUpload.bit();
-        }
-        r
+        self.authorization.effective_for(id, scope)
     }
     pub fn allows(&self, actor: Option<&str>, scope: &Scope, action: Action) -> bool {
         self.effective(actor, scope).has(action)
@@ -171,7 +133,7 @@ impl Engine {
         actor: Option<&str>,
         value: &str,
         write: bool,
-    ) -> Result<Scope, String> {
+    ) -> Result<Scope, EngineError> {
         if !value.starts_with('#') && !value.starts_with('@') {
             return Err("Room scopes require #name.".into());
         }
@@ -180,7 +142,7 @@ impl Engine {
             if self.is_su(actor) {
                 error
             } else {
-                denied.into()
+                EngineError::Forbidden(denied.into())
             }
         })?;
         if !self.is_su(actor) {
@@ -192,7 +154,7 @@ impl Engine {
                     || self.allows(actor, &scope, Action::Read)
             };
             if !allowed {
-                return Err(denied.into());
+                return Err(EngineError::Forbidden(denied.into()));
             }
         }
         Ok(scope)
@@ -202,11 +164,11 @@ impl Engine {
         actor: Option<&str>,
         scope: &Scope,
         action: Action,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         if self.allows(actor, scope, action) {
             Ok(())
         } else {
-            Err(format!(
+            Err(EngineError::Forbidden(format!(
                 "Permission required: {} at {}. Check /permissions {} for effective access.",
                 action.name(),
                 self.scope_label(scope),
@@ -214,7 +176,7 @@ impl Engine {
                     Scope::Room(_) => format!("#{}", self.scope_label(scope)),
                     _ => self.scope_label(scope),
                 }
-            ))
+            )))
         }
     }
     pub fn require_clean(
@@ -222,23 +184,25 @@ impl Engine {
         actor: Option<&str>,
         scope: &Scope,
         age: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         if self.is_su(actor) {
             return Ok(());
         }
         self.require(actor, scope, Action::Clean)?;
-        let user = actor.ok_or("Account unavailable.")?;
+        let user = actor.ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         let (limit, _) = self.cleanup_limit(user, scope)?;
         if limit == -1
             || (limit > 0 && age >= u64::try_from(limit).map_err(|_| "Invalid cleanup limit.")?)
         {
             Ok(())
         } else if limit == 0 {
-            Err("Cleanup disabled by history.clean_min_age metadata.".into())
-        } else {
-            Err(format!(
-                "history.clean_min_age requires messages at least {limit} seconds old."
+            Err(EngineError::Forbidden(
+                "Cleanup disabled by history.clean_min_age metadata.".into(),
             ))
+        } else {
+            Err(EngineError::Forbidden(format!(
+                "history.clean_min_age requires messages at least {limit} seconds old."
+            )))
         }
     }
 
@@ -246,7 +210,7 @@ impl Engine {
         &self,
         actor: Option<&str>,
         view: Option<&str>,
-    ) -> Result<Scope, String> {
+    ) -> Result<Scope, EngineError> {
         match view {
             None | Some("@command" | "@direct") => Ok(Scope::Server),
             Some(view) if view.starts_with("@direct:") => {
@@ -262,19 +226,20 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
         command: &str,
-    ) -> Result<(), String> {
-        self.principal_id(actor).ok_or("Account unavailable.")?;
+    ) -> Result<(), EngineError> {
+        self.principal_id(actor)
+            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         let scope = self.command_scope(actor, room)?;
         let allowed = self.effective(actor, &scope).command(command)
             || (room.is_none() && self.any_command(actor, command));
         if allowed {
             Ok(())
         } else {
-            Err(format!(
+            Err(EngineError::Forbidden(format!(
                 "Command not permitted in this context: {command}. Missing command grant at {}. Action permissions alone do not enable commands. Check /permissions or /man {}.",
                 self.scope_label(&scope),
                 command.trim_start_matches('/')
-            ))
+            )))
         }
     }
     pub fn require_target_command(
@@ -282,11 +247,11 @@ impl Engine {
         actor: Option<&str>,
         scope: &Scope,
         command: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         if self.effective(actor, scope).command(command) {
             Ok(())
         } else {
-            Err(format!(
+            Err(EngineError::Forbidden(format!(
                 "Command not permitted on this target: {command}. Missing command grant at {}. Check /permissions {} or /man {}.",
                 self.scope_label(scope),
                 match scope {
@@ -294,7 +259,7 @@ impl Engine {
                     _ => self.scope_label(scope),
                 },
                 command.trim_start_matches('/')
-            ))
+            )))
         }
     }
     pub(in crate::engine) fn any_command(&self, actor: Option<&str>, command: &str) -> bool {
@@ -383,17 +348,17 @@ impl Engine {
         &self,
         actor: Option<&str>,
         scope: &Scope,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         let own = self.effective(actor, scope);
         let member = member_rights();
         if member.actions & !own.actions != 0 || member.commands & !own.commands != 0 {
-            return Err(format!(
+            return Err(EngineError::Forbidden(format!(
                 "Inviting or assigning the user group requires authority to delegate every participant permission in {}. Ask the room owner to add you with /room add first; /room add also requires x:member.add and the /room command grant.",
                 match scope {
                     Scope::Room(_) => format!("#{}", self.scope_label(scope)),
                     _ => self.scope_label(scope),
                 }
-            ));
+            )));
         }
         Ok(())
     }
@@ -432,8 +397,12 @@ impl Engine {
         actor: Option<&str>,
         name: &str,
         action: Action,
-    ) -> Result<Scope, String> {
-        let account = self.data.users.get(name).ok_or("User not found.")?;
+    ) -> Result<Scope, EngineError> {
+        let account = self
+            .data
+            .users
+            .get(name)
+            .ok_or_else(|| EngineError::NotFound("User not found.".into()))?;
         let scope = Scope::Account(account.id.clone());
         self.require(actor, &scope, action)?;
         // Protection follows the target's assignment even while disabled;
@@ -444,7 +413,9 @@ impl Engine {
             .get(&account.id)
             .is_some_and(|groups| groups.contains(&Group::Su));
         if protected && !self.is_su(actor) {
-            return Err("Only su can manage a su account.".into());
+            return Err(EngineError::Forbidden(
+                "Only su can manage a su account.".into(),
+            ));
         }
         Ok(scope)
     }
@@ -474,7 +445,7 @@ impl Engine {
                 ),
         }
     }
-    pub(in crate::engine) fn parse_scope(&self, value: &str) -> Result<Scope, String> {
+    pub(in crate::engine) fn parse_scope(&self, value: &str) -> Result<Scope, EngineError> {
         if matches!(value, "@global" | "@server") {
             return Ok(Scope::Server);
         }
@@ -484,18 +455,20 @@ impl Engine {
                 .users
                 .get(name)
                 .map(|u| Scope::Account(u.id.clone()))
-                .ok_or("User not found.".into());
+                .ok_or_else(|| EngineError::NotFound("User not found.".into()));
         }
         if let Some(key) = value.strip_prefix("@private:") {
             if self.data.private.contains_key(key) {
                 return Ok(self.private_scope(key));
             }
-            return Err("Private conversation not found.".into());
+            return Err(EngineError::NotFound(
+                "Private conversation not found.".into(),
+            ));
         }
         if value.starts_with('@') {
-            return Err(format!(
+            return Err(EngineError::Invalid(format!(
                 "Unknown scope: {value}. Use a room name, @global, @account:user, or @private:a:b."
-            ));
+            )));
         }
         self.room_scope(value.strip_prefix('#').unwrap_or(value))
     }

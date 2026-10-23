@@ -239,9 +239,20 @@ impl Hub {
         engine: &Engine,
         user: &str,
         conversation: &str,
-    ) -> Result<Vec<serde_json::Value>, String> {
-        let peers = engine.bot_command_peers(user, conversation)?;
-        let publishers = self.0.lock().map_err(|_| "Command registry unavailable.")?;
+    ) -> Result<Vec<serde_json::Value>, crate::engine::EngineError> {
+        use crate::engine::EngineError;
+        let peers = engine
+            .bot_command_peers(user, conversation)
+            .map_err(|error| match error {
+                EngineError::NotFound(_) | EngineError::Forbidden(_) => {
+                    EngineError::Forbidden("Conversation not found or access denied.".into())
+                }
+                error => error,
+            })?;
+        let publishers = self
+            .0
+            .lock()
+            .map_err(|_| EngineError::Unavailable("Command registry unavailable.".into()))?;
         let mut bots = Vec::new();
         for (account, username) in peers {
             let Some(publisher) = publishers.get(&account) else {

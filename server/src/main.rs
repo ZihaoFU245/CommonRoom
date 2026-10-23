@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod console;
 mod engine;
+mod limits;
 mod manual;
 mod media;
 mod web;
@@ -42,8 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::open(&Path::new(&data_dir).join("chat.sqlite"))?;
     let config = Config::load(Path::new(&data_dir))?;
     engine.set_limits(config.max_users, config.max_rooms, config.max_messages)?;
-    engine.media_config = config.media.clone();
-    if engine.data.users.is_empty() {
+    engine.configure_media(config.media.clone());
+    engine.set_avatar_hosts(config.avatar_hosts.iter().cloned().collect());
+    if !engine.has_accounts() {
         tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
     }
     let media = media::MediaStorage::from_config(config.production, config.s3.as_ref())?;
@@ -58,14 +60,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if media.is_some() {
         engine.prepare_media_cleanup()?;
     }
-    let (changes, _) = broadcast::channel(16);
+    let (changes, _) = broadcast::channel(256);
     let app = App {
         media,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
         config: Arc::new(config),
-        connections: Arc::new(tokio::sync::Semaphore::new(128)),
+        admission: Default::default(),
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
@@ -89,8 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             app.stopping
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            app.shutdown.notify_one();
-            let _ = app.changes.send(web::Change::All);
+            app.shutdown.notify_waiters();
+            let _ = app.changes.send(web::Change::Shutdown);
             tracing::info!("Shutting down");
         }
     })

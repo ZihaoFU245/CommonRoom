@@ -14,7 +14,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
 
-Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it. Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are same-origin, HttpOnly, SameSite Strict, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript.
+Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are same-origin, HttpOnly, SameSite Strict, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript.
 
 Login throttling uses the client address from the configured `set_real_ip_from`
 header (default `X-Forwarded-For`) only when the socket peer matches `trust`.
@@ -30,6 +30,21 @@ failures. Tracking is bounded to 4,096 IP/username entries; saturation rejects
 new entries with 429 until windows expire. Password work has its own two-worker
 limit, independent of the general HTTP pool; busy password workers return 503.
 Failed verification logs the client IP without credentials or request bodies.
+Each failed verification also applies per-username exponential backoff of 1, 2,
+4, 8, 16 and then 32 seconds, bounded by the fixed minute window. A successful
+verification resets the backoff, while prior failures still count toward limits.
+
+Authenticated HTTP requests and socket commands share an eight-job allowance
+per stable account. Excess requests return 429; disconnected requests retain
+their allowance until blocking work finishes. Browser and bot sockets have
+separate pools of 128 and 64. Each account can hold four sockets per profile;
+opening another closes its oldest socket. Bot socket controls share the
+30-input/10-second per-account HTTP budget; expected discovery responses to
+server requests remain exempt. Shutdown cancels sockets immediately.
+
+Messages allow 4,000 Unicode scalar values; command lines allow 4,100, including
+the command itself. Passwords allow 128 UTF-8 bytes. Reactions allow 128 Unicode
+scalar values; metadata values and upload hints retain their byte limits.
 
 ## Frames
 
@@ -180,7 +195,7 @@ Browser snapshots additionally include `sync: {instance, revision}`. The instanc
 changes on server restart; revision monotonically combines state, presence and
 read-cursor changes during that instance. Clients ignore an older full snapshot
 from the same instance, preventing a queued WebSocket baseline from replacing a
-newer HTTP refresh. The validator accepts omitted sync metadata from older servers.
+newer HTTP refresh. A cached baseline retains its captured revision while its viewer-visible content is unchanged; unrelated room/session activity need not advance it. The validator accepts omitted sync metadata from older servers.
 Socket open uses the server's baseline without a redundant HTTP snapshot build.
 
 Reconnect checks `/api/session` for credential validity and obtains chat state from
@@ -354,3 +369,42 @@ owner/size, completed, expired or abandoned allocation cannot reuse the ID.
 Avatar allocation skips the preliminary storage availability probe; PUT/completion
 report storage failures. Completion retains its immutable-copy validation and
 post-I/O authorization checks.
+
+External avatar URLs require an exact host in server `avatar_hosts` (default empty).
+Only HTTPS without userinfo is accepted; subdomains and suffix lookalikes do not
+inherit allowance. Disallowed stored URLs are omitted from snapshots. Managed
+avatar uploads remain available independently and retain the 64 KiB and image
+type limits. The browser’s external-avatar preference still defaults off.
+
+Browser engine failures include `error`, `code` and `retryable` fields. Typed domain, snapshot, media,
+avatar, session and history operations distinguish `invalid_request` (400),
+`not_found` (404), `forbidden` (403), `conflict` (409), `unavailable` (503) and
+`internal` (500). Conflict and unavailable responses allow retry. Private object
+lookups conceal access failures as not found while preserving unavailable errors.
+Production deployments at `/` use `__Host-chat_session`; other deployments use
+`chat_session`. Requests with duplicate selected session cookies do not authenticate.
+
+Native v1 bot commands preserve domain failure classes: invalid arguments return
+400, denied authority returns 403, conflicting state returns 409, and persistence
+failures return retryable 503. Database diagnostics remain server-side. The v1
+contract maps internal backend failures to its existing `unavailable` code.
+Browser command frames and console output retain their existing text presentation;
+error types are preserved inside the engine until those final boundaries.
+
+Avatar mutations emit a browser-only `{ "kind": "avatar", "username": "alice",
+"url": "https://example.com/avatar.png" }` profile update. `url: null` removes that
+profile's avatar. Apply only that entry; preserve the loaded conversation windows.
+Recipients must currently be able to see the account through the directory, room/
+private membership or an authored message in readable retained history. Missing or
+inaccessible profiles emit no frame. Bot sockets skip these events.
+Self-service avatar changes and managed-avatar publication share a four-attempt
+budget per stable account per ten seconds; unchanged values and repeated completion
+of the current avatar do not spend it. Exhaustion returns retryable 429. Other
+accounts keep independent capacity. Upload allocation retains its existing quotas.
+
+
+Metadata changes send a baseline to affected viewers, including newly authorized and
+revoked viewers. Unrelated clients may retain an older `policy_revision`; it describes
+their last captured snapshot and is not a global notification sequence. Permission
+checks always use current server authority. Bot credential changes can also emit
+compact `bot_commands` invalidations for readable conversations without a baseline.

@@ -16,6 +16,14 @@ const DEFAULT_COMMANDS: &[&str] = &[
 ];
 
 impl Engine {
+    pub(crate) fn bot_credential(&self, account: &str, credential: &str) -> Option<&Credential> {
+        self.data.bots.get(account)?.tokens.get(credential)
+    }
+
+    pub(crate) fn bot_owner_id(&self, account: &str) -> Option<&str> {
+        self.data.bots.get(account)?.owner_id.as_deref()
+    }
+
     pub(crate) fn bot_operator(&self, actor: &str, account: &str) -> bool {
         let Some(bot) = self.bot_index.accounts.get(account) else {
             return false;
@@ -41,18 +49,18 @@ impl Engine {
             .map(|(name, _)| name.clone())
     }
     #[cfg(test)]
-    pub fn admit_bot_input(&mut self, secret: &str) -> Result<(), String> {
+    pub fn admit_bot_input(&mut self, secret: &str) -> Result<(), EngineError> {
         let name = self.bot_identity(secret).ok_or("Credential revoked.")?;
         let id = self
             .data
             .users
             .get(&name)
-            .ok_or("Account unavailable.")?
+            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
             .id
             .clone();
         self.admit_bot_account(&id)
     }
-    pub(crate) fn admit_bot_account(&mut self, id: &str) -> Result<(), String> {
+    pub(crate) fn admit_bot_account(&mut self, id: &str) -> Result<(), EngineError> {
         let now = std::time::Instant::now();
         self.bot_budgets
             .retain(|_, (at, _)| now.duration_since(*at).as_secs() < 10);
@@ -86,7 +94,7 @@ impl Engine {
             .map(|_| name.clone())
     }
 
-    fn bot_scope(&self, view: Option<&str>, explicit: Option<&str>) -> Result<Scope, String> {
+    fn bot_scope(&self, view: Option<&str>, explicit: Option<&str>) -> Result<Scope, EngineError> {
         if explicit.is_some_and(|value| !value.starts_with('#') && !value.starts_with('@')) {
             return Err("Room scopes require #name.".into());
         }
@@ -99,12 +107,12 @@ impl Engine {
         }
     }
 
-    fn registered_id(&self, name: &str) -> Result<String, String> {
+    fn registered_id(&self, name: &str) -> Result<String, EngineError> {
         let id = self
             .data
             .users
             .get(name)
-            .ok_or("User not found.")?
+            .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
             .id
             .clone();
         if !self.data.bots.contains_key(&id) {
@@ -118,7 +126,7 @@ impl Engine {
         actor: Option<&str>,
         view: Option<&str>,
         parts: &[&str],
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         self.require_command(actor, view, "/bot")?;
         if !(self.is_su(actor) || self.has_group(actor, Group::Admin)) {
             return Err("Only global administrators may manage bot connections.".into());
@@ -132,22 +140,48 @@ impl Engine {
         if matches!(parts.get(1).copied(), Some("ls" | "info")) {
             return self.apply_bot_command(actor, view, parts);
         }
-        let before = self.data.clone();
+        if parts.get(1) == Some(&"token") && parts.get(2) == Some(&"ls") {
+            return self.apply_bot_command(actor, view, parts);
+        }
+        let name = if parts.get(1) == Some(&"token") {
+            parts.get(3).copied()
+        } else {
+            parts.get(2).copied()
+        };
+        let mut keys = changes::DirtyKeys::default();
+        if let Some(name) = name {
+            keys.users.insert(name.into());
+            if let Some(account) = self.data.users.get(name) {
+                keys.bots.insert(account.id.clone());
+            }
+        }
+        if parts.get(1) == Some(&"new")
+            && let Ok(Scope::Room(id)) = self.bot_scope(view, parts.get(3).copied())
+            && let Some(name) = self.bot_index.conversations.get(&id)
+        {
+            keys.rooms.insert(name.clone());
+        }
+        let mut before = MetadataChange::keyed(&self.data, keys);
         let result = self.apply_bot_command(actor, view, parts);
+        if parts.get(1) == Some(&"new")
+            && let Some(account) = name.and_then(|name| self.data.users.get(name))
+        {
+            before.include_new_bot(account.id.clone());
+        }
         match result {
             Ok(reply) => {
-                if self.data == before {
+                if before.unchanged(&self.data) {
                     return Ok(reply);
                 }
                 self.data.policy.revision = before.policy.revision.wrapping_add(1);
-                if let Err(error) = self.save_delta(&before) {
-                    self.data = before;
+                if let Err(error) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
+                    before.restore(&mut self.data);
                     return Err(error);
                 }
                 Ok(reply)
             }
             Err(error) => {
-                self.data = before;
+                before.restore(&mut self.data);
                 Err(error)
             }
         }
@@ -158,7 +192,7 @@ impl Engine {
         actor: Option<&str>,
         view: Option<&str>,
         parts: &[&str],
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         match parts {
             [_, "new", name] | [_, "new", name, _] => {
                 let scope = self.bot_scope(view, parts.get(3).copied())?;
@@ -169,8 +203,8 @@ impl Engine {
                 for action in DEFAULT_ACTIONS { self.require(actor, &scope, *action)?; }
                 for command in DEFAULT_COMMANDS { self.require_target_command(actor, &scope, command)?; }
                 if !valid_name(name) { return Err("Invalid username.".into()); }
-                if self.data.users.contains_key(*name) { return Err("Username already exists.".into()); }
-                if self.data.users.len() >= self.max_users { return Err(format!("User limit reached ({}).", self.max_users)); }
+                if self.data.users.contains_key(*name) { return Err(EngineError::Conflict("Username already exists.".into())); }
+                if self.data.users.len() >= self.max_users { return Err(EngineError::Invalid(format!("User limit reached ({}).", self.max_users))); }
                 let id = uuid::Uuid::new_v4().to_string();
                 // No password is issued. This is an ordinary account; /reset can later set one.
                 self.data.users.insert((*name).into(), Account { id: id.clone(), hash: "!no-password".into(), disabled: false, metadata: BTreeMap::new() });
@@ -181,7 +215,7 @@ impl Engine {
                         .chain(DEFAULT_COMMANDS.iter().map(|c| (*c).to_owned())).collect(),
                 });
                 if let Scope::Room(room_id) = &scope {
-                    let room = self.data.rooms.values_mut().find(|r| r.id == *room_id).ok_or("Room not found.")?;
+                    let room = self.data.rooms.values_mut().find(|r| r.id == *room_id).ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                     room.members.insert((*name).into());
                 }
                 self.audit(actor, "/bot new", name);
@@ -223,7 +257,7 @@ impl Engine {
                     Scope::Room(id) => self.data.rooms.iter().find(|(_, r)| r.id == *id).map(|(n, _)| n.as_str()),
                     _ => None,
                 }).iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
-                Ok(format!("{name} ({id}) at {}\nOwner: {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}", self.scope_label(&scope), self.bot_owner(&id).unwrap_or_else(|| "administrators".into()), !self.active(name), self.online_connections.get(*name).copied().unwrap_or(0), self.effective(Some(name), &scope).names().join(", ")))
+                Ok(format!("{name} ({id}) at {}\nOwner: {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}", self.scope_label(&scope), self.bot_owner(&id).unwrap_or_else(|| "administrators".into()), !self.active(name), self.presence.count(name), self.effective(Some(name), &scope).names().join(", ")))
             }
             [_, "token", "new", name, label] => {
                 let id = self.registered_id(name)?;
@@ -261,5 +295,5 @@ impl Engine {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-#[path = "engine_tests.rs"]
+#[path = "tests/engine.rs"]
 mod tests;

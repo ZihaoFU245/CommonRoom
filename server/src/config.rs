@@ -6,6 +6,7 @@ pub struct Config {
     pub bind: String,
     pub origins: Vec<String>,
     pub production: bool,
+    pub direct_bot_http: bool,
     pub trust: std::net::IpAddr,
     pub set_real_ip_from: Option<String>,
     pub base_url: String,
@@ -13,6 +14,7 @@ pub struct Config {
     pub max_rooms: usize,
     pub max_messages: usize,
     pub media: MediaConfig,
+    pub avatar_hosts: Vec<String>,
     pub s3: Option<S3Config>,
 }
 /// Provider-neutral connection settings. Credentials are environment-only.
@@ -132,6 +134,7 @@ impl Default for Config {
         Self {
             bind: "127.0.0.1:3000".into(),
             production: false,
+            direct_bot_http: false,
             trust: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             set_real_ip_from: Some("X-Forwarded-For".into()),
             base_url: "/".into(),
@@ -139,6 +142,7 @@ impl Default for Config {
             max_rooms: 64,
             max_messages: 1000,
             media: MediaConfig::default(),
+            avatar_hosts: Vec::new(),
             s3: None,
             origins: vec![
                 "http://localhost:5173".into(),
@@ -206,11 +210,23 @@ impl Config {
         };
         let config = Self {
             production,
+            direct_bot_http: match std::env::var("CHAT_DIRECT_BOT_HTTP") {
+                Ok(value) if value == "1" => true,
+                Ok(value) if value == "0" => false,
+                Ok(_) => return Err("CHAT_DIRECT_BOT_HTTP must be 0 or 1.".into()),
+                Err(std::env::VarError::NotPresent) => {
+                    saved.as_ref().is_some_and(|c| c.direct_bot_http)
+                }
+                Err(_) => return Err("Invalid CHAT_DIRECT_BOT_HTTP.".into()),
+            },
             origins,
             max_users: saved.as_ref().map_or(64, |c| c.max_users),
             max_rooms: saved.as_ref().map_or(64, |c| c.max_rooms),
             max_messages: saved.as_ref().map_or(1000, |c| c.max_messages),
             s3: saved.as_ref().and_then(|c| c.s3.clone()),
+            avatar_hosts: saved
+                .as_ref()
+                .map_or_else(Vec::new, |c| c.avatar_hosts.clone()),
             media: saved
                 .as_ref()
                 .map_or_else(MediaConfig::default, |c| c.media.clone()),
@@ -244,6 +260,17 @@ impl Config {
                 .map_err(|_| "set_real_ip_from must be a valid HTTP header name or null.")?;
         }
         config.media.validate()?;
+        if config.direct_bot_http && !private_peer(config.trust) {
+            return Err("direct_bot_http requires a loopback or private trusted peer.".into());
+        }
+        if config.avatar_hosts.len() > 32
+            || config
+                .avatar_hosts
+                .iter()
+                .any(|host| !valid_avatar_host(host))
+        {
+            return Err("avatar_hosts must contain at most 32 exact canonical hostnames without schemes, ports, paths or wildcards.".into());
+        }
         validate_limits(config.max_users, config.max_rooms, config.max_messages)?;
         config
             .bind
@@ -312,6 +339,20 @@ fn normalize_base_url(value: &str) -> Result<String, String> {
     Ok(format!("{}/", value.trim_end_matches('/')))
 }
 
+fn private_peer(ip: std::net::IpAddr) -> bool {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
+        std::net::IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+    }
+}
+
+pub(crate) fn valid_avatar_host(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && !value.contains('*')
+        && url::Host::parse(value).is_ok_and(|host| host.to_string() == value)
+}
+
 pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Result<(), String> {
     if users == 0 || rooms == 0 || messages == 0 {
         return Err("max_users, max_rooms and max_messages must be positive integers.".into());
@@ -326,6 +367,34 @@ pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Re
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests {
     use super::*;
+    #[test]
+    fn external_avatar_hosts_and_direct_bot_trust_are_validated_before_saving() {
+        for host in ["example.com", "www.gravatar.com", "127.0.0.1"] {
+            assert!(valid_avatar_host(host));
+        }
+        for host in [
+            "",
+            "*.example.com",
+            "https://example.com",
+            "example.com:443",
+            "user@example.com",
+            "example.com/path",
+            "EXAMPLE.com",
+        ] {
+            assert!(!valid_avatar_host(host), "{host}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for value in [
+            serde_json::json!({"avatar_hosts":["*.example.com"]}),
+            serde_json::json!({"direct_bot_http":true,"trust":"203.0.113.1"}),
+        ] {
+            let raw = value.to_string();
+            std::fs::write(&path, &raw).unwrap();
+            assert!(Config::load(dir.path()).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
     #[test]
     fn unknown_configuration_fields_fail_without_rewriting() {
         let dir = tempfile::tempdir().unwrap();
@@ -392,6 +461,7 @@ mod tests {
             bind: "127.0.0.1:3456".into(),
             origins: vec!["https://chat.example.com".into()],
             production: true,
+            direct_bot_http: true,
             trust: "10.0.0.2".parse().unwrap(),
             set_real_ip_from: Some("X-Real-IP".into()),
             base_url: "/commonroom/".into(),
@@ -399,6 +469,7 @@ mod tests {
             max_rooms: 12,
             max_messages: 7,
             media: MediaConfig::default(),
+            avatar_hosts: vec!["www.gravatar.com".into()],
             s3: None,
         };
         std::fs::write(
@@ -413,6 +484,8 @@ mod tests {
         .unwrap();
         let restored = Config::load(destination.path()).unwrap();
         assert!(restored.production);
+        assert_eq!(restored.direct_bot_http, original.direct_bot_http);
+        assert_eq!(restored.avatar_hosts, original.avatar_hosts);
         assert_eq!(restored.bind, original.bind);
         assert_eq!(restored.origins, original.origins);
         assert_eq!(restored.trust, original.trust);

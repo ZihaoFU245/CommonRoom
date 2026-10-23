@@ -94,7 +94,7 @@ async function login(username) {
   assert.equal(response.status, 200);
   return response.headers.get("set-cookie").split(";")[0];
 }
-async function socket(cookie) {
+async function socket(cookie, observe = () => {}) {
   const ws = new WebSocket(`${base.replace("http:", "ws:")}/ws`, {
     headers: { Cookie: cookie, Origin: origin },
   });
@@ -104,6 +104,7 @@ async function socket(cookie) {
     const frame = parseFrame(raw.toString());
     assert.ok(frame);
     frames.push(frame);
+    observe(frame);
   });
   await once(ws, "open");
   await until(
@@ -199,7 +200,10 @@ try {
   await mkdir(env.CHAT_DATA, { recursive: true });
   await writeFile(
     join(env.CHAT_DATA, "config.json"),
-    JSON.stringify({ media: { cleanup_interval: 1, cleanup_batch: 2 } }),
+    JSON.stringify({
+      avatar_hosts: ["example.com"],
+      media: { cleanup_interval: 1, cleanup_batch: 2 },
+    }),
   );
   let chat = launch(join(root, "target/debug/chat"), [], env);
   await until(
@@ -221,7 +225,8 @@ try {
   const alice = await login("alice"),
     bob = await login("bob"),
     eve = await login("eve");
-  const send = await socket(alice);
+  const profileFrames = [];
+  const send = await socket(alice, (frame) => profileFrames.push(frame));
   // Avatars have their own account-owned namespace, independent of room grants.
   const avatarBytes = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ZkAAAAASUVORK5CYII=",
@@ -271,6 +276,9 @@ try {
   );
   const avatarComplete = `/api/avatars/uploads/${avatarTicket.media_id}/complete`;
   assert.equal((await request(avatarComplete, alice, {})).status, 400);
+  const beforeAvatarBaselines = profileFrames.filter(
+    (frame) => frame.kind === "snapshot",
+  ).length;
   assert.equal((await request(avatarComplete, bob, {})).status, 200);
   const completedAvatar = await request(avatarComplete, bob, {});
   assert.equal(completedAvatar.status, 200);
@@ -280,6 +288,22 @@ try {
     path: `/api/avatars/${upload_id}/file`,
   });
   const avatarPath = `/api/avatars/${avatarTicket.media_id}/file`;
+  await until(
+    () =>
+      profileFrames.some(
+        (frame) =>
+          frame.kind === "avatar" &&
+          frame.username === "bob" &&
+          frame.url === avatarPath,
+      ),
+    "managed avatar profile notification",
+  );
+  assert.equal(
+    profileFrames.filter((frame) => frame.kind === "snapshot").length,
+    beforeAvatarBaselines,
+    "Avatar completion must not rebuild history baselines",
+  );
+
   assert.equal((await request(avatarPath, null)).status, 401);
   const avatarInfo = avatarPath.replace(/\/file$/u, "/info");
   assert.equal((await request(avatarInfo, null)).status, 401);
@@ -318,6 +342,53 @@ try {
     avatarPath,
   );
 
+  // Media reservation creates a private directory without a broadcast. A warmed
+  // negative routing hint must still let its first message reach the recipient.
+  const privateFrames = [];
+  await socket(bob, (frame) => privateFrames.push(frame));
+  await until(
+    () => privateFrames.some((frame) => frame.kind === "presence"),
+    "recipient routing warmup",
+  );
+  const privateBaselines = privateFrames.filter(
+    (frame) => frame.kind === "snapshot",
+  ).length;
+  const reserved = await request("/api/media/uploads", alice, {
+    conversation_id: "@direct:bob",
+    filename: "reserved.txt",
+    size: 1,
+  });
+  assert.equal(reserved.status, 200);
+  const reservation = await reserved.json();
+  await send("/tell bob first private message after media reservation", null);
+  await until(
+    () =>
+      privateFrames.some(
+        (frame) =>
+          frame.kind === "conversation" &&
+          frame.view === "@direct:alice" &&
+          frame.messages.some(
+            (message) =>
+              message.text === "first private message after media reservation",
+          ),
+      ),
+    "first private message after silent reservation",
+  );
+  assert.equal(
+    privateFrames.filter((frame) => frame.kind === "snapshot").length,
+    privateBaselines,
+  );
+  assert.equal(
+    (
+      await request(
+        `/api/media/uploads/${reservation.media_id}/abandon`,
+        alice,
+        {},
+      )
+    ).status,
+    200,
+  );
+
   const snapshot = await (await request("/api/me", alice)).json();
   const conversation = snapshot.rooms.find((room) => room.name === "files").id;
   assert.deepEqual(await (await request("/api/media/config", alice)).json(), {
@@ -332,7 +403,7 @@ try {
         size: 4,
       })
     ).status,
-    400,
+    403,
   );
   const allocation = await request("/api/media/uploads", alice, {
     conversation_id: conversation,
@@ -373,7 +444,7 @@ try {
     200,
   );
   const completePath = `/api/media/uploads/${ticket.media_id}/complete`;
-  assert.equal((await request(completePath, bob, {})).status, 400);
+  assert.equal((await request(completePath, bob, {})).status, 404);
   const completed = await request(completePath, alice, {});
   assert.equal(completed.status, 200);
   const media = await completed.json();
@@ -543,7 +614,7 @@ try {
     () => /deleted=[1-9]\d*\b/u.test(chat.output),
     "startup orphan cleanup with daily timer",
   );
-  assert.equal((await request(orphanComplete, alice, {})).status, 400);
+  assert.equal((await request(orphanComplete, alice, {})).status, 404);
   assert.equal(
     (await request(`/api/media/${retainedMedia.media_id}/info`, bob)).status,
     200,
@@ -600,7 +671,7 @@ try {
         size: 4,
       })
     ).status,
-    400,
+    403,
     "Authorization precedes the storage probe",
   );
   launchStorage();
@@ -613,6 +684,8 @@ try {
     if (!recovered) await pause(100);
   }
   assert.ok(recovered, "RustFS recovers");
+  // Wait out the bounded negative availability cache before allocating again.
+  await pause(1100);
   const recoveredTicket = await request("/api/media/uploads", alice, {
     conversation_id: conversation,
     filename: "recovered.txt",
@@ -642,7 +715,7 @@ try {
         {},
       )
     ).status,
-    400,
+    404,
   );
   console.log(
     "Media smoke passed: avatars (private upload, ownership, immutable bytes, restart, replacement/removal), RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",

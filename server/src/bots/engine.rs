@@ -23,10 +23,10 @@ impl Engine {
         &self,
         user: &str,
         id: &str,
-    ) -> Result<Vec<(String, String)>, String> {
+    ) -> Result<Vec<(String, String)>, EngineError> {
         let target = self
             .bot_target(user, id, Action::Read)
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::from)?;
         if !self.allows(Some(user), &target.scope, Action::Send)
             || !self.allows(Some(user), &target.scope, Action::Members)
         {
@@ -99,17 +99,35 @@ impl Engine {
         }
         Ok(target)
     }
+    #[cfg(test)]
     pub(crate) fn bot_snapshot(&self, user: &str) -> Result<models::Snapshot, Error> {
+        self.bot_snapshot_plan(user)?.finish()
+    }
+    pub(crate) fn bot_snapshot_plan(
+        &self,
+        user: &str,
+    ) -> Result<super::snapshot::BotSnapshotPlan, Error> {
         let account = self
             .data
             .users
             .get(user)
             .filter(|a| !a.disabled)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?;
-        self.history_store
+        if let Some(mut plan) = self.read_model.bot(&account.id) {
+            for conversation in &mut plan.snapshot.conversations {
+                let (revision, read) = self
+                    .conversation_position(user, &conversation.id)
+                    .ok_or_else(|| Error::storage("Conversation metadata unavailable."))?;
+                conversation.content_revision = revision;
+                plan.cursors.insert(conversation.id.clone(), read);
+            }
+            return Ok(plan);
+        }
+        self.history_store()
             .ensure_available()
             .map_err(Error::storage)?;
         let mut conversations = Vec::new();
+        let mut cursors = BTreeMap::new();
         for (id, view) in self
             .data
             .rooms
@@ -166,6 +184,11 @@ impl Engine {
             } else {
                 Vec::new()
             };
+            let key = target.view.strip_prefix("@private:").map_or_else(
+                || format!("room:{}", target.view),
+                |pair| format!("dm:{pair}"),
+            );
+            cursors.insert(id.clone(), self.read_position(user, &key));
             conversations.push(models::Conversation {
                 id: id.clone(),
                 view: view.clone(),
@@ -176,25 +199,26 @@ impl Engine {
                     react: command("/react", Action::React),
                 },
                 content_revision: target.revision,
-                unread: {
-                    let key = target.view.strip_prefix("@private:").map_or_else(|| format!("room:{}", target.view), |pair| format!("dm:{pair}"));
-                    self.history_store.unread(id, user, self.read_position(user, &key), target.revision).map_err(|_| {
-                        tracing::warn!(conversation_id = %id, "Bot conversation unread metadata unavailable");
-                    }).ok()
-                },
+                unread: None,
             });
         }
-        Ok(models::Snapshot {
-            kind: "snapshot",
-            policy_revision: self.data.policy.revision,
-            server_instance: self.instance.clone(),
-            credential: serde_json::Value::Null,
-            account: models::Account {
-                id: account.id.clone(),
-                username: user.into(),
+        let plan = super::snapshot::BotSnapshotPlan {
+            history: self.history_store().clone(),
+            cursors,
+            snapshot: models::Snapshot {
+                kind: "snapshot",
+                policy_revision: self.data.policy.revision,
+                server_instance: self.instance.clone(),
+                credential: serde_json::Value::Null,
+                account: models::Account {
+                    id: account.id.clone(),
+                    username: user.into(),
+                },
+                conversations,
             },
-            conversations,
-        })
+        };
+        self.read_model.remember_bot(account.id.clone(), &plan);
+        Ok(plan)
     }
     pub(crate) fn issue_bot_credential(
         &mut self,
@@ -227,6 +251,13 @@ impl Engine {
         for id in &input.conversations {
             self.bot_target(&user, id, Action::Read)?;
         }
+        let before = MetadataChange::keyed(
+            &self.data,
+            changes::DirtyKeys {
+                bots: [context.account.clone()].into(),
+                ..Default::default()
+            },
+        );
         let registration = self
             .data
             .bots
@@ -257,7 +288,7 @@ impl Engine {
                 operations: Some(input.operations),
             },
         );
-        if let Err(error) = self.save_bot_metadata() {
+        if let Err(error) = self.save_bot_metadata(&before) {
             if let Some(r) = self.data.bots.get_mut(&context.account) {
                 r.tokens.remove(&id);
             }
@@ -276,9 +307,9 @@ impl Engine {
                     return Err(Error::new(Code::InvalidRequest, "Invalid room name."));
                 }
                 self.require(Some(user), &Scope::Server, Action::CreateRoom)
-                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                    .map_err(Error::from)?;
                 self.require_target_command(Some(user), &Scope::Server, "/new")
-                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                    .map_err(Error::from)?;
                 if self.data.rooms.contains_key(&name) {
                     return Err(Error::new(Code::Conflict, "Room already exists."));
                 }
@@ -300,14 +331,14 @@ impl Engine {
                 let key = private_key(user, &username);
                 let scope = self.private_scope(&key);
                 self.require_target_command(Some(user), &scope, "/tell")
-                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                    .map_err(Error::from)?;
                 self.require(Some(user), &scope, Action::Send)
-                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                    .map_err(Error::from)?;
                 if let Some(c) = self.data.private.get(&key) {
                     return Ok(c.id.clone());
                 }
                 self.require(Some(user), &Scope::Server, Action::Direct)
-                    .map_err(|e| Error::new(Code::Forbidden, e))?;
+                    .map_err(Error::from)?;
                 let Scope::Private(id) = scope else {
                     return Err(Error::storage("Missing private scope"));
                 };
@@ -329,7 +360,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn bot_read(&mut self, user: &str, id: &str, through: u64) -> Result<bool, Error> {
         let retained = self
-            .history_store
+            .history_store()
             .contains_sequence(id, through)
             .map_err(Error::storage)?;
         self.bot_read_checked(user, id, through, retained)
@@ -369,7 +400,7 @@ impl Engine {
         active: bool,
     ) -> Result<bool, Error> {
         let original = self
-            .history_store
+            .history_store()
             .locate(message_id)
             .map_err(Error::storage)?
             .filter(|(conversation, _)| conversation == id)
@@ -431,7 +462,9 @@ impl Engine {
     }
     fn validate_bot_send(&self, user: &str, input: &models::MessageInput) -> Result<Target, Error> {
         let text = input.text.trim();
-        if !has_message_content(text) || input.text.chars().count() > 4000 {
+        if !has_message_content(text)
+            || input.text.chars().count() > crate::limits::MAX_MESSAGE_CHARS
+        {
             return Err(Error::new(
                 Code::InvalidRequest,
                 "Messages support 1–4000 characters.",
@@ -509,7 +542,7 @@ impl Engine {
                     ));
                 }
                 let page = self
-                    .history_store
+                    .history_store()
                     .page(
                         &input.conversation_id,
                         target.revision,
@@ -539,7 +572,7 @@ impl Engine {
             .reply_to
             .as_ref()
             .map(|id| {
-                self.history_store
+                self.history_store()
                     .locate(id)
                     .map_err(Error::storage)
                     .and_then(|original| {
@@ -578,7 +611,7 @@ impl Engine {
             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?
             .id
             .clone();
-        if account_id != prepared.account || target.revision != prepared.revision {
+        if account_id != prepared.account {
             return Err(Error::new(
                 Code::Conflict,
                 "Conversation changed; retry send.",
@@ -592,18 +625,41 @@ impl Engine {
                         "Key already used for another message.",
                     ));
                 }
-                if let Some(message) = prepared.replay.filter(|m| m.sequence == receipt.sequence) {
-                    return Ok(SendResult {
-                        message,
-                        replayed: true,
-                    });
-                }
-                return Err(Error::new(Code::Conflict, "Receipt changed; retry send."));
+                // Another admitted request may have committed this receipt after
+                // preparation. Re-read the retained original under current access
+                // rather than returning a scheduling-dependent conflict.
+                let page = self
+                    .history_store()
+                    .page_checked(
+                        &input.conversation_id,
+                        target.revision,
+                        HistoryRange {
+                            start: Some(receipt.sequence),
+                            end: Some(receipt.sequence),
+                            limit: Some(1),
+                            ..Default::default()
+                        },
+                        "",
+                    )
+                    .map_err(Error::storage)?;
+                let message = page.messages.first().cloned().ok_or_else(|| {
+                    Error::new(Code::MessageGone, "Original message is no longer retained.")
+                })?;
+                return Ok(SendResult {
+                    message,
+                    replayed: true,
+                });
             }
             if prepared.replay.is_some() {
                 return Err(Error::new(Code::Conflict, "Receipt expired; retry send."));
             }
             self.admit_bot_receipt(&account_id)?;
+        }
+        if target.revision != prepared.revision {
+            return Err(Error::new(
+                Code::Conflict,
+                "Conversation changed; retry send.",
+            ));
         }
         self.changed_conversation = None;
         let digest = prepared.digest;
@@ -612,7 +668,7 @@ impl Engine {
         let change = self
             .capture_message_change(&target.view, None, false)
             .ok_or_else(|| Error::storage("Missing mutation context"))?;
-        let result = (|| {
+        let result: Result<_, EngineError> = (|| {
             self.append_text(Some(user), &target.view, text, input.markdown, reply)?;
             let message = if let Some(pair) = target.view.strip_prefix("@private:") {
                 self.data.private.get(pair).and_then(|c| c.messages.back())
@@ -623,7 +679,7 @@ impl Engine {
                     .and_then(|r| r.messages.back())
             }
             .cloned()
-            .ok_or_else(|| "Missing message".to_owned())?;
+            .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?;
             Ok(message)
         })();
         let receipt = result.as_ref().ok().and_then(|message| {
@@ -642,7 +698,7 @@ impl Engine {
                 message,
                 replayed: false,
             })
-            .map_err(Error::storage);
+            .map_err(Error::from);
         self.clear_working_messages();
         result
     }

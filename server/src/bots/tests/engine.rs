@@ -251,7 +251,9 @@ fn room_scoped_grants_can_be_revoked_and_other_grants_added_normally() {
 fn failed_writes_roll_back_creation_credentials_and_messages() {
     let mut e = fixture();
     let previous = e.data.clone();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON")
         .unwrap();
@@ -260,14 +262,18 @@ fn failed_writes_roll_back_creation_credentials_and_messages() {
             .is_err()
     );
     assert!(e.data == previous);
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=OFF")
         .unwrap();
     new_bot(&mut e);
     let secret = token(&mut e, "helper", "runner");
     let previous = e.data.clone();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON")
         .unwrap();
@@ -337,11 +343,13 @@ fn registrations_and_credentials_survive_current_schema_restart() {
         "preserved"
     );
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        17
+        18
     );
 }
 
@@ -502,7 +510,9 @@ fn browser_toggles_and_bot_desired_reactions_share_limits_and_failure_rollback()
     );
     assert!(e.data == before);
 
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON")
         .unwrap();
@@ -523,7 +533,9 @@ fn browser_toggles_and_bot_desired_reactions_share_limits_and_failure_rollback()
     );
     assert!(e.data == before);
     assert_eq!(e.revision, revision);
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=OFF")
         .unwrap();
@@ -598,7 +610,9 @@ fn stable_targets_cannot_follow_recreated_names_and_receipts_survive_restart_and
     );
     e.execute(None, None, "/bot rm renamedbot @global").unwrap();
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row::<usize, _, _>("SELECT count(*) FROM bot_receipts", [], |r| r.get(0))
             .unwrap(),
@@ -616,7 +630,7 @@ fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
     let mut request = input(&e, "support", "/literal answer");
     request.reply_to = Some(question.id.clone());
     let previous = e.data.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_receipt BEFORE INSERT ON bot_receipts BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_receipt BEFORE INSERT ON bot_receipts BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
     assert_eq!(
         e.send_bot_message("helper", &request, Some("a"))
             .err()
@@ -626,7 +640,9 @@ fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
     );
     assert!(e.data == previous);
     assert_eq!(e.history("helper", "support").unwrap().messages.len(), 1);
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER reject_receipt;")
         .unwrap();
@@ -649,7 +665,9 @@ fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
     );
     e.execute(None, None, "/grant helper #support /reply")
         .unwrap();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON")
         .unwrap();
@@ -660,7 +678,9 @@ fn reply_receipts_and_failed_cursor_writes_have_typed_atomic_outcomes() {
             .code,
         Code::Unavailable
     );
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=OFF")
         .unwrap();
@@ -685,7 +705,9 @@ fn live_receipts_are_not_evicted_and_expired_keys_can_be_reused() {
     new_bot(&mut e);
     let request = input(&e, "support", "answer");
     e.send_bot_message("helper", &request, Some("a")).unwrap();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute("UPDATE bot_receipts SET created=?1", [now() - RECEIPT_TTL])
         .unwrap();
@@ -696,7 +718,9 @@ fn live_receipts_are_not_evicted_and_expired_keys_can_be_reused() {
     );
     let account = e.data.users["helper"].id.clone();
     for i in 1..RECEIPT_LIMIT {
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute(
                 "INSERT INTO bot_receipts VALUES(?1,?2,'digest','conversation',1,?3)",
@@ -766,14 +790,21 @@ fn prepared_bot_send_rechecks_revision_permissions_and_concurrent_receipts() {
     };
     let prepared = e.prepare_bot_send("helper", &input, Some("same")).unwrap();
     e.send_bot_message("helper", &input, Some("same")).unwrap();
+    let replay = e
+        .commit_bot_send("helper", &input, Some("same"), prepared)
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(e.history("helper", "support").unwrap().messages.len(), 1);
+    let stale = e.prepare_bot_send("helper", &input, Some("stale")).unwrap();
+    e.send_bot_message("helper", &input, Some("different"))
+        .unwrap();
     assert_eq!(
-        e.commit_bot_send("helper", &input, Some("same"), prepared)
+        e.commit_bot_send("helper", &input, Some("stale"), stale)
             .err()
             .unwrap()
             .code,
         crate::bots::error::Code::Conflict
     );
-    assert_eq!(e.history("helper", "support").unwrap().messages.len(), 1);
     let prepared = e.prepare_bot_send("helper", &input, Some("next")).unwrap();
     e.execute(None, None, "/revoke helper #support w:message.create")
         .unwrap();

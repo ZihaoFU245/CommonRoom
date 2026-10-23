@@ -7,9 +7,6 @@ use axum::{
 };
 use serde::Deserialize;
 
-fn failed(message: &str) -> ApiError {
-    error(StatusCode::BAD_REQUEST, message)
-}
 fn storage(app: &App) -> Result<Arc<crate::media::MediaStorage>, ApiError> {
     app.media.clone().ok_or_else(|| {
         error(
@@ -30,10 +27,20 @@ pub(crate) async fn set(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     authenticated(&app, &headers, move |app, user| {
-        app.engine_api()?
+        let mut engine = app.engine_api()?;
+        let account = engine
+            .active_account_id(user)
+            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
+            .to_owned();
+        if !engine.avatar_matches(user, input.url.as_deref()) {
+            app.admission.avatar_change(&account)?;
+        }
+        if engine
             .set_avatar(user, input.url, false)
-            .map_err(|e| failed(&e))?;
-        let _ = app.changes.send(Change::All);
+            .map_err(ApiError::from)?
+        {
+            let _ = app.changes.send(Change::Avatar(account));
+        }
         Ok(Json(json!({"ok":true})))
     })
     .await
@@ -61,7 +68,7 @@ pub(crate) async fn allocate(
                     .upload_id
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             )
-            .map_err(|e| failed(&e))?;
+            .map_err(ApiError::from)?;
         Ok((storage, media))
     })
     .await?;
@@ -91,7 +98,7 @@ pub(crate) async fn complete(
     let mut media = authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
             .avatar_owner(user, &id)
-            .map_err(|e| failed(&e))
+            .map_err(ApiError::from)
     })
     .await?;
     if !media.ready {
@@ -109,10 +116,12 @@ pub(crate) async fn complete(
         .map_err(super::media::storage_failure)?;
     }
     authenticated(&app, &headers, move |app, user| {
-        app.engine_api()?
-            .finish_avatar(user, &media)
-            .map_err(|e| failed(&e))?;
-        let _ = app.changes.send(Change::All);
+        let mut engine = app.engine_api()?;
+        let account = engine.active_account_id(user).ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?.to_owned();
+        if !engine.avatar_matches(user, Some(&crate::engine::avatars::avatar_path(&media.id))) { app.admission.avatar_change(&account)?; }
+        if engine.finish_avatar(user,&media).map_err(ApiError::from)? {
+            let _=app.changes.send(Change::Avatar(account));
+        }
         Ok(Json(json!({"ok":true,"media_id":media.id,"path":crate::engine::avatars::avatar_path(&media.id)})))
     })
     .await
@@ -127,7 +136,7 @@ pub(crate) async fn info(
         let media = app
             .engine_read_api()?
             .readable_avatar(user, &id)
-            .map_err(|_| error(StatusCode::NOT_FOUND, "Avatar not found."))?;
+            .map_err(|e| super::error::hidden(e, "Avatar not found."))?;
         Ok(Json(
             json!({"size":media.size,"content_type":media.content_type,"filename":media.filename}),
         ))
@@ -144,7 +153,7 @@ pub(crate) async fn download(
     let avatar = authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
             .readable_avatar(user, &id)
-            .map_err(|_| error(StatusCode::NOT_FOUND, "Avatar not found."))
+            .map_err(|e| super::error::hidden(e, "Avatar not found."))
     })
     .await?;
     let url = storage
@@ -154,7 +163,7 @@ pub(crate) async fn download(
     authenticated(&app, &headers, move |app, user| {
         app.engine_read_api()?
             .readable_avatar(user, &avatar.id)
-            .map_err(|_| error(StatusCode::NOT_FOUND, "Avatar not found."))
+            .map_err(|e| super::error::hidden(e, "Avatar not found."))
     })
     .await?;
     Ok(Redirect::temporary(&url))

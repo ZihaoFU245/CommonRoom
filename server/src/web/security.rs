@@ -24,10 +24,11 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
                     .into_response(),
             )
         } else {
-            let direct_bot = request
-                .uri()
-                .path()
-                .starts_with(&format!("{}api/bot/v1/", app.config.base_url))
+            let direct_bot = app.config.direct_bot_http
+                && request
+                    .uri()
+                    .path()
+                    .starts_with(&format!("{}api/bot/v1/", app.config.base_url))
                 && super::auth::bearer(request.headers()).is_some()
                 && !request.headers().contains_key("x-forwarded-proto");
             if app.config.production

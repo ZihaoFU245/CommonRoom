@@ -10,7 +10,7 @@ pub(super) fn engine() -> Engine {
     e
 }
 pub(super) fn persisted_messages(e: &Engine, id: &str) -> VecDeque<Message> {
-    let db = e.db.lock().unwrap();
+    let db = e.store.db.lock().unwrap();
     let mut query = db
         .prepare("SELECT json FROM messages WHERE conversation=?1 ORDER BY sequence")
         .unwrap();
@@ -30,7 +30,7 @@ pub(super) fn private_messages(e: &Engine, key: &str) -> VecDeque<Message> {
 }
 
 fn age_first(e: &Engine, id: &str) {
-    e.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)",params![id,now()-8*86400]).unwrap();
+    e.store.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)",params![id,now()-8*86400]).unwrap();
 }
 #[test]
 fn cleanup_respects_age_scope_permissions_and_persistence() {
@@ -181,7 +181,9 @@ fn failed_read_and_private_eviction_writes_restore_state() {
         .unwrap();
     let before = e.data.clone();
     let through = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON;")
         .unwrap();
@@ -256,7 +258,7 @@ fn unicode_messages_round_trip_and_count_characters() {
 #[test]
 fn blank_messages_are_rejected_on_send_reply_and_edit() {
     let cases: Vec<(String, bool)> = serde_json::from_str(include_str!(
-        "../../../web/tests/fixtures/messageContent.json"
+        "../../../../web/tests/fixtures/messageContent.json"
     ))
     .unwrap();
     let mut e = engine();
@@ -426,7 +428,9 @@ fn room_ring_keeps_newest_messages_across_restart_and_limit_changes() {
         );
         // Each retained message has its own indexed row.
         assert_eq!(
-            e.db.lock()
+            e.store
+                .db
+                .lock()
                 .unwrap()
                 .query_row::<usize, _, _>("SELECT count(*) FROM messages", [], |r| r.get(0))
                 .unwrap(),
@@ -456,7 +460,9 @@ fn failed_writes_restore_evicted_messages_and_limits() {
     e.execute(Some("alice"), Some("lobby"), "latest").unwrap();
     let previous = e.data.clone();
     let revision = e.revision;
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON;")
         .unwrap();
@@ -583,7 +589,9 @@ fn message_features_persist_and_rollback() {
         e.execute(Some("alice"), Some("room"), &format!("/react {id} 🙂"))
             .unwrap();
         let previous = e.data.clone();
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("PRAGMA query_only=ON;")
             .unwrap();
@@ -600,11 +608,13 @@ fn message_features_persist_and_rollback() {
     );
     assert!(room_messages(&e, "room")[1].reply.is_some());
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        17
+        18
     );
 }
 #[test]
@@ -654,7 +664,9 @@ fn rejects_two_servers_and_unknown_schema() {
     let path = dir.path().join("chat.sqlite");
     let e = Engine::open(&path).unwrap();
     assert!(Engine::open(&path).is_err());
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA user_version=99;")
         .unwrap();
@@ -664,7 +676,9 @@ fn rejects_two_servers_and_unknown_schema() {
 #[test]
 fn failed_storage_rolls_back_changes() {
     let mut e = engine();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TABLE state;")
         .unwrap();
@@ -749,13 +763,14 @@ fn delete_user_checks_permissions_and_cleans_references() {
     assert_eq!(e.data.private.len(), 1);
     assert_eq!(e.snapshot("alice").unwrap().private_peers, vec!["eve"]);
     assert!(e.history("alice", "@direct:bob").is_err());
-    assert!(!e.read_positions.contains_key("bob"));
+    assert!(!e.store.read_positions.contains_key("bob"));
     assert!(
-        e.read_positions
+        e.store
+            .read_positions
             .get("alice")
             .is_none_or(|p| !p.contains_key("dm:alice:bob"))
     );
-    assert_eq!(e.db.lock().unwrap().query_row::<u64,_,_>("SELECT COUNT(*) FROM read_positions WHERE username='bob' OR conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),0);
+    assert_eq!(e.store.db.lock().unwrap().query_row::<u64,_,_>("SELECT COUNT(*) FROM read_positions WHERE username='bob' OR conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),0);
     e.provision("bob", "new-hash".into(), false, false).unwrap();
     let replacement = e.snapshot("bob").unwrap();
     assert!(
@@ -797,28 +812,34 @@ fn delete_user_rolls_back_database_and_cache_on_cleanup_failure() {
     let through = e.snapshot("bob").unwrap().unread["@direct:alice"].through;
     e.mark_read("bob", "@direct:alice", through).unwrap();
     let before = e.data.clone();
-    let positions = e.read_positions.clone();
+    let positions = e.store.read_positions.clone();
     let revision = e.revision;
-    let disk: String =
-        e.db.lock()
-            .unwrap()
-            .query_row("SELECT json FROM state", [], |r| r.get(0))
-            .unwrap();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_cleanup BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'test cleanup failure'); END;").unwrap();
+    let disk: String = e
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT json FROM state", [], |r| r.get(0))
+        .unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_cleanup BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'test cleanup failure'); END;").unwrap();
     assert!(e.execute(Some("alice"), None, "/rm user bob").is_err());
     assert!(e.data == before);
-    assert_eq!(e.read_positions, positions);
+    assert_eq!(e.store.read_positions, positions);
     assert_eq!(e.revision, revision);
     assert_eq!(e.session("bob-token").as_deref(), Some("bob"));
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
             .unwrap(),
         disk
     );
-    assert_eq!(e.db.lock().unwrap().query_row::<u64,_,_>("SELECT sequence FROM read_positions WHERE username='bob' AND conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),through);
-    e.db.lock()
+    assert_eq!(e.store.db.lock().unwrap().query_row::<u64,_,_>("SELECT sequence FROM read_positions WHERE username='bob' AND conversation='dm:alice:bob'",[],|r|r.get(0)).unwrap(),through);
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER fail_cleanup;")
         .unwrap();
@@ -995,7 +1016,9 @@ fn retract_persists_and_failed_writes_restore_message_and_quotes() {
                 .unwrap();
             let before = e.data.clone();
             let revision = e.revision;
-            e.db.lock()
+            e.store
+                .db
+                .lock()
                 .unwrap()
                 .execute_batch("PRAGMA query_only=ON;")
                 .unwrap();
@@ -1005,7 +1028,9 @@ fn retract_persists_and_failed_writes_restore_message_and_quotes() {
             );
             assert!(e.data == before);
             assert_eq!(e.revision, revision);
-            e.db.lock()
+            e.store
+                .db
+                .lock()
                 .unwrap()
                 .execute_batch("PRAGMA query_only=OFF;")
                 .unwrap();
@@ -1086,13 +1111,17 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
                 .is_err()
         );
         let before = e.data.clone();
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("PRAGMA query_only=ON;")
             .unwrap();
         assert!(e.execute(None, None, &format!("/retract {id}")).is_err());
         assert!(e.data == before);
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("PRAGMA query_only=OFF;")
             .unwrap();
@@ -1113,7 +1142,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 99] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 99] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1147,13 +1176,15 @@ fn old_and_unversioned_databases_are_rejected_without_modification() {
 }
 
 fn stored_data(e: &Engine) -> Data {
-    let raw: String =
-        e.db.lock()
-            .unwrap()
-            .query_row("SELECT json FROM state", [], |r| r.get(0))
-            .unwrap();
+    let raw: String = e
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT json FROM state", [], |r| r.get(0))
+        .unwrap();
     let mut data: Data = serde_json::from_str(&raw).unwrap();
-    super::storage::load_entities(&e.db.lock().unwrap(), &mut data).unwrap();
+    super::storage::load_entities(&e.store.db.lock().unwrap(), &mut data).unwrap();
     data
 }
 
@@ -1166,23 +1197,23 @@ fn hot_mutations_write_constant_rows_and_leave_unrelated_history_untouched() {
     e.execute(Some("alice"), None, "/tell bob private retained")
         .unwrap();
     let room_id = e.data.rooms["lobby"].id.clone();
-    e.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER untouched_room BEFORE UPDATE ON messages WHEN OLD.conversation='{room_id}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END; CREATE TRIGGER untouched_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'unrelated policy'); END;")).unwrap();
-    let changes = e.db.lock().unwrap().total_changes();
+    e.store.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER untouched_room BEFORE UPDATE ON messages WHEN OLD.conversation='{room_id}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END; CREATE TRIGGER untouched_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'unrelated policy'); END;")).unwrap();
+    let changes = e.store.db.lock().unwrap().total_changes();
     e.execute(Some("alice"), None, "/tell bob new private")
         .unwrap();
-    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 8); // insert/evict, reverse-name references, counter, revision
+    assert_eq!(e.store.db.lock().unwrap().total_changes() - changes, 10); // insert/evict, reverse-name references, retention cursors, counter, revision
     let id = private_messages(&e, "alice:bob")[0].id.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
-    let changes = e.db.lock().unwrap().total_changes();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
+    let changes = e.store.db.lock().unwrap().total_changes();
     e.execute(Some("alice"), None, &format!("/react {id} 🙂"))
         .unwrap();
-    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 2); // membership and revision
+    assert_eq!(e.store.db.lock().unwrap().total_changes() - changes, 2); // membership and revision
     assert!(stored_data(&e) == e.data);
-    let changes = e.db.lock().unwrap().total_changes();
+    let changes = e.store.db.lock().unwrap().total_changes();
     let sequence = private_messages(&e, "alice:bob")[0].sequence;
     e.mark_read("bob", "@direct:alice", sequence).unwrap();
     e.execute(Some("alice"), None, "/help").unwrap();
-    assert_eq!(e.db.lock().unwrap().total_changes() - changes, 1);
+    assert_eq!(e.store.db.lock().unwrap().total_changes() - changes, 1);
 }
 
 #[test]
@@ -1213,7 +1244,7 @@ fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
                 "revision" => "BEFORE UPDATE ON entities",
                 _ => "BEFORE INSERT ON reactions",
             };
-            e.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_hot {trigger} BEGIN SELECT RAISE(ABORT,'injected failure'); END;")).unwrap();
+            e.store.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_hot {trigger} BEGIN SELECT RAISE(ABORT,'injected failure'); END;")).unwrap();
             let input = if stage == "reaction" {
                 format!("/react {id} ok")
             } else {
@@ -1227,7 +1258,7 @@ fn hot_transaction_failures_restore_disk_memory_sequences_and_evictions() {
     }
     let mut e = engine();
     let before = e.data.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_new BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'new chat failure'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_new BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'new chat failure'); END;").unwrap();
     assert!(e.execute(Some("alice"), None, "/tell bob first").is_err());
     assert!(e.data == before);
     assert!(stored_data(&e) == before);
@@ -1314,7 +1345,9 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
             e.provision("alice", "hash".into(), true, false).unwrap();
             match corruption {
                 "cursor" => {
-                    e.db.lock()
+                    e.store
+                        .db
+                        .lock()
                         .unwrap()
                         .execute_batch("INSERT INTO read_positions VALUES('alice','room',-1)")
                         .unwrap();
@@ -1326,7 +1359,9 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
                         scope: authorization::Scope::Server,
                         permissions: BTreeSet::from(["/delete".into()]),
                     });
-                    e.db.lock()
+                    e.store
+                        .db
+                        .lock()
                         .unwrap()
                         .execute(
                             "UPDATE state SET json=?1",
@@ -1335,18 +1370,22 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
                         .unwrap();
                 }
                 "missing_metadata" => {
-                    e.db.lock()
+                    e.store
+                        .db
+                        .lock()
                         .unwrap()
                         .execute_batch("UPDATE state SET json=json_remove(json,'$.bots')")
                         .unwrap();
                 }
                 _ => {}
             }
-            original =
-                e.db.lock()
-                    .unwrap()
-                    .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
-                    .unwrap();
+            original = e
+                .store
+                .db
+                .lock()
+                .unwrap()
+                .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
+                .unwrap();
         }
         assert!(Engine::open(&path).is_err(), "{corruption}");
         let db = Connection::open(&path).unwrap();
@@ -1358,7 +1397,7 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            17
+            18
         );
     }
 }
@@ -1377,12 +1416,12 @@ fn current_schema_restart_preserves_policy_sessions_and_cursors_without_writes()
         e.mark_read("alice", "team", 1).unwrap();
         e.login("session".into(), "alice", "hash", None).unwrap();
         previous = e.data.clone();
-        cursors = e.read_positions.clone();
-        e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_state_write BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'startup must not rewrite state'); END;").unwrap();
+        cursors = e.store.read_positions.clone();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_state_write BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'startup must not rewrite state'); END;").unwrap();
     }
     let e = Engine::open(&path).unwrap();
     assert!(e.data == previous);
-    assert_eq!(e.read_positions, cursors);
+    assert_eq!(e.store.read_positions, cursors);
     assert_eq!(e.session("session").as_deref(), Some("alice"));
     assert_eq!(e.revision, 0);
     assert_eq!(room_messages(&e, "team")[0].text, "preserved");
@@ -1462,7 +1501,7 @@ fn edits_preserve_identity_format_reactions_quotes_and_read_positions() {
     e.mark_read("alice", "lobby", before[1].sequence).unwrap();
     let revision = e.data.rooms["lobby"].revision;
     let sequence = e.data.next_sequence;
-    let cursors = e.read_positions.clone();
+    let cursors = e.store.read_positions.clone();
     // Warm history before updating it to exercise revision-based invalidation.
     e.history("alice", "lobby").unwrap();
     e.execute(
@@ -1483,7 +1522,7 @@ fn edits_preserve_identity_format_reactions_quotes_and_read_positions() {
     assert!(edited[1] == before[1]);
     assert_eq!(e.data.next_sequence, sequence);
     assert_eq!(e.data.rooms["lobby"].revision, revision + 1);
-    assert_eq!(e.read_positions, cursors);
+    assert_eq!(e.store.read_positions, cursors);
     assert_eq!(
         e.changed_conversation.as_ref(),
         Some(&e.data.rooms["lobby"].id)
@@ -1622,7 +1661,7 @@ fn failed_edit_rolls_back_payload_and_revision() {
     let before = room_messages(&e, "lobby")[0].clone();
     let revision = e.data.rooms["lobby"].revision;
     for table in ["messages", "entities"] {
-        e.db.lock().unwrap().execute_batch(&format!(
+        e.store.db.lock().unwrap().execute_batch(&format!(
             "CREATE TRIGGER reject_edit BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT, 'injected edit failure'); END;"
         )).unwrap();
         assert!(
@@ -1636,7 +1675,9 @@ fn failed_edit_rolls_back_payload_and_revision() {
         assert!(room_messages(&e, "lobby")[0] == before);
         assert_eq!(e.data.rooms["lobby"].revision, revision);
         assert!(e.changed_conversation.is_none());
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("DROP TRIGGER reject_edit;")
             .unwrap();
@@ -1650,7 +1691,7 @@ fn unchanged_edits_do_not_mark_messages_or_write_storage() {
     e.execute(Some("bob"), None, "/tell alice private original")
         .unwrap();
     // No-op edits must succeed even when every storage write is rejected.
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop_message BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'unexpected message write'); END; CREATE TRIGGER reject_noop_revision BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT, 'unexpected revision write'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_noop_message BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'unexpected message write'); END; CREATE TRIGGER reject_noop_revision BEFORE UPDATE ON entities BEGIN SELECT RAISE(ABORT, 'unexpected revision write'); END;").unwrap();
     for (view, conversation, text) in [
         ("lobby", "lobby", "original"),
         ("@direct:alice", "alice:bob", "private original"),
@@ -1680,7 +1721,9 @@ fn unchanged_edits_do_not_mark_messages_or_write_storage() {
         assert!(messages[0] == original);
         assert!(!messages[0].edited);
     }
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER reject_noop_message; DROP TRIGGER reject_noop_revision;")
         .unwrap();
@@ -1744,27 +1787,31 @@ fn room_deletion_cleans_cursors_atomically_and_survives_name_reuse() {
         .unwrap();
     let retained = room_messages(&e, "retained")[0].sequence;
     e.mark_read("alice", "retained", retained).unwrap();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_cursor_deletion BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_cursor_deletion BEFORE DELETE ON read_positions BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
     let before = e.data.clone();
     assert!(e.execute(Some("alice"), None, "/rm room removed").is_err());
     assert!(e.data == before);
     assert_eq!(e.read_position("alice", "room:removed"), sequence);
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER reject_cursor_deletion;")
         .unwrap();
     e.execute(Some("alice"), None, "/rm room removed").unwrap();
     assert_eq!(e.read_position("alice", "room:removed"), 0);
     assert_eq!(e.read_position("alice", "room:retained"), retained);
-    let rows: usize =
-        e.db.lock()
-            .unwrap()
-            .query_row(
-                "SELECT count(*) FROM read_positions WHERE conversation='room:removed'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+    let rows: usize = e
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM read_positions WHERE conversation='room:removed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(rows, 0);
     drop(e);
     let mut e = Engine::open(&path).unwrap();
@@ -1779,14 +1826,16 @@ fn session_only_rollback_preserves_expired_and_replaced_sessions_on_failure() {
     e.login("existing".into(), "bob", "test-hash", None)
         .unwrap();
     e.data.sessions.insert(
-        "expired".into(),
+        session_digest("expired"),
         Session {
             username: "alice".into(),
             expires: 0,
         },
     );
     let before = e.data.clone();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("PRAGMA query_only=ON;")
         .unwrap();
@@ -1856,7 +1905,7 @@ fn rename_only_rewrites_indexed_references_and_revises_affected_conversations() 
     .unwrap();
     let unrelated = e.data.rooms["unrelated"].clone();
     let lobby_revision = e.data.rooms["lobby"].revision;
-    e.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_unrelated BEFORE UPDATE ON messages WHEN OLD.conversation='{}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END;", unrelated.id)).unwrap();
+    e.store.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_unrelated BEFORE UPDATE ON messages WHEN OLD.conversation='{}' BEGIN SELECT RAISE(ABORT,'unrelated history'); END;", unrelated.id)).unwrap();
     e.execute(Some("bob"), None, "/rename robert").unwrap();
     assert_eq!(e.data.rooms["unrelated"].revision, unrelated.revision);
     assert_eq!(e.data.rooms["lobby"].revision, lobby_revision + 1);
@@ -1864,7 +1913,7 @@ fn rename_only_rewrites_indexed_references_and_revises_affected_conversations() 
     assert_eq!(messages[0].from, "robert");
     assert_eq!(messages[1].reply.as_ref().unwrap().from, "robert");
     assert!(messages[1].mentions.contains("robert"));
-    let db = e.db.lock().unwrap();
+    let db = e.store.db.lock().unwrap();
     let old: usize = db
         .query_row(
             "SELECT count(*) FROM message_accounts WHERE name='bob'",
@@ -1896,12 +1945,14 @@ fn maintenance_writes_only_target_revision_messages_and_append_only_audit() {
         &format!("/reply {} retained reply", message.id),
     )
     .unwrap();
-    let state: String =
-        e.db.lock()
-            .unwrap()
-            .query_row("SELECT json FROM state", [], |r| r.get(0))
-            .unwrap();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER no_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'state rewrite'); END; CREATE TRIGGER no_entities_insert BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'metadata upsert'); END; CREATE TRIGGER no_audit_update BEFORE UPDATE ON audit_entries BEGIN SELECT RAISE(ABORT,'audit rewrite'); END;").unwrap();
+    let state: String = e
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT json FROM state", [], |r| r.get(0))
+        .unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER no_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'state rewrite'); END; CREATE TRIGGER no_entities_insert BEFORE INSERT ON entities BEGIN SELECT RAISE(ABORT,'metadata upsert'); END; CREATE TRIGGER no_audit_update BEFORE UPDATE ON audit_entries BEGIN SELECT RAISE(ABORT,'audit rewrite'); END;").unwrap();
     e.execute(
         Some("bob"),
         Some("lobby"),
@@ -1914,7 +1965,9 @@ fn maintenance_writes_only_target_revision_messages_and_append_only_audit() {
     e.execute(None, Some("lobby"), "/clean 7d #lobby").unwrap();
     assert!(room_messages(&e, "lobby").is_empty());
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row::<String, _, _>("SELECT json FROM state", [], |r| r.get(0))
             .unwrap(),
@@ -1928,7 +1981,7 @@ fn maintenance_audit_failure_restores_messages_revisions_and_memory() {
     e.execute(Some("bob"), Some("lobby"), "retained").unwrap();
     let message = room_messages(&e, "lobby")[0].clone();
     let before = e.data.clone();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER no_audit BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(ABORT,'audit failure'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER no_audit BEFORE INSERT ON audit_entries BEGIN SELECT RAISE(ABORT,'audit failure'); END;").unwrap();
     assert!(
         e.execute(
             Some("bob"),
@@ -1943,10 +1996,11 @@ fn maintenance_audit_failure_restores_messages_revisions_and_memory() {
 #[test]
 fn audit_retention_appends_without_rewriting_policy_or_retained_entries() {
     let mut e = engine();
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER no_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'state rewrite'); END; CREATE TRIGGER no_audit_update BEFORE UPDATE ON audit_entries BEGIN SELECT RAISE(ABORT,'audit rewrite'); END;").unwrap();
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER no_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'state rewrite'); END; CREATE TRIGGER no_audit_update BEFORE UPDATE ON audit_entries BEGIN SELECT RAISE(ABORT,'audit rewrite'); END;").unwrap();
     for i in 0..1005 {
+        let before = e.data.clone();
         e.audit(None, "test", &i.to_string());
-        e.save().unwrap();
+        e.save_delta(&before).unwrap();
     }
     assert_eq!(e.data.policy.audit.len(), 1000);
     assert_eq!(e.data.policy.audit.front().unwrap().target, "5");
@@ -1959,7 +2013,9 @@ fn expired_sessions_are_not_loaded_and_login_removes_expired_disk_entries() {
     let mut e = Engine::open(&path).unwrap();
     e.provision("alice", "hash".into(), true, false).unwrap();
     e.login("expired".into(), "alice", "hash", None).unwrap();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute(
             "UPDATE entities SET json=json_set(json,'$.expires',0) WHERE kind='session'",
@@ -1971,7 +2027,9 @@ fn expired_sessions_are_not_loaded_and_login_removes_expired_disk_entries() {
     assert!(e.data.sessions.is_empty());
     e.login("fresh".into(), "alice", "hash", None).unwrap();
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row::<usize, _, _>(
                 "SELECT count(*) FROM entities WHERE kind='session'",
@@ -1989,7 +2047,9 @@ fn expired_sessions_are_not_loaded_and_login_removes_expired_disk_entries() {
 #[test]
 fn failed_rollback_reload_requires_restart_instead_of_reusing_partial_memory() {
     let mut e = engine();
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TABLE entities;")
         .unwrap();

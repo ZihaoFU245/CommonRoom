@@ -1,4 +1,4 @@
-use super::models::*;
+use super::{EngineError, models::*};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use rand_core::OsRng;
 use std::{
@@ -21,14 +21,14 @@ pub(super) fn name_character(c: char) -> bool {
         || (!c.is_ascii() && !c.is_whitespace() && !c.is_control())
 }
 
-pub fn hash_password(password: &str) -> Result<String, String> {
-    if password.chars().count() < 3 || password.len() > 128 {
+pub fn hash_password(password: &str) -> Result<String, EngineError> {
+    if password.chars().count() < 3 || password.len() > crate::limits::MAX_PASSWORD_BYTES {
         return Err("Passwords must contain at least 3 characters and at most 128 bytes.".into());
     }
     Argon2::default()
         .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
         .map(|h| h.to_string())
-        .map_err(|_| "Password hashing failed.".into())
+        .map_err(EngineError::unavailable)
 }
 pub fn verify_password(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash).is_ok_and(|h| {
@@ -38,7 +38,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     })
 }
 
-pub(super) fn parse_age(value: &str) -> Result<u64, String> {
+pub(super) fn parse_age(value: &str) -> Result<u64, EngineError> {
     let unit = value
         .chars()
         .last()
@@ -59,11 +59,11 @@ pub(super) fn parse_age(value: &str) -> Result<u64, String> {
         .and_then(|n| n.checked_mul(multiplier))
         .ok_or_else(|| "Age must be a positive duration, e.g. 7d.".into())
 }
-pub(super) fn require_len(parts: &[&str], len: usize, usage: &str) -> Result<(), String> {
+pub(super) fn require_len(parts: &[&str], len: usize, usage: &str) -> Result<(), EngineError> {
     if parts.len() == len {
         Ok(())
     } else {
-        Err(format!("Usage: {usage}"))
+        Err(EngineError::Invalid(format!("Usage: {usage}")))
     }
 }
 /// Match the browser's blank-content check without modifying Unicode text.
@@ -139,4 +139,8 @@ pub(super) fn private_peer<'a>(key: &'a str, user: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+pub(crate) fn session_digest(token: &str) -> String {
+    crate::bots::digest(&format!("session:{token}"))
 }

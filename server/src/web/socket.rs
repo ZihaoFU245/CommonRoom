@@ -28,17 +28,30 @@ pub(crate) async fn upgrade(
                 "Session worker unavailable.",
             )
         })??;
-    let permit = app
-        .connections
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Connection limit reached."))?;
+    let account = app
+        .engine_read_api()?
+        .active_account_id(&username)
+        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
+        .to_owned();
+    let profile = if super::auth::bearer(&headers).is_some() {
+        super::admission::Profile::Bot
+    } else {
+        super::admission::Profile::Browser
+    };
+    let lease = app
+        .admission
+        .socket(account, profile)
+        .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
     Ok(ws
-        .max_message_size(65536)
-        .max_frame_size(65536)
+        .max_message_size(crate::web::transport::MAX_FRAME_BYTES)
+        .max_frame_size(crate::web::transport::MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
-            let _permit = permit;
-            connection(app, headers, username, socket).await;
+            crate::web::transport::run(
+                &app,
+                lease,
+                connection(app.clone(), headers, username, socket),
+            )
+            .await;
         }))
 }
 pub(crate) async fn snapshot(
@@ -58,7 +71,7 @@ pub(crate) async fn snapshot(
             let frame = if bot {
                 json!({"kind":"error", "id":null, "error":crate::bots::error::Error::storage(error)})
             } else {
-                json!({"kind":"error", "id":0, "text":error})
+                json!({"kind":"error", "id":0, "text":error.message()})
             };
             let _sent = send(socket, Message::Text(frame.to_string().into())).await;
             let _closed = send(socket, Message::Close(None)).await;
@@ -71,6 +84,16 @@ pub(crate) async fn send(socket: &mut WebSocket, message: Message) -> bool {
         .await
         .is_ok_and(|r| r.is_ok())
 }
+#[cfg(test)]
+pub(crate) fn avatar_frame(
+    app: &App,
+    headers: &HeaderMap,
+    owner: &str,
+) -> Result<Option<axum::extract::ws::Utf8Bytes>, crate::engine::EngineError> {
+    super::updates::browser(app, headers, false, &[Change::Avatar(owner.into())])
+        .map(|(_, frames)| frames.into_iter().next())
+}
+
 // Count sockets rather than accounts so closing one tab keeps other tabs online.
 struct Presence {
     app: App,
@@ -87,7 +110,7 @@ impl Presence {
                 app.update_presence(Some(&old), Some(&current))
                     .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
             }
-            Ok(current)
+            Ok::<_, ApiError>(current)
         })
         .await
         .map_err(|_| {
@@ -118,8 +141,7 @@ pub(crate) async fn connection(
     mut socket: WebSocket,
 ) {
     let bot = super::auth::bearer(&headers).is_some();
-    let mut changes = app.changes.subscribe();
-    let mut activities = app.bot_runtimes.activities.subscribe();
+    let mut events = crate::web::transport::Events::new(&app, false);
     let presence_app = app.clone();
     let presence_user = user.clone();
     if !matches!(
@@ -141,109 +163,168 @@ pub(crate) async fn connection(
     if !snapshot(&app, &mut socket, bot, &headers).await {
         return;
     }
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
-    let mut budget = (Instant::now(), 0u32);
-    let mut last_seen = Instant::now();
+    let mut budget = crate::web::transport::Budget::new();
+    let mut interests = crate::web::transport::Interests::default();
+
     loop {
-        tokio::select! {
-            _ = heartbeat.tick() => {
-                if presence.authenticate(&headers).await.is_err() { break; }
-                if last_seen.elapsed() > Duration::from_secs(75) { break; }
-                if !send(&mut socket, Message::Ping(Vec::new().into())).await { break; }
-            },
-            change = changes.recv() => {
-                user = match presence.authenticate(&headers).await { Ok(user) => user, Err(_) => break };
-                if matches!(&change, Ok(Change::Read(name)) if name != &user) { continue; }
-                if matches!(change, Err(broadcast::error::RecvError::Closed)) { break; }
-                if let Ok(Change::BotCommands(id)) = &change {
-                    if bot { continue; }
-                    let read_app = app.clone(); let read_user = user.clone(); let id = id.clone();
-                    let visible = tokio::task::spawn_blocking(move || {
-                        let engine = read_app.engine_read()?;
-                        Ok::<_, String>(engine.bot_target(&read_user, &id, crate::engine::authorization::Action::Read).is_ok().then_some(id))
-                    }).await;
-                    match visible {
-                        Ok(Ok(Some(id))) => { if !send(&mut socket, Message::Text(json!({"kind":"bot_commands","conversation_id":id}).to_string().into())).await { break; } },
-                        Ok(Ok(None)) => {}, _ => break,
-                    }
+        match events.next(&mut socket).await {
+            crate::web::transport::Event::Maintenance => {}
+            crate::web::transport::Event::Heartbeat(alive) => {
+                if !alive {
+                    break;
+                }
+                if presence.authenticate(&headers).await.is_err() {
+                    break;
+                }
+                if !send(&mut socket, Message::Ping(Vec::new().into())).await {
+                    break;
+                }
+            }
+            crate::web::transport::Event::Change(change) => {
+                let change = match change {
+                    Ok(change) => change,
+                    Err(broadcast::error::RecvError::Lagged(_)) => Change::All,
+                    Err(_) => break,
+                };
+                let mut changes = events.take_batch(change);
+                if changes.contains(&Change::Shutdown) {
+                    break;
+                }
+                changes.retain(|change| {
+                    !interests.excludes(change) && !matches!(change, Change::Read(name) | Change::Account(name) if name != &user)
+                        && !(bot
+                            && matches!(
+                                change,
+                                Change::Avatar(_) | Change::BotCommands(_) | Change::Presence
+                            ))
+                });
+                if changes.is_empty() {
                     continue;
                 }
-                if matches!(change, Ok(Change::Presence)) {
-                    if bot { continue; }
-                    let read_app = app.clone(); let read_user = user.clone();
-                    let online = tokio::task::spawn_blocking(move || Ok::<_, String>(read_app.engine_read()?.online(&read_user))).await;
-                    match online {
-                        Ok(Ok(online)) => { if !send(&mut socket, Message::Text(json!({"kind":"presence","online":online}).to_string().into())).await { break; } },
-                        _ => break,
-                    }
-                    continue;
-                }
-                if bot {
-                    if let Ok(Change::Conversation(id)) = &change {
-                        let read_app=app.clone(); let read_headers=headers.clone(); let id=id.clone();
-                        let update=tokio::task::spawn_blocking(move || {
-                            let engine=read_app.engine_read()?;
-                            let current=super::auth::identity(&engine,&read_headers).ok_or("Credential revoked.")?;
-                            Ok::<_,String>(engine.bot_target(&current,&id,crate::engine::authorization::Action::Read).is_ok().then(|| json!({"kind":"conversation","conversation_id":id})))
-                        }).await;
-                        match update { Ok(Ok(Some(value))) => { if !send(&mut socket, Message::Text(value.to_string().into())).await {break;} }, Ok(Ok(None))=>{}, _=>break }
-                    } else if !snapshot(&app,&mut socket,true,&headers).await { break; }
-                    continue;
-                }
-                if matches!(change, Ok(Change::Read(_))) {
-                    let read_app=app.clone(); let read_user=user.clone();
-                    let unread=match tokio::task::spawn_blocking(move ||read_app.engine_read()?.unreads(&read_user)).await {Ok(Ok(unread))=>unread,_=>break};
-                    if !send(&mut socket, Message::Text(json!({"kind":"read", "unread":unread}).to_string().into())).await { break; }
-                } else if let Ok(Change::Conversation(id))=change {
-                    let read_app=app.clone(); let read_user=user.clone();
-                    let update=tokio::task::spawn_blocking(move ||read_app.engine_read()?.conversation_update(&read_user,&id)).await;
-                    match update {
-                        Ok(Ok(Some(value)))=>{if !send(&mut socket,Message::Text(value.to_string().into())).await {break;}},
-                        Ok(Ok(None))=>{},
-                        _=>break,
-                    }
-                } else if !snapshot(&app, &mut socket, bot, &headers).await { break; }
-            },
-            activity = activities.recv() => {
-                let Ok(activity) = activity else { continue; };
-                if bot { continue; }
-                let Ok(current) = presence.authenticate(&headers).await else { break; };
                 let read_app = app.clone();
-                let id = activity["conversation_id"].as_str().unwrap_or_default().to_owned();
+                let read_headers = headers.clone();
+                let old = user.clone();
+                let mut routed = std::mem::take(&mut interests);
+                let result = tokio::task::spawn_blocking(move || {
+                    let (current, frames) = super::updates::browser_with_interests(
+                        &read_app,
+                        &read_headers,
+                        bot,
+                        &changes,
+                        &mut routed,
+                    )?;
+                    if current != old {
+                        read_app
+                            .update_presence(Some(&old), Some(&current))
+                            .map_err(crate::engine::EngineError::Unavailable)?;
+                    }
+                    Ok::<_, crate::engine::EngineError>((current, frames, routed))
+                })
+                .await;
+                let Ok(Ok((current, frames, routed))) = result else {
+                    break;
+                };
+                interests = routed;
+                user = current;
+                presence.user.clone_from(&user);
+                let mut alive = true;
+                for frame in frames {
+                    if !send(&mut socket, Message::Text(frame)).await {
+                        alive = false;
+                        break;
+                    }
+                }
+                if !alive {
+                    break;
+                }
+            }
+            crate::web::transport::Event::Activity(activity) => {
+                let Ok(activity) = activity else {
+                    continue;
+                };
+                if bot {
+                    continue;
+                }
+                let read_app = app.clone();
+                let read_headers = headers.clone();
+                let old = user.clone();
+                let id = activity["conversation_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if interests.excludes(&Change::Conversation(id.clone())) {
+                    continue;
+                }
                 let allowed = tokio::task::spawn_blocking(move || {
                     let engine = read_app.engine_read()?;
-                    Ok::<_, String>(engine.bot_target(&current, &id, crate::engine::authorization::Action::Read).is_ok())
-                }).await;
-                if matches!(allowed, Ok(Ok(true))) && !send(&mut socket, Message::Text(activity.to_string().into())).await { break; }
-            },
-            incoming = socket.recv() => {
-                let Some(Ok(message)) = incoming else { break; };
-                last_seen = Instant::now();
-                user = match presence.authenticate(&headers).await { Ok(user) => user, Err(_) => break };
+                    let current = super::auth::identity(&engine, &read_app.config, &read_headers)
+                        .ok_or("Credential revoked.")?;
+                    let allowed = engine
+                        .bot_target(&current, &id, crate::engine::authorization::Action::Read)
+                        .is_ok();
+                    drop(engine);
+                    if old != current {
+                        read_app
+                            .update_presence(Some(&old), Some(&current))
+                            .map_err(crate::engine::EngineError::Unavailable)?;
+                    }
+                    Ok::<_, crate::engine::EngineError>((current, allowed))
+                })
+                .await;
+                let Ok(Ok((current, allowed))) = allowed else {
+                    break;
+                };
+                user = current;
+                presence.user.clone_from(&user);
+                if allowed && !send(&mut socket, Message::Text(activity.to_string().into())).await {
+                    break;
+                }
+            }
+            crate::web::transport::Event::Incoming(incoming) => {
+                let Some(Ok(message)) = incoming else {
+                    break;
+                };
+                user = match presence.authenticate(&headers).await {
+                    Ok(user) => user,
+                    Err(_) => break,
+                };
                 match message {
                     Message::Text(raw) => {
-                        if budget.0.elapsed() > Duration::from_secs(10) { budget = (Instant::now(), 0); }
-                        budget.1 += 1;
+                        let admitted = budget.admit(Instant::now());
                         if bot {
                             let frame = json!({"kind":"error","id":null,"error":crate::bots::error::Error::new(crate::bots::error::Code::InvalidRequest,"Use /api/bot/v1/ws for bot controls.")});
-                            if !send(&mut socket,Message::Text(frame.to_string().into())).await {break;}
+                            if !send(&mut socket, Message::Text(frame.to_string().into())).await {
+                                break;
+                            }
                             continue;
                         }
                         let parsed = serde_json::from_str::<Input>(&raw);
                         let (id, result) = match parsed {
-                            Ok(input) if budget.1 <= 30 => (input.id, execute_input(&app, &headers, &user, &input).await),
-                            Ok(input) => (input.id, Err("Slow down; at most 30 messages per 10 seconds.".into())),
+                            Ok(input) if admitted => {
+                                (input.id, execute_input(&app, &headers, &user, &input).await)
+                            }
+                            Ok(input) => (
+                                input.id,
+                                Err("Slow down; at most 30 messages per 10 seconds.".into()),
+                            ),
                             Err(_) => (0, Err("Invalid message format.".into())),
                         };
-                        let reply = match &result { Ok((text, _)) => json!({ "kind": "notice", "id": id, "text": text }), Err(text) => json!({ "kind": "error", "id": id, "text": text }) };
+                        let reply = match &result {
+                            Ok((text, _)) => json!({ "kind": "notice", "id": id, "text": text }),
+                            Err(text) => json!({ "kind": "error", "id": id, "text": text }),
+                        };
                         // Persistence is already committed. Notify peers even if
                         // the requester's connection can no longer accept its reply.
-                        if let Ok((_,Some(change)))=result { let _=app.changes.send(change); }
-                        if !send(&mut socket, Message::Text(reply.to_string().into())).await { break; }
-                    },
+                        if let Ok((_, Some(change))) = result {
+                            let _ = app.changes.send(change);
+                        }
+                        if !send(&mut socket, Message::Text(reply.to_string().into())).await {
+                            break;
+                        }
+                    }
                     Message::Close(_) => break,
                     Message::Binary(_) => break,
-                    _ => {},
+                    _ => {}
                 }
             }
         }

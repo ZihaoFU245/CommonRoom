@@ -43,12 +43,12 @@ impl CleanupPlan {
     }
 }
 impl Engine {
-    fn cleanup_plan(&self, context: &CommandContext<'_>) -> Result<CleanupPlan, String> {
+    fn cleanup_plan(&self, context: &CommandContext<'_>) -> Result<CleanupPlan, EngineError> {
         let parts = context.parts;
         let preview = match parts {
             ["/clean", _, _] => false,
             ["/clean", _, _, "--dry-run"] => true,
-            _ => return Err(format!("Usage: {USAGE}")),
+            _ => return Err(EngineError::Invalid(format!("Usage: {USAGE}"))),
         };
         // Zero is an internal all-history request; normal durations stay positive.
         let age = if parts[1] == "-1" {
@@ -117,7 +117,7 @@ impl Engine {
             .iter()
             .map(|target| match target {
                 Scope::Room(id) | Scope::Private(id) => Ok(id.clone()),
-                _ => Err("Invalid cleanup scope.".to_owned()),
+                _ => Err(EngineError::Invalid("Invalid cleanup scope.".into())),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let totals = self.cleanup_counts(&ids, cutoff)?;
@@ -141,14 +141,20 @@ impl Engine {
             targets: counts,
         })
     }
-    pub(super) fn preview_cleanup(&self, context: &CommandContext<'_>) -> Result<String, String> {
+    pub(super) fn preview_cleanup(
+        &self,
+        context: &CommandContext<'_>,
+    ) -> Result<String, EngineError> {
         let plan = self.cleanup_plan(context)?;
         if !plan.preview {
-            return Err(format!("Usage: {USAGE}"));
+            return Err(EngineError::Invalid(format!("Usage: {USAGE}")));
         }
         Ok(plan.report())
     }
-    pub(super) fn apply_cleanup(&mut self, context: &CommandContext<'_>) -> Result<String, String> {
+    pub(super) fn apply_cleanup(
+        &mut self,
+        context: &CommandContext<'_>,
+    ) -> Result<String, EngineError> {
         let plan = self.cleanup_plan(context)?;
         let report = plan.report();
         if plan.preview {
@@ -162,7 +168,7 @@ impl Engine {
                 Scope::Room(id) | Scope::Private(id) => id,
                 _ => return Err("Invalid cleanup scope.".into()),
             };
-            self.pending_cleanups.push((id.clone(), plan.cutoff));
+            self.store.pending_cleanups.push((id.clone(), plan.cutoff));
             if let Some(room) = self.data.rooms.values_mut().find(|room| &room.id == id) {
                 room.revision = room.revision.wrapping_add(1);
             }
@@ -170,7 +176,7 @@ impl Engine {
                 chat.revision = chat.revision.wrapping_add(1);
             }
         }
-        if self.pending_cleanups.is_empty() {
+        if self.store.pending_cleanups.is_empty() {
             return Ok(report);
         }
         self.audit(
@@ -189,7 +195,7 @@ mod tests {
     use crate::engine::tests::{engine, private_messages, room_messages};
 
     fn age_first(e: &Engine, id: &str) {
-        e.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)", params![id, now()-8*86400]).unwrap();
+        e.store.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)", params![id, now()-8*86400]).unwrap();
     }
     fn seed_private(e: &mut Engine) {
         e.execute(Some("bob"), None, "/tell eve old private")
@@ -313,7 +319,7 @@ mod tests {
                 .is_err()
         );
         let before = e.data.clone();
-        let writes = e.db.lock().unwrap().total_changes();
+        let writes = e.store.db.lock().unwrap().total_changes();
         e.execute(
             Some("bob"),
             Some("lobby"),
@@ -321,7 +327,7 @@ mod tests {
         )
         .unwrap();
         assert!(e.data == before);
-        assert_eq!(e.db.lock().unwrap().total_changes(), writes);
+        assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
         assert!(!e.is_su(Some("bob")));
         e.execute(Some("bob"), Some("lobby"), "/sudo /clean -1 @global")
             .unwrap();
@@ -378,7 +384,7 @@ mod tests {
         e.execute(None, None, "/grant alice su").unwrap();
         let before = e.data.clone();
         let revision = e.revision;
-        let writes = e.db.lock().unwrap().total_changes();
+        let writes = e.store.db.lock().unwrap().total_changes();
         for view in [None, Some("@command"), Some("lobby"), Some("@direct:eve")] {
             for command in [
                 "/clean",
@@ -394,7 +400,7 @@ mod tests {
                 );
                 assert!(e.data == before);
                 assert_eq!(e.revision, revision);
-                assert_eq!(e.db.lock().unwrap().total_changes(), writes);
+                assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
             }
         }
     }
@@ -414,7 +420,7 @@ mod tests {
             .unwrap();
         let before = e.data.clone();
         let revision = e.revision;
-        let writes = e.db.lock().unwrap().total_changes();
+        let writes = e.store.db.lock().unwrap().total_changes();
         for command in [
             "/clean 7d @direct:eve --dry-run",
             "/clean 7d @private:bob:eve --dry-run",
@@ -429,7 +435,7 @@ mod tests {
             );
             assert!(e.data == before);
             assert_eq!(e.revision, revision);
-            assert_eq!(e.db.lock().unwrap().total_changes(), writes);
+            assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
         }
         assert!(
             e.execute(Some("bob"), None, "/clean 1d @direct:eve --dry-run")
@@ -497,13 +503,15 @@ mod tests {
             assert_eq!(private_messages(&e, "bob:eve").len(), 2);
         }
         let revision = e.revision;
-        e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_clean BEFORE DELETE ON messages WHEN json_extract(OLD.json,'$.text')='old private' BEGIN SELECT RAISE(ABORT,'injected cleanup failure'); END;").unwrap();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_clean BEFORE DELETE ON messages WHEN json_extract(OLD.json,'$.text')='old private' BEGIN SELECT RAISE(ABORT,'injected cleanup failure'); END;").unwrap();
         assert!(e.execute(None, None, "/clean 7d @global").is_err());
         assert_eq!(e.revision, revision);
         assert!(e.data == before);
         assert_eq!(room_messages(&e, "lobby").len(), 1);
         assert_eq!(private_messages(&e, "alice:eve").len(), 1);
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute_batch("DROP TRIGGER deny_clean;")
             .unwrap();

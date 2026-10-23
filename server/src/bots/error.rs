@@ -79,3 +79,33 @@ impl IntoResponse for Error {
         response
     }
 }
+
+impl From<crate::engine::EngineError> for Error {
+    fn from(error: crate::engine::EngineError) -> Self {
+        use crate::engine::EngineError;
+        let code = match &error {
+            EngineError::Invalid(_) => Code::InvalidRequest,
+            EngineError::NotFound(_) => Code::NotFound,
+            EngineError::Forbidden(_) => Code::Forbidden,
+            EngineError::Conflict(_) => Code::Conflict,
+            // v1 has no internal-error code; preserve its unavailable contract.
+            EngineError::Unavailable(_) | EngineError::Internal(_) => Code::Unavailable,
+        };
+        Self::new(code, error)
+    }
+}
+
+impl From<Error> for crate::engine::EngineError {
+    fn from(error: Error) -> Self {
+        use crate::engine::EngineError;
+        match error.code {
+            Code::Unauthorized | Code::Forbidden => EngineError::Forbidden(error.message),
+            Code::NotFound | Code::MessageGone => EngineError::NotFound(error.message),
+            Code::Conflict | Code::IdempotencyConflict => EngineError::Conflict(error.message),
+            Code::Unavailable | Code::IdempotencyCapacity | Code::RateLimited => {
+                EngineError::Unavailable(error.message)
+            }
+            _ => EngineError::Invalid(error.message),
+        }
+    }
+}

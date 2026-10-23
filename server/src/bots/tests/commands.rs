@@ -339,7 +339,7 @@ async fn history_loads_a_referenced_message_page_without_cross_conversation_disc
                 .unwrap();
         }
         source = engine
-            .history_store
+            .history_store()
             .page(
                 &id,
                 engine.data.rooms["support"].revision,
@@ -358,7 +358,7 @@ async fn history_loads_a_referenced_message_page_without_cross_conversation_disc
             .execute(None, Some("foreign"), "private to foreign")
             .unwrap();
         foreign_source = engine
-            .history_store
+            .history_store()
             .page(
                 &engine.data.rooms["foreign"].id,
                 engine.data.rooms["foreign"].revision,
@@ -409,5 +409,95 @@ async fn history_loads_a_referenced_message_page_without_cross_conversation_disc
         .await
         .0,
         StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn native_command_failures_preserve_domain_classes_and_hide_storage_details() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let execute = |command: &str| json!({"conversation_id":id,"command":command});
+    let (status, value) = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/commands",
+        execute("/room new denied"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["error"]["code"], "forbidden");
+    assert_eq!(value["error"]["retryable"], false);
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper admin")
+        .unwrap();
+    let (status, value) = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/commands",
+        execute("/room new"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], "invalid_request");
+    let (status, value) = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/commands",
+        execute("/room new support"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["error"]["code"], "conflict");
+    let store = app.engine_read().unwrap().history_store().clone();
+    store.read(|db| {
+        db.execute_batch("PRAGMA query_only=OFF; CREATE TRIGGER reject_command_room BEFORE INSERT ON entities WHEN NEW.kind='room' BEGIN SELECT RAISE(ABORT,'private database implementation detail'); END; PRAGMA query_only=ON;")?;
+        Ok(())
+    }).unwrap();
+    let (status, value) = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/commands",
+        execute("/room new failed-write"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(value["error"]["code"], "unavailable");
+    assert_eq!(value["error"]["retryable"], true);
+    assert!(
+        !value
+            .to_string()
+            .contains("private database implementation detail")
+    );
+    assert!(
+        !app.engine_read()
+            .unwrap()
+            .data
+            .rooms
+            .contains_key("failed-write")
+    );
+    store
+        .read(|db| {
+            db.execute_batch(
+                "PRAGMA query_only=OFF; DROP TRIGGER reject_command_room; PRAGMA query_only=ON;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "POST",
+            "/api/bot/v1/commands",
+            execute("/room new recovered")
+        )
+        .await
+        .0,
+        StatusCode::OK
     );
 }

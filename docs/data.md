@@ -2,20 +2,25 @@
 
 ## Database compatibility
 
-Empty databases initialize as v17. Only the immediately preceding HEAD schema
-(v16) upgrades to v17; v17 reopens directly. Older schemas and unversioned
+Empty databases initialize as v18. The supported upgrade baseline is commit
+`793f9bb65683f63130c234f78856b8813362f45f` (schema v18). v17 upgrades
+transactionally to v18; v18 reopens directly. Earlier schemas and unversioned
 existing databases are rejected before journal, schema or data changes.
 
-The v16-to-v17 transaction removes cleanup age constraints from grants and moves
-them into `history.clean_min_age` metadata. Existing explicit metadata takes
-precedence. Legacy grants retain their union semantics: unrestricted grants win;
-otherwise the smallest applicable minimum age wins. Group grants expand to their
-current recipients. Admin/ownership defaults remain derived rather than copied.
-Private conversations now share the account's global limit; differing legacy
-private constraints consolidate to the strictest effective minimum at the root.
-History, credentials, cursors, permissions and media metadata remain intact.
-A failure rolls back account metadata, policy and schema version together.
-Older binaries cannot open v17.
+The v17-to-v18 transaction replaces raw session keys with domain-separated
+Blake2s digests, initializes per-conversation retained-row counters and creates a
+bounded authentication audit. History, credentials, cursors, permissions and
+media metadata remain intact. Failure rolls back all new tables, triggers,
+session keys and the schema version together. Older binaries cannot open v18.
+Production sites at the root path switch to `__Host-chat_session` cookies and
+require one sign-in after deployment. Other deployments keep their existing
+cookies and original expiry; migrated tokens still authenticate by digest.
+
+Authentication events retain the most recent 2,048 verified login outcomes and
+valid logouts, including time, canonical client IP when available and valid
+username. They contain no password, token or request body. Session creation and
+logout commit atomically with their event. Throttled requests and malformed
+credentials do not create authentication events.
 
 Back up the entire data folder and object store with the server stopped. Tests
 use isolated temporary data and never modify working `data/`.
@@ -47,7 +52,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v17 and upgrades HEAD v16 only. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v18 and upgrades the supported v17 baseline only. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -84,8 +89,7 @@ Sends/replies insert one message, prune beyond the configured per-conversation r
 
 Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. One writer connection and four independent read-only connections use WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages are bounded to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting; SQLite page caches and response copies are additional memory.
 
-Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains only the command family's affected metadata maps,
-excluding transient message bodies. Cleanup counting batches authorized IDs against
+Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains only resolved entity keys, excluding transient message bodies. Creation and rename include destination keys so rollback also removes tentative inserts. Cleanup counting batches authorized IDs against
 the existing timestamp expression index; this requires no schema change. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.
 
 Message JSON may include a boolean `markdown` field. Missing fields default to
@@ -146,7 +150,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v17 and the minimal reference worker.
+independently of server SQLite schema v18 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -154,7 +158,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v17.
+keys; unsupported versions are rejected. This does not change server schema v18.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -256,13 +260,13 @@ The optional `metadata["@global"]["avatar"]` is an HTTPS image URL or a canonica
 `/api/avatars/<id>/file` link. Only this profile key has a self-service HTTP writer;
 ordinary metadata mutations still require su. The writer preserves other metadata
 and rolls back failed persistence. These values use existing account JSON and
-media rows, so SQLite remains schema v17 with no migration.
+media rows, so SQLite remains schema v18 with no migration.
 
 Uploaded avatars use media records with conversation `@avatar` and permanent
 retention. Immutable file bytes live at `avatars/<stable-account-id>/<upload-id>`
 in private S3. Metadata references protect them during startup/daily cleanup. Each cleanup SQL
 statement builds one uncorrelated, non-null reference list, avoiding a per-media-row
-account JSON scan without changing schema v17. Disabled accounts intentionally keep
+account JSON scan without changing schema v18. Disabled accounts intentionally keep
 those references so their avatar returns on re-enable; their images are unreadable
 while disabled. Replacing/removing the avatar or deleting its account releases the
 reference.

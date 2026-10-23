@@ -84,7 +84,7 @@ fn attachment_errors_do_not_reveal_allocation_state_and_edit_checks_ownership_fi
     let mut media = e.allocate_media("alice", &room, "test.png", 8).unwrap();
     let missing = media_link(&uuid::Uuid::new_v4().to_string());
     let error = e.execute(Some("bob"), Some("lobby"), &missing).unwrap_err();
-    assert_eq!(error, "Upload not found.");
+    assert_eq!(error.message(), "Upload not found.");
     assert_eq!(
         e.execute(Some("bob"), Some("lobby"), &media_link(&media.id))
             .unwrap_err(),
@@ -107,7 +107,8 @@ fn attachment_errors_do_not_reveal_allocation_state_and_edit_checks_ownership_fi
             Some("lobby"),
             &format!("/edit {message} {missing}")
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .message(),
         "You can only edit your own messages."
     );
     e.execute(Some("alice"), Some("lobby"), &media_link(&media.id))
@@ -128,27 +129,29 @@ fn rejected_and_preview_uploads_leave_no_private_directory_or_reservation() {
         assert!(e.data.private.is_empty());
         assert_eq!(e.revision, revision);
     }
-    e.media_config.pending_limit = 0;
+    e.media.config.pending_limit = 0;
     assert!(
         e.allocate_media_target("bob", "@direct:eve", "file", 8, BTreeMap::new(), false)
             .is_err()
     );
     assert!(e.data.private.is_empty());
-    e.media_config.pending_limit = 10;
-    e.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_pair BEFORE INSERT ON entities WHEN NEW.kind='private' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    e.media.config.pending_limit = 10;
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER deny_pair BEFORE INSERT ON entities WHEN NEW.kind='private' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
     assert!(
         e.allocate_media_target("bob", "@direct:eve", "file", 8, BTreeMap::new(), false)
             .is_err()
     );
     assert!(e.data.private.is_empty());
-    let db = e.db.lock().unwrap();
+    let db = e.store.db.lock().unwrap();
     assert_eq!(
         db.query_row("SELECT count(*) FROM media", [], |r| r.get::<_, usize>(0))
             .unwrap(),
         0
     );
     drop(db);
-    e.db.lock()
+    e.store
+        .db
+        .lock()
         .unwrap()
         .execute_batch("DROP TRIGGER deny_pair;")
         .unwrap();
@@ -158,7 +161,9 @@ fn rejected_and_preview_uploads_leave_no_private_directory_or_reservation() {
         .unwrap();
     assert_eq!(e.data.private["bob:eve"].id, media.conversation);
     assert_eq!(
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .query_row(
                 "SELECT count(*) FROM entities WHERE kind='private'",
@@ -174,12 +179,12 @@ fn rejected_and_preview_uploads_leave_no_private_directory_or_reservation() {
 fn empty_cleanup_and_console_reads_do_not_write_or_advance_revision() {
     let mut e = engine();
     let revision = e.revision;
-    let writes = e.db.lock().unwrap().total_changes();
+    let writes = e.store.db.lock().unwrap().total_changes();
     let audit = e.data.policy.audit.len();
     for input in ["/user ls", "/user get bob", "/room ls", "/clean 7d #lobby"] {
         e.execute(None, None, input).unwrap();
         assert_eq!(e.revision, revision);
-        assert_eq!(e.db.lock().unwrap().total_changes(), writes);
+        assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
         assert_eq!(e.data.policy.audit.len(), audit);
     }
 }
@@ -227,12 +232,18 @@ fn scoped_snapshots_exclude_working_messages_and_unrelated_maps() {
         .unwrap()
         .messages
         .push_back(message);
-    let change = MetadataChange::capture(&e.data, ChangeFamily::Policy);
-    let view = change.view(&e.data);
-    assert!(view.rooms["lobby"].messages.is_empty());
-    assert!(std::ptr::eq(view.users, &e.data.users));
-    assert!(std::ptr::eq(view.private, &e.data.private));
-    assert!(std::ptr::eq(view.sessions, &e.data.sessions));
+    let change = MetadataChange::keyed(
+        &e.data,
+        changes::DirtyKeys {
+            rooms: ["lobby".into()].into(),
+            ..Default::default()
+        },
+    );
+    let view = change.view();
+    assert!(view.rooms.unwrap()["lobby"].messages.is_empty());
+    assert!(view.users.is_none());
+    assert!(view.private.is_none());
+    assert!(view.sessions.is_none());
 }
 
 #[test]
@@ -258,7 +269,7 @@ fn cleanup_counts_use_existing_timestamp_index_and_count_multiple_references_onc
         .unwrap();
     assert_eq!(counts[&id], (2, 2));
     assert_eq!(counts["missing"], (0, 0));
-    let db = e.db.lock().unwrap();
+    let db = e.store.db.lock().unwrap();
     let mut query = db.prepare("EXPLAIN QUERY PLAN SELECT targets.value, count(DISTINCT m.sequence), count(refs.media_id) FROM json_each(?1) AS targets LEFT JOIN messages AS m ON m.conversation=targets.value AND json_extract(m.json,'$.time')<?2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value").unwrap();
     let plan = query
         .query_map(
@@ -290,4 +301,61 @@ fn routing_normalizes_only_the_room_target() {
         assert!(e.execute(None, None, input).is_err());
         assert!(e.data == before);
     }
+}
+
+#[test]
+fn indexed_conversation_updates_follow_renames_deletion_and_private_access() {
+    let mut e = engine();
+    let room_id = e.data.rooms["lobby"].id.clone();
+    e.execute(Some("alice"), Some("lobby"), "indexed room")
+        .unwrap();
+    e.execute(None, None, "/room rename #lobby renamed")
+        .unwrap();
+    assert_eq!(
+        e.conversation_update("bob", &room_id).unwrap().unwrap()["view"],
+        "renamed"
+    );
+    e.execute(None, None, "/room delete #renamed").unwrap();
+    assert!(e.conversation_update("bob", &room_id).unwrap().is_none());
+    e.execute(Some("alice"), None, "/tell bob indexed private")
+        .unwrap();
+    let private_id = e.data.private["alice:bob"].id.clone();
+    assert_eq!(
+        e.conversation_update("alice", &private_id)
+            .unwrap()
+            .unwrap()["view"],
+        "@direct:bob"
+    );
+    assert!(e.conversation_update("eve", &private_id).unwrap().is_none());
+    e.execute(None, None, "/user rename bob robert").unwrap();
+    assert_eq!(
+        e.conversation_update("alice", &private_id)
+            .unwrap()
+            .unwrap()["view"],
+        "@direct:robert"
+    );
+}
+
+#[test]
+fn transport_identity_lookups_follow_disable_rename_and_replacement() {
+    let mut e = engine();
+    let id = e.active_account_id("bob").unwrap().to_owned();
+    let hash = e.password_hash("bob").unwrap().to_owned();
+    assert!(e.has_accounts());
+    assert_eq!(e.active_account_name(&id), Some("bob"));
+    e.execute(None, None, "/user disable bob").unwrap();
+    assert_eq!(e.account_id("bob"), Some(id.as_str()));
+    assert!(e.active_account_id("bob").is_none());
+    assert!(e.active_account_name(&id).is_none());
+    assert!(e.password_hash("bob").is_none());
+    e.execute(None, None, "/user enable bob").unwrap();
+    assert_eq!(e.password_hash("bob"), Some(hash.as_str()));
+    e.execute(None, None, "/user rename bob robert").unwrap();
+    assert!(e.account_id("bob").is_none());
+    assert_eq!(e.active_account_name(&id), Some("robert"));
+    e.execute(None, None, "/user delete robert").unwrap();
+    assert!(e.active_account_name(&id).is_none());
+    e.provision("robert", hash, false, false).unwrap();
+    assert_ne!(e.active_account_id("robert"), Some(id.as_str()));
+    assert!(e.active_account_name(&id).is_none());
 }

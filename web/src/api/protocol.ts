@@ -108,6 +108,11 @@ export interface ConversationUpdate {
   messages: Message[];
   unread: Unread;
 }
+export interface AvatarUpdate {
+  kind: "avatar";
+  username: string;
+  url: string | null;
+}
 export interface Acknowledgement {
   kind: "notice" | "error";
   id: number;
@@ -123,6 +128,7 @@ export interface BotActivity {
 }
 export type ServerFrame =
   | BotActivity
+  | AvatarUpdate
   | { kind: "bot_commands"; conversation_id: string }
   | Snapshot
   | ConversationUpdate
@@ -328,6 +334,13 @@ export function parseFrame(raw: string): ServerFrame | null {
       messages: value.messages,
       unread: value.unread,
     };
+  if (
+    value.kind === "avatar" &&
+    typeof value.username === "string" &&
+    value.username.length > 0 &&
+    (value.url === null || typeof value.url === "string")
+  )
+    return { kind: "avatar", username: value.username, url: value.url };
   if (value.kind === "presence" && strings(value.online))
     return { kind: "presence", online: value.online };
   if (value.kind === "read" && unreads(value.unread))

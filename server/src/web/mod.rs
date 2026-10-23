@@ -1,5 +1,8 @@
+pub(crate) mod admission;
 pub(crate) mod auth;
 mod avatars;
+mod error;
+pub(crate) use error::ApiError;
 mod bot_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
@@ -11,6 +14,8 @@ pub(crate) mod socket;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests;
+pub(crate) mod transport;
+pub(crate) mod updates;
 
 use crate::{config::Config, engine::Engine};
 use axum::{
@@ -26,13 +31,27 @@ use std::{
 };
 use tokio::sync::broadcast;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     All,
+    Metadata(Arc<crate::engine::MetadataNotice>),
     Presence,
+    Shutdown,
     Read(String),
+    Account(String),
+    Avatar(String),
     Conversation(String),
     BotCommands(String),
+}
+
+impl Change {
+    pub(crate) fn command(change: crate::engine::CommandChange) -> Option<Self> {
+        match change {
+            crate::engine::CommandChange::Unchanged => None,
+            crate::engine::CommandChange::Metadata(notice) => Some(Self::Metadata(notice)),
+            crate::engine::CommandChange::Conversation(id) => Some(Self::Conversation(id)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -42,7 +61,7 @@ pub struct App {
     pub attempts: Arc<Mutex<login_limits::LoginLimits>>,
     pub changes: broadcast::Sender<Change>,
     pub config: Arc<Config>,
-    pub connections: Arc<tokio::sync::Semaphore>,
+    pub admission: Arc<admission::Admission>,
     pub io_jobs: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
     pub snapshots: Arc<Mutex<snapshots::SnapshotCache>>,
@@ -51,19 +70,19 @@ pub struct App {
     pub shutdown: Arc<tokio::sync::Notify>,
 }
 impl App {
-    pub fn io_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
-        self.io_jobs
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "Server busy; retry shortly.".into())
+    pub fn io_permit(&self) -> Result<admission::IoPermit, String> {
+        admission::io_permit(&self.io_jobs)
     }
 
     // Fail closed after a panic; a poisoned engine may contain a partial mutation.
-    pub fn engine(&self) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, String> {
-        let engine = self
-            .engine
-            .write()
-            .map_err(|_| "Server state unavailable; restart the service.")?;
+    pub fn engine(
+        &self,
+    ) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, crate::engine::EngineError> {
+        let engine = self.engine.write().map_err(|_| {
+            crate::engine::EngineError::Unavailable(
+                "Server state unavailable; restart the service.".into(),
+            )
+        })?;
         engine.ensure_recovered()?;
         Ok(engine)
     }
@@ -74,10 +93,11 @@ impl App {
         old: Option<&str>,
         current: Option<&str>,
     ) -> Result<(), String> {
-        let mut engine = self
-            .engine
-            .write()
-            .map_err(|_| "Server state unavailable; restart the service.")?;
+        let mut engine = self.engine.write().map_err(|_| {
+            crate::engine::EngineError::Unavailable(
+                "Server state unavailable; restart the service.".into(),
+            )
+        })?;
         engine.ensure_recovered()?;
         let disconnected = old.is_some_and(|name| engine.disconnect(name));
         let connected = current.is_some_and(|name| engine.connect(name));
@@ -86,26 +106,49 @@ impl App {
         }
         Ok(())
     }
-    pub fn engine_read(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, String> {
-        let engine = self
-            .engine
-            .read()
-            .map_err(|_| "Server state unavailable; restart the service.")?;
+    pub fn engine_read(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, Engine>, crate::engine::EngineError> {
+        let engine = self.engine.read().map_err(|_| {
+            crate::engine::EngineError::Unavailable(
+                "Server state unavailable; restart the service.".into(),
+            )
+        })?;
         engine.ensure_recovered()?;
         Ok(engine)
     }
     fn engine_read_api(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, ApiError> {
-        self.engine_read()
-            .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))
+        self.engine_read().map_err(ApiError::from)
     }
     fn engine_api(&self) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, ApiError> {
-        self.engine()
-            .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))
+        self.engine().map_err(ApiError::from)
     }
 }
-pub(crate) type ApiError = (StatusCode, Json<serde_json::Value>);
 pub(crate) fn error(code: StatusCode, message: &str) -> ApiError {
-    (code, Json(json!({ "error": message })))
+    use crate::engine::EngineError;
+    let typed = match code {
+        StatusCode::BAD_REQUEST => Some(EngineError::Invalid(message.into())),
+        StatusCode::NOT_FOUND => Some(EngineError::NotFound(message.into())),
+        StatusCode::FORBIDDEN => Some(EngineError::Forbidden(message.into())),
+        StatusCode::CONFLICT => Some(EngineError::Conflict(message.into())),
+        StatusCode::SERVICE_UNAVAILABLE => Some(EngineError::Unavailable(message.into())),
+        StatusCode::INTERNAL_SERVER_ERROR => Some(EngineError::Internal(message.into())),
+        _ => None,
+    };
+    if let Some(error) = typed {
+        return error.into();
+    }
+    let name = match code {
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        _ => "request_failed",
+    };
+    ApiError(
+        code,
+        Json(
+            json!({ "error": message, "code":name, "retryable":code == StatusCode::TOO_MANY_REQUESTS }),
+        ),
+    )
 }
 
 pub fn router(app: App) -> Router {
@@ -141,6 +184,7 @@ pub fn router(app: App) -> Router {
     };
     routes
         .layer(axum::extract::DefaultBodyLimit::max(4096))
+        .layer(middleware::from_fn_with_state(app.clone(), admission::http))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(
             app.clone(),

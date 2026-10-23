@@ -15,11 +15,17 @@ enum Key {
     Account(String),
 }
 
+struct Window {
+    at: Instant,
+    count: u32,
+    failures: u32,
+    next: Instant,
+}
 pub(crate) struct Reservation(Vec<(Key, Instant)>);
 
 #[derive(Default)]
 pub(crate) struct LoginLimits {
-    counts: HashMap<Key, (Instant, u32)>,
+    counts: HashMap<Key, Window>,
     // Windows never refresh: expiration is ordered and each key is queued once.
     expires: VecDeque<(Instant, Key)>,
 }
@@ -48,9 +54,11 @@ impl LoginLimits {
             .filter(|(key, _)| !self.counts.contains_key(key))
             .count();
         if self.counts.len() + missing > CAPACITY
-            || keys
-                .iter()
-                .any(|(key, limit)| self.counts.get(key).is_some_and(|(_, n)| n >= limit))
+            || keys.iter().any(|(key, limit)| {
+                self.counts
+                    .get(key)
+                    .is_some_and(|entry| entry.count >= *limit || entry.next > now)
+            })
         {
             return Err(LIMITED);
         }
@@ -58,21 +66,34 @@ impl LoginLimits {
         for (key, _) in keys {
             let count = self.counts.entry(key.clone()).or_insert_with(|| {
                 self.expires.push_back((now, key.clone()));
-                (now, 0)
+                Window {
+                    at: now,
+                    count: 0,
+                    failures: 0,
+                    next: now,
+                }
             });
-            count.1 += 1;
-            reservation.push((key, count.0));
+            count.count += 1;
+            reservation.push((key, count.at));
         }
         Ok(Reservation(reservation))
     }
 
-    pub(crate) fn finish(&mut self, reservation: Reservation, failed: bool) {
-        if !failed {
-            for (key, started) in reservation.0 {
-                if let Some((at, count)) = self.counts.get_mut(&key)
-                    && *at == started
-                {
-                    *count = count.saturating_sub(1);
+    pub(crate) fn finish(&mut self, reservation: Reservation, failed: bool, now: Instant) {
+        for (key, started) in reservation.0 {
+            if let Some(entry) = self.counts.get_mut(&key)
+                && entry.at == started
+            {
+                if failed {
+                    if matches!(key, Key::Account(_)) {
+                        entry.failures = entry.failures.saturating_add(1);
+                        let seconds = 1u64 << entry.failures.saturating_sub(1).min(5);
+                        entry.next = now + Duration::from_secs(seconds);
+                    }
+                } else {
+                    entry.count = entry.count.saturating_sub(1);
+                    entry.failures = 0;
+                    entry.next = now;
                 }
             }
         }
@@ -117,7 +138,7 @@ mod tests {
         let ip = "198.51.100.1".parse().unwrap();
         for _ in 0..100 {
             let reservation = limits.admit(ip, "alice", now).unwrap();
-            limits.finish(reservation, false);
+            limits.finish(reservation, false, now);
         }
         assert_eq!(limits.expires.len(), 2);
         for _ in 0..9 {
@@ -125,7 +146,7 @@ mod tests {
         }
         let bob = limits.admit(ip, "bob", now).unwrap();
         assert!(limits.admit(ip, "alice", now).is_err());
-        limits.finish(bob, false);
+        limits.finish(bob, false, now);
         limits.admit(ip, "alice", now).unwrap();
         assert!(limits.admit(ip, "alice", now).is_err());
     }
@@ -138,8 +159,45 @@ mod tests {
         for _ in 0..10 {
             limits.admit(ip, "alice", now + WINDOW).unwrap();
         }
-        limits.finish(old, false);
+        limits.finish(old, false, now + WINDOW);
         assert!(limits.admit(ip, "alice", now + WINDOW).is_err());
+    }
+    #[test]
+    fn account_backoff_grows_across_ips_and_is_capped() {
+        let mut limits = LoginLimits::default();
+        let start = Instant::now();
+        let mut now = start;
+        for (n, delay) in [1, 2, 4, 8, 16, 32].into_iter().enumerate() {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::new(
+                198,
+                51,
+                100,
+                u8::try_from(n + 1).unwrap(),
+            ));
+            let reservation = limits.admit(ip, "alice", now).unwrap();
+            limits.finish(reservation, true, now);
+            assert!(
+                limits
+                    .admit(
+                        "203.0.113.1".parse().unwrap(),
+                        "alice",
+                        (now + Duration::from_secs(delay - 1))
+                            .min(start + WINDOW - Duration::from_secs(1))
+                    )
+                    .is_err()
+            );
+            now += Duration::from_secs(delay);
+        }
+        // The fixed minute window expires even after the maximum backoff.
+        let reservation = limits
+            .admit("203.0.113.1".parse().unwrap(), "alice", now)
+            .unwrap();
+        limits.finish(reservation, false, now);
+        assert!(
+            limits
+                .admit("203.0.113.1".parse().unwrap(), "alice", now)
+                .is_ok()
+        );
     }
     #[test]
     fn saturation_is_bounded_and_does_not_evict_active_limits() {

@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tower::ServiceExt;
-#[path = "command_tests.rs"]
+#[path = "commands.rs"]
 mod command_tests;
 
 fn fixture() -> (App, String) {
@@ -40,7 +40,7 @@ fn fixture() -> (App, String) {
             attempts: Default::default(),
             changes,
             config: Arc::new(Config::default()),
-            connections: Arc::new(tokio::sync::Semaphore::new(128)),
+            admission: Default::default(),
             io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
             password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
             snapshots: Default::default(),
@@ -368,21 +368,21 @@ async fn browser_and_bot_history_distinguish_revision_conflicts_from_storage_fai
             .execute(Some("admin"), Some("support"), "history target")
             .unwrap();
         (
-            engine.history_store.clone(),
+            engine.history_store().clone(),
             engine.data.rooms["support"].revision,
         )
     };
     store
         .read(|db| {
             db.execute_batch("PRAGMA query_only=OFF;")
-                .map_err(|e| e.to_string())?;
+                .map_err(crate::engine::EngineError::from)?;
             db.execute(
                 "UPDATE entities SET revision=?1 WHERE kind='room' AND key='support'",
                 [revision + 1],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::engine::EngineError::from)?;
             db.execute_batch("PRAGMA query_only=ON;")
-                .map_err(|e| e.to_string())
+                .map_err(crate::engine::EngineError::from)
         })
         .unwrap();
     for path in [
@@ -398,19 +398,19 @@ async fn browser_and_bot_history_distinguish_revision_conflicts_from_storage_fai
     store
         .read(|db| {
             db.execute_batch("PRAGMA query_only=OFF;")
-                .map_err(|e| e.to_string())?;
+                .map_err(crate::engine::EngineError::from)?;
             db.execute(
                 "UPDATE entities SET revision=?1 WHERE kind='room' AND key='support'",
                 [revision],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::engine::EngineError::from)?;
             db.execute(
                 "UPDATE messages SET json=json_set(json,'$.time','invalid') WHERE conversation=?1",
                 [&id],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::engine::EngineError::from)?;
             db.execute_batch("PRAGMA query_only=ON;")
-                .map_err(|e| e.to_string())
+                .map_err(crate::engine::EngineError::from)
         })
         .unwrap();
     for path in [
@@ -565,6 +565,7 @@ async fn extractor_limits_throttling_and_production_ingress_obey_the_contract() 
     assert_eq!(response.headers()["retry-after"], "10");
     app.config = Arc::new(Config {
         production: true,
+        direct_bot_http: true,
         base_url: "/commonroom/".into(),
         origins: vec!["https://chat.example.com".into()],
         ..Config::default()
@@ -712,6 +713,7 @@ async fn restricted_credentials_are_scoped_expiring_and_cannot_escape_v1() {
     let (app, token) = fixture();
     let id = conversation(&app);
     let expires = crate::bots::now() + 300;
+    let mut changes = app.changes.subscribe();
     let issued = request(
         &app,
         Some(&token),
@@ -721,6 +723,14 @@ async fn restricted_credentials_are_scoped_expiring_and_cannot_escape_v1() {
     )
     .await;
     assert_eq!(issued.0, StatusCode::OK);
+    let change = changes.try_recv().unwrap();
+    let notice = match change {
+        crate::web::Change::Metadata(notice) => Some(notice),
+        _ => None,
+    }
+    .unwrap();
+    assert!(notice.targets(app.engine_read().unwrap().account_id("helper").unwrap()));
+    assert!(notice.catalogues().any(|conversation| conversation == &id));
     let restricted = issued.1["token"].as_str().unwrap();
     let snapshot = request(&app, Some(restricted), "GET", "/api/bot/v1/me", json!({}))
         .await
@@ -898,13 +908,13 @@ async fn unhealthy_unread_metadata_does_not_hide_healthy_bot_conversations() {
         json!({"conversation_id":id,"text":"fixture"}),
     )
     .await;
-    let store = app.engine_read().unwrap().history_store.clone();
+    let store = app.engine_read().unwrap().history_store().clone();
     store
         .read(|db| {
             db.execute_batch(
                 "PRAGMA query_only=OFF; UPDATE messages SET sequence=-1; PRAGMA query_only=ON;",
             )
-            .map_err(|e| e.to_string())
+            .map_err(crate::engine::EngineError::from)
         })
         .unwrap();
     let (status, snapshot) = request(&app, Some(&token), "GET", "/api/bot/v1/me", json!({})).await;
@@ -919,7 +929,7 @@ async fn unhealthy_unread_metadata_does_not_hide_healthy_bot_conversations() {
     assert!(broken["unread"].is_null());
 }
 
-#[path = "discovery_tests.rs"]
+#[path = "discovery.rs"]
 mod discovery_tests;
 
 #[test]
@@ -931,20 +941,11 @@ fn bot_baselines_share_buffers_but_isolate_credentials_and_recheck_revocation() 
         format!("Bearer {secret}").parse().unwrap(),
     );
     let context = Context::authenticate(&app, &headers).unwrap();
-    let first = {
-        let engine = app.engine_read().unwrap();
-        crate::web::snapshots::bot_value(&app, &engine, &context).unwrap()
-    };
-    let again = {
-        let engine = app.engine_read().unwrap();
-        crate::web::snapshots::bot_value(&app, &engine, &context).unwrap()
-    };
+    let first = { crate::web::snapshots::bot_value(&app, &context).unwrap() };
+    let again = { crate::web::snapshots::bot_value(&app, &context).unwrap() };
     assert_eq!(first.as_str().as_ptr(), again.as_str().as_ptr());
     app.update_presence(None, Some("admin")).unwrap();
-    let after_presence = {
-        let engine = app.engine_read().unwrap();
-        crate::web::snapshots::bot_value(&app, &engine, &context).unwrap()
-    };
+    let after_presence = { crate::web::snapshots::bot_value(&app, &context).unwrap() };
     assert_eq!(first.as_str().as_ptr(), after_presence.as_str().as_ptr());
     let second = app
         .engine()
@@ -960,10 +961,7 @@ fn bot_baselines_share_buffers_but_isolate_credentials_and_recheck_revocation() 
         format!("Bearer {second}").parse().unwrap(),
     );
     let scoped = Context::authenticate(&app, &headers).unwrap();
-    let scoped_value = {
-        let engine = app.engine_read().unwrap();
-        crate::web::snapshots::bot_value(&app, &engine, &scoped).unwrap()
-    };
+    let scoped_value = { crate::web::snapshots::bot_value(&app, &scoped).unwrap() };
     let parsed: Value = serde_json::from_str(&scoped_value).unwrap();
     assert_eq!(parsed["credential"]["id"], scoped.credential);
     assert_ne!(parsed["credential"]["id"], context.credential);
@@ -975,9 +973,8 @@ fn bot_baselines_share_buffers_but_isolate_credentials_and_recheck_revocation() 
             &format!("/bot token rm helper {}", scoped.credential),
         )
         .unwrap();
-    let engine = app.engine_read().unwrap();
-    assert!(crate::web::snapshots::bot_value(&app, &engine, &scoped).is_err());
-    assert!(crate::web::snapshots::bot_value(&app, &engine, &context).is_ok());
+    assert!(crate::web::snapshots::bot_value(&app, &scoped).is_err());
+    assert!(crate::web::snapshots::bot_value(&app, &context).is_ok());
 }
 
 #[tokio::test]
@@ -990,14 +987,14 @@ async fn reconnect_session_check_authenticates_without_building_history() {
     let mut headers = HeaderMap::new();
     headers.insert(header::COOKIE, "chat_session=web".parse().unwrap());
     headers.insert(header::ORIGIN, "http://localhost:5173".parse().unwrap());
-    let before = app.engine_read().unwrap().history_store.stats().unwrap();
+    let before = app.engine_read().unwrap().history_store().stats().unwrap();
     assert!(
         web::auth::session_status(State(app.clone()), headers.clone())
             .await
             .is_ok()
     );
     assert_eq!(
-        app.engine_read().unwrap().history_store.stats().unwrap(),
+        app.engine_read().unwrap().history_store().stats().unwrap(),
         before
     );
     app.engine().unwrap().logout("web").unwrap();
@@ -1007,5 +1004,140 @@ async fn reconnect_session_check_authenticates_without_building_history() {
             .unwrap_err()
             .0,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn account_admission_uses_the_typed_bot_rate_limit_contract() {
+    let (app, secret) = fixture();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {secret}").parse().unwrap(),
+    );
+    let context = crate::bots::auth::Context::authenticate(&app, &headers).unwrap();
+    let leases: Vec<_> = (0..8)
+        .map(|_| app.admission.http(context.account.clone()).unwrap())
+        .collect();
+    let (status, value) = request(&app, Some(&secret), "GET", "/api/bot/v1/me", json!({})).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(value["error"]["code"], "rate_limited");
+    assert_eq!(value["error"]["retryable"], true);
+    drop(leases);
+    assert_eq!(
+        request(&app, Some(&secret), "GET", "/api/bot/v1/me", json!({}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn production_direct_bot_http_requires_explicit_opt_in_and_never_accepts_forwarded_http() {
+    use axum::extract::ConnectInfo;
+    let (mut app, token) = fixture();
+    for (enabled, proto, status) in [
+        (false, None, StatusCode::BAD_REQUEST),
+        (true, None, StatusCode::OK),
+        (true, Some("http"), StatusCode::BAD_REQUEST),
+        (false, Some("https"), StatusCode::OK),
+    ] {
+        app.config = Arc::new(Config {
+            production: true,
+            direct_bot_http: enabled,
+            origins: vec!["https://chat.example.com".into()],
+            ..Config::default()
+        });
+        let mut builder = Request::builder()
+            .uri("/api/bot/v1/me")
+            .extension(ConnectInfo(
+                "127.0.0.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"));
+        if let Some(proto) = proto {
+            builder = builder.header("x-forwarded-proto", proto);
+        }
+        let response = web::router(app.clone())
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+}
+
+#[test]
+fn socket_batches_preserve_live_credential_scopes_and_skip_unrelated_events() {
+    let (app, secret) = fixture();
+    let visible = conversation(&app);
+    let hidden = app.engine_read().unwrap().data.rooms["secret"].id.clone();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {secret}").parse().unwrap(),
+    );
+    let context = Context::authenticate(&app, &headers).unwrap();
+    let changes = [
+        crate::web::Change::Conversation(visible.clone()),
+        crate::web::Change::Conversation(hidden),
+        crate::web::Change::Read("other".into()),
+        crate::web::Change::Account("other".into()),
+        crate::web::Change::Presence,
+        crate::web::Change::BotCommands(visible.clone()),
+        crate::web::Change::Avatar("other".into()),
+    ];
+    let (_, frames) = crate::bots::socket::render_changes(&app, &context, &changes).unwrap();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(
+        serde_json::from_str::<Value>(&frames[0]).unwrap()["conversation_id"],
+        visible
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&frames[1]).unwrap()["kind"],
+        "presence"
+    );
+    let scoped = app
+        .engine()
+        .unwrap()
+        .issue_bot_credential(
+            &context,
+            crate::bots::models::CredentialInput {
+                label: "batch-send-only".into(),
+                expires: crate::bots::now() + 100,
+                conversations: [visible.clone()].into(),
+                operations: ["send".into()].into(),
+            },
+        )
+        .unwrap();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", scoped["token"].as_str().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let context = Context::authenticate(&app, &headers).unwrap();
+    assert!(
+        crate::bots::socket::render_changes(&app, &context, &changes)
+            .unwrap()
+            .1
+            .is_empty()
+    );
+    app.engine()
+        .unwrap()
+        .execute(
+            None,
+            None,
+            &format!("/bot token rm helper {}", context.credential),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::bots::socket::render_changes(
+            &app,
+            &context,
+            &[crate::web::Change::Conversation(visible)]
+        )
+        .unwrap_err()
+        .code,
+        Code::Unauthorized
     );
 }

@@ -17,7 +17,96 @@ pub(crate) fn valid_avatar_url(value: &str) -> bool {
             && url.password().is_none()
     })
 }
+/// Only owned authorization inputs cross the history read boundary.
+pub(crate) struct AvatarPlan {
+    owner: String,
+    value: Option<String>,
+    known: bool,
+    conversations: Vec<String>,
+    history: std::sync::Arc<HistoryStore>,
+}
+impl AvatarPlan {
+    pub(crate) fn history_ids(&self) -> impl Iterator<Item = &str> {
+        self.conversations
+            .iter()
+            .filter(|_| !self.known)
+            .map(String::as_str)
+    }
+
+    pub(crate) fn finish(self) -> Result<Option<serde_json::Value>, EngineError> {
+        if !self.known
+            && !self
+                .history
+                .has_author_in(&self.conversations, &self.owner)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(
+            serde_json::json!({"kind":"avatar","username":self.owner,"url":self.value}),
+        ))
+    }
+}
+
 impl Engine {
+    pub(crate) fn avatar_matches(&self, user: &str, value: Option<&str>) -> bool {
+        self.data
+            .users
+            .get(user)
+            .and_then(|account| account.metadata.get("@global"))
+            .and_then(|metadata| metadata.get("avatar"))
+            .map(String::as_str)
+            == value
+    }
+
+    pub(crate) fn avatar_plan(&self, viewer: &str, owner_id: &str) -> Option<AvatarPlan> {
+        use authorization::{Action, Scope};
+        if !self.active(viewer) {
+            return None;
+        }
+        let owner = self.active_account_name(owner_id)?;
+        let mut known =
+            viewer == owner || self.allows(Some(viewer), &Scope::Server, Action::Directory);
+        let mut conversations = Vec::new();
+        if !known {
+            for room in self.data.rooms.values() {
+                let scope = Scope::Room(room.id.clone());
+                if self.allows(Some(viewer), &scope, Action::Read) {
+                    known |= self.allows(Some(viewer), &scope, Action::Members)
+                        && room.members.contains(owner);
+                    conversations.push(room.id.clone());
+                }
+            }
+            for (key, chat) in &self.data.private {
+                let scope = self.private_scope(key);
+                if self.allows(Some(viewer), &scope, Action::Read) {
+                    known |= private_peer(key, viewer) == Some(owner)
+                        || (self.allows(Some(viewer), &scope, Action::Members)
+                            && key.split(':').any(|name| name == owner));
+                    conversations.push(chat.id.clone());
+                }
+            }
+        }
+        let value = self.avatar_directory_for(&[owner].into()).remove(owner);
+        Some(AvatarPlan {
+            owner: owner.into(),
+            value,
+            known,
+            conversations,
+            history: self.history_store().clone(),
+        })
+    }
+
+    pub(crate) fn set_avatar_hosts(&mut self, hosts: BTreeSet<String>) {
+        if self.media.avatar_hosts != hosts {
+            self.read_model.advance();
+            self.media.avatar_hosts = hosts;
+        }
+    }
+
+    fn allowed_avatar_url(&self, value: &str) -> bool {
+        self.media.allows_avatar(value)
+    }
+
     #[cfg(test)]
     pub(crate) fn avatar_directory(&self) -> BTreeMap<String, String> {
         self.avatar_directory_for(&self.data.users.keys().map(String::as_str).collect())
@@ -34,7 +123,7 @@ impl Engine {
                     return None;
                 }
                 let value = account.metadata.get("@global")?.get("avatar")?;
-                (valid_avatar_url(value)
+                (self.allowed_avatar_url(value)
                     || value
                         .strip_prefix("/api/avatars/")
                         .and_then(|s| s.strip_suffix("/file"))
@@ -50,24 +139,34 @@ impl Engine {
         user: &str,
         value: Option<String>,
         managed: bool,
-    ) -> Result<(), String> {
+    ) -> Result<bool, EngineError> {
         if !self.active(user) {
-            return Err("Account unavailable.".into());
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
         }
         if let Some(value) = &value
             && !managed
-            && !valid_avatar_url(value)
+            && !self.allowed_avatar_url(value)
         {
             return Err(
-                "Avatar URL must be HTTPS without credentials (maximum 2048 bytes).".into(),
+                "Avatar URL must use an allowed HTTPS host without credentials (maximum 2048 bytes).".into(),
             );
         }
-        let before = MetadataChange::capture(&self.data, ChangeFamily::Metadata);
+        if self
+            .data
+            .users
+            .get(user)
+            .and_then(|account| account.metadata.get("@global"))
+            .and_then(|metadata| metadata.get("avatar"))
+            == value.as_ref()
+        {
+            return Ok(false);
+        }
+        let before = MetadataChange::accounts(&self.data, [user.to_owned()], false);
         let account = self
             .data
             .users
             .get_mut(user)
-            .ok_or("Account unavailable.")?;
+            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         let metadata = account.metadata.entry("@global".into()).or_default();
         if let Some(value) = value {
             if metadata.len() >= 32 && !metadata.contains_key("avatar") {
@@ -78,14 +177,14 @@ impl Engine {
             metadata.remove("avatar");
         }
         account.metadata.retain(|_, entries| !entries.is_empty());
-        if let Err(error) = self.save_metadata(&[], None, Some(&before)) {
+        if let Err(error) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
             before.restore(&mut self.data);
             return Err(error);
         }
-        Ok(())
+        Ok(true)
     }
     #[cfg(test)]
-    pub(crate) fn allocate_avatar(&self, user: &str, size: u64) -> Result<Media, String> {
+    pub(crate) fn allocate_avatar(&self, user: &str, size: u64) -> Result<Media, EngineError> {
         self.allocate_avatar_id(user, size, &uuid::Uuid::new_v4().to_string())
     }
     pub(crate) fn allocate_avatar_id(
@@ -93,9 +192,9 @@ impl Engine {
         user: &str,
         size: u64,
         id: &str,
-    ) -> Result<Media, String> {
+    ) -> Result<Media, EngineError> {
         if !self.active(user) {
-            return Err("Account unavailable.".into());
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
         }
         if !uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id) {
             return Err("Invalid avatar upload ID.".into());
@@ -103,7 +202,11 @@ impl Engine {
         if size == 0 || size > MAX_AVATAR_SIZE {
             return Err("Avatar must be between 1 byte and 64 KiB.".into());
         }
-        let account = self.data.users.get(user).ok_or("Account unavailable.")?;
+        let account = self
+            .data
+            .users
+            .get(user)
+            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         if let Ok(existing) = self.stored_media(id) {
             let existing = self.avatar_owner(user, &existing.id)?;
             if existing.size != size || existing.ready {
@@ -130,7 +233,7 @@ impl Engine {
         self.store_media_allocation(&media)?;
         Ok(media)
     }
-    pub(crate) fn avatar_owner(&self, user: &str, id: &str) -> Result<Media, String> {
+    pub(crate) fn avatar_owner(&self, user: &str, id: &str) -> Result<Media, EngineError> {
         let media = self.stored_media(id)?;
         if !self.active(user)
             || self
@@ -141,13 +244,13 @@ impl Engine {
             || media.conversation != "@avatar"
             || media.deleting
             || media.deleted
-            || now().saturating_sub(media.created) >= self.media_config.pending_ttl
+            || now().saturating_sub(media.created) >= self.media.config.pending_ttl
         {
             return Err("Avatar upload unavailable.".into());
         }
         Ok(media)
     }
-    pub(crate) fn finish_avatar(&mut self, user: &str, media: &Media) -> Result<(), String> {
+    pub(crate) fn finish_avatar(&mut self, user: &str, media: &Media) -> Result<bool, EngineError> {
         let current = self.avatar_owner(user, &media.id)?;
         if !media.ready
             || !matches!(
@@ -162,7 +265,7 @@ impl Engine {
         }
         self.set_avatar(user, Some(avatar_path(&media.id)), true)
     }
-    pub(crate) fn readable_avatar(&self, viewer: &str, id: &str) -> Result<Media, String> {
+    pub(crate) fn readable_avatar(&self, viewer: &str, id: &str) -> Result<Media, EngineError> {
         let media = self.stored_media(id)?;
         let owner = self
             .bot_index
@@ -184,11 +287,11 @@ impl Engine {
                 != Some(&avatar_path(id))
             || !self.avatar_visible(viewer, owner)?
         {
-            return Err("Avatar not found.".into());
+            return Err(EngineError::NotFound("Avatar not found.".into()));
         }
         Ok(media)
     }
-    fn avatar_visible(&self, viewer: &str, owner: &str) -> Result<bool, String> {
+    fn avatar_visible(&self, viewer: &str, owner: &str) -> Result<bool, EngineError> {
         use authorization::{Action, Scope};
         if viewer == owner || self.allows(Some(viewer), &Scope::Server, Action::Directory) {
             return Ok(true);
@@ -198,7 +301,7 @@ impl Engine {
             if self.allows(Some(viewer), &scope, Action::Read)
                 && ((self.allows(Some(viewer), &scope, Action::Members)
                     && room.members.contains(owner))
-                    || self.history_store.has_author(&room.id, owner)?)
+                    || self.history_store().has_author(&room.id, owner)?)
             {
                 return Ok(true);
             }
@@ -209,7 +312,7 @@ impl Engine {
                 && (private_peer(key, viewer) == Some(owner)
                     || (self.allows(Some(viewer), &scope, Action::Members)
                         && key.split(':').any(|name| name == owner))
-                    || self.history_store.has_author(&chat.id, owner)?)
+                    || self.history_store().has_author(&chat.id, owner)?)
             {
                 return Ok(true);
             }
@@ -230,8 +333,98 @@ mod tests {
         media
     }
     #[test]
+    fn profile_frames_match_live_directory_member_and_historical_author_visibility() {
+        let mut e = super::super::tests::engine();
+        e.set_avatar_hosts(["example.com".into()].into());
+        let owner = e.active_account_id("alice").unwrap().to_owned();
+        e.set_avatar("alice", Some("https://example.com/a.png".into()), false)
+            .unwrap();
+        assert!(
+            e.avatar_plan("bob", &owner)
+                .unwrap()
+                .finish()
+                .unwrap()
+                .is_some()
+        );
+        e.execute(None, None, "/revoke bob user @global").unwrap();
+        assert!(
+            e.avatar_plan("bob", &owner)
+                .unwrap()
+                .finish()
+                .unwrap()
+                .is_some()
+        );
+        e.execute(None, None, "/revoke bob user #lobby").unwrap();
+        e.execute(None, None, "/grant bob #lobby r:message.read")
+            .unwrap();
+        assert!(
+            e.avatar_plan("bob", &owner)
+                .unwrap()
+                .finish()
+                .unwrap()
+                .is_none()
+        );
+        e.execute(Some("alice"), Some("lobby"), "Retained author")
+            .unwrap();
+        let value = e
+            .avatar_plan("bob", &owner)
+            .unwrap()
+            .finish()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"kind":"avatar","username":"alice","url":"https://example.com/a.png"})
+        );
+        assert!(value.get("messages").is_none());
+        e.set_avatar("alice", None, false).unwrap();
+        assert!(
+            e.avatar_plan("bob", &owner)
+                .unwrap()
+                .finish()
+                .unwrap()
+                .unwrap()["url"]
+                .is_null()
+        );
+        e.execute(None, None, "/clean -1 #lobby").unwrap();
+        assert!(
+            e.avatar_plan("bob", &owner)
+                .unwrap()
+                .finish()
+                .unwrap()
+                .is_none()
+        );
+        e.execute(None, None, "/user disable alice").unwrap();
+        assert!(e.avatar_plan("bob", &owner).is_none());
+    }
+    #[test]
+    fn external_avatar_hosts_are_denied_by_default_and_filtered_after_policy_changes() {
+        let mut e = super::super::tests::engine();
+        assert!(
+            e.set_avatar("bob", Some("https://example.com/a.png".into()), false)
+                .is_err()
+        );
+        e.media.avatar_hosts.insert("example.com".into());
+        e.set_avatar("bob", Some("https://example.com/a.png".into()), false)
+            .unwrap();
+        for value in [
+            "https://tracker.example/a",
+            "https://example.com.evil/a",
+            "https://evil.example.com/a",
+            "https://example.com@evil.test/a",
+        ] {
+            assert!(e.set_avatar("bob", Some(value.into()), false).is_err());
+        }
+        assert!(e.snapshot("alice").unwrap().avatars.contains_key("bob"));
+        e.set_avatar_hosts(BTreeSet::new());
+        assert!(!e.snapshot("alice").unwrap().avatars.contains_key("bob"));
+    }
+    #[test]
     fn self_service_url_validation_remove_and_metadata_isolation() {
         let mut e = super::super::tests::engine();
+        e.media
+            .avatar_hosts
+            .extend(["example.com".into(), "www.gravatar.com".into()]);
         let before = e.data.users["alice"].clone();
         for url in [
             "http://example.com/a.png",
@@ -272,6 +465,9 @@ mod tests {
     #[test]
     fn avatar_upload_ownership_type_limits_and_cleanup_lifecycle() {
         let mut e = super::super::tests::engine();
+        e.media
+            .avatar_hosts
+            .extend(["example.com".into(), "www.gravatar.com".into()]);
         for size in [0, MAX_AVATAR_SIZE + 1] {
             assert!(e.allocate_avatar("bob", size).is_err());
         }
@@ -283,7 +479,7 @@ mod tests {
                 .unwrap();
             assert_eq!(boundary.size, MAX_AVATAR_SIZE);
         }
-        e.media_config.pending_limit = 1;
+        e.media.config.pending_limit = 1;
         let mut media = ready(&e, "bob");
         assert!(
             media
@@ -304,7 +500,9 @@ mod tests {
         e.prepare_media_cleanup().unwrap();
         assert!(e.expired_media().unwrap().is_empty());
         assert!(e.readable_avatar("bob", &media.id).is_ok());
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute("UPDATE media SET unreferenced=0,created=0", [])
             .unwrap();
@@ -327,11 +525,13 @@ mod tests {
             e.finish_avatar("bob", &media).unwrap();
             let before = e.data.clone();
             let revision = e.revision;
-            e.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_avatar BEFORE UPDATE ON entities WHEN OLD.kind='account' BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+            e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_avatar BEFORE UPDATE ON entities WHEN OLD.kind='account' BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
             assert!(e.set_avatar("bob", None, false).is_err());
             assert!(e.data == before);
             assert_eq!(e.revision, revision);
-            e.db.lock()
+            e.store
+                .db
+                .lock()
                 .unwrap()
                 .execute_batch("DROP TRIGGER reject_avatar;")
                 .unwrap();
@@ -349,6 +549,7 @@ mod tests {
     #[test]
     fn avatar_projection_does_not_reveal_hidden_directory_identities() {
         let mut e = Engine::open(Path::new(":memory:")).unwrap();
+        e.media.avatar_hosts.insert("example.com".into());
         for name in ["alice", "bob"] {
             e.provision(name, "hash".into(), false, false).unwrap();
         }
@@ -373,7 +574,9 @@ mod tests {
         assert!(e.allocate_avatar_id("bob", 65, &id).is_err());
         assert!(e.allocate_avatar_id("bob", 64, "bad").is_err());
         assert_eq!(
-            e.db.lock()
+            e.store
+                .db
+                .lock()
                 .unwrap()
                 .query_row("SELECT COUNT(*) FROM media WHERE id=?1", [&id], |r| r
                     .get::<_, u64>(0))
@@ -422,8 +625,13 @@ mod tests {
     #[test]
     fn expired_reservations_and_replaced_accounts_cannot_complete() {
         let mut e = super::super::tests::engine();
+        e.media
+            .avatar_hosts
+            .extend(["example.com".into(), "www.gravatar.com".into()]);
         let media = ready(&e, "bob");
-        e.db.lock()
+        e.store
+            .db
+            .lock()
             .unwrap()
             .execute(
                 "UPDATE media SET json=json_set(json,'$.created',0) WHERE id=?1",

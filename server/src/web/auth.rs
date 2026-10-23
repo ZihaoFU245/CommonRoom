@@ -18,13 +18,32 @@ fn verify_login_password(password: &str, expected: Option<&str>) -> bool {
     expected.is_some() && valid
 }
 
-pub(crate) fn token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chat_session="))
+fn cookie_name(config: &Config) -> &'static str {
+    if config.production && config.base_url == "/" {
+        "__Host-chat_session"
+    } else {
+        "chat_session"
+    }
+}
+pub(crate) fn token<'a>(config: &Config, headers: &'a HeaderMap) -> Option<&'a str> {
+    let expected = cookie_name(config);
+    let mut token = None;
+    for header in headers.get_all(header::COOKIE) {
+        for part in header.as_bytes().split(|byte| *byte == b';') {
+            let part = part.trim_ascii();
+            let Some(index) = part.iter().position(|byte| *byte == b'=') else {
+                continue;
+            };
+            if &part[..index] == expected.as_bytes() {
+                let value = &part[index + 1..];
+                if token.is_some() || value.is_empty() || !value.iter().all(u8::is_ascii_graphic) {
+                    return None;
+                }
+                token = Some(std::str::from_utf8(value).ok()?);
+            }
+        }
+    }
+    token
 }
 pub(crate) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, ApiError> {
     if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
@@ -34,7 +53,7 @@ pub(crate) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, Api
         ));
     }
     let engine = app.engine_read_api()?;
-    identity(&engine, headers)
+    identity(&engine, &app.config, headers)
         .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
 }
 pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -45,11 +64,11 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     }
     value.strip_prefix("Bearer ").filter(|s| !s.is_empty())
 }
-pub(crate) fn identity(engine: &Engine, headers: &HeaderMap) -> Option<String> {
+pub(crate) fn identity(engine: &Engine, config: &Config, headers: &HeaderMap) -> Option<String> {
     if headers.contains_key(header::AUTHORIZATION) {
         engine.bot_identity(bearer(headers)?)
     } else {
-        engine.session(token(headers)?)
+        engine.session(token(config, headers)?)
     }
 }
 #[derive(Deserialize)]
@@ -64,7 +83,7 @@ pub(crate) async fn login(
     Json(input): Json<Login>,
 ) -> Result<Response, ApiError> {
     check_origin(&app, &headers)?;
-    if !valid_name(&input.username) || input.password.len() > 128 {
+    if !valid_name(&input.username) || input.password.len() > crate::limits::MAX_PASSWORD_BYTES {
         return Err(error(
             StatusCode::UNAUTHORIZED,
             "Invalid username or password.",
@@ -88,14 +107,14 @@ pub(crate) async fn login(
         .map_err(|message| error(StatusCode::TOO_MANY_REQUESTS, message))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let result = login_inner(&app, &headers, &input);
+        let result = login_inner(&app, &headers, &input, ip);
         // Pending attempts count until completion, so concurrent requests cannot
         // overshoot a limit. Cancelled HTTP futures still finish this bookkeeping.
-        let failed = matches!(&result, Err((StatusCode::UNAUTHORIZED, _)));
+        let failed = matches!(&result, Err(ApiError(StatusCode::UNAUTHORIZED, _)));
         app.attempts
             .lock()
             .map_err(|_| login_state_unavailable())?
-            .finish(reservation, failed);
+            .finish(reservation, failed, std::time::Instant::now());
         if failed {
             tracing::warn!(client = %ip, "Login rejected");
         }
@@ -110,16 +129,26 @@ fn login_state_unavailable() -> ApiError {
         "Login state unavailable; restart the service.",
     )
 }
-fn login_inner(app: &App, headers: &HeaderMap, input: &Login) -> Result<Response, ApiError> {
-    let account = app
+fn login_inner(
+    app: &App,
+    headers: &HeaderMap,
+    input: &Login,
+    client: std::net::IpAddr,
+) -> Result<Response, ApiError> {
+    let expected = app
         .engine_read_api()?
-        .data
-        .users
-        .get(&input.username)
-        .cloned()
-        .filter(|u| !u.disabled);
-    let valid = verify_login_password(&input.password, account.as_ref().map(|a| a.hash.as_str()));
+        .password_hash(&input.username)
+        .map(str::to_owned);
+    let valid = verify_login_password(&input.password, expected.as_deref());
     if !valid {
+        let event = crate::engine::AuthEvent::new(
+            Some(&input.username),
+            Some(client),
+            crate::engine::AuthOutcome::Failure,
+        );
+        app.engine_read_api()?
+            .record_auth_event(&event)
+            .map_err(ApiError::from)?;
         return Err(error(
             StatusCode::UNAUTHORIZED,
             "Invalid username or password.",
@@ -131,16 +160,20 @@ fn login_inner(app: &App, headers: &HeaderMap, input: &Login) -> Result<Response
         uuid::Uuid::new_v4().simple()
     );
     app.engine_api()?
-        .login(
+        .login_recorded(
             value.clone(),
             &input.username,
-            &account
-                .as_ref()
-                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid username or password."))?
-                .hash,
-            token(headers),
+            expected
+                .as_deref()
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid username or password."))?,
+            token(&app.config, headers),
+            Some(&crate::engine::AuthEvent::new(
+                Some(&input.username),
+                Some(client),
+                crate::engine::AuthOutcome::Success,
+            )),
         )
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+        .map_err(ApiError::from)?;
     tracing::info!(user = %input.username, "Login succeeded");
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
@@ -157,7 +190,8 @@ fn login_inner(app: &App, headers: &HeaderMap, input: &Login) -> Result<Response
 
 pub(crate) fn cookie(app: &App, value: &str, age: u32) -> String {
     format!(
-        "chat_session={value}; HttpOnly; SameSite=Strict; Path={}; Max-Age={age}{}",
+        "{}={value}; HttpOnly; SameSite=Strict; Path={}; Max-Age={age}{}",
+        cookie_name(&app.config),
         app.config.base_url,
         if app.config.production {
             "; Secure"
@@ -168,15 +202,44 @@ pub(crate) fn cookie(app: &App, value: &str, age: u32) -> String {
 }
 pub(crate) async fn logout(
     State(app): State<App>,
+    peer: Option<axum::Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    check_origin(&app, &headers)?;
+    let client = peer.map(|axum::Extension(ConnectInfo(peer))| {
+        client_ip(&app.config, peer.ip(), &headers).unwrap_or_else(|_| peer.ip().to_canonical())
+    });
     let permit = app
         .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let runtime = tokio::runtime::Handle::current();
+        .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        runtime.block_on(logout_inner(State(app), headers))
+        if let Some(token) = token(&app.config, &headers) {
+            let mut engine = app.engine_api()?;
+            let user = engine.session(token);
+            let event = crate::engine::AuthEvent::new(
+                user.as_deref(),
+                client,
+                crate::engine::AuthOutcome::Logout,
+            );
+            if let Some(user) = engine
+                .logout_recorded(token, Some(&event))
+                .map_err(ApiError::from)?
+            {
+                let _ = app.changes.send(Change::Account(user));
+            }
+        }
+        let mut response = Json(json!({"ok":true})).into_response();
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&cookie(&app, "", 0)).map_err(|_| {
+                error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid session cookie configuration.",
+                )
+            })?,
+        );
+        Ok(response)
     })
     .await
     .map_err(|_| {
@@ -186,26 +249,6 @@ pub(crate) async fn logout(
         )
     })?
 }
-async fn logout_inner(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
-    check_origin(&app, &headers)?;
-    if let Some(token) = token(&headers) {
-        app.engine_api()?
-            .logout(token)
-            .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    }
-    let _ = app.changes.send(Change::All);
-    let mut response = Json(json!({ "ok": true })).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie(&app, "", 0)).map_err(|_| {
-            error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Invalid session cookie configuration.",
-            )
-        })?,
-    );
-    Ok(response)
-}
 pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
     check_read_origin_or_bot(&app, &headers)?;
     let permit = app
@@ -214,8 +257,7 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         authenticate(&app, &headers)?;
-        let value = super::snapshots::value(&app, &headers, false)
-            .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+        let value = super::snapshots::value(&app, &headers, false).map_err(ApiError::from)?;
         Ok((
             [(header::CONTENT_TYPE, "application/json")],
             value.to_string(),
@@ -257,6 +299,50 @@ pub(crate) async fn session_status(
 #[allow(clippy::unwrap_used)] // Test assertions intentionally fail on invalid fixtures.
 mod tests {
     use super::*;
+    #[test]
+    fn cookie_selection_enforces_host_prefix_and_rejects_duplicate_values_across_headers() {
+        let mut config = Config {
+            production: true,
+            ..Config::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            "chat_session=shadow; __Host-chat_session=actual"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(token(&config, &headers), Some("actual"));
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_bytes(b"foreign=\xff; __Host-chat_session=actual").unwrap(),
+        );
+        assert_eq!(token(&config, &headers), Some("actual"));
+        headers.append(
+            header::COOKIE,
+            "__Host-chat_session=second".parse().unwrap(),
+        );
+        assert!(token(&config, &headers).is_none());
+        headers.insert(header::COOKIE, "chat_session=legacy".parse().unwrap());
+        assert!(token(&config, &headers).is_none());
+        config.base_url = "/commonroom/".into();
+        assert_eq!(token(&config, &headers), Some("legacy"));
+        headers.insert(
+            header::COOKIE,
+            "chat_session=one; chat_session=two".parse().unwrap(),
+        );
+        assert!(token(&config, &headers).is_none());
+        headers.insert(header::COOKIE, "chat_session=".parse().unwrap());
+        assert!(token(&config, &headers).is_none());
+        let mut app = crate::web::tests::login_test_app();
+        config.base_url = "/".into();
+        app.config = std::sync::Arc::new(config);
+        let value = cookie(&app, "session", 43200);
+        assert!(value.starts_with("__Host-chat_session="));
+        assert!(value.contains("; Path=/;"));
+        assert!(value.ends_with("; Secure"));
+        assert!(!value.contains("Domain="));
+    }
     #[test]
     fn dummy_login_hash_uses_the_same_work_parameters_as_real_passwords() {
         let real = crate::engine::hash_password("test-password").unwrap();

@@ -36,9 +36,9 @@ const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM
 // Uncorrelated NOT IN builds one transient lookup per statement; account JSON
 // is not reparsed for each candidate. Exclude NULLs so accounts without avatars
 // cannot suppress cleanup.
-fn delete_tombstones(db: &Connection, cutoff: u64) -> Result<(), String> {
+fn delete_tombstones(db: &Connection, cutoff: u64) -> Result<(), EngineError> {
     db.execute(TOMBSTONES_SQL, [cutoff])
-        .map_err(|e| e.to_string())?;
+        .map_err(EngineError::unavailable)?;
     Ok(())
 }
 // Columns are authoritative for mutable state; legacy JSON copies are ignored.
@@ -58,17 +58,17 @@ pub(super) fn reconcile(
     db: &Connection,
     conversation: &str,
     message: &Message,
-) -> Result<(), String> {
+) -> Result<(), EngineError> {
     let ids = media_references(&message.text);
     let previous: BTreeSet<String> = {
         let mut query = db
             .prepare("SELECT media_id FROM message_media WHERE conversation=?1 AND sequence=?2")
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         query
             .query_map(params![conversation, message.sequence], |row| row.get(0))
-            .map_err(|e| e.to_string())?
+            .map_err(EngineError::unavailable)?
             .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
+            .map_err(EngineError::unavailable)?
     };
     // Validate before replacing references, allowing an editor to preserve another
     // author's attachment that is already published in this conversation.
@@ -76,9 +76,9 @@ pub(super) fn reconcile(
         if previous.contains(id) {
             continue;
         }
-        let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation=?2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (uploader=?3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)))", params![id,conversation,message.author_id,now()], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation=?2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (uploader=?3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)))", params![id,conversation,message.author_id,now()], |r| r.get(0)).map_err(EngineError::unavailable)?;
         if !valid {
-            return Err("Upload not found.".into());
+            return Err(EngineError::NotFound("Upload not found.".into()));
         }
     }
     if ids == previous {
@@ -88,37 +88,49 @@ pub(super) fn reconcile(
         "DELETE FROM message_media WHERE conversation=?1 AND sequence=?2",
         params![conversation, message.sequence],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(EngineError::unavailable)?;
     for id in ids {
         db.execute(
             "INSERT INTO message_media VALUES(?1,?2,?3)",
             params![conversation, message.sequence, id],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(EngineError::unavailable)?;
         db.execute(
             "UPDATE media SET unreferenced=NULL,published=COALESCE(published,?2) WHERE id=?1",
             params![id, now()],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(EngineError::unavailable)?;
     }
     Ok(())
 }
 
 impl Engine {
+    pub(crate) fn media_read_version(&self) -> Result<(u64, u64), EngineError> {
+        Ok((
+            self.revision,
+            self.store
+                .db
+                .lock()
+                .map_err(EngineError::unavailable)?
+                .total_changes(),
+        ))
+    }
+
     // Called before accepting uploads on restart. SQLite references are authoritative;
     // recent uploads from a previous process no longer have a live reservation.
-    pub(crate) fn prepare_media_cleanup(&self) -> Result<(), String> {
-        self.db
+    pub(crate) fn prepare_media_cleanup(&self) -> Result<(), EngineError> {
+        self.store
+            .db
             .lock()
-            .map_err(|_| "Storage unavailable.")?
+            .map_err(EngineError::unavailable)?
             .execute(STARTUP_CLEANUP_SQL, [])
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         Ok(())
     }
-    pub(crate) fn store_media_allocation(&self, media: &Media) -> Result<(), String> {
-        let mut db = self.db.lock().map_err(|_| "Storage unavailable.")?;
-        let tx = db.savepoint().map_err(|e| e.to_string())?;
-        let (bytes, pending, recent): (u64,u64,u64) = tx.query_row("SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END),0),COALESCE(SUM(deleted=0 AND published IS NULL),0),COALESCE(SUM(created>?2),0) FROM media WHERE uploader=?1", params![media.uploader,now().saturating_sub(60)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e| e.to_string())?;
+    pub(crate) fn store_media_allocation(&self, media: &Media) -> Result<(), EngineError> {
+        let mut db = self.store.db.lock().map_err(EngineError::unavailable)?;
+        let tx = db.savepoint().map_err(EngineError::unavailable)?;
+        let (bytes, pending, recent): (u64,u64,u64) = tx.query_row("SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END),0),COALESCE(SUM(deleted=0 AND published IS NULL),0),COALESCE(SUM(created>?2),0) FROM media WHERE uploader=?1", params![media.uploader,now().saturating_sub(60)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(EngineError::unavailable)?;
         let quota = self
             .data
             .users
@@ -128,20 +140,20 @@ impl Engine {
                 self.metadata_value(name, &authorization::Scope::Server, "media.user_quota")
             })
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(self.media_config.user_quota)
-            .min(self.media_config.user_quota);
+            .unwrap_or(self.media.config.user_quota)
+            .min(self.media.config.user_quota);
         if bytes.saturating_add(media.size) > quota {
             return Err(
                 "Upload byte quota reached; remove attachments or wait for cleanup.".into(),
             );
         }
-        if pending >= self.media_config.pending_limit {
+        if pending >= self.media.config.pending_limit {
             return Err(
                 "Pending upload limit reached; send or remove attachments and wait for cleanup."
                     .into(),
             );
         }
-        if recent >= self.media_config.allocations_per_minute {
+        if recent >= self.media.config.allocations_per_minute {
             return Err("Upload rate limit reached; retry in a minute.".into());
         }
         if let Some((key, chat)) = self
@@ -156,12 +168,12 @@ impl Engine {
                     [key],
                     |row| row.get(0),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(EngineError::unavailable)?;
             if !exists {
                 put_entity(&tx, "private", key, &private_metadata(chat))?;
             }
         }
-        let json = serde_json::to_string(media).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(media).map_err(EngineError::unavailable)?;
         tx.execute(
             "INSERT INTO media(id,uploader,conversation,size,created,ready,unreferenced,staging_clean,json) VALUES(?1,?2,?3,?4,?5,0,?5,0,?6)",
             params![
@@ -173,18 +185,21 @@ impl Engine {
                 json
             ],
         )
-        .map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())
+        .map_err(EngineError::unavailable)?;
+        tx.commit().map_err(EngineError::unavailable)
     }
-    pub(crate) fn stored_media_with_reference(&self, id: &str) -> Result<(Media, bool), String> {
-        let db = self.db.lock().map_err(|_| "Storage unavailable.")?;
+    pub(crate) fn stored_media_with_reference(
+        &self,
+        id: &str,
+    ) -> Result<(Media, bool), EngineError> {
+        let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         db.query_row("SELECT json,ready,expires,deleting,deleted,EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) FROM media WHERE id=?1", [id], |row| Ok((media_row(row)?, row.get(5)?)))
-            .optional().map_err(|e| e.to_string())?.ok_or_else(|| "Upload not found.".into())
+            .optional().map_err(EngineError::unavailable)?.ok_or_else(|| EngineError::NotFound("Upload not found.".into()))
     }
-    pub(crate) fn stored_media(&self, id: &str) -> Result<Media, String> {
+    pub(crate) fn stored_media(&self, id: &str) -> Result<Media, EngineError> {
         self.stored_media_with_reference(id).map(|(media, _)| media)
     }
-    pub(crate) fn store_media_ready(&self, media: &Media) -> Result<(), String> {
+    pub(crate) fn store_media_ready(&self, media: &Media) -> Result<(), EngineError> {
         let mut media = media.clone();
         media.expires =
             if media.max_age == -1 {
@@ -194,32 +209,35 @@ impl Engine {
                     u64::try_from(media.max_age).map_err(|_| "Invalid media age.")?,
                 ))
             };
-        let json = serde_json::to_string(&media).map_err(|e| e.to_string())?;
-        let db = self.db.lock().map_err(|_| "Storage unavailable.")?;
+        let json = serde_json::to_string(&media).map_err(EngineError::unavailable)?;
+        let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         let changed = db
             .execute(
                 "UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND ready=0 AND deleting=0 AND deleted=0",
                 params![media.id, json, now(), media.expires],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         if changed != 1 {
-            return Err("Upload changed; retry completion.".into());
+            return Err(EngineError::Conflict(
+                "Upload changed; retry completion.".into(),
+            ));
         }
         Ok(())
     }
     #[cfg(test)]
-    pub(crate) fn media_attached(&self, id: &str) -> Result<bool, String> {
-        self.db
+    pub(crate) fn media_attached(&self, id: &str) -> Result<bool, EngineError> {
+        self.store
+            .db
             .lock()
-            .map_err(|_| "Storage unavailable.")?
+            .map_err(EngineError::unavailable)?
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)",
                 [id],
                 |r| r.get(0),
             )
-            .map_err(|e| e.to_string())
+            .map_err(EngineError::unavailable)
     }
-    pub(crate) fn abandon_media(&self, user: &str, id: &str) -> Result<(), String> {
+    pub(crate) fn abandon_media(&self, user: &str, id: &str) -> Result<(), EngineError> {
         let media = self.stored_media(id)?;
         if self
             .data
@@ -227,15 +245,15 @@ impl Engine {
             .get(user)
             .is_none_or(|u| u.id != media.uploader)
         {
-            return Err("Upload not found.".into());
+            return Err(EngineError::NotFound("Upload not found.".into()));
         }
-        let db = self.db.lock().map_err(|_| "Storage unavailable.")?;
+        let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         let changed = db
             .execute(
                 "UPDATE media SET deleting=1 WHERE id=?1 AND published IS NULL AND deleted=0",
                 [id],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         if changed == 0 {
             tracing::debug!(
                 media_id = id,
@@ -245,39 +263,44 @@ impl Engine {
         Ok(())
     }
     #[cfg(test)]
-    pub(crate) fn expired_media(&self) -> Result<Vec<Media>, String> {
+    pub(crate) fn expired_media(&self) -> Result<Vec<Media>, EngineError> {
         self.expired_media_before(u64::MAX)
     }
-    pub(crate) fn expired_media_before(&self, attempted_before: u64) -> Result<Vec<Media>, String> {
+    pub(crate) fn expired_media_before(
+        &self,
+        attempted_before: u64,
+    ) -> Result<Vec<Media>, EngineError> {
         let timestamp = now();
-        let mut db = self.db.lock().map_err(|_| "Storage unavailable.")?;
-        let tx = db.savepoint().map_err(|e| e.to_string())?;
-        delete_tombstones(&tx, timestamp.saturating_sub(self.media_config.pending_ttl))?;
+        let mut db = self.store.db.lock().map_err(EngineError::unavailable)?;
+        let tx = db.savepoint().map_err(EngineError::unavailable)?;
+        delete_tombstones(&tx, timestamp.saturating_sub(self.media.config.pending_ttl))?;
         // Sort at most 3 * batch candidates, rather than the entire live table.
         let result = {
-            let mut query = tx.prepare(CLAIM_CLEANUP_SQL).map_err(|e| e.to_string())?;
+            let mut query = tx
+                .prepare(CLAIM_CLEANUP_SQL)
+                .map_err(EngineError::unavailable)?;
             query
                 .query_map(
                     params![
                         timestamp,
-                        timestamp.saturating_sub(self.media_config.pending_ttl),
-                        self.media_config.cleanup_batch,
+                        timestamp.saturating_sub(self.media.config.pending_ttl),
+                        self.media.config.cleanup_batch,
                         attempted_before.min(i64::MAX.unsigned_abs())
                     ],
                     media_row,
                 )
-                .map_err(|e| e.to_string())?
+                .map_err(EngineError::unavailable)?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?
+                .map_err(EngineError::unavailable)?
         };
         for media in &result {
             tx.execute(
                 "UPDATE media SET deleting=1,cleanup_attempt=?2 WHERE id=?1",
                 params![media.id, timestamp],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         }
-        tx.commit().map_err(|e| e.to_string())?;
+        tx.commit().map_err(EngineError::unavailable)?;
         Ok(result
             .into_iter()
             .map(|mut media| {
@@ -289,53 +312,54 @@ impl Engine {
     pub(crate) fn media_staging_cleanup(
         &self,
         attempted_before: u64,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, EngineError> {
         let timestamp = now();
-        let mut db = self.db.lock().map_err(|_| "Storage unavailable.")?;
-        let tx = db.savepoint().map_err(|e| e.to_string())?;
+        let mut db = self.store.db.lock().map_err(EngineError::unavailable)?;
+        let tx = db.savepoint().map_err(EngineError::unavailable)?;
         let ids = {
-            let mut query = tx.prepare("SELECT id FROM media WHERE staging_clean=0 AND created<=?1 AND staging_attempt<?3 ORDER BY staging_attempt,created LIMIT ?2").map_err(|e| e.to_string())?;
+            let mut query = tx.prepare("SELECT id FROM media WHERE staging_clean=0 AND created<=?1 AND staging_attempt<?3 ORDER BY staging_attempt,created LIMIT ?2").map_err(EngineError::unavailable)?;
             query
                 .query_map(
                     params![
-                        timestamp.saturating_sub(self.media_config.pending_ttl),
-                        self.media_config.cleanup_batch,
+                        timestamp.saturating_sub(self.media.config.pending_ttl),
+                        self.media.config.cleanup_batch,
                         attempted_before
                     ],
                     |row| row.get(0),
                 )
-                .map_err(|e| e.to_string())?
+                .map_err(EngineError::unavailable)?
                 .collect::<Result<Vec<String>, _>>()
-                .map_err(|e| e.to_string())?
+                .map_err(EngineError::unavailable)?
         };
         for id in &ids {
             tx.execute(
                 "UPDATE media SET staging_attempt=?2 WHERE id=?1",
                 params![id, timestamp],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         }
-        tx.commit().map_err(|e| e.to_string())?;
+        tx.commit().map_err(EngineError::unavailable)?;
         Ok(ids)
     }
-    pub(crate) fn media_staging_cleaned(&self, id: &str) -> Result<(), String> {
-        self.db
+    pub(crate) fn media_staging_cleaned(&self, id: &str) -> Result<(), EngineError> {
+        self.store
+            .db
             .lock()
-            .map_err(|_| "Storage unavailable.")?
+            .map_err(EngineError::unavailable)?
             .execute("UPDATE media SET staging_clean=1 WHERE id=?1", [id])
-            .map_err(|e| e.to_string())?;
+            .map_err(EngineError::unavailable)?;
         Ok(())
     }
-    pub(crate) fn remove_media_record(&self, id: &str) -> Result<(), String> {
-        let db = self.db.lock().map_err(|_| "Storage unavailable.")?;
+    pub(crate) fn remove_media_record(&self, id: &str) -> Result<(), EngineError> {
+        let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         db.execute(
             "UPDATE media SET deleted=1,deleting=0,ready=0 WHERE id=?1 AND deleting=1",
             [id],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(EngineError::unavailable)?;
         // Keep tombstones while retained messages reference expired attachments.
         // Unreferenced tombstones also preserve rate accounting and staging recovery.
-        delete_tombstones(&db, now().saturating_sub(self.media_config.pending_ttl))?;
+        delete_tombstones(&db, now().saturating_sub(self.media.config.pending_ttl))?;
         Ok(())
     }
 }
@@ -347,7 +371,7 @@ mod tests {
     #[test]
     fn avatar_cleanup_builds_one_reference_list_instead_of_a_correlated_account_scan() {
         let engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
-        let db = engine.db.lock().unwrap();
+        let db = engine.store.db.lock().unwrap();
         for sql in [TOMBSTONES_SQL, STARTUP_CLEANUP_SQL, CLAIM_CLEANUP_SQL] {
             let mut query = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
             let bindings = vec![1_i64; query.parameter_count()];
@@ -393,7 +417,7 @@ mod tests {
             .unwrap();
         let message = engine.history("alice", "files").unwrap().messages[0].clone();
         let conversation = engine.data.rooms["files"].id.clone();
-        let db = engine.db.lock().unwrap();
+        let db = engine.store.db.lock().unwrap();
         let changes = db.total_changes();
         reconcile(&db, &conversation, &message).unwrap();
         assert_eq!(db.total_changes(), changes);

@@ -1,8 +1,11 @@
-use super::auth::{identity, token};
+use super::auth::identity;
+#[path = "credential_commands.rs"]
+mod credentials;
 use super::*;
+use crate::engine::EngineError;
 use crate::engine::{
     authorization::{Action, Scope},
-    hash_password, sudo_command, verify_password,
+    sudo_command,
 };
 use axum::http::HeaderMap;
 use serde::Deserialize;
@@ -21,6 +24,7 @@ pub(crate) async fn execute_input(
     user: &str,
     input: &Input,
 ) -> Result<(String, Option<Change>), String> {
+    crate::limits::validate_input(&input.text)?;
     let permit = app.io_permit()?;
     let app = app.clone();
     let headers = headers.clone();
@@ -31,23 +35,28 @@ pub(crate) async fn execute_input(
         room: input.room.clone(),
         text: input.text.clone(),
     };
-    let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        runtime.block_on(execute_input_inner(&app, &headers, &user, &input))
+        let account = app
+            .engine_read()?
+            .active_account_id(&user)
+            .ok_or("Account unavailable.")?
+            .to_owned();
+        let _account_permit = app.admission.http(account)?;
+        execute_input_inner(&app, &headers, &user, &input).map_err(String::from)
     })
     .await
     .map_err(|_| "Command worker unavailable.")?
 }
-async fn execute_input_inner(
+fn execute_input_inner(
     app: &App,
     headers: &HeaderMap,
     user: &str,
     input: &Input,
-) -> Result<(String, Option<Change>), String> {
+) -> Result<(String, Option<Change>), EngineError> {
     {
         let engine = app.engine_read()?;
-        if identity(&engine, headers).as_deref() != Some(user) {
+        if identity(&engine, &app.config, headers).as_deref() != Some(user) {
             return Err("Please log in.".into());
         }
     }
@@ -57,7 +66,7 @@ async fn execute_input_inner(
     let command = text.split_whitespace().next().unwrap_or("");
     let routed = crate::commands::route(text);
     let parts: Vec<_> = routed.split_whitespace().collect();
-    let provision = crate::commands::provision_command(&parts)?;
+    let provision = crate::commands::provision_command(&parts).map_err(EngineError::Invalid)?;
     if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
         return app.engine()?.with_command_authority(
             Some(user),
@@ -65,7 +74,7 @@ async fn execute_input_inner(
             true,
             |_| {
                 if parts.len() != 1 {
-                    return Err(format!("Usage: {}", parts[0]));
+                    return Err(EngineError::Invalid(format!("Usage: {}", parts[0])));
                 }
                 Ok(("Done.".into(), None))
             },
@@ -73,7 +82,7 @@ async fn execute_input_inner(
     }
     if parts.first() == Some(&"/configs") {
         let mut engine = app.engine()?;
-        if identity(&engine, headers).as_deref() != Some(user) {
+        if identity(&engine, &app.config, headers).as_deref() != Some(user) {
             return Err("Please log in.".into());
         }
         return engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
@@ -84,7 +93,8 @@ async fn execute_input_inner(
                 return Err("Usage: /configs".into());
             }
             app.config
-                .display_with_history(engine.history_store.stats()?)
+                .display_with_history(engine.history_store().stats()?)
+                .map_err(EngineError::Invalid)
                 .map(|text| (text, None))
         });
     }
@@ -92,7 +102,7 @@ async fn execute_input_inner(
     if !passwd && provision.is_none() {
         if !sudo {
             let engine = app.engine_read()?;
-            if identity(&engine, headers).as_deref() != Some(user) {
+            if identity(&engine, &app.config, headers).as_deref() != Some(user) {
                 return Err("Please log in.".into());
             }
             if let Some(result) =
@@ -102,135 +112,17 @@ async fn execute_input_inner(
             }
         }
         let mut engine = app.engine()?;
-        if identity(&engine, headers).as_deref() != Some(user) {
+        if identity(&engine, &app.config, headers).as_deref() != Some(user) {
             return Err("Please log in.".into());
         }
-        let before = engine.revision;
-        let reply = engine.execute_formatted(
+        let outcome = engine.execute_command(
             Some(user),
             input.room.as_deref(),
             &input.text,
             input.markdown,
         )?;
-        let change = (engine.revision != before).then(|| {
-            engine
-                .changed_conversation
-                .as_ref()
-                .map_or(Change::All, |id| Change::Conversation(id.clone()))
-        });
-        return Ok((reply, change));
+        let change = Change::command(outcome.change);
+        return Ok((outcome.reply, change));
     }
-    if passwd && parts.len() != 3 {
-        return Err("Usage: /user passwd old new".into());
-    }
-    if input.text.len() > 4000 {
-        return Err("Password commands support at most 4000 bytes.".into());
-    }
-    let reset = provision.is_some_and(|account| account.reset);
-    let admin = provision.is_some_and(|account| account.admin);
-    let name = provision.map_or(parts[1], |account| account.name);
-    let password = provision.map_or(parts[2], |account| account.password);
-    let target_id = {
-        let mut engine = app.engine()?;
-        engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
-            engine.require_command(Some(user), input.room.as_deref(), command)?;
-            if passwd {
-                let scope = engine.account_target(Some(user), user, Action::Password)?;
-                engine.require_target_command(Some(user), &scope, command)?;
-                Ok(None)
-            } else if reset {
-                let scope = engine.account_target(Some(user), name, Action::Reset)?;
-                engine.require_target_command(Some(user), &scope, command)?;
-                Ok(Some(
-                    engine
-                        .data
-                        .users
-                        .get(name)
-                        .ok_or("User not found.")?
-                        .id
-                        .clone(),
-                ))
-            } else {
-                engine.require_target_command(Some(user), &Scope::Server, command)?;
-                engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
-                if admin {
-                    engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
-                }
-                Ok(None)
-            }
-        })?
-    };
-    let expected = if passwd {
-        Some(
-            app.engine()?
-                .data
-                .users
-                .get(user)
-                .filter(|u| !u.disabled)
-                .ok_or("Account unavailable.")?
-                .hash
-                .clone(),
-        )
-    } else {
-        None
-    };
-    let old = name.to_owned();
-    let password = password.to_owned();
-    let expected_job = expected.clone();
-    let permit = app
-        .password_jobs
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| "Account management busy. Try again shortly.")?;
-    let hash = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        if let Some(hash) = expected_job
-            && (old.len() > 128 || !verify_password(&old, &hash))
-        {
-            return Err("Old password is incorrect.".into());
-        }
-        hash_password(&password)
-    })
-    .await
-    .map_err(|_| "Password hashing failed.")??;
-    let mut engine = app.engine()?;
-    let current = super::auth::bearer(headers)
-        .or_else(|| token(headers))
-        .ok_or("Please log in.")?;
-    if identity(&engine, headers).as_deref() != Some(user) {
-        return Err("Please log in.".into());
-    }
-    engine.with_command_authority(Some(user), input.room.as_deref(), sudo, |engine| {
-        if passwd {
-            engine.require_command(Some(user), input.room.as_deref(), command)?;
-            let scope = engine.account_target(Some(user), user, Action::Password)?;
-            engine.require_target_command(Some(user), &scope, command)?;
-            return engine
-                .change_password(
-                    user,
-                    expected.as_deref().ok_or("Account unavailable.")?,
-                    hash,
-                    current,
-                )
-                .map(|text| (text, Some(Change::All)));
-        }
-        // Recheck the command, action and target identity after hashing.
-        engine.require_command(Some(user), input.room.as_deref(), command)?;
-        if reset {
-            let scope = engine.account_target(Some(user), name, Action::Reset)?;
-            engine.require_target_command(Some(user), &scope, command)?;
-            if engine.data.users.get(name).map(|u| &u.id) != target_id.as_ref() {
-                return Err("Account changed. Try again.".into());
-            }
-        } else {
-            engine.require_target_command(Some(user), &Scope::Server, command)?;
-            engine.require(Some(user), &Scope::Server, Action::CreateAccount)?;
-            if admin {
-                engine.require(Some(user), &Scope::Server, Action::AssignAdmin)?;
-            }
-        }
-        engine
-            .provision_by(Some(user), name, hash, admin, reset)
-            .map(|text| (text, Some(Change::All)))
-    })
+    credentials::execute(app, headers, user, input, sudo, command, &parts)
 }

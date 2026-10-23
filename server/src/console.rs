@@ -34,30 +34,33 @@ pub fn start(app: App) {
                     continue;
                 }
             };
-            let before = match app.engine() {
-                Ok(engine) => engine.revision,
-                Err(error) => {
-                    tracing::error!("{error}");
-                    break;
-                }
-            };
             let result = match (parts[0], provision) {
-                ("/help", _) if parts.len() == 1 => Ok(commands::help(true, true)),
-                ("/configs", _) if parts.len() == 1 => app.engine_read().and_then(|engine| {
-                    app.config
-                        .display_with_history(engine.history_store.stats()?)
-                }),
+                ("/help", _) if parts.len() == 1 => Ok((commands::help(true, true), None)),
+                ("/configs", _) if parts.len() == 1 => {
+                    app.engine_read().map_err(String::from).and_then(|engine| {
+                        app.config
+                            .display_with_history(engine.history_store().stats()?)
+                            .map(|reply| (reply, None))
+                    })
+                }
                 ("/configs", _) => Err("Usage: /configs".into()),
-                (_, Some(account)) => hash_password(account.password).and_then(|hash| {
-                    app.engine()?
-                        .provision(account.name, hash, account.admin, account.reset)
+                (_, Some(account)) => hash_password(account.password)
+                    .map_err(String::from)
+                    .and_then(|hash| {
+                        let mut engine = app.engine()?;
+                        let reply =
+                            engine.provision(account.name, hash, account.admin, account.reset)?;
+                        Ok((reply, Some(Change::Metadata(engine.metadata_change()))))
+                    }),
+                _ => app.engine().map_err(String::from).and_then(|mut engine| {
+                    engine
+                        .execute_command(None, None, command, false)
+                        .map(|outcome| (outcome.reply, Change::command(outcome.change)))
+                        .map_err(String::from)
                 }),
-                _ => app
-                    .engine()
-                    .and_then(|mut engine| engine.execute(None, None, command)),
             };
             match result {
-                Ok(reply) => {
+                Ok((reply, change)) => {
                     if parts.get(0..3) == Some(&["/bot", "token", "new"]) {
                         // Explicit secret issuance goes to the operator, never the tracing log.
                         use std::io::Write;
@@ -67,8 +70,8 @@ pub fn start(app: App) {
                     } else {
                         tracing::info!("{reply}");
                     }
-                    if app.engine().is_ok_and(|engine| engine.revision != before) {
-                        let _ = app.changes.send(Change::All);
+                    if let Some(change) = change {
+                        let _ = app.changes.send(change);
                     }
                 }
                 Err(error) => tracing::warn!("{error}"),

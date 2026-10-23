@@ -40,16 +40,7 @@ impl Context {
     }
     pub fn user(&self, engine: &Engine) -> Result<String, Error> {
         let name = engine
-            .bot_index
-            .accounts
-            .get(&self.account)
-            .filter(|name| {
-                engine
-                    .data
-                    .users
-                    .get(*name)
-                    .is_some_and(|a| a.id == self.account && !a.disabled)
-            })
+            .active_account_name(&self.account)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?;
         let credential = self.metadata(engine)?;
         if credential.digest != self.digest
@@ -62,14 +53,11 @@ impl Context {
                 "Credential expired or revoked.",
             ));
         }
-        Ok(name.clone())
+        Ok(name.to_owned())
     }
     pub fn metadata<'a>(&self, engine: &'a Engine) -> Result<&'a Credential, Error> {
         engine
-            .data
-            .bots
-            .get(&self.account)
-            .and_then(|r| r.tokens.get(&self.credential))
+            .bot_credential(&self.account, &self.credential)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Credential revoked."))
     }
     pub fn permits(
@@ -93,10 +81,14 @@ impl Context {
         }
         Ok(())
     }
-    pub fn snapshot(&self, engine: &Engine) -> Result<super::models::Snapshot, Error> {
+    pub fn snapshot_plan(
+        &self,
+        engine: &Engine,
+    ) -> Result<crate::engine::snapshot::BotSnapshotPlan, Error> {
         let user = self.user(engine)?;
         let c = self.metadata(engine)?;
-        let mut snapshot = engine.bot_snapshot(&user)?;
+        let mut plan = engine.bot_snapshot_plan(&user)?;
+        let snapshot = &mut plan.snapshot;
         let permits = |operation: &str, id: &str| {
             c.operations
                 .as_ref()
@@ -110,6 +102,6 @@ impl Context {
             v.permissions.react &= permits("react", &v.id);
         }
         snapshot.credential = serde_json::json!({"id":self.credential,"expires":c.expires,"conversations":c.conversations,"operations":c.operations});
-        Ok(snapshot)
+        Ok(plan)
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::commands;
 
-pub fn sudo_command(input: &str) -> Result<Option<&str>, String> {
+pub fn sudo_command(input: &str) -> Result<Option<&str>, EngineError> {
     let input = input.trim();
     if input.split_whitespace().next() != Some("/sudo") {
         return Ok(None);
@@ -10,7 +10,10 @@ pub fn sudo_command(input: &str) -> Result<Option<&str>, String> {
         .strip_prefix("/sudo")
         .ok_or("Invalid command.")?
         .trim_start();
-    if input.chars().count() > 4100 || !command.starts_with('/') || command == "/" {
+    if input.chars().count() > crate::limits::MAX_COMMAND_CHARS
+        || !command.starts_with('/')
+        || command == "/"
+    {
         return Err("Usage: /sudo /command [arguments]".into());
     }
     if command.split_whitespace().next() == Some("/sudo") {
@@ -36,10 +39,10 @@ impl Engine {
         actor: Option<&str>,
         view: Option<&str>,
         input: &str,
-    ) -> Option<Result<String, String>> {
+    ) -> Option<Result<String, EngineError>> {
         let command = input.split_whitespace().next().unwrap_or("");
         if let Err(error) = commands::validate_room_arguments(input) {
-            return Some(Err(error));
+            return Some(Err(EngineError::Invalid(error)));
         }
         let routed = commands::route(input);
         let parts: Vec<_> = routed.split_whitespace().collect();
@@ -74,11 +77,9 @@ impl Engine {
             return None;
         }
         Some((|| {
-            if input.chars().count() > 4100 {
-                return Err("Enter a message of up to 4000 characters or a command.".into());
-            }
+            crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
             if actor.is_some_and(|name| !self.active(name)) {
-                return Err("Account unavailable.".into());
+                return Err(EngineError::Forbidden("Account unavailable.".into()));
             }
             self.require_command(actor, view, command)?;
             let context = CommandContext {
@@ -109,8 +110,26 @@ impl Engine {
         actor: Option<&str>,
         room: Option<&str>,
         input: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         self.execute_formatted(actor, room, input, false)
+    }
+    pub(crate) fn execute_command(
+        &mut self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        input: &str,
+        markdown: bool,
+    ) -> Result<CommandOutcome, EngineError> {
+        let revision = self.revision;
+        let reply = self.execute_formatted(actor, room, input, markdown)?;
+        let change = if self.revision == revision {
+            CommandChange::Unchanged
+        } else if let Some(id) = &self.changed_conversation {
+            CommandChange::Conversation(id.clone())
+        } else {
+            CommandChange::Metadata(self.metadata_change())
+        };
+        Ok(CommandOutcome { reply, change })
     }
     pub fn execute_formatted(
         &mut self,
@@ -118,9 +137,9 @@ impl Engine {
         room: Option<&str>,
         input: &str,
         markdown: bool,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         if actor.is_some_and(|user| !self.active(user)) {
-            return Err("Account unavailable.".into());
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
         }
         self.changed_conversation = None;
         let result = self.execute_inner(actor, room, input, markdown);
@@ -135,15 +154,15 @@ impl Engine {
         for chat in self.data.private.values_mut() {
             chat.messages.clear();
         }
-        self.pending_deletes.clear();
-        self.pending_cleanups.clear();
+        self.store.pending_deletes.clear();
+        self.store.pending_cleanups.clear();
     }
     fn load_command_message(
         &mut self,
         actor: Option<&str>,
         view: Option<&str>,
         parts: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineError> {
         if !matches!(
             parts.first().copied(),
             Some("/react" | "/reply" | "/retract" | "/edit")
@@ -155,7 +174,7 @@ impl Engine {
         };
         self.require_command(actor, view, parts[0])?;
         let scope = self.command_scope(actor, view)?;
-        let Some((id, message)) = self.history_store.locate(message_id)? else {
+        let Some((id, message)) = self.history_store().locate(message_id)? else {
             return Ok(());
         };
         if let Some(name) = view.filter(|v| !v.starts_with('@')) {
@@ -165,7 +184,7 @@ impl Engine {
                 self.data
                     .rooms
                     .get_mut(name)
-                    .ok_or("Room not found.")?
+                    .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
                     .messages
                     .push_back(message);
             }
@@ -185,7 +204,7 @@ impl Engine {
                 self.data
                     .private
                     .get_mut(&key)
-                    .ok_or("Private conversation not found.")?
+                    .ok_or_else(|| EngineError::NotFound("Private conversation not found.".into()))?
                     .messages
                     .push_back(message);
             }
@@ -203,7 +222,7 @@ impl Engine {
         room: Option<&str>,
         input: &str,
         markdown: bool,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         if let Some(command) = sudo_command(input)? {
             return self.with_command_authority(actor, room, true, |engine| {
                 engine.execute_inner(actor, room, command, markdown)
@@ -213,7 +232,7 @@ impl Engine {
             return result;
         }
         let command = input.split_whitespace().next().unwrap_or("");
-        commands::validate_room_arguments(input)?;
+        commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
         let routed = commands::route(input);
         let parts: Vec<_> = routed.split_whitespace().collect();
         self.load_command_message(actor, room, &parts)?;
@@ -228,11 +247,18 @@ impl Engine {
                 }
                 [_, "user", name, new_name] => (*name, *new_name),
                 [_, new_name] => (
-                    actor.ok_or_else(|| format!("Usage: {}", commands::RENAME_USAGE))?,
+                    actor.ok_or_else(|| {
+                        EngineError::Invalid(format!("Usage: {}", commands::RENAME_USAGE))
+                    })?,
                     *new_name,
                 ),
                 [_, name, new_name] => (*name, *new_name),
-                _ => return Err(format!("Usage: {}", commands::RENAME_USAGE)),
+                _ => {
+                    return Err(EngineError::Invalid(format!(
+                        "Usage: {}",
+                        commands::RENAME_USAGE
+                    )));
+                }
             };
             return self.rename_user(actor, name, new_name, command);
         }
@@ -257,17 +283,16 @@ impl Engine {
             });
             if result.is_err() {
                 self.restore_command_state(revision, changed)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(EngineError::unavailable)?;
             }
             return result;
         }
-        let family = match parts.first().copied() {
-            Some("/user") => ChangeFamily::Metadata,
-            Some("/enable" | "/disable") => ChangeFamily::Accounts,
-            Some("/grant" | "/revoke") => ChangeFamily::Policy,
-            _ => ChangeFamily::Rooms,
-        };
-        let before = MetadataChange::capture(&self.data, family);
+        if parts.first() == Some(&"/user") {
+            // The metadata handler resolves the exact account keys, validates
+            // the entire selection, and owns its atomic commit/rollback.
+            return self.apply(actor, room, input, markdown);
+        }
+        let before = self.command_metadata_change(room, &parts);
         self.metadata_dirty = false;
         let result = self.apply(actor, room, input, markdown);
         match result {
@@ -282,7 +307,9 @@ impl Engine {
                     self.data.policy.revision = before.policy.revision.wrapping_add(1);
                 }
                 let removed_rooms = before.removed_rooms(&self.data);
-                if let Err(e) = self.save_metadata(&removed_rooms, None, Some(&before)) {
+                if let Err(e) =
+                    self.save_metadata(&removed_rooms, changes::Baseline::Captured(&before))
+                {
                     before.restore(&mut self.data);
                     return Err(e);
                 }
@@ -300,8 +327,8 @@ impl Engine {
         room: Option<&str>,
         input: &str,
         markdown: bool,
-    ) -> Result<String, String> {
-        if input.chars().count() > 4000 {
+    ) -> Result<String, EngineError> {
+        if input.chars().count() > crate::limits::MAX_MESSAGE_CHARS {
             return Err("Messages support at most 4000 characters.".into());
         }
         let room = room.ok_or("Select a room first.")?;
@@ -320,13 +347,11 @@ impl Engine {
         room: Option<&str>,
         input: &str,
         markdown: bool,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         let input = input.trim();
-        if input.is_empty() || input.chars().count() > 4100 {
-            return Err("Enter a message of up to 4000 characters or a command.".into());
-        }
+        crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
         if actor.is_some_and(|name| !self.active(name)) {
-            return Err("Account unavailable.".into());
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
         }
         let author = actor.unwrap_or("console");
         let command = input.split_whitespace().next().unwrap_or("");
@@ -346,14 +371,14 @@ impl Engine {
                 ("/new", Some("room")) | ("/rm", Some("room")) => {}
                 ("/rm", Some("group")) if (4..=5).contains(&parts.len()) => {}
                 _ => {
-                    return Err(format!(
+                    return Err(EngineError::Invalid(format!(
                         "Usage: {}",
                         if parts[0] == "/new" {
                             commands::NEW_USAGE
                         } else {
                             commands::RM_USAGE
                         }
-                    ));
+                    )));
                 }
             }
             routed_parts = std::iter::once(parts[0])
@@ -515,7 +540,7 @@ impl Engine {
         change: MessageChange,
         result: Result<T, E>,
         receipt: Option<&crate::bots::models::Receipt>,
-        storage_error: impl FnOnce(String) -> E,
+        storage_error: impl FnOnce(EngineError) -> E,
     ) -> Result<T, E> {
         let result = result.and_then(|value| {
             self.save_message_change_with_receipt(&change, receipt)
@@ -565,4 +590,15 @@ impl Engine {
             }
         }
     }
+}
+
+/// The engine reports committed effects; transports only choose the wire event.
+pub(crate) enum CommandChange {
+    Unchanged,
+    Metadata(std::sync::Arc<MetadataNotice>),
+    Conversation(String),
+}
+pub(crate) struct CommandOutcome {
+    pub(crate) reply: String,
+    pub(crate) change: CommandChange,
 }

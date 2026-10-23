@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   avatarSource,
+  applyAvatar,
   cropSquare,
   encodeAvatar,
   MAX_AVATAR_BYTES,
@@ -115,4 +116,34 @@ test("avatar completion requires a matching canonical media ID and path", () => 
     { ...valid, path: "/api/media/other/file" },
   ])
     assert.equal(isCompletedAvatar(invalid), false);
+});
+
+test("profile updates replace or remove one avatar without replacing history or other profiles", () => {
+  const rooms = [{ messages: [{ text: "preserved" }] }];
+  const initial = {
+    username: "alice",
+    rooms,
+    avatars: { alice: "old", bob: "other" },
+  };
+  const updated = applyAvatar(initial, {
+    kind: "avatar",
+    username: "alice",
+    url: "new",
+  });
+  assert.deepEqual(updated.avatars, { alice: "new", bob: "other" });
+  assert.equal(updated.rooms, rooms);
+  assert.equal(initial.avatars.alice, "old");
+  const removed = applyAvatar(updated, {
+    kind: "avatar",
+    username: "alice",
+    url: null,
+  });
+  assert.deepEqual(removed.avatars, { bob: "other" });
+  const special = applyAvatar(removed, {
+    kind: "avatar",
+    username: "__proto__",
+    url: "safe-own-property",
+  });
+  assert.equal(Object.getPrototypeOf(special.avatars), Object.prototype);
+  assert.equal(Object.hasOwn(special.avatars, "__proto__"), true);
 });

@@ -5,7 +5,7 @@ impl Engine {
     pub(in crate::engine) fn apply_permissions(
         &self,
         context: &CommandContext<'_>,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         let actor = context.actor;
         let parts = context.parts;
         if parts.len() > 2 {
@@ -39,7 +39,9 @@ impl Engine {
         }
         if parts.get(1) == Some(&"@audit") {
             if !self.is_su(actor) {
-                return Err("Only su can inspect the global audit log.".into());
+                return Err(EngineError::Forbidden(
+                    "Only su can inspect the global audit log.".into(),
+                ));
             }
             let entries = self
                 .data
@@ -201,7 +203,7 @@ impl Engine {
     pub(in crate::engine) fn apply_policy(
         &mut self,
         context: &CommandContext<'_>,
-    ) -> Result<String, String> {
+    ) -> Result<String, EngineError> {
         let actor = context.actor;
         let parts = context.parts;
         if parts.get(1) == Some(&"@all") && matches!(parts[0], "/grant" | "/revoke") {
@@ -272,17 +274,21 @@ impl Engine {
                     .users
                     .get(parts[1])
                     .filter(|u| !u.disabled)
-                    .ok_or("User not found.")?
+                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .id
                     .clone();
                 self.require(actor, &scope, Action::PolicyWrite)?;
                 if self.is_su(Some(parts[1])) && !self.is_su(actor) {
-                    return Err("Only su can manage a su account.".into());
+                    return Err(EngineError::Forbidden(
+                        "Only su can manage a su account.".into(),
+                    ));
                 }
                 let mut requested = Rights::default();
                 requested.insert(parts[3])?;
                 if !matches!(scope, Scope::Room(_)) && !self.is_su(actor) {
-                    return Err("Only su can change @global, account or private grants.".into());
+                    return Err(EngineError::Forbidden(
+                        "Only su can change @global, account or private grants.".into(),
+                    ));
                 }
                 if !self.is_su(actor) {
                     let own = self.effective(actor, &scope);
@@ -305,10 +311,10 @@ impl Engine {
                         || requested.actions & !own.actions != 0
                         || requested.commands & !own.commands != 0
                     {
-                        return Err(format!(
+                        return Err(EngineError::Invalid(format!(
                             "Room managers may delegate only participant permissions they hold in {label}; the room owner may also delegate x:member.add and /add. {} is outside that authority or is not held here. Global permissions such as w:room.create must be granted by su at @global. Use /man grant.",
                             parts[3]
-                        ));
+                        )));
                     }
                 }
                 let room_media = (parts[3] == Action::MediaUpload.name())
@@ -325,7 +331,9 @@ impl Engine {
                 }
                 if let Some(room_id) = &room_media {
                     if self.has_group(Some(parts[1]), Group::Su) && !self.is_su(actor) {
-                        return Err("Only su can change a superuser's media policy.".into());
+                        return Err(EngineError::Forbidden(
+                            "Only su can change a superuser's media policy.".into(),
+                        ));
                     }
                     if parts[0] == "/grant" {
                         if let Some(rooms) = self.data.policy.media_revocations.get_mut(&target) {
@@ -426,10 +434,10 @@ impl Engine {
             }
             "/grant" | "/revoke" | "/rm" => {
                 if !(2..=4).contains(&parts.len()) {
-                    return Err(format!(
+                    return Err(EngineError::Invalid(format!(
                         "Invalid arguments. Use /man {} for group and permission syntax.",
                         parts[0].trim_start_matches('/')
-                    ));
+                    )));
                 }
                 let group = Group::parse(parts.get(2).copied().unwrap_or("admin"))?;
                 let scope = parts
@@ -443,12 +451,14 @@ impl Engine {
                     .users
                     .get(parts[1])
                     .filter(|u| !u.disabled)
-                    .ok_or("User not found.")?
+                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .id
                     .clone();
                 if group == Group::Su {
                     if scope != Scope::Server || !self.is_su(actor) {
-                        return Err("Only su can assign or revoke the server-wide su group.".into());
+                        return Err(EngineError::Forbidden(
+                            "Only su can assign or revoke the server-wide su group.".into(),
+                        ));
                     }
                 } else if scope == Scope::Server {
                     self.require(actor, &scope, Action::AssignAdmin)?;
@@ -456,11 +466,15 @@ impl Engine {
                     self.require_target_command(actor, &scope, parts[0])?;
                     self.require(actor, &scope, Action::PolicyWrite)?;
                     if group == Group::Admin && !self.is_su(actor) {
-                        return Err("Only su can delegate room-management groups.".into());
+                        return Err(EngineError::Forbidden(
+                            "Only su can delegate room-management groups.".into(),
+                        ));
                     }
                 }
                 if self.is_su(Some(parts[1])) && !self.is_su(actor) {
-                    return Err("Only su can manage a su account.".into());
+                    return Err(EngineError::Forbidden(
+                        "Only su can manage a su account.".into(),
+                    ));
                 }
                 if parts[0] != "/grant"
                     && group == Group::Admin
@@ -487,7 +501,7 @@ impl Engine {
                             .rooms
                             .iter()
                             .find(|(_, room)| &room.id == id)
-                            .ok_or("Room not found.")?;
+                            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                         if !room.members.contains(parts[1]) {
                             self.require(actor, &scope, Action::Invite)?;
                             self.require_member_delegation(actor, &scope)?;
@@ -502,7 +516,7 @@ impl Engine {
                             .data
                             .rooms
                             .get_mut(&name)
-                            .ok_or("Room not found.")?
+                            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
                             .members
                             .insert(parts[1].into());
                         if added {

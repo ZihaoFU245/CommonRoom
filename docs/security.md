@@ -208,7 +208,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-The current schema is v17. New empty databases initialize transactionally; only HEAD v16 upgrades, and v17 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+The current schema is v18. New empty databases initialize transactionally; only the supported v17 baseline upgrades, and v18 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -278,3 +278,9 @@ flag cannot bypass the su boundary. Metadata never changes command/action grants
 Cleanup always names its target. Private cleanup requires both `/clean` and
 `x:history.clean` on that pair. Bulk operations authorize every target before
 counting/deleting. Preview uses the same checks and writes no state or audit.
+
+Sessions are indexed by domain-separated Blake2s token digests. Root-path production
+deployments use `__Host-chat_session` with Secure, HttpOnly and Path=/; scoped
+deployments retain `chat_session`. Duplicate selected cookie names are rejected
+across all Cookie headers. The bounded durable authentication audit records verified
+login outcomes and valid logouts without credentials or request bodies. See [Data](data.md).

@@ -66,7 +66,7 @@ pub struct Session {
     pub username: String,
     pub expires: u64,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct RoomView {
     pub id: String,
     pub owner: String,
@@ -92,18 +92,18 @@ pub struct History {
     pub has_before: bool,
     pub has_after: bool,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Access {
     pub id: String,
     pub permissions: Vec<String>,
     pub commands: Vec<crate::commands::Command>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct SyncVersion {
     pub instance: String,
     pub revision: u64,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Snapshot {
     pub sync: SyncVersion,
     pub kind: &'static str,
