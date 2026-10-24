@@ -285,14 +285,23 @@ impl Engine {
                 }
                 let mut requested = Rights::default();
                 requested.insert(parts[3])?;
+                if matches!(parts[3], "w:account.color.own" | "w:account.color.any")
+                    && !matches!(scope, Scope::Room(_))
+                {
+                    return Err("Color grants require a room scope.".into());
+                }
                 if !matches!(scope, Scope::Room(_)) && !self.is_su(actor) {
                     return Err(EngineError::Forbidden(
                         "Only su can change @global, account or private grants.".into(),
                     ));
                 }
                 if !self.is_su(actor) {
-                    let own = self.effective(actor, &scope);
+                    let mut own = self.effective(actor, &scope);
                     let mut ceiling = member_rights();
+                    ceiling.add(rights(&[Action::ColorOwn], &[]));
+                    if own.has(Action::ColorAny) {
+                        own.add(rights(&[Action::ColorOwn], &[]));
+                    }
                     let owner = match &scope {
                         Scope::Room(room_id) => self.principal_id(actor).is_some_and(|id| {
                             self.data
@@ -510,7 +519,7 @@ impl Engine {
                     } else {
                         None
                     };
-                    self.assign(target, group, scope.clone());
+                    self.assign(target.clone(), group, scope.clone());
                     if let Some(name) = room_name {
                         let added = self
                             .data
@@ -520,6 +529,7 @@ impl Engine {
                             .members
                             .insert(parts[1].into());
                         if added {
+                            self.add_member_color_grant(target, scope.clone());
                             self.audit(actor, "/add", &format!("{} {name}", parts[1]));
                         }
                     }

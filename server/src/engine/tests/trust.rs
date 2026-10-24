@@ -525,7 +525,10 @@ fn su_is_a_grant_group_and_only_su_can_assign_it() {
     e.execute(None, None, "/grant bob su").unwrap();
     assert!(e.groups(Some("bob")).contains(&"su".into()));
     for action in Action::ALL {
-        assert!(e.allows(Some("bob"), &Scope::Server, *action));
+        assert_eq!(
+            e.allows(Some("bob"), &Scope::Server, *action),
+            !matches!(action, Action::ColorOwn | Action::ColorAny)
+        );
     }
     e.execute(Some("bob"), None, "/grant eve su").unwrap();
     assert!(e.is_su(Some("eve")));
@@ -1534,7 +1537,6 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "r:account.list",
         "w:account.password.own",
         "w:account.rename.own",
-        "w:account.color.own",
         "w:private.create",
     ]);
     let admin = BTreeSet::from([
@@ -1542,7 +1544,6 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "r:account.list",
         "w:account.password.own",
         "w:account.rename.own",
-        "w:account.color.own",
         "w:private.create",
         "w:room.create",
         "x:account.create",
@@ -1565,7 +1566,6 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "w:message.react",
         "w:message.retract.own",
         "w:message.edit.own",
-        "w:account.color.own",
         "x:room.join",
     ]);
     let manager = BTreeSet::from([
@@ -1607,10 +1607,15 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
                 _ => (),
             }
             if scope == room {
+                if matches!(actor, Some("alice" | "bob")) {
+                    expected.insert("w:account.color.own");
+                }
+                if actor == Some("alice") {
+                    expected.insert("w:account.color.any");
+                }
                 if actor == Some("alice") {
                     expected.extend(member.iter().copied());
                     expected.extend(manager.iter().copied());
-                    expected.insert("w:account.color.any");
                 }
                 if actor == Some("bob") {
                     expected.extend(member.iter().copied());
@@ -1621,7 +1626,9 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
             }
             for action in Action::ALL {
                 let allowed =
-                    actor.is_none() || actor == Some("eve") || expected.contains(&action.name());
+                    (actor.is_none() || actor == Some("eve") || expected.contains(&action.name()))
+                        && (matches!(scope, Scope::Room(_))
+                            || !matches!(action, Action::ColorOwn | Action::ColorAny));
                 assert_eq!(
                     e.allows(actor, &scope, *action),
                     allowed,

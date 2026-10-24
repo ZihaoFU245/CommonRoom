@@ -614,7 +614,7 @@ fn message_features_persist_and_rollback() {
             .unwrap()
             .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        18
+        19
     );
 }
 #[test]
@@ -1397,7 +1397,7 @@ fn current_schema_validation_failures_do_not_rewrite_metadata() {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            18
+            19
         );
     }
 }

@@ -7,6 +7,7 @@ import type {
   Command,
   Hint,
 } from "../../api/protocol.ts";
+import { nameColors } from "../preferences/nameColors.ts";
 import { permissionNames } from "./completion.ts";
 // Commands and output live only in this tab; chat comes from server snapshots.
 export function clearedOrder(cleared: Record<string, number>, view: string) {
@@ -271,6 +272,7 @@ export function suggestions(
         : users;
     if (position === 3 && ["get", "set", "reset"].includes(operation || ""))
       values = [
+        "color",
         "media.max_size",
         "media.max_age",
         "media.user_quota",
@@ -392,6 +394,13 @@ export function suggestions(
     parts[3] === "history.clean_min_age"
   )
     values = ["0", "-1", "7d", "30d", "@unset"];
+  if (
+    name === "/user" &&
+    parts[1] === "set" &&
+    position === 4 &&
+    parts[3] === "color"
+  )
+    values = [...nameColors, "@unset"];
   if (name === "/clean" && position === 1) values = ["7d", "30d", "-1"];
   if (name === "/clean" && position === 2)
     values = [

@@ -714,7 +714,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
   const live = { ...message(101), from: "bob" };
   let state = {
     ...empty,
-    permissions: ["w:account.color.own"],
+    permissions: [],
     colors: { alice: "purple" },
     color_version: "instance:1",
     rooms: [
@@ -1144,7 +1144,7 @@ await test("color picker previews locally, applies once and preserves keyboard f
     await import("../../src/components/settings/NameColorSettings.tsx");
   let state = {
     ...empty,
-    permissions: ["w:account.color.own"],
+    permissions: [],
     colors: { alice: "red" },
   };
   const writes = [];
@@ -1286,6 +1286,76 @@ await test("color picker previews locally, applies once and preserves keyboard f
   check(
     writes.length === 2,
     "outside focus dismisses the preview without saving",
+  );
+});
+
+await test("color settings keep the root available and expose only authorized room scopes", async () => {
+  const { NameColorSettings } =
+    await import("../../src/components/settings/NameColorSettings.tsx");
+  const baseRoom = {
+    name: "allowed",
+    id: "allowed-id",
+    owner: "bob",
+    permissions: ["w:account.color.own"],
+    colors: { alice: "blue" },
+  };
+  let state = {
+    ...empty,
+    permissions: [],
+    rooms: [
+      baseRoom,
+      {
+        ...baseRoom,
+        name: "revoked",
+        id: "revoked-id",
+        permissions: ["r:message.read"],
+      },
+      {
+        ...baseRoom,
+        name: "managed",
+        id: "managed-id",
+        permissions: ["w:account.color.any"],
+      },
+    ],
+  };
+  function draw() {
+    render(
+      h(NameColorSettings, { state, onNameColorChange: async () => {} }),
+      tests,
+    );
+  }
+  draw();
+  tests.querySelector("#name-color-scope").click();
+  await until(() => tests.querySelector("#name-color-scopes:not([inert])"));
+  const scopes = [
+    ...tests.querySelectorAll(
+      '#name-color-scopes:not([inert]) [role="option"]',
+    ),
+  ];
+  check(
+    scopes.map((item) => item.textContent.trim()).join(",") ===
+      "Everywhere,#allowed,#managed",
+    "root needs no grant; revoked rooms stay absent; any enables room control",
+  );
+  scopes[1].click();
+  await until(
+    () =>
+      tests.querySelector("#name-color-scope").textContent.trim() ===
+      "#allowed",
+  );
+  state = {
+    ...state,
+    rooms: state.rooms.map((room) => ({ ...room, permissions: [] })),
+  };
+  draw();
+  await until(
+    () =>
+      tests.querySelector("#name-color-scope").textContent.trim() ===
+      "Everywhere",
+  );
+  check(
+    tests.querySelector("#name-color-value").textContent === "Default",
+    "revocation falls back to editing the root, without using the room's saved value",
   );
 });
 

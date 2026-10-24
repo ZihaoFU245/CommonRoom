@@ -18,7 +18,8 @@ CREATE TRIGGER retention_move AFTER UPDATE OF conversation,sequence ON messages 
 END;
 ";
 pub(super) fn migrate(db: &Connection, data: &mut Data) -> Result<(), EngineError> {
-    let tx = db.unchecked_transaction()?;
+    // The caller owns the complete v17-to-current upgrade transaction.
+    let tx = db;
     tx.execute_batch(SCHEMA)?;
     tx.execute("INSERT INTO retention SELECT conversation,count(*),min(sequence) FROM messages GROUP BY conversation", [])?;
     let sessions = data
@@ -30,10 +31,8 @@ pub(super) fn migrate(db: &Connection, data: &mut Data) -> Result<(), EngineErro
     // Row-by-row key updates could otherwise collide despite distinct secrets.
     tx.execute("DELETE FROM entities WHERE kind='session'", [])?;
     for (digest, session) in &sessions {
-        put_entity(&tx, "session", digest, session)?;
+        put_entity(tx, "session", digest, session)?;
     }
-    tx.pragma_update(None, "user_version", 18)?;
-    tx.commit()?;
     data.sessions = sessions;
     Ok(())
 }
@@ -140,7 +139,7 @@ mod tests {
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap(),
-            18
+            19
         );
         assert_eq!(
             db.query_row::<usize, _, _>("SELECT count FROM retention", [], |row| row.get(0))

@@ -1733,7 +1733,7 @@ mod tests {
                 .unwrap()
                 .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            18
+            19
         );
     }
     #[test]

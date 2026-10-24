@@ -102,7 +102,7 @@ The permission catalog has individual actions in three families:
   `account.list`, `server.config`, `policy.read`.
 - `w`: `media.upload`, `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
   `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`,
-  `account.color.own`, `account.color.any`.
+  `account.color.own`, `account.color.any` (room-only).
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.rename`,
   `room.owner.transfer`, `history.clean`, `account.create`,
@@ -209,7 +209,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-The current schema is v18. New empty databases initialize transactionally; only the supported v17 baseline upgrades, and v18 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+The current schema is v19. New empty databases initialize transactionally; the supported v17 baseline and v18 upgrade atomically, and v19 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -256,19 +256,27 @@ Bearer-authenticated reads retain their credential checks without requiring Orig
 
 ## Name colors
 
-`w:account.color.own` lets an account set its own `color` metadata at the scope it holds the
-grant: `@global` for its default, or a room for that room's override. The server user bundle
-and the room participant bundle include it, so room managers may delegate it like other
-participant actions. As with other server grants, a global grant applies to every room; a room
-override also requires the room to be readable.
+Active accounts own their root `color` value and can set/reset it without an action
+grant. Root color ownership grants no authority in a room. Room `color` metadata
+overrides the root, then falls back to normal text color when both are absent.
 
-`w:account.color.any` permits `/user set who color value [scope]` and
-`/user reset who color [scope]`, including `@all` and `@unset`. Room owners
-receive it automatically, including owners of existing rooms. Room grants affect
-only members' overrides in that room; a global grant also permits global colors.
-The `/user` command grant remains required. Other metadata and `@all` key resets
-remain su-only. Ownership transfer moves the automatic permission to the new owner.
-Only su can delegate this management permission using `/grant`.
+`w:account.color.own` allows setting or clearing your own override in one room.
+`w:account.color.any` allows setting or clearing members' room overrides, including
+bulk color updates; owners receive it as a transferable ownership grant. Su retains
+room authority. Neither action is valid at global/account/private scopes, and neither
+appears in global or room group bundles. First admission creates a direct room
+own-color grant. Owners holding `color.any` and policy-management authority can grant
+or revoke that capability even if they no longer hold `color.own` themselves.
+
+`/revoke bob #support w:account.color.own` removes the direct grant; no global or
+group color rights remain to restore it implicitly. Existing room overrides stay
+in place, so changing the root cannot replace a managed room color. Re-adding an
+existing member or assigning a user/admin group does not restore own-color access.
+Regrant explicitly with `/grant bob #support w:account.color.own`. Normal additive
+semantics remain; another explicit `color.any` grant still authorizes room writes.
+Color grants never authorize other metadata keys, another room, or someone else's
+root metadata. Non-su writers cannot manage protected su accounts. Other metadata
+writes remain su-only.
 
 ## Media grants
 
@@ -288,8 +296,7 @@ rights and an unexpired retained reference, independently of upload grants.
 See [Media uploads](media-uploads.md).
 
 
-User metadata writes, except scoped `color` writes with `w:account.color.any`,
-are reserved for su (including stdin and authorized sudo).
+User metadata writes are reserved for su (including stdin and authorized sudo).
 Global admins receive `r:account.metadata` only. Room policy management permits
 room-member metadata inspection, not changes; a direct `x:account.metadata`
 flag cannot bypass the su boundary. Metadata never changes command/action grants.

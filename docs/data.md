@@ -2,19 +2,20 @@
 
 ## Database compatibility
 
-Empty databases initialize as v18. The supported upgrade baseline is commit
-`793f9bb65683f63130c234f78856b8813362f45f` (schema v18). v17 upgrades
-transactionally to v18; v18 reopens directly. Earlier schemas and unversioned
-existing databases are rejected before journal, schema or data changes.
+Empty databases initialize as v19. The supported v17 baseline and v18 databases
+upgrade transactionally to v19; v19 reopens directly. Earlier schemas and
+unversioned existing databases are rejected before journal, schema or data changes.
 
-The v17-to-v18 transaction replaces raw session keys with domain-separated
-Blake2s digests, initializes per-conversation retained-row counters and creates a
-bounded authentication audit. History, credentials, cursors, permissions and
-media metadata remain intact. Failure rolls back all new tables, triggers,
-session keys and the schema version together. Older binaries cannot open v18.
-Production sites at the root path switch to `__Host-chat_session` cookies and
-require one sign-in after deployment. Other deployments keep their existing
-cookies and original expiry; migrated tokens still authenticate by digest.
+The v17 upgrade replaces raw session keys with domain-separated Blake2s digests,
+initializes retained-row counters and creates a bounded authentication audit.
+The v18-to-v19 step converts inherited own-color rights into direct grants for
+existing room participants and adds `w:account.color.any` to ownership grants.
+Global/account/private color grants are no longer valid. Metadata values, history,
+credentials and cursors remain intact. The upgrade runs once; restarts cannot
+restore revoked own-color grants. Previously ineffective revocations did not persist a
+restriction, so reissue those revocations after upgrading. Failure rolls back policy, new tables/triggers,
+session changes and schema version together. Older binaries cannot open v19.
+Production sites at the root path use `__Host-chat_session` cookies.
 
 Authentication events retain the most recent 2,048 verified login outcomes and
 valid logouts, including time, canonical client IP when available and valid
@@ -52,7 +53,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v18 and upgrades the supported v17 baseline only. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads v19 and upgrades v18 and the supported v17 baseline. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -150,7 +151,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v18 and the minimal reference worker.
+independently of server SQLite schema v19 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -158,7 +159,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v18.
+keys; unsupported versions are rejected. This does not change server schema v19.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -242,14 +243,9 @@ Metadata updates save changed accounts and audit entries atomically. Other value
 never included in public snapshots; the global avatar link is a public profile projection. User media limits are independent of grants;
 `/user get` and `/user set` enforce current access on every selected account.
 
-Metadata mutation requires su at execution time, except `color` writes authorized
-by `w:account.color.any` at the target scope. Global admin group bundles
+Metadata mutation now requires su at execution time. Global admin group bundles
 provide only metadata read access; stored direct write flags cannot override the
-su check for other metadata. No metadata rows or existing values are rewritten
-for this policy change.
-
-Room owner grants compiled from existing data include `w:account.color.any`; no
-schema migration is required. Ownership transfer replaces the owner grant.
+su check. No metadata rows or existing values are rewritten for this policy change.
 
 `history.clean_min_age` is a typed cleanup limit: `0` disables cleanup, `-1`
 is unrestricted, and positive values store minimum message age in seconds.
@@ -265,7 +261,7 @@ The optional `color` metadata key names one of 16 fixed palette colors. `@global
 account's default; a stable room ID branch overrides it in that room. Private conversations
 use the global value. Writers reject other values, and the key is rejected in private branches. Like
 other metadata, colors follow renames and are removed with their room or account. These values
-use existing account JSON, so SQLite remains schema v18 with no migration.
+use existing account JSON without layout changes. Policy capabilities migrate with schema v19.
 
 ## Avatars
 
@@ -273,13 +269,13 @@ The optional `metadata["@global"]["avatar"]` is an HTTPS image URL or a canonica
 `/api/avatars/<id>/file` link. Only this profile key has a self-service HTTP writer;
 ordinary metadata mutations still require su. The writer preserves other metadata
 and rolls back failed persistence. These values use existing account JSON and
-media rows, so SQLite remains schema v18 with no migration.
+media rows, so color values need no layout change; policy capabilities migrate with schema v19.
 
 Uploaded avatars use media records with conversation `@avatar` and permanent
 retention. Immutable file bytes live at `avatars/<stable-account-id>/<upload-id>`
 in private S3. Metadata references protect them during startup/daily cleanup. Each cleanup SQL
 statement builds one uncorrelated, non-null reference list, avoiding a per-media-row
-account JSON scan without changing schema v18. Disabled accounts intentionally keep
+account JSON scan without changing schema v19. Disabled accounts intentionally keep
 those references so their avatar returns on re-enable; their images are unreadable
 while disabled. Replacing/removing the avatar or deleting its account releases the
 reference.

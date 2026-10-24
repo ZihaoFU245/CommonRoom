@@ -10,7 +10,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
-| `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only, requires `w:account.color.own` at that scope; metadata notice on change |
+| `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
@@ -151,13 +151,16 @@ merges retain colors only for names still disclosed by their message window. Old
 servers may omit these fields; clients then use the snapshot color maps.
 
 `POST /api/color` authenticates the browser session, enforces the browser origin and changes only
-the caller's own account. The global scope requires `w:account.color.own` at `@global`; a room
-override additionally requires that room to exist and be readable, and unknown or unreadable rooms
+the caller's own account. Root writes follow account ownership and need no color grant. A room
+override requires `w:account.color.own` or `w:account.color.any` in that room. The room
+must exist and be readable; unknown or unreadable rooms
 return the same not-found error. Validation and permission checks run before charging the
 per-account profile-change budget shared with avatars (4 writes per 10 seconds). No-op
 requests do not consume it. The browser previews swatches locally and saves only on Apply;
 Cancel, Escape and outside dismissal discard the preview.
-Su can also set or reset anyone's `color` through `/user set` and `/user reset`.
+`/user set` and `/user reset` allow your own root color, your room color with
+`color.own`, or members' room colors with `color.any`. Su can manage any color.
+Other metadata writes remain su-only. Both color grants are invalid outside rooms.
 
 `/retract message-id` deletes only the requesting author’s retained message in the
 selected room or their private history. It increments the conversation revision

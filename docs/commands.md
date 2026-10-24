@@ -39,15 +39,25 @@ override. `/user get @all #support` applies the same view to every member.
 Metadata never grants permissions. Only the public global avatar link and the `color` key
 (global value plus room overrides) are public profile projections; color data is sent only to browsers that opt in. `color` accepts one
 of 16 palette names (`red` … `pink`) at `@global` or a room. Accounts change their own color
-from Settings › Preferences after enabling Show name colors, with
-`w:account.color.own` at that scope.
+from Settings › Preferences after enabling Show name colors. Their global default needs
+no color permission. In a room, `w:account.color.own` permits changing their own
+override; `w:account.color.any` permits changing members' overrides and is assigned
+to the owner. Both grants are room-only and absent from global/group bundles.
+First admission adds a direct own-color grant; re-adding an existing member or
+reassigning a group does not restore a revoked grant. Owners can set a managed
+color and remove that direct grant:
+
+```text
+/user set bob color blue #support
+/revoke bob #support w:account.color.own
+```
+
+Bob can still change his root default, but cannot set or clear this room override.
+`/user reset bob color #support` restores inheritance; `/grant bob #support w:account.color.own` restores self-editing. Tab completes `color`, the palette and `@unset`.
 Read your own metadata;
 other users require `r:account.metadata` at global/account scope or room policy
-management. Only su can set, remove or bulk-update other metadata. The exception is `color`: holders of
-`w:account.color.any` may set/reset it for accounts in that scope using `/user set`
-or `/user reset`, including `@all`. Room owners receive this permission automatically.
-For example, `/user set bob color blue #support` assigns a room color;
-`/user reset bob color #support` restores inheritance. Global admins
+management. Color writes follow the ownership/room grants above, including bulk color
+updates with `color.any`. Other metadata writes and bulk resets remain su-only. Global admins
 receive `r:account.metadata` for reading; room policy managers may inspect their
 members' room metadata. `x:account.metadata` remains reserved for su, and an
 explicit write flag does not bypass this restriction. Stdin and authorized
@@ -408,8 +418,8 @@ metadata limit. Bulk cleanup authorizes every target and its limit before deleti
 inheritance. `/user reset bob @all #support` clears every override in that room
 branch; `/user reset bob @all @global` clears only the global root. Other branches
 remain unchanged. `@all` may also select users, as in
-`/user reset @all @all #support`. Metadata resets require su, except `color` with `w:account.color.any`; they use
-the same scope and bulk selection rules as `/user set`, and prune empty branches. Account-wide
+`/user reset @all @all #support`. Metadata resets are su-only, use the same scope
+and bulk selection rules as `/user set`, and prune empty branches. Account-wide
 quota reset defaults to `@global` even from a room.
 
 Password reset uses `/user reset bob password new-password`; it targets one

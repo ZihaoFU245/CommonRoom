@@ -244,7 +244,6 @@ fn member_rights() -> Rights {
             Action::React,
             Action::EditOwn,
             Action::RetractOwn,
-            Action::ColorOwn,
         ],
         &[
             "/user", "/room", "/members", "/history", "/react", "/edit", "/retract", "/reply",
@@ -284,7 +283,11 @@ fn manager_rights() -> Rights {
 }
 fn group_rights(group: Group, scope: &Scope) -> Rights {
     if group == Group::Su {
-        return rights(Action::ALL, COMMANDS);
+        let mut r = rights(Action::ALL, COMMANDS);
+        if !matches!(scope, Scope::Room(_)) {
+            r.actions &= !(Action::ColorOwn.bit() | Action::ColorAny.bit());
+        }
+        return r;
     }
     if matches!(scope, Scope::Room(_)) {
         let mut r = member_rights();
@@ -301,7 +304,6 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             Action::Directory,
             Action::Password,
             Action::RenameOwn,
-            Action::ColorOwn,
             Action::Direct,
         ],
         &[
@@ -395,6 +397,16 @@ impl CompiledPolicy {
             .and_then(|scopes| scopes.get(&Scope::Server))
             .copied()
             .unwrap_or_default();
+        // Color capabilities never inherit from a global scope.
+        r.actions &= !(Action::ColorOwn.bit() | Action::ColorAny.bit());
+        if matches!(scope, Scope::Room(_))
+            && self
+                .groups
+                .get(id)
+                .is_some_and(|groups| groups.contains(&Group::Su))
+        {
+            r.add(rights(&[Action::ColorOwn, Action::ColorAny], &[]));
+        }
         if scope != &Scope::Server {
             r.add(
                 self.scopes
@@ -429,6 +441,9 @@ impl CompiledPolicy {
                 .is_some_and(|rooms| rooms.contains(room_id))
         {
             r.actions &= !Action::MediaUpload.bit();
+        }
+        if !matches!(scope, Scope::Room(_)) {
+            r.actions &= !(Action::ColorOwn.bit() | Action::ColorAny.bit());
         }
         r
     }
@@ -476,11 +491,12 @@ impl CompiledPolicy {
         for grant in &data.policy.grants {
             let mut mask = Rights::default();
             for p in &grant.permissions {
+                if matches!(p.as_str(), "w:account.color.own" | "w:account.color.any")
+                    && !matches!(grant.scope, Scope::Room(_))
+                {
+                    return Err("Color grants require a room scope.".into());
+                }
                 mask.insert(p)?;
-            }
-            // Owner grants predate ColorAny in existing databases.
-            if grant.owner && matches!(grant.scope, Scope::Room(_)) {
-                mask.add(rights(&[Action::ColorAny], &[]));
             }
             let ids: Vec<_> = match &grant.subject {
                 Subject::Account(id) => vec![id.clone()],

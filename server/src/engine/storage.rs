@@ -1,4 +1,5 @@
 use super::*;
+mod color_grants;
 mod command_receipts;
 mod media;
 mod revision;
@@ -60,10 +61,9 @@ impl Engine {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(EngineError::from)?;
-        if ![0, 17, 18].contains(&version) {
+        if ![0, 17, 18, 19].contains(&version) {
             return Err(
-                "Unsupported database schema; only baseline v17 and current v18 are supported."
-                    .into(),
+                "Unsupported database schema; only v17, v18 and current v19 are supported.".into(),
             );
         }
         if version == 0 {
@@ -119,7 +119,7 @@ impl Engine {
                 .execute_batch(revision::SCHEMA)
                 .map_err(EngineError::from)?;
             transaction
-                .execute_batch("PRAGMA user_version=18;")
+                .execute_batch("PRAGMA user_version=19;")
                 .map_err(EngineError::from)?;
             transaction.commit().map_err(EngineError::from)?;
         }
@@ -130,6 +130,9 @@ impl Engine {
         drop(raw);
         load_entities(&db, &mut data)?;
         crate::bots::models::validate(&data).map_err(EngineError::unavailable)?;
+        if matches!(version, 17 | 18) {
+            color_grants::upgrade_policy(&mut data);
+        }
         let authorization = super::authorization::CompiledPolicy::compile(&data)
             .map_err(EngineError::unavailable)?;
         let mut read_positions: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
@@ -154,8 +157,14 @@ impl Engine {
                     .insert(view, sequence);
             }
         }
-        if version == 17 {
-            revision::migrate(&db, &mut data)?;
+        if matches!(version, 17 | 18) {
+            let tx = db.unchecked_transaction()?;
+            if version == 17 {
+                revision::migrate(&tx, &mut data)?;
+            }
+            write_state(&tx, &data)?;
+            tx.pragma_update(None, "user_version", 19)?;
+            tx.commit()?;
         }
         data.sessions.retain(|_, session| session.expires > now());
         for room in data.rooms.values_mut() {

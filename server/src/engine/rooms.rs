@@ -105,6 +105,7 @@ impl Engine {
                 if actor.is_some() {
                     target.members.insert(author.into());
                     self.assign(owner_id.clone(), Group::User, scope.clone());
+                    self.add_member_color_grant(owner_id.clone(), scope.clone());
                 }
                 self.add_owner_grants(owner_id, scope);
                 self.data.rooms.insert(name.into(), target);
@@ -157,7 +158,10 @@ impl Engine {
                     .get_mut(room)
                     .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                 if parts[0] == "/add" {
-                    target.members.insert(name.into());
+                    let added = target.members.insert(name.into());
+                    if added {
+                        self.add_member_color_grant(id.clone(), scope.clone());
+                    }
                     self.assign(id, Group::User, scope);
                 } else {
                     target.members.remove(name);
@@ -206,13 +210,17 @@ impl Engine {
                             .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
                             .id
                             .clone();
-                        self.metadata_dirty |= self
+                        let added = self
                             .data
                             .rooms
                             .get_mut(name)
                             .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
                             .members
                             .insert(user.into());
+                        if added {
+                            self.add_member_color_grant(id.clone(), scope.clone());
+                        }
+                        self.metadata_dirty |= added;
                         self.assign(id, Group::User, scope);
                     }
                 } else {
@@ -279,14 +287,17 @@ impl Engine {
                     .grants
                     .retain(|g| !(g.owner && g.scope == scope));
                 self.add_owner_grants(target_id.clone(), scope.clone());
-                self.assign(target_id.clone(), Group::User, scope);
+                self.assign(target_id.clone(), Group::User, scope.clone());
                 let target = self
                     .data
                     .rooms
                     .get_mut(name)
                     .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
-                target.owner_id = target_id;
-                target.members.insert(parts[1].into());
+                target.owner_id = target_id.clone();
+                let added = target.members.insert(parts[1].into());
+                if added {
+                    self.add_member_color_grant(target_id, scope);
+                }
                 self.audit(actor, "/owner", &format!("{} {name}", parts[1]));
                 Ok(format!("{} owns #{name}.", parts[1]))
             }

@@ -1444,7 +1444,9 @@ async fn color_api_is_scoped_permission_checked_and_broadcast_as_metadata() {
     use tower::ServiceExt;
     let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
     for name in ["alice", "bob"] {
-        engine.provision(name, "hash".into(), false, false).unwrap();
+        engine
+            .provision(name, "hash".into(), name == "alice", false)
+            .unwrap();
         engine.login(name.into(), name, "hash", None).unwrap();
     }
     engine.execute(None, None, "/room new team").unwrap();
@@ -1499,7 +1501,7 @@ async fn color_api_is_scoped_permission_checked_and_broadcast_as_metadata() {
             "bob",
             "http://localhost:5173",
             r#"{"color":"red"}"#,
-            StatusCode::FORBIDDEN,
+            StatusCode::OK,
         ),
         (
             "bob",
@@ -1542,18 +1544,49 @@ async fn color_api_is_scoped_permission_checked_and_broadcast_as_metadata() {
         .active_account_id("bob")
         .unwrap()
         .to_owned();
-    for _ in 0..2 {
+    for _ in 0..3 {
         assert!(matches!(
             notifications.try_recv(),
             Ok(Change::Metadata(notice)) if notice.targets(&bob)
         ));
     }
     assert!(notifications.try_recv().is_err());
-    let engine = app.engine_read().unwrap();
-    let metadata = &engine.data.users["alice"].metadata;
-    assert_eq!(metadata["@global"]["color"], "red");
-    assert_eq!(metadata[&team]["color"], "teal");
-    assert!(engine.data.users["bob"].metadata.is_empty());
+    {
+        let engine = app.engine_read().unwrap();
+        let metadata = &engine.data.users["alice"].metadata;
+        assert_eq!(metadata["@global"]["color"], "red");
+        assert_eq!(metadata[&team]["color"], "teal");
+        assert_eq!(engine.data.users["bob"].metadata["@global"]["color"], "red");
+    }
+    app.engine
+        .write()
+        .unwrap()
+        .execute(None, None, "/revoke alice #team w:account.color.own")
+        .unwrap();
+    let version = app.engine_read().unwrap().color_version();
+    for color in [json!("blue"), json!("teal"), serde_json::Value::Null] {
+        let response = routes
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/color")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::COOKIE, "chat_session=alice")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"color":color,"room":team}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    assert_eq!(app.engine_read().unwrap().color_version(), version);
+    assert_eq!(
+        app.engine_read().unwrap().data.users["alice"].metadata[&team]["color"],
+        "teal"
+    );
+    assert!(notifications.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -1583,7 +1616,10 @@ async fn color_budget_counts_valid_changes_only_and_keeps_rejected_writes_atomic
             let hash = e.password_hash("alice").unwrap().to_owned();
             e.login("fixture".into(), "alice", &hash, None).unwrap();
             if invalid == "permission" {
-                e.execute(None, None, "/revoke alice user @global").unwrap();
+                e.execute(None, None, "/room new denied").unwrap();
+                e.execute(None, None, "/room add alice #denied").unwrap();
+                e.execute(None, None, "/revoke alice #denied w:account.color.own")
+                    .unwrap();
             }
             if invalid == "capacity" {
                 e.data.users.get_mut("alice").unwrap().metadata.insert(
@@ -1600,7 +1636,10 @@ async fn color_budget_counts_valid_changes_only_and_keeps_rejected_writes_atomic
                 json!({"color":"red", "room":"missing"}),
                 StatusCode::NOT_FOUND,
             ),
-            "permission" => (json!({"color":"red"}), StatusCode::FORBIDDEN),
+            "permission" => (
+                json!({"color":"red", "room":app.engine_read().unwrap().data.rooms["denied"].id}),
+                StatusCode::FORBIDDEN,
+            ),
             _ => (json!({"color":"red"}), StatusCode::BAD_REQUEST),
         };
         for _ in 0..5 {

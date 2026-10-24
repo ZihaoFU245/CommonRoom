@@ -142,8 +142,10 @@ const USER: &str = r#"
 - Custom values inherit only where global account read authority allows inspection.
 - Room deletion prunes its branch from every account atomically.
 - Read your own metadata freely; other accounts require r:account.metadata (global/account) or room policy-management authority.
-- Only su can change metadata, except `color` with `w:account.color.any` at the target scope.
-- Room owners receive `w:account.color.any`: `/user set bob color blue #support` sets a member color, and `/user reset bob color #support` restores inheritance. Both support `@all` users.
+- Color is the exception: your root default needs no color grant; room own-color changes need `w:account.color.own`, and members' room colors need `w:account.color.any`. Owners receive color.any.
+- Both color grants are room-only. First admission adds a direct color.own grant; revoke it to prevent further self-edits without changing the root default. Existing room overrides remain until set/reset by an authorized writer.
+- `/user set bob color blue #support` sets an override; `/user reset bob color #support` restores root inheritance. Bulk color writes require authority for every target.
+- Other metadata writes, media limits and whole-scope resets remain su-only.
 - `/user reset bob media.max_size #support` removes one override and restores inheritance.
 - `/user reset bob @all #support` clears only that room branch; `@global` clears only the root.
 - `/user reset @all @all #support` resets every selected member's room branch.
@@ -412,6 +414,8 @@ const PERMISSIONS: &str = r#"# Permissions
 - HTTP history requests check read access independently of command grants.
 
 - Grants add together, without wildcards or groups nested inside groups.
+- `w:account.color.own` and `w:account.color.any` are room-only. Root colors follow account ownership. Neither action is included in group bundles; new members receive direct color.own grants, and owners receive transferable color.any grants.
+- `/revoke bob #support w:account.color.own` removes self-editing there. Re-adding an existing member or reassigning a group does not restore it; use `/grant` explicitly.
 - Room media has a narrow revocation override: `/revoke user #room w:media.upload` blocks uploads there until `/grant` restores them, even with a global upload grant.
 - Su remains fully trusted.
 - Other permissions keep their additive behavior.

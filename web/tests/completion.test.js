@@ -249,3 +249,44 @@ test("user reset completes metadata, scopes and the explicit password selector",
     false,
   );
 });
+
+test("user metadata completes color keys, palette values, resets and scopes", () => {
+  for (const operation of ["set", "get", "reset"]) {
+    assert.deepEqual(values(`/user ${operation} bob col`), [
+      `/user ${operation} bob color `,
+    ]);
+  }
+  const palette = [
+    "red",
+    "orange",
+    "amber",
+    "yellow",
+    "lime",
+    "green",
+    "emerald",
+    "teal",
+    "cyan",
+    "sky",
+    "blue",
+    "indigo",
+    "violet",
+    "purple",
+    "fuchsia",
+    "pink",
+    "@unset",
+  ];
+  assert.deepEqual(
+    values("/user set bob color "),
+    palette.map((color) => `/user set bob color ${color} `),
+  );
+  assert.deepEqual(values("/user set @all color bl"), [
+    "/user set @all color blue ",
+  ]);
+  assert.deepEqual(values("/user set bob color @"), [
+    "/user set bob color @unset ",
+  ]);
+  assert.deepEqual(values("/user set bob color blue "), [
+    "/user set bob color blue @global ",
+    "/user set bob color blue #team ",
+  ]);
+});

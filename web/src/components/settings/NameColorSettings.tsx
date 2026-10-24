@@ -341,14 +341,13 @@ export function NameColorSettings({
   onNameColorChange,
 }: Pick<SettingsProps, "state" | "onNameColorChange">) {
   const scopes = [
-    ...(state.permissions.includes(colorPermission)
-      ? [{ id: null, label: "Everywhere", colors: state.colors }]
-      : []),
+    { id: null, label: "Everywhere", colors: state.colors },
     ...state.rooms
       .filter(
         (room) =>
           !room.name.startsWith("@") &&
-          room.permissions.includes(colorPermission),
+          (room.permissions.includes(colorPermission) ||
+            room.permissions.includes("w:account.color.any")),
       )
       .map((room) => ({
         id: room.id,

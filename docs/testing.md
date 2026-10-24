@@ -76,7 +76,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v18 restart and baseline v17 upgrade, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover v19 restart and v17/v18 upgrades, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -185,7 +185,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v18 restart and baseline v17 upgrade and rejection of unsupported schemas.
+cleanup constraints, persistence failures, v19 restart and v17/v18 upgrades and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -592,7 +592,7 @@ backoff, exponential rests, empty results and immediate notification refresh.
 Object-command regressions cover scoped user lists, complete bulk metadata reads,
 privacy, protected accounts, media inheritance/quotas, renames, room deletion,
 read-only execution and failed-write rollback. Bulk grant/revoke tests exercise original-policy authorization, owners, protected su accounts, and the last active
-administrator. Only baseline v17-to-v18 migration is tested; pre-HEAD upgrade fixtures
+administrator. Baseline v17-to-current and v18-to-current migrations are tested; pre-HEAD upgrade fixtures
 are removed and versions 1–16 are tested for unchanged rejection. Upload hint tests
 cover bounds/header injection, signing, replacement metadata and browser headers.
 
@@ -830,7 +830,13 @@ message actions. Minute boundaries, author changes, private-pair changes, local
 midnight and unread dividers split runs; retractions reconnect eligible neighbors.
 Disabling bars preserves the original five-minute header grouping.
 
-Color-any authorization tests cover existing and new room owners, ownership
-transfer, scoped grants and revocation, global grants, member-only targeting,
-bulk color assignment/reset, inheritance, unrelated metadata denial, palette
-validation, and atomic rollback/version stability on failed writes.
+Room-only color tests verify grant rejection at global/account/private scopes, no
+root-to-room authority inheritance, ordinary-admin revocation, cross-room and
+cross-account isolation, bulk/protected-target atomicity, non-color metadata denial,
+owner transfer and failed-write rollback. v19 migration tests cover legacy global
+grants, preserved colors/history/cursors, restart/rename/regrant behavior and complete
+v17/v18 upgrade rollback. HTTP tests reject set/reset/no-op room writes after
+revocation without metadata/version changes or notifications, while root writes remain
+available without global grants. Browser coverage keeps root settings available and
+filters room choices using own/any grants, including live revocation fallback.
+Completion covers the color key, full palette, @unset, bulk selectors and scopes.

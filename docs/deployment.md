@@ -725,9 +725,9 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-The server accepts schema v18 and upgrades only the v17 baseline at commit
+The server accepts schema v19 and upgrades v18 and the v17 baseline at commit
 `793f9bb65683f63130c234f78856b8813362f45f` transactionally. Earlier schemas
-are unsupported, and a v18 database cannot be opened by an older binary.
+are unsupported, and a v19 database cannot be opened by an older binary.
 Root-path production deployments require one sign-in to obtain the new
 `__Host-chat_session` cookie. Back up before
 upgrading, keeping the database and object store consistent ([Data](data.md)).

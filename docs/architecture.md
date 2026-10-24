@@ -105,7 +105,7 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v18; only the supported v17 baseline upgrades transactionally. Earlier schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v19; v18 and the supported v17 baseline upgrade transactionally. Earlier schemas are rejected.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. Both caches use four conversation-hashed mutex shards; each shard receives one quarter of the global message, byte, page and unread-entry budgets. One hot shard cannot borrow another shard’s allowance. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
@@ -186,7 +186,7 @@ measurement and reuses computed styles until layout/font changes.
 `web/media.rs` owns browser upload/config/completion/download HTTP adapters and
 background cleanup orchestration. `engine/media.rs` owns scoped authorization,
 scoped user metadata limits, configured quotas and media lifecycle; `engine/storage/media.rs` owns all media SQL,
-transactional message references, deletion claims and schema v18. `media.rs`
+transactional message references, deletion claims and schema v19. `media.rs`
 provides the S3 transport through rust-s3. Storage network calls run outside engine
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
