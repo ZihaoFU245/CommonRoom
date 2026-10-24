@@ -36,7 +36,11 @@ custom values appear only with permission to read that account's global metadata
 Room managers without that permission see local custom values and effective media/cleanup
 limits. `media.user_quota` appears only in the global section and is never a room
 override. `/user get @all #support` applies the same view to every member.
-Metadata never grants permissions. Only the public global avatar link is projected in broadcast snapshots.
+Metadata never grants permissions. Only the public global avatar link and the `color` key
+(global value plus room overrides) are public profile projections; color data is sent only to browsers that opt in. `color` accepts one
+of 16 palette names (`red` … `pink`) at `@global` or a room. Accounts change their own color
+from Settings › Preferences after enabling Show name colors, with
+`w:account.color.own` at that scope.
 Read your own metadata;
 other users require `r:account.metadata` at global/account scope or room policy
 management. Only su can set, remove or bulk-update metadata. Global admins
@@ -202,6 +206,23 @@ Preferences provides Enable Markdown (the same sending preference as
 The Markdown checkbox affects future messages; each stored message retains
 its existing format. The LaTeX checkbox immediately changes how Markdown
 messages are displayed, including history, without changing plain-text messages.
+
+Preferences also provides Show name colors, Show message color bars and Show name
+borders. All three default off and are saved independently on this device. Enabling
+name colors loads the picker and requests profile colors for snapshots, live updates
+and history; disabling it stops those requests. Choose a global color or a room
+override in the revealed controls. The original reply quote bar remains visible
+regardless of the optional message side bars. When message bars are enabled, a
+Bar opacity slider adjusts only the bar from 0–100%, defaults to 50%, and saves
+on this device; author text and the reply quote bar retain their normal colors.
+When enabled, the message bar spans
+the full message content, with the reply quote inset inside it. Consecutive
+messages from the same author and conversation in the same minute share a
+continuous bar; a new minute, author, date, local command output or unread divider
+starts a new line. With bars off, the existing five-minute header grouping remains. Scope and color
+menus use themed surfaces and short transitions that respect reduced motion.
+Name badges use a subdued border and surface tint; custom palettes derive name
+shades against their own surfaces for readable text.
 
 Navigation remembers its open or closed state in this browser across refreshes.
 The menu button moves to the right of the logo and becomes an X while navigation

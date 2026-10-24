@@ -105,6 +105,13 @@ for (const [name, base, accent] of seeds) {
     );
     floor("online dot", tokens.online, tokens.paper, 3);
     floor("offline dot", tokens.offline, tokens.paper, 3);
+    for (const token of paletteTokens.filter((key) =>
+      key.startsWith("name-"),
+    )) {
+      for (const surface of [tokens.paper, tokens.wash, tokens.field]) {
+        floor(token, tokens[token], surface, 4.5);
+      }
+    }
     floor("border", tokens.line, tokens.paper, 1.2);
     floor("border on wash", tokens.line, tokens.wash, 1.2);
     floor("divider", tokens.hairline, tokens.paper, 1.5);
@@ -135,7 +142,14 @@ test("text contrast holds across every three-digit seed colour", () => {
     const accent = `#${(0xfff - value).toString(16).padStart(3, "0")}`;
     const { tokens } = derivePalette(base, accent);
     for (const surface of ["paper", "wash", "field"]) {
-      for (const text of ["ink", "muted", "subtle", "placeholder", "danger"]) {
+      for (const text of [
+        "ink",
+        "muted",
+        "subtle",
+        "placeholder",
+        "danger",
+        ...paletteTokens.filter((key) => key.startsWith("name-")),
+      ]) {
         assert.ok(
           contrast(tokens[text], tokens[surface]) >= 4.5,
           `${base}: ${text} on ${surface} must reach 4.5:1`,

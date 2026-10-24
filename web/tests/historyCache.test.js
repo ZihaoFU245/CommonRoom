@@ -234,3 +234,45 @@ test("cached previews apply known retention, edits and retractions before HTTP",
     "preview must not mutate the cached revision",
   );
 });
+
+test("live frames supply missing room colors without changing configured overrides", () => {
+  const original = {
+    ...snapshot(),
+    color_version: "instance:1",
+    colors: { alice: "blue" },
+  };
+  const update = {
+    view: "0",
+    id: "0",
+    messages: [message(2401)],
+    unread: { revision: 2, through: 2401, oldest: 1, count: 1 },
+    name_colors: { version: "instance:1", values: { alice: "red" } },
+  };
+  const result = applyConversation(original, update);
+  assert.deepEqual(result.rooms[0].name_colors, update.name_colors);
+  assert.equal(result.rooms[0].colors, undefined);
+  assert.deepEqual(result.colors, original.colors);
+  assert.equal(
+    applyConversation(original, {
+      ...update,
+      name_colors: { ...update.name_colors, version: "instance:2" },
+    }),
+    null,
+  );
+});
+
+test("history merging preserves colors for older authors across page boundaries", () => {
+  const previous = {
+    ...page("team", 1),
+    name_colors: { version: "one", values: { alice: "red", absent: "pink" } },
+  };
+  const next = {
+    ...page("team", 101),
+    name_colors: { version: "one", values: { bob: "teal" } },
+  };
+  next.messages = next.messages.map((m) => ({ ...m, from: "bob" }));
+  assert.deepEqual(mergePage(previous, next, "newer").name_colors, {
+    version: "one",
+    values: { alice: "red", bob: "teal" },
+  });
+});

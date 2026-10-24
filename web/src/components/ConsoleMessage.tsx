@@ -12,6 +12,8 @@ import {
 import type { MessageDate } from "../features/conversation/messages.ts";
 import { useMessageEditorLayout } from "../hooks/useMessageEditorLayout.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
+import { Mention } from "./Mention.tsx";
+import { useNameColor } from "./NameColorContext.ts";
 
 export const ConsoleMessage = memo(function ConsoleMessage({
   message,
@@ -19,6 +21,8 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   self,
   date,
   grouped,
+  connectsPrevious = false,
+  connectsNext = false,
   pending,
   debug,
   allowHtml,
@@ -40,6 +44,8 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   self: string;
   date: MessageDate;
   grouped: boolean;
+  connectsPrevious?: boolean;
+  connectsNext?: boolean;
   pending: boolean;
   debug: boolean;
   allowHtml: boolean;
@@ -106,13 +112,15 @@ export const ConsoleMessage = memo(function ConsoleMessage({
     hasMessageContent(editValue) &&
     Array.from(editValue).length <= 4000;
   const reply = message.reply;
+  const authorColor = useNameColor(message.from);
+  const replyColor = useNameColor(reply?.from ?? "");
   const text = mentionedText(message.text, message.mentions);
   const invocation = mentionedCommand(message.text, message.mentions);
   return (
     <article
       id={`message-${message.id}`}
       data-sequence={message.sequence}
-      class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""}`}
+      class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""} ${connectsPrevious ? "message-bar-continued" : ""} ${connectsNext ? "message-bar-continues" : ""}`}
       title={date.full}
     >
       {grouped && (
@@ -125,10 +133,12 @@ export const ConsoleMessage = memo(function ConsoleMessage({
         </time>
       )}
       {!grouped && <Avatar url={avatar} name={message.from} />}
-      <div class="message-content">
+      <div class="message-content" data-name-color={authorColor}>
         {!grouped && (
           <header class="message-meta">
-            <strong class="message-author">{message.from}</strong>
+            <strong class="message-author" data-name-color={authorColor}>
+              {message.from}
+            </strong>
             <time dateTime={date.iso} title={date.full} aria-label={date.full}>
               {date.time}
             </time>
@@ -144,7 +154,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
             }
             title="Jump to original message if it is loaded"
           >
-            <strong>↳ {reply.from}</strong>
+            <strong data-name-color={replyColor}>↳ {reply.from}</strong>
             <span dir="auto">{reply.text}</span>
           </button>
         )}
@@ -213,7 +223,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
             >
               {invocation ? (
                 <p dir="auto">
-                  <mark class="mention">{invocation.mention}</mark>
+                  <Mention text={invocation.mention} />
                   {invocation.separator}
                   <code>{invocation.command}</code>
                 </p>
@@ -229,9 +239,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 <p dir="auto">
                   {text.map((part, index) =>
                     part.mention ? (
-                      <mark key={index} class="mention">
-                        {part.text}
-                      </mark>
+                      <Mention key={index} text={part.text} />
                     ) : (
                       part.text
                     ),
@@ -275,115 +283,115 @@ export const ConsoleMessage = memo(function ConsoleMessage({
             </button>
           ))}
         </div>
-      </div>
-      <div
-        class={`message-actions ${editing || reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
-      >
-        {canReply && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => onReply(message)}
-            aria-label={`Reply to ${message.from}'s message`}
-          >
-            Reply
-          </button>
-        )}
-        {canEdit && (
-          <button
-            type="button"
-            disabled={pending || editing}
-            aria-label={
-              message.from === self ? "Edit your message" : "Edit message"
-            }
-            onClick={() => {
-              editOriginal.current = message.text;
-              setEditText(message.text);
-              setEditError("");
-              changeEditing(true);
-            }}
-          >
-            Edit
-          </button>
-        )}
-        {canDelete && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => onDelete(message)}
-            aria-label={
-              message.from === self ? "Delete your message" : "Delete message"
-            }
-          >
-            Delete
-          </button>
-        )}
-        {canReact && (
-          <details
-            ref={placement.anchor}
-            open={reactionOpen}
-            onToggle={(event) => setReactionOpen(event.currentTarget.open)}
-          >
-            <summary
-              aria-label={`Add reaction to ${message.from}'s message`}
-              onClick={(event) => {
-                event.preventDefault();
-                setReactionOpen(!reactionOpen);
+        <div
+          class={`message-actions ${editing || reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
+        >
+          {canReply && (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => onReply(message)}
+              aria-label={`Reply to ${message.from}'s message`}
+            >
+              Reply
+            </button>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              disabled={pending || editing}
+              aria-label={
+                message.from === self ? "Edit your message" : "Edit message"
+              }
+              onClick={() => {
+                editOriginal.current = message.text;
+                setEditText(message.text);
+                setEditError("");
+                changeEditing(true);
               }}
             >
-              +
-            </summary>
-            <div
-              ref={placement.picker}
-              class={`reaction-picker ${placement.above ? "above" : ""}`}
+              Edit
+            </button>
+          )}
+          {canDelete && (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => onDelete(message)}
+              aria-label={
+                message.from === self ? "Delete your message" : "Delete message"
+              }
             >
-              <div class="reaction-choices">
-                {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    disabled={pending}
-                    aria-label={`Add reaction ${value}`}
-                    onClick={() => {
-                      onReact(message, value);
-                      setReactionOpen(false);
-                    }}
-                  >
-                    {value}
-                  </button>
-                ))}
-              </div>
-              <form
-                onSubmit={(event) => {
+              Delete
+            </button>
+          )}
+          {canReact && (
+            <details
+              ref={placement.anchor}
+              open={reactionOpen}
+              onToggle={(event) => setReactionOpen(event.currentTarget.open)}
+            >
+              <summary
+                aria-label={`Add reaction to ${message.from}'s message`}
+                onClick={(event) => {
                   event.preventDefault();
-                  onReact(message, reaction);
-                  setReaction("");
-                  setReactionOpen(false);
+                  setReactionOpen(!reactionOpen);
                 }}
               >
-                <input
-                  name="reaction"
-                  aria-label="Custom reaction"
-                  placeholder="Emoji or text"
-                  value={reaction}
-                  onInput={(e) => setReaction(e.currentTarget.value)}
-                />
-                <button disabled={pending || !reaction.trim()}>Add</button>
-              </form>
-            </div>
-          </details>
-        )}
-        {debug && (
-          <button
-            type="button"
-            aria-label="Show message details"
-            aria-expanded={detailsOpen}
-            aria-controls={`details-${message.id}`}
-            onClick={() => setDetailsOpen(!detailsOpen)}
-          >
-            ⋯
-          </button>
-        )}
+                +
+              </summary>
+              <div
+                ref={placement.picker}
+                class={`reaction-picker ${placement.above ? "above" : ""}`}
+              >
+                <div class="reaction-choices">
+                  {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={pending}
+                      aria-label={`Add reaction ${value}`}
+                      onClick={() => {
+                        onReact(message, value);
+                        setReactionOpen(false);
+                      }}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    onReact(message, reaction);
+                    setReaction("");
+                    setReactionOpen(false);
+                  }}
+                >
+                  <input
+                    name="reaction"
+                    aria-label="Custom reaction"
+                    placeholder="Emoji or text"
+                    value={reaction}
+                    onInput={(e) => setReaction(e.currentTarget.value)}
+                  />
+                  <button disabled={pending || !reaction.trim()}>Add</button>
+                </form>
+              </div>
+            </details>
+          )}
+          {debug && (
+            <button
+              type="button"
+              aria-label="Show message details"
+              aria-expanded={detailsOpen}
+              aria-controls={`details-${message.id}`}
+              onClick={() => setDetailsOpen(!detailsOpen)}
+            >
+              ⋯
+            </button>
+          )}
+        </div>
       </div>
     </article>
   );

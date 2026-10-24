@@ -101,7 +101,8 @@ The permission catalog has individual actions in three families:
 - `r`: `room.discover`, `message.read`, `message.metadata`, `member.list`,
   `account.list`, `server.config`, `policy.read`.
 - `w`: `media.upload`, `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
-  `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`.
+  `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`,
+  `account.color.own`.
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.rename`,
   `room.owner.transfer`, `history.clean`, `account.create`,
@@ -252,6 +253,15 @@ cannot grant it even when holding it. Ordinary participants retain edit-own.
 Session-bearing GET endpoints require a configured Origin or, when browsers omit
 Origin, `Sec-Fetch-Site: same-origin`. Same-site sibling requests are rejected.
 Bearer-authenticated reads retain their credential checks without requiring Origin.
+
+## Name colors
+
+`w:account.color.own` lets an account set its own `color` metadata at the scope it holds the
+grant: `@global` for its default, or a room for that room's override. The server user bundle
+and the room participant bundle include it, so room managers may delegate it like other
+participant actions. As with other server grants, a global grant applies to every room; a room
+override also requires the room to be readable. There is no grant for changing another
+account's color. Only su can do that, through ordinary metadata commands.
 
 ## Media grants
 

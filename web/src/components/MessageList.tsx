@@ -11,6 +11,7 @@ import type { Command, Message, TimelineEntry } from "../api/protocol.ts";
 import {
   messageDate,
   groupedMessage,
+  sameMinuteMessage,
 } from "../features/conversation/messages.ts";
 import { messageActions } from "../features/conversation/permissions.ts";
 import { ConsoleOutput } from "./ConsoleOutput.tsx";
@@ -19,6 +20,7 @@ interface Props {
   motionScope: string;
   revision: number;
   historyReady: boolean;
+  messageBars?: boolean;
   atBottom: RefObject<boolean>;
   entries: TimelineEntry[];
   username: string;
@@ -43,6 +45,7 @@ export const MessageList = memo(function MessageList({
   motionScope,
   revision,
   historyReady,
+  messageBars = false,
   atBottom,
   entries,
   username,
@@ -158,10 +161,21 @@ export const MessageList = memo(function MessageList({
       previous?.kind !== "message" ||
       messageDate(previous.message.time).key !== date.key;
     const isUnreadBoundary = entry.message.sequence === unreadBoundary;
+    const next = entries[index + 1];
+    const connectsPrevious =
+      !isUnreadBoundary &&
+      previous?.kind === "message" &&
+      sameMinuteMessage(entry.message, previous.message);
+    const connectsNext =
+      next?.kind === "message" &&
+      next.message.sequence !== unreadBoundary &&
+      sameMinuteMessage(next.message, entry.message);
     const grouped =
       !isUnreadBoundary &&
       previous?.kind === "message" &&
-      groupedMessage(entry.message, previous.message);
+      (messageBars
+        ? sameMinuteMessage(entry.message, previous.message)
+        : groupedMessage(entry.message, previous.message));
     return (
       <div key={entry.key} data-virtual-key={entry.key}>
         {newDay && (
@@ -180,6 +194,8 @@ export const MessageList = memo(function MessageList({
           self={username}
           date={date}
           grouped={grouped && !entry.message.reply}
+          connectsPrevious={connectsPrevious}
+          connectsNext={connectsNext}
           pending={pending}
           debug={debug}
           allowHtml={allowHtml}

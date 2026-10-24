@@ -17,8 +17,13 @@ interface Callbacks {
   onResult: (data: Acknowledgement) => void;
   onDisconnect: () => void;
   onLogout: () => void;
+  whenIdle?: (callback: () => void) => () => void;
 }
-export function useConnection(initial: Snapshot, handlers: Callbacks) {
+export function useConnection(
+  initial: Snapshot,
+  handlers: Callbacks,
+  nameColors = false,
+) {
   const [state, setState] = useState(initial);
   const [botCommandVersions, setBotCommandVersions] = useState(
     new Map<string, number>(),
@@ -31,6 +36,8 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
   const socket = useRef<WebSocket | null>(null);
   const callbacks = useRef(handlers);
   callbacks.current = handlers;
+  const projection = useRef(nameColors);
+  const changeProjection = useRef<(enabled: boolean) => void>(() => {});
   useEffect(() => {
     let stopped = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -47,17 +54,32 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       }
       // Transient refresh failures retry on reconnect/focus; socket updates remain authoritative.
     };
-    const sync = snapshotSync(
-      api.me,
-      (data, baseline) => {
-        const previous = currentState.current;
-        currentState.current = data;
-        setState(data);
-        callbacks.current.onSnapshot(previous, data, baseline);
-      },
-      handleSyncError,
-      olderSnapshot,
-    );
+    const createSync = () =>
+      snapshotSync(
+        () => api.me(projection.current),
+        (data, baseline) => {
+          const previous = currentState.current;
+          currentState.current = data;
+          setState(data);
+          callbacks.current.onSnapshot(previous, data, baseline);
+        },
+        handleSyncError,
+        olderSnapshot,
+      );
+    let sync = createSync();
+    changeProjection.current = (enabled) => {
+      if (stopped || projection.current === enabled) return;
+      projection.current = enabled;
+      // All acknowledgements have arrived. Replace the projection without
+      // reporting a transport failure or accepting an old HTTP refresh.
+      const previous = socket.current;
+      socket.current = null;
+      previous?.close();
+      clearTimeout(retry);
+      sync.stop();
+      sync = createSync();
+      connect();
+    };
     const resume = () => {
       clearTimeout(resumeTimer);
       if (stopped || document.hidden) return;
@@ -91,6 +113,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       awaitingBaseline = true;
       setStatus("connecting");
       const url = new URL("ws", document.baseURI);
+      if (projection.current) url.searchParams.set("colors", "1");
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       socket.current = ws;
@@ -167,6 +190,7 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
         setStatus("offline");
         setBotActivities([]);
         callbacks.current.onDisconnect();
+        if (stopped || socket.current !== ws) return;
         // Authentication and the backoff run together; a slow health check must
         // not add another network round trip before the socket can reconnect.
         retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 15000));
@@ -189,6 +213,13 @@ export function useConnection(initial: Snapshot, handlers: Callbacks) {
       socket.current?.close();
     };
   }, []);
+  useEffect(() => {
+    if (projection.current === nameColors) return;
+    const change = () => changeProjection.current(nameColors);
+    if (callbacks.current.whenIdle) return callbacks.current.whenIdle(change);
+    change();
+    return undefined;
+  }, [nameColors]);
 
   return {
     state,

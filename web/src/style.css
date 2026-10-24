@@ -1,4 +1,7 @@
 :root {
+  /* First-paint fallback; applyAppearance synchronizes these with controlMotion. */
+  --control-motion-duration: 120ms;
+  --control-motion-easing: ease-out;
   --chat-header-height: 64px;
   --chat-footer-height: 80px;
   /* Light appearance. Every themed surface reads from this palette. */
@@ -24,6 +27,23 @@
   /* Text on --accent stays dark in both themes: the fill itself is unchanged. */
   --accent-label: #2d2d2b;
   --accent-contrast: #fff;
+  /* Built-in name shades; custom palettes derive contrast against their surfaces. */
+  --name-red: #dc2626;
+  --name-orange: #c2410c;
+  --name-amber: #b45309;
+  --name-yellow: #a16207;
+  --name-lime: #4d7c0f;
+  --name-green: #15803d;
+  --name-emerald: #047857;
+  --name-teal: #0f766e;
+  --name-cyan: #0e7490;
+  --name-sky: #0369a1;
+  --name-blue: #2563eb;
+  --name-indigo: #4f46e5;
+  --name-violet: #7c3aed;
+  --name-purple: #9333ea;
+  --name-fuchsia: #c026d3;
+  --name-pink: #db2777;
   color-scheme: light;
   caret-color: var(--ink);
   font-family:
@@ -64,6 +84,22 @@
   --shadow-float: 0 6px 20px #00000059;
   --shadow-pop: 0 4px 15px #00000059;
   --shadow-dialog: 0 12px 50px #00000073;
+  --name-red: #f87171;
+  --name-orange: #fb923c;
+  --name-amber: #fbbf24;
+  --name-yellow: #facc15;
+  --name-lime: #a3e635;
+  --name-green: #4ade80;
+  --name-emerald: #34d399;
+  --name-teal: #2dd4bf;
+  --name-cyan: #22d3ee;
+  --name-sky: #38bdf8;
+  --name-blue: #60a5fa;
+  --name-indigo: #818cf8;
+  --name-violet: #a78bfa;
+  --name-purple: #c084fc;
+  --name-fuchsia: #e879f9;
+  --name-pink: #f472b6;
   color-scheme: dark;
   scrollbar-color: var(--line) transparent;
 }
@@ -251,7 +287,7 @@ textarea {
   top: 16px;
   left: 24px;
   z-index: 101;
-  transition: left 120ms ease-out;
+  transition: left var(--control-motion-duration) var(--control-motion-easing);
 }
 .navigation-open .navigation-toggle {
   left: 224px;
@@ -487,7 +523,7 @@ textarea {
   padding: 3px 0;
   outline: none;
   line-height: 1.5;
-  transition: height 120ms ease-out;
+  transition: height var(--control-motion-duration) var(--control-motion-easing);
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -846,7 +882,8 @@ textarea {
   color: var(--muted);
   font-size: 1.21429rem;
   line-height: 1;
-  transition: transform 120ms ease;
+  transition: transform var(--control-motion-duration)
+    var(--control-motion-easing);
 }
 .nav-group[open] summary::before {
   transform: rotate(90deg);
@@ -999,7 +1036,8 @@ button:focus-visible {
   stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
-  transition: transform 120ms ease-out;
+  transition: transform var(--control-motion-duration)
+    var(--control-motion-easing);
 }
 .online-users.open .online-toggle svg {
   transform: rotate(180deg);
@@ -1023,9 +1061,9 @@ button:focus-visible {
   transform: translateY(-6px);
   pointer-events: none;
   transition:
-    opacity 120ms ease-out,
-    transform 120ms ease-out,
-    visibility 120ms;
+    opacity var(--control-motion-duration) var(--control-motion-easing),
+    transform var(--control-motion-duration) var(--control-motion-easing),
+    visibility var(--control-motion-duration);
 }
 .online-users.open .online-list {
   opacity: 1;
@@ -1038,6 +1076,10 @@ button:focus-visible {
   padding: 4px;
   overflow-wrap: anywhere;
 }
+.online-list b {
+  font-weight: inherit;
+  color: var(--name);
+}
 @media (prefers-reduced-motion: reduce) {
   .online-list,
   .online-toggle svg {
@@ -1047,6 +1089,7 @@ button:focus-visible {
 
 /* Chat messages use the UI font; command output keeps its console typography. */
 .chat-message {
+  --message-top-gap: 16px;
   position: relative;
   padding: 16px 10px 2px 56px;
   margin: 0 -10px;
@@ -1061,6 +1104,7 @@ button:focus-visible {
   line-height: 1.65;
 }
 .chat-message.grouped {
+  --message-top-gap: 2px;
   padding-top: 2px;
 }
 .chat-message:hover {
@@ -1081,9 +1125,16 @@ button:focus-visible {
   margin-bottom: 4px;
 }
 .message-author {
+  color: var(--name);
   font-size: 1rem;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+.show-name-borders .message-author {
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--name) 24%, var(--line));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--wash) 60%, var(--paper));
 }
 .message-content p {
   color: var(--ink);
@@ -1160,7 +1211,7 @@ button:focus-visible {
 }
 .mention {
   background: var(--wash);
-  color: var(--ink);
+  color: var(--name);
   border-radius: 3px;
   padding: 0 2px;
   font-weight: 600;
@@ -1281,6 +1332,7 @@ button:focus-visible {
 }
 .reply-quote strong {
   flex-shrink: 0;
+  color: var(--name);
 }
 .reply-quote span {
   overflow: hidden;
@@ -2323,4 +2375,292 @@ button:focus-visible {
 .avatar-crop button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.show-message-bars .message-content {
+  border-left: 3px solid
+    color-mix(in srgb, var(--ink) var(--message-bar-opacity, 50%), transparent);
+  padding-left: 11px;
+}
+.show-message-bars .message-content[data-name-color] {
+  border-left-color: color-mix(
+    in srgb,
+    var(--name) var(--message-bar-opacity, 50%),
+    transparent
+  );
+}
+/* Extend each segment through the row's own padding. Adjacent segments meet
+   without overlapping, preserving the selected opacity at every join. */
+.show-message-bars .message-bar-continued .message-content {
+  margin-top: calc(-1 * var(--message-top-gap));
+  padding-top: var(--message-top-gap);
+}
+.show-message-bars .message-bar-continues .message-content {
+  margin-bottom: -2px;
+  padding-bottom: 2px;
+}
+.show-message-bars .reply-quote {
+  margin-left: 2px;
+  max-width: calc(100% - 2px);
+}
+
+.name-color-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 20px;
+}
+.name-color-scope {
+  margin-bottom: 12px;
+}
+.name-color-setting > span {
+  font-size: 0.85714rem;
+  font-weight: 600;
+}
+.name-color-control {
+  position: relative;
+  width: min(14rem, 42vw);
+  max-width: 100%;
+  min-width: 0;
+}
+.name-color-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font-size: 0.92857rem;
+  text-align: left;
+}
+.name-color-toggle > span:not(.name-color-swatch) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name-color-toggle:hover {
+  border-color: var(--hairline);
+}
+.name-color-toggle:disabled {
+  opacity: 0.6;
+}
+.name-color-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--subtle);
+  transition: transform var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.name-color-toggle[aria-expanded="true"] .name-color-chevron {
+  transform: rotate(180deg);
+}
+.name-scope-options {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 100%;
+  max-height: min(16rem, 35dvh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+}
+.name-scope-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 0.92857rem;
+  text-align: left;
+}
+.name-scope-option > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name-scope-option:hover,
+.name-scope-option:focus-visible,
+.name-scope-option[aria-selected="true"] {
+  background: var(--wash);
+}
+.name-scope-option > svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  visibility: hidden;
+}
+.name-scope-option[aria-selected="true"] > svg {
+  visibility: visible;
+}
+@media (prefers-reduced-motion: reduce) {
+  .name-color-chevron {
+    transition: none;
+  }
+}
+.name-color-swatch {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--name);
+}
+.name-color-picker {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(6, 28px);
+  overflow-y: auto;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+}
+.name-color-picker[data-side="top"],
+.name-scope-options[data-side="top"] {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+@media (max-width: 500px) {
+  .name-color-setting {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .name-color-control {
+    width: 100%;
+  }
+  .name-color-picker {
+    width: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .name-color-picker .name-color-option {
+    width: 100%;
+    height: auto;
+    min-height: 28px;
+    aspect-ratio: 1;
+  }
+}
+.name-color-option {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--name);
+}
+.name-color-option[aria-pressed="true"] {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Each colored element falls back to the text color unless it carries its own
+   data-name-color; these must precede the palette rules below. */
+.message-author,
+.reply-quote strong,
+.online-list b,
+.mention,
+.name-color-swatch,
+.name-color-option {
+  --name: var(--ink);
+}
+[data-name-color="red"] {
+  --name: var(--name-red);
+}
+[data-name-color="orange"] {
+  --name: var(--name-orange);
+}
+[data-name-color="amber"] {
+  --name: var(--name-amber);
+}
+[data-name-color="yellow"] {
+  --name: var(--name-yellow);
+}
+[data-name-color="lime"] {
+  --name: var(--name-lime);
+}
+[data-name-color="green"] {
+  --name: var(--name-green);
+}
+[data-name-color="emerald"] {
+  --name: var(--name-emerald);
+}
+[data-name-color="teal"] {
+  --name: var(--name-teal);
+}
+[data-name-color="cyan"] {
+  --name: var(--name-cyan);
+}
+[data-name-color="sky"] {
+  --name: var(--name-sky);
+}
+[data-name-color="blue"] {
+  --name: var(--name-blue);
+}
+[data-name-color="indigo"] {
+  --name: var(--name-indigo);
+}
+[data-name-color="violet"] {
+  --name: var(--name-violet);
+}
+[data-name-color="purple"] {
+  --name: var(--name-purple);
+}
+[data-name-color="fuchsia"] {
+  --name: var(--name-fuchsia);
+}
+[data-name-color="pink"] {
+  --name: var(--name-pink);
+}
+
+.message-bar-opacity-setting .account-summary {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.name-color-preview,
+.name-color-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.name-color-preview {
+  padding: 0.25rem;
+}
+.name-color-preview > span {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+.name-color-actions {
+  justify-content: flex-end;
+  padding-top: 0.25rem;
 }

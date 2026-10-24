@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   groupedMessage,
+  sameMinuteMessage,
   messageDate,
 } from "../src/features/conversation/messages.ts";
 
@@ -74,6 +75,50 @@ test("grouping breaks for another sender, backwards time, long gaps and local mi
     groupedMessage(
       { from: "alice", time: midnight },
       { from: "alice", time: midnight - 60 },
+    ),
+    false,
+  );
+});
+
+test("message bars connect only consecutive messages in the same author minute and conversation", () => {
+  const time = new Date(2026, 9, 21, 16, 44, 0).getTime() / 1000;
+  const previous = { from: "alice", time: time + 5, to: null };
+  assert.equal(
+    sameMinuteMessage({ ...previous, time: time + 59 }, previous),
+    true,
+  );
+  assert.equal(
+    sameMinuteMessage(
+      { ...previous, time: time + 60 },
+      { ...previous, time: time + 59 },
+    ),
+    false,
+  );
+  assert.equal(
+    sameMinuteMessage({ ...previous, from: "bob" }, previous),
+    false,
+  );
+  assert.equal(
+    sameMinuteMessage({ ...previous, time: time + 4 }, previous),
+    false,
+  );
+  assert.equal(sameMinuteMessage(previous, null), false);
+  assert.equal(
+    sameMinuteMessage(
+      { ...previous, private_id: "other" },
+      { ...previous, private_id: "pair" },
+    ),
+    false,
+  );
+  assert.equal(
+    sameMinuteMessage({ ...previous, to: "eve" }, { ...previous, to: "bob" }),
+    false,
+  );
+  const midnight = new Date(2026, 9, 22).getTime() / 1000;
+  assert.equal(
+    sameMinuteMessage(
+      { ...previous, time: midnight },
+      { ...previous, time: midnight - 1 },
     ),
     false,
   );

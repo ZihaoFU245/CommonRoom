@@ -1,5 +1,6 @@
 import type { Snapshot, Acknowledgement, Fonts } from "../../api/protocol.ts";
 import type { Aliases } from "../../features/conversation/aliases.ts";
+import type { NameColor } from "../../features/preferences/nameColors.ts";
 import type { Theme, Seeds } from "../../features/preferences/settings.ts";
 
 export interface SettingsProps {
@@ -16,10 +17,23 @@ export interface SettingsProps {
   onMarkdownChange: (enabled: boolean) => void;
   latex: boolean;
   onLatexChange: (enabled: boolean) => void;
+  nameColors: boolean;
+  onNameColorsChange: (enabled: boolean) => void;
+  messageBars: boolean;
+  onMessageBarsChange: (enabled: boolean) => void;
+  messageBarOpacity: number;
+  onMessageBarOpacityChange: (opacity: number) => void;
+  nameBorders: boolean;
+  onNameBordersChange: (enabled: boolean) => void;
   allowHtml: boolean;
   onAllowHtmlChange: (enabled: boolean) => void;
   onChange: (value: Fonts) => void;
   onThemeChange: (value: Theme) => void;
   onSeedsChange: (value: Seeds) => void;
+  /** `room` is a stable room ID; null changes the `@global` color. */
+  onNameColorChange: (
+    color: NameColor | null,
+    room: string | null,
+  ) => Promise<void>;
   onClose: () => void;
 }

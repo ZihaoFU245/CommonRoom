@@ -63,3 +63,21 @@ export function groupedMessage(
     messageDate(message.time).key === messageDate(previous.time).key
   );
 }
+
+/** Visual bar runs follow the displayed minute, within one conversation. */
+export function sameMinuteMessage(
+  message: Pick<Message, "from" | "time"> &
+    Partial<Pick<Message, "private_id" | "to">>,
+  previous?:
+    | (Pick<Message, "from" | "time"> &
+        Partial<Pick<Message, "private_id" | "to">>)
+    | null,
+): boolean {
+  return (
+    !!previous &&
+    groupedMessage(message, previous) &&
+    Math.floor(message.time / 60) === Math.floor(previous.time / 60) &&
+    message.private_id === previous.private_id &&
+    message.to === previous.to
+  );
+}

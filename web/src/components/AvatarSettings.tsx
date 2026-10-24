@@ -1,3 +1,4 @@
+import { controlMotion } from "../features/preferences/motion.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import autoAnimate from "@formkit/auto-animate";
 import { Avatar } from "./Avatar.tsx";
@@ -51,10 +52,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
   const controller = useRef(new AbortController());
   useEffect(() => {
     if (!animatedSettings.current) return;
-    const animation = autoAnimate(animatedSettings.current, {
-      duration: 120,
-      easing: "ease-out",
-    });
+    const animation = autoAnimate(animatedSettings.current, controlMotion);
     return () => animation.destroy?.();
   }, []);
   useEffect(() => () => controller.current.abort(), []);

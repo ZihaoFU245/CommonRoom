@@ -1,3 +1,4 @@
+import { controlMotion } from "./motion.ts";
 import { defaultSeeds, derivePalette, paletteTokens } from "./palette.ts";
 import {
   defaultTheme,
@@ -24,6 +25,11 @@ export function applyAppearance(
   seeds: Seeds,
 ) {
   const root = document.documentElement;
+  root.style.setProperty(
+    "--control-motion-duration",
+    `${controlMotion.duration}ms`,
+  );
+  root.style.setProperty("--control-motion-easing", controlMotion.easing);
   if (theme === "custom") {
     const { polarity, tokens } = derivePalette(seeds.base, seeds.accent);
     /* Inline properties outrank the themed blocks, so the generated palette

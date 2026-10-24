@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { useNameColor } from "./NameColorContext.ts";
+
+function OnlineName({ name, self }: { name: string; self: boolean }) {
+  return (
+    <span>
+      <b data-name-color={useNameColor(name)}>{name}</b>
+      {self ? " (you)" : ""}
+    </span>
+  );
+}
 
 export function OnlineUsers({
   names,
@@ -51,10 +61,7 @@ export function OnlineUsers({
       <div id="online-users-list" class="online-list" aria-hidden={!open}>
         {connected ? (
           names.map((name) => (
-            <span key={name}>
-              {name}
-              {name === username ? " (you)" : ""}
-            </span>
+            <OnlineName key={name} name={name} self={name === username} />
           ))
         ) : (
           <span>Reconnecting…</span>

@@ -1,3 +1,4 @@
+import { controlMotion } from "../../features/preferences/motion.ts";
 import autoAnimate from "@formkit/auto-animate";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { errorMessage } from "../../api/protocol.ts";
@@ -61,10 +62,7 @@ export function AccountEditor({
   useEffect(() => {
     if (!content.current || (section !== "account" && section !== "security"))
       return;
-    const animation = autoAnimate(content.current, {
-      duration: 120,
-      easing: "ease-out",
-    });
+    const animation = autoAnimate(content.current, controlMotion);
     return () => animation.destroy?.();
   }, [section]);
   function submit(text: string, password = false) {

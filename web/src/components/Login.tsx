@@ -1,3 +1,4 @@
+import { loadInitialAccount } from "../api/bootstrap.ts";
 import type { JSX } from "preact";
 import { useState } from "preact/hooks";
 import type { Snapshot } from "../api/protocol.ts";
@@ -22,7 +23,7 @@ export function Login({
     setError("");
     try {
       await api.login(username, password);
-      onLogin(await api.me());
+      onLogin(await loadInitialAccount());
     } catch (e) {
       setError(errorMessage(e));
     } finally {

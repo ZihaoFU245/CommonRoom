@@ -1,9 +1,10 @@
+import { loadInitialAccount } from "./api/bootstrap.ts";
 import mediaWorkerUrl from "virtual:media-worker-url";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { Snapshot } from "./api/protocol.ts";
 import { errorMessage } from "./api/protocol.ts";
-import { api, isUnauthorized } from "./api/client.ts";
+import { isUnauthorized } from "./api/client.ts";
 import { Chat } from "./components/Chat.tsx";
 import { Login } from "./components/Login.tsx";
 import { bootAppearance } from "./features/preferences/appearance.ts";
@@ -42,8 +43,7 @@ function App() {
   );
   const [initialError, setInitialError] = useState("");
   useEffect(() => {
-    api
-      .me()
+    loadInitialAccount()
       .then(setAccount)
       .catch((error) => {
         if (!isUnauthorized(error)) setInitialError(errorMessage(error));

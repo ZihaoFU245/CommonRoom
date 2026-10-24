@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api, ApiError } from "../src/api/client.ts";
+import { createRequestLifecycle } from "../src/features/conversation/requestLifecycle.ts";
 const registration = mockHooks();
 const { useConnection } = await import("../src/hooks/useConnection.ts");
 registration.deregister();
@@ -43,13 +44,15 @@ function fixture(t) {
     timers = new Map(),
     listeners = new Map();
   let serial = 0,
-    loggedOut = 0;
+    loggedOut = 0,
+    disconnected = 0;
   let refreshError;
   class Socket {
     static OPEN = 1;
     static CLOSED = 3;
     readyState = 0;
-    constructor() {
+    constructor(url) {
+      this.url = url;
       sockets.push(this);
     }
     close() {
@@ -82,18 +85,36 @@ function fixture(t) {
     return snapshot;
   };
   const harness = createHookHarness();
-  useHarness(harness);
-  useConnection(snapshot, {
-    onSnapshot(previous, next) {
-      snapshots.push(next);
-    },
-    onResult() {},
-    onDisconnect() {},
-    onLogout() {
-      loggedOut++;
-    },
-  });
-  for (const effect of harness.effects) effect();
+  const results = [],
+    frames = [];
+  const lifecycle = createRequestLifecycle(
+    (frame) => frames.push(frame),
+    () => {},
+  );
+  function render(nameColors = false) {
+    useHarness(harness);
+    harness.effects = [];
+    useConnection(
+      snapshot,
+      {
+        onSnapshot(previous, next) {
+          snapshots.push(next);
+        },
+        onResult: lifecycle.receive,
+        onDisconnect() {
+          disconnected++;
+          lifecycle.disconnect();
+        },
+        whenIdle: lifecycle.whenIdle,
+        onLogout() {
+          loggedOut++;
+        },
+      },
+      nameColors,
+    );
+    for (const effect of harness.effects) effect();
+  }
+  render();
   t.after(() => {
     for (const slot of harness.slots) slot?.cleanup?.();
     Object.assign(globalThis, originals);
@@ -102,6 +123,24 @@ function fixture(t) {
   });
   return {
     sockets,
+    results,
+    frames,
+    render,
+    submit(parallel = false) {
+      return lifecycle.submit({
+        command: {
+          text: parallel ? "message" : "/help",
+          room: "lobby",
+          key: null,
+        },
+        frame: { text: "hello", room: "lobby" },
+        parallel,
+        complete: (result) => results.push(result),
+      });
+    },
+    get disconnected() {
+      return disconnected;
+    },
     checks,
     timers,
     listeners,
@@ -221,4 +260,56 @@ test("debounced refresh errors still detect revoked sessions", async (t) => {
   await h.runTimers();
   assert.equal(h.loggedOut, 1);
   assert.equal(h.timers.size, 0);
+});
+
+for (const parallel of [false, true]) {
+  test(`changing color subscription drains ${parallel ? "parallel messages" : "commands"} before reconnecting`, (t) => {
+    const h = fixture(t);
+    h.baseline();
+    h.submit(parallel);
+    if (parallel) h.submit(true);
+    const old = h.sockets[0];
+    h.render(true);
+    assert.equal(h.sockets.length, 1);
+    assert.equal(old.readyState, WebSocket.OPEN);
+    for (const frame of h.frames) {
+      old.onmessage({
+        data: JSON.stringify({ kind: "notice", id: frame.id, text: "sent" }),
+      });
+    }
+    assert.equal(h.results.length, h.frames.length);
+    assert.ok(h.results.every((result) => result.kind === "notice"));
+    assert.equal(h.disconnected, 0);
+    assert.equal(old.readyState, WebSocket.CLOSED);
+    assert.equal(h.sockets.length, 2);
+    assert.equal(new URL(h.sockets[1].url).searchParams.get("colors"), "1");
+    h.baseline();
+    h.render(false);
+    assert.equal(h.sockets.length, 3);
+    assert.equal(new URL(h.sockets[2].url).searchParams.has("colors"), false);
+  });
+}
+
+test("reverting a queued preference cancels reconnect and real disconnect still fails pending requests", (t) => {
+  const h = fixture(t);
+  h.baseline();
+  h.submit();
+  h.render(true);
+  h.render(false);
+  h.sockets[0].onmessage({
+    data: JSON.stringify({ kind: "notice", id: h.frames[0].id, text: "sent" }),
+  });
+  assert.equal(h.sockets.length, 1);
+  h.submit(true);
+  h.render(true);
+  h.sockets[0].close();
+  assert.equal(h.results[1].kind, "error");
+  assert.match(h.results[1].text, /Connection lost/);
+  assert.equal(h.disconnected, 1);
+  assert.equal(h.sockets.length, 2);
+  assert.equal(
+    h.timers.size,
+    0,
+    "idle reconnect must not also schedule backoff",
+  );
 });

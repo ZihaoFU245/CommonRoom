@@ -32,6 +32,7 @@ async function request<T>(
   body?: unknown,
   signal?: AbortSignal,
   timeoutMs = 15000,
+  nameColors = false,
 ): Promise<T> {
   const cancellation = requestAbort(timeoutMs, signal);
   try {
@@ -40,12 +41,17 @@ async function request<T>(
       credentials: "same-origin",
       cache: "no-store",
       signal: cancellation.signal,
-      ...(body === undefined
-        ? {}
-        : {
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(body !== undefined || nameColors
+        ? {
+            headers: {
+              ...(body === undefined
+                ? {}
+                : { "Content-Type": "application/json" }),
+              ...(nameColors ? { "X-Chat-Name-Colors": "1" } : {}),
+            },
+          }
+        : {}),
     });
     const value: unknown = await response.json().catch(() => null);
     cancellation.signal.throwIfAborted();
@@ -122,17 +128,33 @@ export const api = {
       undefined,
       signal,
     ),
-  me: () => request("me", isSnapshot),
+  me: (nameColors = false) =>
+    request("me", isSnapshot, undefined, undefined, 15000, nameColors),
   session: () => request("session", isOk),
   login: (username: string, password: string) =>
     request("login", isOk, { username, password }),
   logout: () => request("logout", isOk, {}),
-  history: (view: string, signal: AbortSignal, range: HistoryRange = {}) => {
+  history: (
+    view: string,
+    signal: AbortSignal,
+    range: HistoryRange = {},
+    nameColors = false,
+  ) => {
     const query = new URLSearchParams({ view });
     for (const [key, value] of Object.entries(range))
       query.set(key, String(value));
-    return request(`history?${query.toString()}`, isHistory, undefined, signal);
+    return request(
+      `history?${query.toString()}`,
+      isHistory,
+      undefined,
+      signal,
+      15000,
+      nameColors,
+    );
   },
   read: (view: string, through: number) =>
     request("read", isOk, { view, through }),
+  /** `room` is a stable room ID; null sets the `@global` color. */
+  color: (color: string | null, room: string | null) =>
+    request("color", isOk, { color, room }),
 };

@@ -28,6 +28,22 @@ export const paletteTokens = [
   "shadow-float",
   "shadow-pop",
   "shadow-dialog",
+  "name-red",
+  "name-orange",
+  "name-amber",
+  "name-yellow",
+  "name-lime",
+  "name-green",
+  "name-emerald",
+  "name-teal",
+  "name-cyan",
+  "name-sky",
+  "name-blue",
+  "name-indigo",
+  "name-violet",
+  "name-purple",
+  "name-fuchsia",
+  "name-pink",
 ] as const;
 export type PaletteToken = (typeof paletteTokens)[number];
 export type Palette = Record<PaletteToken, string>;
@@ -262,6 +278,9 @@ export function derivePalette(
     clamp(accentHsl.l + (labelIsDark ? 0.07 : -0.07), 0, 1),
   );
 
+  // User names appear on paper, hovered rows and fields. Preserve each hue while
+  // solving its lightness against the custom surface instead of reusing a fixed shade.
+  const name = (hue: number) => solve(5.2, dark, hue, 0.65);
   return {
     polarity,
     tokens: {
@@ -281,6 +300,22 @@ export function derivePalette(
       danger,
       online,
       offline,
+      "name-red": name(0),
+      "name-orange": name(24),
+      "name-amber": name(38),
+      "name-yellow": name(48),
+      "name-lime": name(82),
+      "name-green": name(142),
+      "name-emerald": name(160),
+      "name-teal": name(174),
+      "name-cyan": name(192),
+      "name-sky": name(204),
+      "name-blue": name(220),
+      "name-indigo": name(244),
+      "name-violet": name(266),
+      "name-purple": name(280),
+      "name-fuchsia": name(300),
+      "name-pink": name(330),
       scrim: dark ? "#000000a6" : `${ink}55`,
       hairline,
       "shadow-float": dark ? "0 6px 20px #00000059" : "0 6px 20px #00000012",

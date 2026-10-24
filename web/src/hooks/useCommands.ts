@@ -357,5 +357,6 @@ export function useCommands({
     confirmDelete,
     receive: lifecycle.receive,
     disconnect: lifecycle.disconnect,
+    whenIdle: lifecycle.whenIdle,
   };
 }

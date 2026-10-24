@@ -5,6 +5,7 @@ import type { ComponentChildren } from "preact";
 import { lazy, memo, Suspense } from "preact/compat";
 import type { MarkdownNode } from "../features/conversation/markdown.ts";
 import { mentionedText } from "../features/conversation/interactions.ts";
+import { Mention } from "./Mention.tsx";
 const Attachment = lazy(() =>
   import("./Attachment.tsx").then((module) => ({ default: module.Attachment })),
 );
@@ -32,13 +33,7 @@ export const MarkdownContent = memo(function MarkdownContent({
         return code
           ? node
           : mentionedText(node, mentions).map((part, i) =>
-              part.mention ? (
-                <mark key={i} class="mention">
-                  {part.text}
-                </mark>
-              ) : (
-                part.text
-              ),
+              part.mention ? <Mention key={i} text={part.text} /> : part.text,
             );
       if (node.html)
         return (

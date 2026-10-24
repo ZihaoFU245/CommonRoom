@@ -1,4 +1,11 @@
-import type { History, Message, Snapshot, Unread } from "../../api/protocol.ts";
+import { mergeMessageColors } from "../preferences/nameColors.ts";
+import type {
+  History,
+  Message,
+  Snapshot,
+  Unread,
+  MessageColors,
+} from "../../api/protocol.ts";
 export const ROOM_CACHE_LIMIT = 1000;
 const TOTAL_CACHE_LIMIT = 5000;
 const BYTE_LIMIT = 16 * 1024 * 1024;
@@ -53,9 +60,15 @@ export class HistoryCache {
   store(page: CachedHistory): void {
     const previous = this.entries.get(page.view);
     const size =
-      previous?.page.messages === page.messages
+      previous?.page.messages === page.messages &&
+      previous.page.name_colors === page.name_colors
         ? previous.bytes
-        : bytes(page.messages);
+        : bytes(page.messages) +
+          Object.entries(page.name_colors?.values ?? {}).reduce(
+            (total, [name, color]) =>
+              total + 128 + 2 * (name.length + (color?.length ?? 0)),
+            0,
+          );
     this.delete(page.view);
     this.entries.set(page.view, { page, bytes: size });
     this.count += page.messages.length;
@@ -140,6 +153,11 @@ export function mergePage(
   return {
     ...current,
     messages,
+    name_colors: mergeMessageColors(
+      current.name_colors,
+      page.name_colors,
+      messages,
+    ),
     revision: page.revision,
     has_before:
       direction === "older"
@@ -192,18 +210,32 @@ export function boundSnapshot(
     messages.reverse();
     tails.set(conversation.id, messages);
   }
+  const directMessages = [...tails.entries()]
+    .filter(([id]) => !roomIds.has(id))
+    .flatMap(([, messages]) => messages)
+    .sort((a, b) => a.sequence - b.sequence);
   return {
     ...snapshot,
+    name_colors: mergeMessageColors(
+      undefined,
+      snapshot.name_colors,
+      directMessages,
+    ),
     rooms: snapshot.rooms.map((room) => {
       const messages = tails.get(room.id) ?? [];
       return messages.length === room.messages.length
         ? room
-        : { ...room, messages };
+        : {
+            ...room,
+            messages,
+            name_colors: mergeMessageColors(
+              undefined,
+              room.name_colors,
+              messages,
+            ),
+          };
     }),
-    direct: [...tails.entries()]
-      .filter(([id]) => !roomIds.has(id))
-      .flatMap(([, messages]) => messages)
-      .sort((a, b) => a.sequence - b.sequence),
+    direct: directMessages,
   };
 }
 export function applyConversation(
@@ -213,6 +245,7 @@ export function applyConversation(
     id: string;
     messages: Message[];
     unread: Snapshot["unread"][string];
+    name_colors?: MessageColors | undefined;
   },
 ): Snapshot | null {
   const room = previous.rooms.find(
@@ -220,13 +253,28 @@ export function applyConversation(
   );
   const direct = previous.private_access[update.view]?.id === update.id;
   if (!room && !direct) return null;
+  if (
+    update.name_colors &&
+    update.name_colors.version !== previous.color_version
+  )
+    return null;
   return boundSnapshot(
     {
       ...previous,
+      name_colors: direct
+        ? mergeMessageColors(previous.name_colors, update.name_colors, [
+            ...previous.direct,
+            ...update.messages,
+          ])
+        : previous.name_colors,
       rooms: room
         ? previous.rooms.map((item) =>
             item.id === update.id
-              ? { ...item, messages: update.messages }
+              ? {
+                  ...item,
+                  messages: update.messages,
+                  name_colors: update.name_colors,
+                }
               : item,
           )
         : previous.rooms,

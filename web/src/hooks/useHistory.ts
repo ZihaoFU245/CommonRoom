@@ -27,6 +27,7 @@ export function useHistory(
   ledger: ValueRef<Ledger>,
   virtualTimeline: RefObject<VirtualTimelineHandle>,
   atBottom: RefObject<boolean>,
+  nameColors = false,
 ) {
   const cache = useRef(new HistoryCache());
   const lookahead = useRef(new HistoryLookahead());
@@ -124,13 +125,18 @@ export function useHistory(
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const started = performance.now();
-          page = await api.history(view, controller.signal, range);
+          page = await api.history(view, controller.signal, range, nameColors);
           lookahead.current.sample(performance.now() - started);
           if (page.view !== view)
             throw new Error(
               "History response belongs to another conversation.",
             );
-          if (currentState.current.unread[view]?.revision === page.revision)
+          if (
+            currentState.current.unread[view]?.revision === page.revision &&
+            (!nameColors ||
+              !page.name_colors ||
+              page.name_colors.version === currentState.current.color_version)
+          )
             break;
         } catch (error) {
           if (
@@ -212,7 +218,17 @@ export function useHistory(
       request.current?.abort();
       request.current = null;
     };
-  }, [selected, id, state.policy_revision]);
+  }, [selected, id, state.policy_revision, nameColors]);
+  function colorsReady(page: CachedHistory): boolean {
+    return (
+      !nameColors ||
+      state.color_version === undefined ||
+      page.name_colors?.version === state.color_version ||
+      page.messages.every((message) =>
+        tail.some((item) => item.id === message.id),
+      )
+    );
+  }
   useEffect(() => {
     // Revocation and resource identity reuse cannot retain accessible cached history.
     for (const [view, page] of cache.current) {
@@ -231,7 +247,8 @@ export function useHistory(
     if (
       target === undefined &&
       visible?.id === id &&
-      visible.revision === unread.revision
+      visible.revision === unread.revision &&
+      colorsReady(visible)
     ) {
       commit(visible);
       return;
@@ -241,7 +258,8 @@ export function useHistory(
       target === undefined &&
       previous?.view === selected &&
       previous.id === id &&
-      previous.oldest === unread.oldest
+      previous.oldest === unread.oldest &&
+      colorsReady(previous)
     ) {
       const last = previous.through;
       const additions = tail.filter((message) => message.sequence > last);
@@ -277,7 +295,16 @@ export function useHistory(
     fetchPage(anchor === undefined ? {} : { around: anchor }).catch(
       (error: unknown) => setHistoryError(errorMessage(error)),
     );
-  }, [selected, id, unread?.revision, state.policy_revision, retry, target]);
+  }, [
+    selected,
+    id,
+    unread?.revision,
+    state.policy_revision,
+    state.color_version,
+    nameColors,
+    retry,
+    target,
+  ]);
   const messages = useMemo(
     () =>
       visible !== null
@@ -298,6 +325,7 @@ export function useHistory(
     lookahead: lookahead.current,
     historyReady,
     messages,
+    nameColors: visible?.name_colors,
     historyError,
     loading,
     refreshing: loading && target === undefined && visible !== null,

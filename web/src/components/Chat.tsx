@@ -1,3 +1,4 @@
+import { controlMotion } from "../features/preferences/motion.ts";
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
 import { useCommands } from "../hooks/useCommands.ts";
 import { useReadTracking } from "../hooks/useReadTracking.ts";
@@ -36,7 +37,25 @@ import type { useTheme } from "../hooks/useTheme.ts";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useEvent } from "../hooks/useEvent.ts";
 import autoAnimate from "@formkit/auto-animate";
-import { loadLatex, saveLatex } from "../features/preferences/formatting.ts";
+import {
+  loadLatex,
+  loadMessageBars,
+  loadMessageBarOpacity,
+  loadNameColors,
+  loadNameBorders,
+  saveLatex,
+  saveMessageBars,
+  saveMessageBarOpacity,
+  saveNameColors,
+  saveNameBorders,
+} from "../features/preferences/formatting.ts";
+import {
+  sameColors,
+  resolvedColors,
+  scopedColors,
+  type NameColor,
+} from "../features/preferences/nameColors.ts";
+import { NameColorContext } from "./NameColorContext.ts";
 
 export function Chat({
   initial,
@@ -49,6 +68,12 @@ export function Chat({
 }) {
   const [fonts, setFonts] = useFonts();
   const [latex, setLatex] = useState(loadLatex);
+  const [showNameColors, setShowNameColors] = useState(loadNameColors);
+  const [messageBars, setMessageBars] = useState(loadMessageBars);
+  const [messageBarOpacity, setMessageBarOpacity] = useState(
+    loadMessageBarOpacity,
+  );
+  const [nameBorders, setNameBorders] = useState(loadNameBorders);
   const [allowHtml, setAllowHtml] = useState(loadMarkdownHtml);
   const { theme, setTheme, seeds, setSeeds } = appearance;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -132,10 +157,7 @@ export function Chat({
   const animatedLayout = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!animatedLayout.current) return;
-    const animation = autoAnimate(animatedLayout.current, {
-      duration: 120,
-      easing: "ease-out",
-    });
+    const animation = autoAnimate(animatedLayout.current, controlMotion);
     return () => animation.destroy?.();
   }, []);
   function closeMenu() {
@@ -165,52 +187,57 @@ export function Chat({
     socket,
     botCommandVersions,
     botActivities,
-  } = useConnection(initial, {
-    onLogout,
-    onSnapshot(previous, data, baseline) {
-      const view = selectedRef.current;
-      const oldId =
-        previous.private_access[view]?.id ??
-        previous.rooms.find((room) => room.name === view)?.id;
-      if (
-        oldId &&
-        !data.private_access[view] &&
-        !data.rooms.some((room) => room.name === view)
-      ) {
-        const renamedView =
-          Object.keys(data.private_access).find(
-            (key) => data.private_access[key]?.id === oldId,
-          ) ?? data.rooms.find((room) => room.id === oldId)?.name;
-        if (renamedView) setSelected(renamedView);
-      }
-      const contentChanged =
-        previous.rooms !== data.rooms || previous.direct !== data.direct;
-      if (contentChanged)
-        notifyMentions(previous, data, {
-          baseline,
-          enabled: notificationsRef.current,
-          NotificationClass: window.Notification,
-          background: document.hidden || !document.hasFocus(),
-          selected: selectedRef.current,
-          open: (view) => {
-            window.focus();
-            setSelected(view);
-          },
-        });
+  } = useConnection(
+    initial,
+    {
+      onLogout,
+      onSnapshot(previous, data, baseline) {
+        const view = selectedRef.current;
+        const oldId =
+          previous.private_access[view]?.id ??
+          previous.rooms.find((room) => room.name === view)?.id;
+        if (
+          oldId &&
+          !data.private_access[view] &&
+          !data.rooms.some((room) => room.name === view)
+        ) {
+          const renamedView =
+            Object.keys(data.private_access).find(
+              (key) => data.private_access[key]?.id === oldId,
+            ) ?? data.rooms.find((room) => room.id === oldId)?.name;
+          if (renamedView) setSelected(renamedView);
+        }
+        const contentChanged =
+          previous.rooms !== data.rooms || previous.direct !== data.direct;
+        if (contentChanged)
+          notifyMentions(previous, data, {
+            baseline,
+            enabled: notificationsRef.current,
+            NotificationClass: window.Notification,
+            background: document.hidden || !document.hasFocus(),
+            selected: selectedRef.current,
+            open: (view) => {
+              window.focus();
+              setSelected(view);
+            },
+          });
 
-      if (
-        desiredRoom.current &&
-        (data.rooms.some((r) => r.name === desiredRoom.current) ||
-          (desiredRoom.current.startsWith("@direct:") &&
-            privatePeers(data).includes(desiredRoom.current.slice(8))))
-      ) {
-        setSelected(desiredRoom.current);
-        desiredRoom.current = null;
-      }
+        if (
+          desiredRoom.current &&
+          (data.rooms.some((r) => r.name === desiredRoom.current) ||
+            (desiredRoom.current.startsWith("@direct:") &&
+              privatePeers(data).includes(desiredRoom.current.slice(8))))
+        ) {
+          setSelected(desiredRoom.current);
+          desiredRoom.current = null;
+        }
+      },
+      onResult: (data) => commands.receive(data),
+      onDisconnect: () => commands.disconnect(),
+      whenIdle: (callback) => commands.whenIdle(callback),
     },
-    onResult: (data) => commands.receive(data),
-    onDisconnect: () => commands.disconnect(),
-  });
+    showNameColors,
+  );
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
     () => privatePeers(state),
@@ -302,6 +329,7 @@ export function Chat({
   const {
     unread,
     historyReady,
+    nameColors,
     messages,
     historyError,
     lookahead,
@@ -322,7 +350,18 @@ export function Chat({
     ledger,
     virtualTimeline,
     atBottom,
+    showNameColors,
   );
+  const viewColors = showNameColors
+    ? resolvedColors(
+        scopedColors(state.colors, room?.colors),
+        state.color_version,
+        nameColors,
+        room?.name_colors ?? (direct ? state.name_colors : undefined),
+      )
+    : {};
+  const colors = useRef(viewColors);
+  if (!sameColors(colors.current, viewColors)) colors.current = viewColors;
   const { unreadBoundary, acknowledgeVisible, rememberPosition, jumpToUnread } =
     useReadTracking({
       selected,
@@ -420,8 +459,14 @@ export function Chat({
     if (window.matchMedia("(max-width: 700px)").matches) setMenu(false);
     input.current?.focus();
   }
-  return (
-    <div class={`chat-shell ${menu ? "navigation-open" : ""}`}>
+  async function changeNameColor(color: NameColor | null, room: string | null) {
+    await api.color(color, room);
+  }
+  const view = (
+    <div
+      class={`chat-shell ${menu ? "navigation-open" : ""} ${messageBars ? "show-message-bars" : ""} ${nameBorders ? "show-name-borders" : ""}`}
+      style={{ "--message-bar-opacity": `${messageBarOpacity}%` }}
+    >
       <button
         class="mobile-menu navigation-toggle"
         ref={menuButton}
@@ -459,6 +504,26 @@ export function Chat({
             setLatex(enabled);
             saveLatex(enabled);
           }}
+          nameColors={showNameColors}
+          onNameColorsChange={(enabled) => {
+            setShowNameColors(enabled);
+            saveNameColors(enabled);
+          }}
+          messageBarOpacity={messageBarOpacity}
+          onMessageBarOpacityChange={(opacity) => {
+            setMessageBarOpacity(opacity);
+            saveMessageBarOpacity(opacity);
+          }}
+          messageBars={messageBars}
+          onMessageBarsChange={(enabled) => {
+            setMessageBars(enabled);
+            saveMessageBars(enabled);
+          }}
+          nameBorders={nameBorders}
+          onNameBordersChange={(enabled) => {
+            setNameBorders(enabled);
+            saveNameBorders(enabled);
+          }}
           allowHtml={allowHtml}
           onAllowHtmlChange={(enabled) => {
             setAllowHtml(enabled);
@@ -467,6 +532,7 @@ export function Chat({
           onChange={setFonts}
           onThemeChange={setTheme}
           onSeedsChange={setSeeds}
+          onNameColorChange={changeNameColor}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -574,6 +640,7 @@ export function Chat({
             </div>
           )}
           <MessageList
+            messageBars={messageBars}
             avatars={state.avatars}
             motionScope={
               state.private_access[selected]?.id ??
@@ -655,5 +722,10 @@ export function Chat({
         </main>
       </div>
     </div>
+  );
+  return (
+    <NameColorContext.Provider value={colors.current}>
+      {view}
+    </NameColorContext.Provider>
   );
 }

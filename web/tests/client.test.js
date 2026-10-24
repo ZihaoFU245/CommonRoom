@@ -89,3 +89,32 @@ test("outbound frames retain the request ID and Unicode text", () => {
   );
   assert.deepEqual(JSON.parse(raw), frame);
 });
+
+test("history color data is requested only with an explicit opt-in", async (t) => {
+  const originalFetch = globalThis.fetch,
+    originalDocument = globalThis.document;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  });
+  globalThis.document = { baseURI: "https://example.com/commonroom/" };
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push(options);
+    return Response.json({
+      view: "team",
+      messages: [],
+      revision: 1,
+      has_before: false,
+      has_after: false,
+    });
+  };
+  const signal = new AbortController().signal;
+  await api.history("team", signal);
+  await api.history("team", signal, {}, true);
+  await api.history("team", signal, {}, false);
+  assert.equal(requests[0].headers?.["X-Chat-Name-Colors"], undefined);
+  assert.equal(requests[1].headers["X-Chat-Name-Colors"], "1");
+  assert.equal(requests[2].headers?.["X-Chat-Name-Colors"], undefined);
+});

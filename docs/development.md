@@ -88,6 +88,11 @@ Node/Deno development and bot-worker requirements remain separate.
   missing from it silently keeps the built-in value. Text drawn on `--accent` must use
   `--accent-label` or `--accent-contrast`, never `--ink`, because the accent fill does not
   change between themes.
+- Small controls, settings reveals and menus use `controlMotion` from
+  `web/src/features/preferences/motion.ts` (120 ms, ease-out). `applyAppearance`
+  writes the matching CSS motion variables before rendering; the stylesheet keeps
+  first-paint fallbacks. Message and preview motion retain their separate 180 ms
+  timing. Respect reduced motion and clean up animation controllers/listeners.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`/`engine/history.rs`, and avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.

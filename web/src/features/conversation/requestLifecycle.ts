@@ -22,6 +22,7 @@ export function createRequestLifecycle(
     number,
     { request: PendingCommand; complete: Completion; parallel: boolean }
   >();
+  const idle = new Set<() => void>();
   const exclusive = () => [...active.values()].some((item) => !item.parallel);
   const available = (parallel: boolean) =>
     parallel ? !exclusive() && active.size < 16 : active.size === 0;
@@ -31,8 +32,22 @@ export function createRequestLifecycle(
     active.delete(data.id);
     pendingChanged(exclusive());
     current.complete(data, current.request);
+    if (!active.size) {
+      for (const callback of [...idle]) {
+        if (active.size) break;
+        idle.delete(callback);
+        callback();
+      }
+    }
   }
   return {
+    whenIdle(this: void, callback: () => void) {
+      if (!active.size) callback();
+      else idle.add(callback);
+      return () => {
+        idle.delete(callback);
+      };
+    },
     get pending() {
       return active.size > 0;
     },

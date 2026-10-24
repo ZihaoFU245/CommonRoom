@@ -435,3 +435,103 @@ test("switching from an in-flight page to a complete cached tail clears loading"
     "complete cached conversation must not remain loading",
   );
 });
+
+test("cached author colors refresh after reset even when message revision is unchanged", async (t) => {
+  const original = api.history;
+  const harness = { slots: [], index: 0, effects: [], dirty: true };
+  t.after(() => {
+    api.history = original;
+    for (const slot of harness.slots) slot?.cleanup?.();
+  });
+  const message = {
+    id: "old",
+    from: "bob",
+    sequence: 1,
+    time: 1,
+    text: "Old author",
+    mentions: [],
+    reply: null,
+    reactions: {},
+  };
+  const state = {
+    rooms: [{ name: "team", id: "stable", messages: [] }],
+    direct: [],
+    private_access: {},
+    unread: { team: { revision: 1, through: 100, oldest: 1 } },
+    policy_revision: 0,
+    color_version: "instance:1",
+  };
+  const current = { current: state };
+  const ledger = { current: { sequence: 0, messages: new Map() } };
+  let result, resolveOld;
+  let requests = 0;
+  api.history = async () => {
+    requests++;
+    return {
+      view: "team",
+      revision: 1,
+      messages: [message],
+      has_before: false,
+      has_after: true,
+      name_colors: {
+        version: state.color_version,
+        values: { bob: requests === 1 ? "red" : null },
+      },
+    };
+  };
+  async function settle() {
+    for (let n = 0; n < 20; n++) {
+      if (harness.dirty) {
+        useHarness(harness);
+        harness.index = 0;
+        harness.effects = [];
+        harness.dirty = false;
+        result = useHistory(
+          state,
+          "team",
+          [],
+          current,
+          ledger,
+          { current: { anchor: () => 1 } },
+          { current: false },
+          true,
+        );
+        for (const effect of harness.effects) effect();
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      if (!harness.dirty) return;
+    }
+    assert.fail("color refresh did not settle");
+  }
+  await settle();
+  assert.equal(result.nameColors.values.bob, "red");
+  const fetchCurrent = api.history;
+  api.history = () =>
+    new Promise((resolve) => {
+      resolveOld = resolve;
+    });
+  result.retryHistory();
+  await settle();
+  state.color_version = "instance:2";
+  harness.dirty = true;
+  await settle();
+  api.history = fetchCurrent;
+  resolveOld({
+    view: "team",
+    revision: 1,
+    messages: [message],
+    has_before: false,
+    has_after: true,
+    name_colors: { version: "instance:1", values: { bob: "red" } },
+  });
+  await settle();
+  assert.equal(result.messages[0].id, "old");
+  assert.equal(result.nameColors.version, "instance:2");
+  assert.equal(result.nameColors.values.bob, null);
+  assert.equal(requests, 2);
+  state.color_version = "restart:1";
+  harness.dirty = true;
+  await settle();
+  assert.equal(result.nameColors.version, "restart:1");
+  assert.equal(requests, 3);
+});

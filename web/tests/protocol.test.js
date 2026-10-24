@@ -38,6 +38,7 @@ const snapshot = {
   admin: true,
   users: ["alice", "bob"],
   online: ["alice"],
+  colors: { alice: "red", "用户🙂": "teal" },
   rooms: [
     {
       id: "room-id",
@@ -47,6 +48,7 @@ const snapshot = {
       name: "room",
       members: ["alice", "bob"],
       messages: [message],
+      colors: { bob: "blue" },
     },
   ],
   direct: [],
@@ -99,6 +101,10 @@ test("protocol rejects malformed nested data before it reaches UI state", () => 
     null,
     {},
     { ...snapshot, account_access: null },
+    { ...snapshot, colors: ["red"] },
+    { ...snapshot, colors: { alice: 1 } },
+    { ...snapshot, rooms: [{ ...snapshot.rooms[0], colors: ["red"] }] },
+    { ...snapshot, rooms: [{ ...snapshot.rooms[0], colors: { bob: 1 } }] },
     {
       ...snapshot,
       account_access: { id: "id", permissions: [123], commands: [] },
@@ -256,5 +262,42 @@ test("avatar frames accept explicit removals and reject malformed profiles", () 
     { kind: "avatar", username: "alice", url: {} },
   ]) {
     assert.equal(parseFrame(JSON.stringify(value)), null);
+  }
+});
+
+test("history and live color projections validate nullable values and versions", () => {
+  const page = {
+    view: "team",
+    messages: [],
+    revision: 1,
+    has_before: false,
+    has_after: false,
+  };
+  const update = {
+    kind: "conversation",
+    view: "team",
+    id: "stable",
+    messages: [],
+    unread: { count: 0, first: null, oldest: 0, through: 0, revision: 1 },
+  };
+  for (const name_colors of [
+    { version: "instance:1", values: { alice: "red", bob: null } },
+    { version: "instance:1", values: {} },
+  ]) {
+    assert.ok(isHistory({ ...page, name_colors }));
+    assert.deepEqual(
+      parseFrame(JSON.stringify({ ...update, name_colors })).name_colors,
+      name_colors,
+    );
+  }
+  for (const name_colors of [
+    null,
+    {},
+    { version: 1, values: {} },
+    { version: "one", values: [] },
+    { version: "one", values: { alice: 1 } },
+  ]) {
+    assert.equal(isHistory({ ...page, name_colors }), false);
+    assert.equal(parseFrame(JSON.stringify({ ...update, name_colors })), null);
   }
 });

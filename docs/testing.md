@@ -779,3 +779,53 @@ coalesced audiences and retain bot command catalogue invalidations during forced
 recovery. Bot credential API tests assert committed notifications. The real socket
 harness checks hidden room creation, grants, revocation and regrant while an unrelated
 viewer receives no baseline.
+
+
+## Name color synchronization
+
+Profile-budget HTTP tests require invalid palette, missing room, denied permission
+and full metadata-scope attempts to leave all four valid writes available. They
+cover 429 responses, no-op writes after exhaustion, unchanged state/version and no
+broadcast on rejection, and the shared avatar allowance. Color-version tests cover
+unrelated avatar, media, room creation and private-chat writes, actual color and
+account lifecycle changes, failed persistence and explicit history opt-in.
+
+Connection tests delay both exclusive commands and parallel messages across a
+preference toggle, cancel a queued toggle and exercise real disconnects. Initial
+snapshot tests cover saved opt-in, default-off and blocked storage; browser login
+coverage checks the first authenticated snapshot. Picker tests compare six local
+swatches before one Apply, discard Cancel/Escape/outside previews, preserve focus
+during a slow save and avoid stealing focus after a rejected save.
+
+Color regressions cover restricted readers without directory/member-list access,
+authors first disclosed by live frames, authors outside snapshot tails reached by
+history paging, reply authors and mentions, room inheritance and explicit resets,
+private global-only colors, access revocation, and server restart versions. Web
+coverage verifies nullable projection validation, bounded cache merges, separation
+of display projections from saved room settings, metadata changes without message
+revision changes, and stale in-flight history responses after a color reset.
+
+Name colors, author borders and message side bars default off independently and
+persist only explicit opt-ins. Browser regressions verify the original reply quote
+bar remains when add-ons are off, Preferences loads the color picker only after
+enabling display, socket/history color requests opt in explicitly, and disabling
+display stops color requests. HTTP/live baseline tests cover default omission and
+cache separation between opted-in and default clients on the same account.
+
+Settings browser coverage additionally exercises the themed scope listbox,
+arrow-key navigation, focus restoration, Escape without closing the parent dialog,
+option/picker AutoAnimate transitions and live reduced-motion changes. Geometry
+assertions require the message bar to span header, reply and body, with an inset
+reply bar and no duplicate body bar. Palette tests check every name shade against
+paper, wash and field surfaces, including mid-tone and saturated custom seeds.
+
+Message bar opacity regressions cover the 50% default, saved 0–100% values, invalid
+or unavailable storage and clamping. Browser checks exercise the live slider at
+0%, 20%, 50% and 100%, inspect painted alpha, and preserve author text, reply quote
+color and bar geometry while hiding the slider when bars are disabled.
+
+Connected-bar regressions require adjacent same-author/minute segments to meet
+without gaps or overlapping alpha, including reply headers, reaction rows and
+message actions. Minute boundaries, author changes, private-pair changes, local
+midnight and unread dividers split runs; retractions reconnect eligible neighbors.
+Disabling bars preserves the original five-minute header grouping.

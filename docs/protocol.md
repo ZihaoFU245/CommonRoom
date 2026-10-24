@@ -8,8 +8,9 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `POST /api/logout` | `{}` | `{ok:true}` and cleared cookie |
 | `GET /api/session` | Cookie credential | `{ok:true}` or 401; lightweight reconnect authentication |
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
-| `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after}` |
+| `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
+| `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only, requires `w:account.color.own` at that scope; metadata notice on change |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
@@ -55,8 +56,8 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 `@direct:peer` or `@private:a:b` in `room` so command gates apply to that context. IDs correlate acknowledgements within the requesting socket. `room` is null for the command console; ordinary private sends use `/tell`. The server returns one of:
 
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
-- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,rooms,direct,private_peers,commands,available_rooms,unread}`.
-- `{kind:"conversation",view,id,messages,unread}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
+- `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,colors,color_version,rooms,direct,private_peers,commands,available_rooms,unread}`.
+- `{kind:"conversation",view,id,messages,unread,name_colors}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
 - `{kind:"bot_commands",conversation_id}`: invalidate cached bot command metadata for this readable conversation; refresh cached metadata for prefetched conversations in the background.
 - `{kind:"activity",conversation_id,account_id,state,expires,draft?}`: transient bot progress for current readers. `state` is working/idle; optional plain-text draft is provisional, bounded to 4,000 characters, expires after 30 seconds, and is never inserted into history.
 - `{kind:"presence",online}`: authorized online account names; preserves existing message data.
@@ -114,6 +115,49 @@ draft or reply selection.
 `online` lists active accounts with at least one authenticated WebSocket. Presence is
 transient, counts multiple tabs/devices, updates on connect/disconnect, and resets
 on restart. It is separate from the registered account directory in `users`.
+
+`colors` maps account names to fixed palette names (`red` … `pink`) from each account's
+`@global` `color` metadata. It covers the viewer, `users`, `private_peers`, visible
+room members and names disclosed by included messages (authors, reply authors and
+mentions). Each room view also carries `colors`, that room's overrides, limited to
+the viewer, its visible members and names disclosed by its included messages.
+Clients resolve a name as room override, then global color, then the default ink color.
+Private conversations use global colors only. Older servers may omit either map.
+
+Name color display is a browser-local opt-in, off by default. HTTP clients request
+color projections with `X-Chat-Name-Colors: 1` on `/api/me` and `/api/history`;
+browser sockets opt in with `/ws?colors=1`. Without this opt-in, snapshots omit
+`colors`/`color_version` and room color maps, and conversation/history responses
+omit `name_colors`. The flag changes projection only and grants no permissions. The browser
+waits for pending commands and messages to be acknowledged before replacing its socket subscription.
+Colored and uncolored baseline buffers have separate cache entries. The default
+browser metadata template stores no color directory; opted-in reads build it on
+demand. Toggling display reconnects that browser's socket, while HTTP reads use
+the current preference.
+
+Opted-in history pages and browser conversation frames include
+`name_colors: {version,values}`. `values` resolves each disclosed author, reply author
+and mention to that conversation's room override or global color; `null` explicitly
+means default ink. Private pages resolve global colors only. No unrelated account or
+room color entries are included. These display projections do not change the saved
+room overrides shown in Settings.
+
+Opted-in snapshots include an opaque `color_version` that changes when the active color
+directory changes (including account rename, disable/delete and room color removal),
+and on server restart. Clients use supplemental `name_colors` only when its `version`
+matches the snapshot, refresh cached history after version changes even when the
+message revision is unchanged, and resynchronize on a mismatched live frame. Cache
+merges retain colors only for names still disclosed by their message window. Older
+servers may omit these fields; clients then use the snapshot color maps.
+
+`POST /api/color` authenticates the browser session, enforces the browser origin and changes only
+the caller's own account. The global scope requires `w:account.color.own` at `@global`; a room
+override additionally requires that room to exist and be readable, and unknown or unreadable rooms
+return the same not-found error. Validation and permission checks run before charging the
+per-account profile-change budget shared with avatars (4 writes per 10 seconds). No-op
+requests do not consume it. The browser previews swatches locally and saves only on Apply;
+Cancel, Escape and outside dismissal discard the preview.
+Su can also set or reset anyone's `color` through `/user set` and `/user reset`.
 
 `/retract message-id` deletes only the requesting author’s retained message in the
 selected room or their private history. It increments the conversation revision

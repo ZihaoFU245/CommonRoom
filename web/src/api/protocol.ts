@@ -18,7 +18,13 @@ export interface Message {
   reply: Reply | null;
   mentions: string[];
 }
+export interface MessageColors {
+  version: string;
+  values: Record<string, string | null>;
+}
 export interface Room {
+  /** Client-only supplemental history colors; snapshots do not send this field. */
+  name_colors?: MessageColors | undefined;
   id: string;
   owner: string;
   permissions: string[];
@@ -26,6 +32,8 @@ export interface Room {
   name: string;
   members: string[];
   messages: Message[];
+  /** Room-scoped overrides of the snapshot's global `colors`. */
+  colors?: Record<string, string>;
 }
 export interface Command {
   name: string;
@@ -65,6 +73,9 @@ export interface Access {
   commands: Command[];
 }
 export interface Snapshot {
+  color_version?: string;
+  /** Client-only supplemental history colors; snapshots do not send this field. */
+  name_colors?: MessageColors | undefined;
   sync?: { instance: string; revision: number };
   kind: "snapshot";
   username: string;
@@ -79,6 +90,7 @@ export interface Snapshot {
   users: string[];
   avatars?: Record<string, string>;
   online: string[];
+  colors?: Record<string, string>;
   rooms: Room[];
   direct: Message[];
   private_peers: string[];
@@ -87,6 +99,7 @@ export interface Snapshot {
   unread: Record<string, Unread>;
 }
 export interface History {
+  name_colors?: MessageColors | undefined;
   view: string;
   messages: Message[];
   revision: number;
@@ -102,6 +115,7 @@ export interface HistoryRange {
   limit?: number;
 }
 export interface ConversationUpdate {
+  name_colors?: MessageColors | undefined;
   kind: "conversation";
   view: string;
   id: string;
@@ -228,8 +242,19 @@ const commands = (v: unknown): v is Command[] =>
       typeof c.admin === "boolean" &&
       typeof c.console === "boolean",
   );
+const colorMap = (v: unknown): v is Record<string, string> =>
+  record(v) && Object.values(v).every((color) => typeof color === "string");
+const messageColors = (v: unknown): v is MessageColors =>
+  record(v) &&
+  typeof v.version === "string" &&
+  record(v.values) &&
+  Object.values(v.values).every(
+    (color) => color === null || typeof color === "string",
+  );
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
+  (v.color_version === undefined || typeof v.color_version === "string") &&
+  (v.name_colors === undefined || messageColors(v.name_colors)) &&
   (v.sync === undefined ||
     (record(v.sync) &&
       typeof v.sync.instance === "string" &&
@@ -259,6 +284,7 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
     (record(v.avatars) &&
       Object.values(v.avatars).every((url) => typeof url === "string"))) &&
   strings(v.online) &&
+  (v.colors === undefined || colorMap(v.colors)) &&
   Array.isArray(v.rooms) &&
   v.rooms.every(
     (r) =>
@@ -269,7 +295,9 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
       strings(r.permissions) &&
       commands(r.commands) &&
       strings(r.members) &&
-      messages(r.messages),
+      messages(r.messages) &&
+      (r.colors === undefined || colorMap(r.colors)) &&
+      (r.name_colors === undefined || messageColors(r.name_colors)),
   ) &&
   messages(v.direct) &&
   strings(v.private_peers) &&
@@ -283,7 +311,8 @@ export const isHistory = (v: unknown): v is History =>
   typeof v.has_before === "boolean" &&
   typeof v.has_after === "boolean" &&
   messages(v.messages) &&
-  v.messages.length <= 100;
+  v.messages.length <= 100 &&
+  (v.name_colors === undefined || messageColors(v.name_colors));
 export const isOk = (v: unknown): v is { ok: true } =>
   record(v) && v.ok === true;
 export function parseFrame(raw: string): ServerFrame | null {
@@ -325,7 +354,8 @@ export function parseFrame(raw: string): ServerFrame | null {
     typeof value.id === "string" &&
     messages(value.messages) &&
     value.messages.length <= 50 &&
-    unread(value.unread)
+    unread(value.unread) &&
+    (value.name_colors === undefined || messageColors(value.name_colors))
   )
     return {
       kind: "conversation",
@@ -333,6 +363,9 @@ export function parseFrame(raw: string): ServerFrame | null {
       id: value.id,
       messages: value.messages,
       unread: value.unread,
+      ...(value.name_colors === undefined
+        ? {}
+        : { name_colors: value.name_colors }),
     };
   if (
     value.kind === "avatar" &&

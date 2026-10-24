@@ -254,6 +254,14 @@ Private cleanup uses the global root. Role defaults are never persisted, so role
 revocation and ownership transfer cannot leave stale unlimited values behind.
 Su and authorized sudo bypass cleanup permissions and metadata limits.
 
+## Name colors
+
+The optional `color` metadata key names one of 16 fixed palette colors. `@global` holds the
+account's default; a stable room ID branch overrides it in that room. Private conversations
+use the global value. Writers reject other values, and the key is rejected in private branches. Like
+other metadata, colors follow renames and are removed with their room or account. These values
+use existing account JSON, so SQLite remains schema v18 with no migration.
+
 ## Avatars
 
 The optional `metadata["@global"]["avatar"]` is an HTTPS image URL or a canonical
