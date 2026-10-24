@@ -1260,8 +1260,15 @@ button:focus-visible {
   display: flex;
   gap: 6px;
   margin-bottom: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.reaction-choices::-webkit-scrollbar {
+  display: none;
 }
 .reaction-choices button {
+  flex: none;
   padding: 5px;
   border-radius: 4px;
   font-size: 1.28571rem;
