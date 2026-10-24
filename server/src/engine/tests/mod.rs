@@ -1,4 +1,5 @@
 use super::*;
+mod storage;
 pub(super) fn engine() -> Engine {
     let mut e = Engine::open(Path::new(":memory:")).unwrap();
     for (name, admin) in [("alice", true), ("bob", false), ("eve", false)] {
@@ -373,23 +374,6 @@ fn permissions_and_private_delivery() {
     assert!(e.execute(Some("eve"), None, "/disable bob").is_err());
 }
 #[test]
-fn persists_accounts_and_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.sqlite");
-    {
-        let mut e = Engine::open(&path).unwrap();
-        e.provision("alice", "hash".into(), true, false).unwrap();
-        e.execute(Some("alice"), None, "/new room lobby").unwrap();
-        e.execute(Some("alice"), Some("lobby"), "retained").unwrap();
-    }
-    let e = Engine::open(&path).unwrap();
-    assert!(e.active("alice"));
-    assert_eq!(
-        e.snapshot("alice").unwrap().rooms[0].messages[0].text,
-        "retained"
-    );
-}
-#[test]
 fn bounded_history_and_disabled_users() {
     let mut e = engine();
     e.set_limits(64, 64, 200).unwrap();
@@ -453,7 +437,7 @@ fn room_ring_keeps_newest_messages_across_restart_and_limit_changes() {
     assert_eq!(room_messages(&e, "one")[0].text, "newest");
 }
 #[test]
-fn failed_writes_restore_evicted_messages_and_limits() {
+fn failed_limit_changes_preserve_state_and_configured_limits() {
     let mut e = engine();
     e.set_limits(64, 64, 2).unwrap();
     e.execute(Some("alice"), Some("lobby"), "oldest").unwrap();
@@ -466,8 +450,6 @@ fn failed_writes_restore_evicted_messages_and_limits() {
         .unwrap()
         .execute_batch("PRAGMA query_only=ON;")
         .unwrap();
-    assert!(e.execute(Some("alice"), Some("lobby"), "unsaved").is_err());
-    assert!(e.data == previous);
     assert!(e.set_limits(1, 1, 1).is_err());
     assert!(e.data == previous);
     assert_eq!(e.max_messages, 2);
@@ -659,19 +641,13 @@ fn moving_folder_preserves_sessions_and_permissions() {
     assert!(e.session("new-token").is_none());
 }
 #[test]
-fn rejects_two_servers_and_unknown_schema() {
+fn rejects_two_servers_and_releases_folder_lock_on_drop() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chat.sqlite");
     let e = Engine::open(&path).unwrap();
     assert!(Engine::open(&path).is_err());
-    e.store
-        .db
-        .lock()
-        .unwrap()
-        .execute_batch("PRAGMA user_version=99;")
-        .unwrap();
     drop(e);
-    assert!(Engine::open(&path).is_err());
+    assert!(Engine::open(&path).is_ok());
 }
 #[test]
 fn failed_storage_rolls_back_changes() {
@@ -1142,7 +1118,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 99] {
+    for version in (0..=18).chain([20, 99]) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {
@@ -1151,7 +1127,9 @@ fn old_and_unversioned_databases_are_rejected_without_modification() {
             db.execute("INSERT INTO state VALUES(1,'untouched')", [])
                 .unwrap();
         }
+        let before = std::fs::read(&path).unwrap();
         assert!(Engine::open(&path).is_err(), "schema {version}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "schema {version}");
         let db = Connection::open(&path).unwrap();
         assert_eq!(
             db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
@@ -1201,7 +1179,27 @@ fn hot_mutations_write_constant_rows_and_leave_unrelated_history_untouched() {
     let changes = e.store.db.lock().unwrap().total_changes();
     e.execute(Some("alice"), None, "/tell bob new private")
         .unwrap();
-    assert_eq!(e.store.db.lock().unwrap().total_changes() - changes, 10); // insert/evict, reverse-name references, retention cursors, counter, revision
+    let small_send_changes = e.store.db.lock().unwrap().total_changes() - changes;
+    e.store
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER untouched_state;")
+        .unwrap();
+    for n in 0..40 {
+        let room = format!("unrelated{n}");
+        e.execute(Some("alice"), None, &format!("/room new {room}"))
+            .unwrap();
+        e.execute(Some("alice"), Some(&room), "unrelated").unwrap();
+    }
+    e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER untouched_state BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'unrelated policy'); END;").unwrap();
+    let changes = e.store.db.lock().unwrap().total_changes();
+    e.execute(Some("alice"), None, "/tell bob same bounded work")
+        .unwrap();
+    assert_eq!(
+        e.store.db.lock().unwrap().total_changes() - changes,
+        small_send_changes
+    );
     let id = private_messages(&e, "alice:bob")[0].id.clone();
     e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER untouched_payload BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT,'reaction rewrote payload'); END;").unwrap();
     let changes = e.store.db.lock().unwrap().total_changes();
@@ -1420,11 +1418,26 @@ fn current_schema_restart_preserves_policy_sessions_and_cursors_without_writes()
         e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_state_write BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'startup must not rewrite state'); END;").unwrap();
     }
     let e = Engine::open(&path).unwrap();
+    assert!(e.working.is_none());
+    assert_eq!(e.history_store().stats().unwrap()["messages"], 0);
+    assert_eq!(e.store.db.lock().unwrap().total_changes(), 0);
     assert!(e.data == previous);
     assert_eq!(e.store.read_positions, cursors);
     assert_eq!(e.session("session").as_deref(), Some("alice"));
     assert_eq!(e.revision, 0);
-    assert_eq!(room_messages(&e, "team")[0].text, "preserved");
+    assert_eq!(
+        e.history("alice", "team").unwrap().messages[0].text,
+        "preserved"
+    );
+    assert_eq!(
+        e.store
+            .db
+            .lock()
+            .unwrap()
+            .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        19
+    );
 }
 
 #[test]

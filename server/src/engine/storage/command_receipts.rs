@@ -178,28 +178,8 @@ impl Engine {
         // rollback instead of cloning the whole instance for every native call.
         let (data, cursors) = {
             let db = self.store.db.lock().map_err(Error::storage)?;
-            let raw: String = db
-                .query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))
-                .map_err(Error::storage)?;
-            let mut data: Data = serde_json::from_str(&raw).map_err(Error::storage)?;
-            load_entities(&db, &mut data).map_err(Error::storage)?;
-            let mut cursors: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-            let mut query = db
-                .prepare("SELECT username,conversation,sequence FROM read_positions")
-                .map_err(Error::storage)?;
-            let rows = query
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, u64>(2)?,
-                    ))
-                })
-                .map_err(Error::storage)?;
-            for row in rows {
-                let (user, view, through) = row.map_err(Error::storage)?;
-                cursors.entry(user).or_default().insert(view, through);
-            }
+            let data = load_data(&db).map_err(Error::storage)?;
+            let cursors = load_read_positions(&db).map_err(Error::storage)?;
             (data, cursors)
         };
         self.authorization =

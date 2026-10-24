@@ -434,16 +434,11 @@ impl Engine {
             return Err(Error::new(Code::Forbidden, "Reaction permission denied."));
         }
         // Load only the affected row, then share mutation/rollback with browser toggles.
-        let messages = if let Some(pair) = target.view.strip_prefix("@private:") {
-            self.data.private.get_mut(pair).map(|c| &mut c.messages)
-        } else {
-            self.data
-                .rooms
-                .get_mut(&target.view)
-                .map(|r| &mut r.messages)
-        }
-        .ok_or_else(|| Error::storage("Missing conversation"))?;
-        messages.push_back(original);
+        self.working = Some(messages::WorkingMessage {
+            reaction: None,
+            conversation: id.into(),
+            message: original,
+        });
         let change = self
             .capture_message_change(&target.view, Some(&message_id), true)
             .ok_or_else(|| Error::storage("Missing reaction rollback"))?;
@@ -670,16 +665,10 @@ impl Engine {
             .ok_or_else(|| Error::storage("Missing mutation context"))?;
         let result: Result<_, EngineError> = (|| {
             self.append_text(Some(user), &target.view, text, input.markdown, reply)?;
-            let message = if let Some(pair) = target.view.strip_prefix("@private:") {
-                self.data.private.get(pair).and_then(|c| c.messages.back())
-            } else {
-                self.data
-                    .rooms
-                    .get(&target.view)
-                    .and_then(|r| r.messages.back())
-            }
-            .cloned()
-            .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?;
+            let message = self
+                .working_message(&input.conversation_id)
+                .cloned()
+                .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?;
             Ok(message)
         })();
         let receipt = result.as_ref().ok().and_then(|message| {

@@ -93,10 +93,10 @@ Node/Deno development and bot-worker requirements remain separate.
   writes the matching CSS motion variables before rendering; the stylesheet keeps
   first-paint fallbacks. Message and preview motion retain their separate 180 ms
   timing. Respect reduced motion and clean up animation controllers/listeners.
-- Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`/`engine/history.rs`, and avoid holding the engine read/write lock across `.await`.
+- Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`/`engine/storage/` and `engine/history.rs`/`engine/history/`, and avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
-- Keep migrations compatible with existing `data/`. Any schema change needs a version increment, migration tests, rollback behavior, and an update to [Data](data.md).
+- Preserve compatibility with existing HEAD-schema `data/`. Any schema change needs a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). Current startup supports only fresh and HEAD-schema databases; do not restore obsolete migration paths.
 - Use `cargo fmt` and the web Prettier scripts. Update the relevant guides when paths, commands, protocol, configuration, or deployment behavior changes.
 
 ## Adding a feature

@@ -1,23 +1,23 @@
-# Historical v6 mutation persistence benchmarks
+# Storage benchmarks
 
-These recorded results predate v7 pagination, reader concurrency and lazy caches. They are not measurements of the current implementation. The runner now seeds both versions through public commands and adapts fixture access to their different storage ownership.
-
-Measured on 2026-10-11, Darwin arm64, Rust 1.99.0, bundled SQLite, release profile.
-Baseline: `181fd92c88bed009f7a67afad393c96b2d7a8bdf` (schema v5).
-Current: v6 targeted persistence implemented for issue #7.
-
-## Reproduce
+## Current HEAD comparison
 
 ```sh
 rtk proxy python3 auto/benchmark-storage.py
 ```
 
-The runner archives the baseline into a temporary directory and supplies the
-identical benchmark source to both versions. Separate binary target names prevent
-Cargo from reusing one version's executable for the other. Both builds share only
-the dependency/build cache. `--baseline-ref COMMIT` overrides the baseline. No
-working data or Git checkout is modified. Python uses `wait4` to measure each test
-process's peak RSS; compilation is excluded.
+The runner compares the committed HEAD with the working tree using the current
+`server/src/engine/tests/benchmarks.rs` fixture. `--baseline-ref COMMIT` selects
+another compatible HEAD-era revision. Both versions create fresh isolated temporary
+databases; no migration or adaptation for historical database layouts is included.
+The baseline export contains the server and compile-time documentation/web fixtures;
+it does not include the optional `simpleBot/` worker or working data.
+
+Distinct binary names prevent Cargo from reusing one version's executable for the
+other. Both builds share only the dependency/build cache. Python uses `wait4` to
+measure each test process's peak RSS on macOS/Linux; compilation is excluded.
+The runner never changes the working checkout. Its output reports the resolved
+baseline commit so results can be tied to an exact source revision.
 
 Two fixtures contain 256-byte message bodies:
 
@@ -41,7 +41,39 @@ of just the final checkpoint interval. Production keeps SQLite's default automat
 checkpointing. Changed-row counts come from `total_changes`; more normalized rows
 can still produce far less write volume than replacing one giant JSON row.
 
-## Recorded results
+## Database refactor measurements
+
+One local release-profile run on 2026-10-24 compared committed HEAD
+`55e110954048813cd14d6f151edacbd76162778b` with the database refactor in the
+working tree. Both fixtures and all timed commands completed successfully.
+Latency entries are microseconds; mutation entries show p50 / p95.
+
+| Operation | Small HEAD | Small refactor | Large HEAD | Large refactor |
+| --- | ---: | ---: | ---: | ---: |
+| Room send | 260 / 401 | 249 / 461 | 247 / 522 | 233 / 464 |
+| Room reaction | 89 / 106 | 65 / 90 | 65 / 92 | 65 / 76 |
+| Private send | 287 / 509 | 272 / 504 | 466 / 664 | 413 / 562 |
+| Private reaction | 93 / 179 | 72 / 101 | 67 / 82 | 65 / 93 |
+| Snapshot construction (mean) | 31 | 31 | 608 | 567 |
+| Snapshot serialization (mean) | 35 | 35 | 298 | 296 |
+| WAL bytes, 120 mutations | 6,245,952 | 6,196,512 | 7,712,672 | 7,778,592 |
+| Changed persistent rows | 660 | 660 | 660 | 660 |
+
+Process peak RSS across both fixtures was 28,819,456 bytes for HEAD and
+22,822,912 bytes for the refactor. The sample has only 30 observations per
+mutation type. Small-room send p95 and large-private reaction p95 increased;
+these measurements do not establish a uniform latency improvement. Structural
+regressions separately verify bounded mutation writes, skipped attachment queries,
+one cold unread reader lease per batch, and no lease for warm unread entries.
+
+## Historical v5/v6 results
+
+The following results were measured on 2026-10-11, Darwin arm64, Rust 1.99.0,
+bundled SQLite, release profile. They predate pagination, reader concurrency and
+lazy caches, and are retained only as a historical record. They do not measure
+current HEAD and cannot be reproduced by the current HEAD-era comparison runner.
+Baseline: `181fd92c88bed009f7a67afad393c96b2d7a8bdf` (schema v5).
+The compared v6 implementation used targeted persistence for issue #7.
 
 All latency entries are microseconds, expressed as p50 / p95. Small-sample timing
 noise explains why some small-fixture current results exceed the large fixture.
@@ -71,7 +103,10 @@ WAL growth improves about 890×. Snapshots/serialization remain essentially unch
 This evidence justifies moving frequent mutation persistence out of the whole-state
 JSON representation.
 
-## Complexity and remaining costs
+## Historical v6 complexity and remaining costs
+
+These costs describe v6. For the current implementation, see
+[Architecture](architecture.md) and [Data](data.md).
 
 - Appending/evicting from a conversation deque is O(1).
 - A send/reply performs one message insert, at most one eviction, one counter
@@ -95,7 +130,7 @@ JSON representation.
   limits. Lazy history loading, all-operation mutation journals, and constant-time
   in-memory message lookup are not part of this change.
 
-## Correctness checks
+## Historical v6 correctness checks
 
 `auto/check.sh` passes Rust formatting, Clippy, 84 Rust tests (two manual benchmarks
 ignored), TypeScript, ESLint, web formatting, and 64 web tests. The debug/release

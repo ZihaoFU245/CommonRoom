@@ -725,12 +725,10 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-The server accepts schema v19 and upgrades v18 and the v17 baseline at commit
-`793f9bb65683f63130c234f78856b8813362f45f` transactionally. Earlier schemas
-are unsupported, and a v19 database cannot be opened by an older binary.
-Root-path production deployments require one sign-in to obtain the new
-`__Host-chat_session` cookie. Back up before
-upgrading, keeping the database and object store consistent ([Data](data.md)).
+The server accepts only the current HEAD schema, v19, and initializes empty
+databases transactionally. Older schemas are rejected unchanged; legacy upgrade
+paths have been removed because deployed databases already run HEAD. Back up the
+database and object store consistently before replacing a deployment ([Data](data.md)).
 
 Stop the old process before starting the new one; only one process may use a data
 folder. Replace the binary and UI assets, then start the new version and run the

@@ -147,13 +147,7 @@ impl Engine {
         result
     }
     pub(super) fn clear_working_messages(&mut self) {
-        // Working messages are transient. Durable history and bounded pages live in storage.
-        for room in self.data.rooms.values_mut() {
-            room.messages.clear();
-        }
-        for chat in self.data.private.values_mut() {
-            chat.messages.clear();
-        }
+        self.working = None;
         self.store.pending_deletes.clear();
         self.store.pending_cleanups.clear();
     }
@@ -180,39 +174,36 @@ impl Engine {
         if let Some(name) = view.filter(|v| !v.starts_with('@')) {
             let target = self.room_scope(name)?;
             self.require(actor, &target, authorization::Action::Read)?;
-            if target == authorization::Scope::Room(id) {
-                self.data
-                    .rooms
-                    .get_mut(name)
-                    .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
-                    .messages
-                    .push_back(message);
+            if target == authorization::Scope::Room(id.clone()) {
+                self.working = Some(messages::WorkingMessage {
+                    reaction: None,
+                    conversation: id,
+                    message,
+                });
             }
             return Ok(());
         }
-        if let Some(key) = self
-            .data
-            .private
-            .iter()
-            .find(|(_, chat)| chat.id == id)
-            .map(|(key, _)| key.clone())
-        {
-            let target = self.private_scope(&key);
+        let target_view = self.bot_index.conversations.get(&id);
+        if let Some(key) = target_view.and_then(|view| view.strip_prefix("@private:")) {
+            let target = self.private_scope(key);
             if self.allows(actor, &target, authorization::Action::Read)
                 && !matches!(&scope,authorization::Scope::Private(selected) if *selected!=id)
             {
-                self.data
-                    .private
-                    .get_mut(&key)
-                    .ok_or_else(|| EngineError::NotFound("Private conversation not found.".into()))?
-                    .messages
-                    .push_back(message);
+                self.working = Some(messages::WorkingMessage {
+                    reaction: None,
+                    conversation: id,
+                    message,
+                });
             }
         } else if self.is_su(actor)
             && scope == authorization::Scope::Server
-            && let Some(room) = self.data.rooms.values_mut().find(|room| room.id == id)
+            && target_view.is_some()
         {
-            room.messages.push_back(message);
+            self.working = Some(messages::WorkingMessage {
+                reaction: None,
+                conversation: id,
+                message,
+            });
         }
         Ok(())
     }
@@ -418,16 +409,19 @@ impl Engine {
     }
 }
 
-// A send holds only the evicted message; a reaction holds only its old message.
-// No retained conversation or unrelated entity is cloned for rollback.
+// A mutation owns its target coordinates and only the prior attachment IDs for edits.
+// Message bodies live only in Engine::working, outside metadata rollback snapshots.
 pub(super) struct MessageChange {
     pub(super) key: String,
     pub(super) private: bool,
-    pub(super) reaction: bool,
-    pub(super) index: Option<usize>,
-    pub(super) previous: Option<Message>,
+    pub(super) mutation: MessageMutation,
     pub(super) sequence: u64,
     pub(super) revision: Option<u64>,
+}
+pub(super) enum MessageMutation {
+    Append,
+    Edit { attachments: BTreeSet<String> },
+    Reaction,
 }
 impl MessageChange {
     pub(super) fn new_conversation(&self) -> bool {
@@ -467,17 +461,18 @@ impl Engine {
         } else {
             let id = parts.get(1)?;
             let scope = self.command_scope(actor, view).ok()?;
+            let row = self.working.as_ref().filter(|row| row.message.id == *id)?;
             let key = self
-                .data
-                .private
-                .iter()
-                .find(|(key, chat)| {
-                    self.allows(actor, &self.private_scope(key), authorization::Action::Read)
-                        && !matches!(&scope,authorization::Scope::Private(id) if *id != chat.id)
-                        && chat.messages.iter().any(|m| m.id == *id)
-                })?
-                .0
-                .clone();
+                .bot_index
+                .conversations
+                .get(&row.conversation)?
+                .strip_prefix("@private:")?;
+            if !self.allows(actor, &self.private_scope(key), authorization::Action::Read)
+                || matches!(&scope, authorization::Scope::Private(id) if *id != row.conversation)
+            {
+                return None;
+            }
+            let key = key.to_owned();
             (true, key)
         };
         let view = if private {
@@ -504,33 +499,28 @@ impl Engine {
         let private = view.starts_with("@private:");
         let key = view.strip_prefix("@private:").unwrap_or(view).to_owned();
         let conversation = if private {
-            self.data
-                .private
-                .get(&key)
-                .map(|c| (&c.messages, c.revision))
+            self.data.private.get(&key).map(|c| (&c.id, c.revision))
         } else {
-            self.data.rooms.get(&key).map(|r| (&r.messages, r.revision))
+            self.data.rooms.get(&key).map(|r| (&r.id, r.revision))
         };
-        let index = if let Some(id) = message_id {
-            Some(conversation?.0.iter().position(|m| m.id == id)?)
-        } else {
-            None
-        };
-        let previous = conversation.and_then(|(messages, _)| {
-            if let Some(index) = index {
-                messages.get(index).cloned()
+        let mutation = if let Some(message_id) = message_id {
+            let message = self
+                .working_message(conversation?.0)
+                .filter(|m| m.id == message_id)?;
+            if reaction {
+                MessageMutation::Reaction
             } else {
-                (messages.len() == self.max_messages)
-                    .then(|| messages.front().cloned())
-                    .flatten()
+                MessageMutation::Edit {
+                    attachments: media::media_references(&message.text),
+                }
             }
-        });
+        } else {
+            MessageMutation::Append
+        };
         Some(MessageChange {
             key,
             private,
-            reaction,
-            index,
-            previous,
+            mutation,
             sequence: self.data.next_sequence,
             revision: conversation.map(|(_, r)| r),
         })
@@ -554,40 +544,24 @@ impl Engine {
     }
     pub(super) fn restore_message_change(&mut self, change: MessageChange) {
         self.data.next_sequence = change.sequence;
+        self.working = None;
         if change.private && change.revision.is_none() {
             self.data.private.remove(&change.key);
             return;
         }
-        let conversation = if change.private {
+        let revision = if change.private {
             self.data
                 .private
                 .get_mut(&change.key)
-                .map(|c| (&mut c.messages, &mut c.revision))
+                .map(|c| &mut c.revision)
         } else {
             self.data
                 .rooms
                 .get_mut(&change.key)
-                .map(|r| (&mut r.messages, &mut r.revision))
+                .map(|r| &mut r.revision)
         };
-        if let Some((messages, revision)) = conversation {
-            if let Some(old_revision) = change.revision {
-                *revision = old_revision;
-            }
-            if change.index.is_some() {
-                if let (Some(index), Some(previous)) = (change.index, change.previous)
-                    && let Some(message) = messages.get_mut(index)
-                {
-                    *message = previous;
-                }
-            } else if messages
-                .back()
-                .is_some_and(|m| m.sequence > change.sequence)
-            {
-                messages.pop_back();
-                if let Some(previous) = change.previous {
-                    messages.push_front(previous);
-                }
-            }
+        if let (Some(revision), Some(previous)) = (revision, change.revision) {
+            *revision = previous;
         }
     }
 }

@@ -226,12 +226,11 @@ fn scoped_snapshots_exclude_working_messages_and_unrelated_maps() {
     e.execute(Some("bob"), Some("lobby"), "cached body")
         .unwrap();
     let message = room_messages(&e, "lobby")[0].clone();
-    e.data
-        .rooms
-        .get_mut("lobby")
-        .unwrap()
-        .messages
-        .push_back(message);
+    e.working = Some(messages::WorkingMessage {
+        reaction: None,
+        conversation: e.data.rooms["lobby"].id.clone(),
+        message,
+    });
     let change = MetadataChange::keyed(
         &e.data,
         changes::DirtyKeys {
@@ -240,7 +239,7 @@ fn scoped_snapshots_exclude_working_messages_and_unrelated_maps() {
         },
     );
     let view = change.view();
-    assert!(view.rooms.unwrap()["lobby"].messages.is_empty());
+    assert!(view.rooms.unwrap()["lobby"] == e.data.rooms["lobby"]);
     assert!(view.users.is_none());
     assert!(view.private.is_none());
     assert!(view.sessions.is_none());
@@ -270,7 +269,12 @@ fn cleanup_counts_use_existing_timestamp_index_and_count_multiple_references_onc
     assert_eq!(counts[&id], (2, 2));
     assert_eq!(counts["missing"], (0, 0));
     let db = e.store.db.lock().unwrap();
-    let mut query = db.prepare("EXPLAIN QUERY PLAN SELECT targets.value, count(DISTINCT m.sequence), count(refs.media_id) FROM json_each(?1) AS targets LEFT JOIN messages AS m ON m.conversation=targets.value AND json_extract(m.json,'$.time')<?2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value").unwrap();
+    let mut query = db
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            storage::CLEANUP_COUNTS_SQL
+        ))
+        .unwrap();
     let plan = query
         .query_map(
             params![serde_json::to_string(&[id]).unwrap(), i64::MAX],

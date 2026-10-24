@@ -65,6 +65,7 @@ pub struct Engine {
     data: Data,
     #[cfg(test)]
     pub(crate) data: Data,
+    working: Option<messages::WorkingMessage>,
     pub revision: u64,
     color_revision: u64,
     committed_colors: colors::ColorDirectory,

@@ -82,7 +82,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover v19 restart and v17/v18 upgrades, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover HEAD v19 initialization and restart, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -191,7 +191,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, v19 restart and v17/v18 upgrades and rejection of unsupported schemas.
+cleanup constraints, persistence failures, HEAD v19 initialization and restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -229,7 +229,7 @@ either global sudo grant is revoked.
 
 ## Persistence benchmark
 
-Run `rtk proxy python3 auto/benchmark-storage.py` to build the baseline commit and
+Run `rtk proxy python3 auto/benchmark-storage.py` to compare committed HEAD and
 current code against identical isolated fixtures. It prints send/reaction p50/p95,
 separate snapshot/serialization timings, WAL bytes, changed-row counts, and isolated
 process peak RSS. It uses temporary databases, never `data/`. See
@@ -598,8 +598,8 @@ backoff, exponential rests, empty results and immediate notification refresh.
 Object-command regressions cover scoped user lists, complete bulk metadata reads,
 privacy, protected accounts, media inheritance/quotas, renames, room deletion,
 read-only execution and failed-write rollback. Bulk grant/revoke tests exercise original-policy authorization, owners, protected su accounts, and the last active
-administrator. Baseline v17-to-current and v18-to-current migrations are tested; pre-HEAD upgrade fixtures
-are removed and versions 1–16 are tested for unchanged rejection. Upload hint tests
+administrator. Legacy upgrade fixtures are removed; unversioned databases and
+versions 1–18 and representative future versions are tested for unchanged rejection. Upload hint tests
 cover bounds/header injection, signing, replacement metadata and browser headers.
 
 Command-output regressions cover full subcommand paths, permission-filtered help,
@@ -650,8 +650,8 @@ Cleanup metadata regressions cover disabled users, live admin/owner defaults,
 role removal and ownership transfer, global/room precedence, unset inheritance,
 private cleanup, all-history requests, bulk denial atomicity, and sudo bypass of
 command/action grants and limits without retaining elevated authority. Grant limit
-arguments are rejected. HEAD migration tests verify constraint transfer and atomic
-rollback of metadata, grants and schema version.
+arguments are rejected. HEAD persistence tests verify atomic metadata/grant
+rollback; unsupported schemas are rejected without modification.
 
 User reset regressions cover metadata key/all-key removal, inheritance fallback,
 current-scope and account-quota defaults, bulk selection, Su-only writes, storage
@@ -748,8 +748,7 @@ suffix/subdomain/userinfo lookalikes and hiding previously allowed stored URLs
 after policy changes. Direct bot ingress tests cover explicit opt-in, private
 trust validation, default denial and rejection of forwarded HTTP even with opt-in.
 
-Backend review regressions additionally cover atomic baseline v17-to-v18 session
-hashing (including digest-key collisions and migration rollback), bounded durable
+Backend review regressions cover digest-based session lookup, bounded durable
 authentication events, retained-row counters, typed retryable storage errors,
 duplicate cookies across headers, and idempotent avatar broadcasts. Incremental
 unreads are compared to an exact SQL oracle across global sequence gaps, cursor
@@ -839,10 +838,35 @@ Disabling bars preserves the original five-minute header grouping.
 Room-only color tests verify grant rejection at global/account/private scopes, no
 root-to-room authority inheritance, ordinary-admin revocation, cross-room and
 cross-account isolation, bulk/protected-target atomicity, non-color metadata denial,
-owner transfer and failed-write rollback. v19 migration tests cover legacy global
-grants, preserved colors/history/cursors, restart/rename/regrant behavior and complete
-v17/v18 upgrade rollback. HTTP tests reject set/reset/no-op room writes after
+owner transfer, restart/rename/regrant behavior and failed-write rollback.
+HEAD-only startup tests reject v17/v18 and all other unsupported schemas unchanged. HTTP tests reject set/reset/no-op room writes after
 revocation without metadata/version changes or notifications, while root writes remain
 available without global grants. Browser coverage keeps root settings available and
 filters room choices using own/any grants, including live revocation fallback.
 Completion covers the color key, full palette, @unset, bulk selectors and scopes.
+
+## Server database refactor regressions
+
+`engine/tests/storage.rs` checks database integrity, foreign keys, retained-row
+counts and independently reconstructed account references after deterministic mixed
+mutations, account rename/deletion and cleanup. A competing writer causes a bounded
+unavailable result without partial memory changes; the next mutation succeeds after
+the lock is released. Abrupt-exit tests spawn the test binary against an isolated
+temporary database, kill it before/after an outer transaction commit, and verify
+message, receipt, session, sequence and read cursor atomicity after reopening.
+
+Attachment-free inserts/edits and identity rewrites are exercised with the reference
+table deliberately absent, proving those paths do not query it. Media reference
+change tests retain validation, rollback and shared-attachment coverage. The unread
+SQL oracle includes edits, reactions and rename invalidation. Batch regressions
+require one reader lease for cold unread requests and none for warm requests.
+Serialized-size checks cover Unicode, escaping and reactions. Query-plan tests use
+the same pagination SQL constants as production. Restart coverage combines cold
+history caches, no startup writes and policy/session/cursor/history preservation.
+Concurrency cases keep separate transport assertions while sharing their app and
+reader-start fixtures. Mutation-cost checks compare work across unrelated history
+growth and protect untouched tables instead of fixing send cost to trigger counts.
+
+For server-only work, run `rtk cargo fmt --all --check`,
+`rtk cargo clippy --all-targets --locked -- -D warnings` and
+`rtk cargo test --locked`. These do not enter the optional `simpleBot/` worker.

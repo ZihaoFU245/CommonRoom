@@ -95,36 +95,16 @@ impl MetadataChange {
         let rooms = (!keys.rooms.is_empty()).then(|| {
             keys.rooms
                 .iter()
-                .filter_map(|key| {
-                    data.rooms.get(key).map(|room| {
-                        (
-                            key.clone(),
-                            Room {
-                                id: room.id.clone(),
-                                owner_id: room.owner_id.clone(),
-                                members: room.members.clone(),
-                                revision: room.revision,
-                                ..Default::default()
-                            },
-                        )
-                    })
-                })
+                .filter_map(|key| data.rooms.get(key).map(|room| (key.clone(), room.clone())))
                 .collect()
         });
         let private = (!keys.private.is_empty()).then(|| {
             keys.private
                 .iter()
                 .filter_map(|key| {
-                    data.private.get(key).map(|chat| {
-                        (
-                            key.clone(),
-                            PrivateChat {
-                                id: chat.id.clone(),
-                                revision: chat.revision,
-                                ..Default::default()
-                            },
-                        )
-                    })
+                    data.private
+                        .get(key)
+                        .map(|chat| (key.clone(), chat.clone()))
                 })
                 .collect()
         });

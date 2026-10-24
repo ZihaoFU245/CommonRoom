@@ -19,13 +19,13 @@ Domain modules extend that coordinator rather than creating separate copies of a
 | Module | Responsibility |
 | --- | --- |
 | `models.rs` | Persisted data and serialized snapshot/history types |
-| `storage.rs` | SQLite opening, transactional initialization, writer connection, bounded maintenance, cursors, checkpointing |
-| `history.rs` | Four read-only connections, keyset pagination, bounded page/unread caches and cache statistics |
+| `storage.rs` and `storage/` | Database lifetime and metadata commit coordination; focused bootstrap/schema, entity, message, cursor, account, receipt, auth, retention and maintenance modules |
+| `history.rs` and `history/` | Four read-only connections and statistics; focused keyset pagination, immutable pages, bounded caches and batched unread projections |
 | `authorization.rs` and `authorization/` | Policy types, predefined bundles and compiled index; `access.rs` owns access checks/delegation, `commands.rs` owns policy inspection/mutations |
 | `objects.rs` | Object command listing, scoped account metadata, bulk metadata selection and validation |
 | `accounts.rs` | Account/session lifecycle, roles, provisioning, and account deletion |
 | `rooms.rs` | Room creation, deletion, invitations, joining, and leaving |
-| `messages.rs` | Message construction, private queues, reactions and replies |
+| `messages.rs` | Owned transient message mutations, reactions and replies; room/private metadata contains no message bodies |
 | `cleanup.rs` | Explicit history cleanup scopes, authorization and read-only previews |
 | `queries.rs` | Snapshot authorization, visible-conversation and directory helpers; history/read queries |
 | `read_model.rs` | Metadata epoch, bounded browser/bot templates and viewer-specific snapshot stamps |
@@ -105,7 +105,7 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current schema is v19; v18 and the supported v17 baseline upgrade transactionally. Earlier schemas are rejected.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. The current HEAD schema is v19. Only fresh and current-schema databases are accepted; all other versions are rejected unchanged.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 10,000 globally, 256 pages, and 32 MiB of conservative payload accounting. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. Both caches use four conversation-hashed mutex shards; each shard receives one quarter of the global message, byte, page and unread-entry budgets. One hot shard cannot borrow another shard’s allowance. `/configs` exposes page-cache hits, misses and usage to authorized operators.
 
@@ -359,3 +359,19 @@ Directory identity changes target authorized directory viewers. Su-only generic 
 metadata changes conservatively invalidate all profiles; self-service avatar APIs
 continue to use compact profile events. The global policy revision is a version of
 captured authority, not a promise that unrelated clients receive every server mutation.
+
+Database refactoring keeps the existing v19 disk layout. Borrowed persistence
+projections serialize metadata without cloning policy/bot maps or constructing
+empty-history domain objects. One owned working message supplies browser and bot
+mutations; clearing command state is constant work rather than a scan of every
+conversation. Message actions resolve stable IDs through the existing conversation
+index; reactions carry one membership delta and edits capture only prior attachment
+IDs. Postcommit metadata invalidation is shared, while the outer command
+receipt transaction still encloses nested savepoints and reloads on failure.
+
+Cold snapshot/read-notification unread misses share one reader transaction and
+reuse cached statements; per-conversation failures still omit only that entry.
+Pagination uses shared ascending/descending SQL definitions, one edge-existence
+query and allocation-free exact serialized-size counting. Revision-keyed caches,
+reader limits, engine-lock release and transport authorization rechecks remain
+part of the read contract.

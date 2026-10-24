@@ -31,7 +31,13 @@ impl SnapshotPlan {
             .enumerate()
             .map(|(index, room)| (room.id.clone(), index))
             .collect();
-        for conversation in &self.jobs {
+        let unreads = self.history.unread_batch(
+            &self.snapshot.username,
+            self.jobs
+                .iter()
+                .map(|c| (c.id.as_str(), c.read, c.revision)),
+        )?;
+        for (conversation, unread) in self.jobs.iter().zip(unreads) {
             if tail_budget > 0 {
                 match self.history.page_checked(
                     &conversation.id,
@@ -58,12 +64,7 @@ impl SnapshotPlan {
                     }
                 }
             }
-            match self.history.unread(
-                &conversation.id,
-                &self.snapshot.username,
-                conversation.read,
-                conversation.revision,
-            ) {
+            match unread {
                 Ok(unread) => {
                     self.snapshot
                         .unread
@@ -150,8 +151,21 @@ impl BotSnapshotPlan {
     ) -> Result<crate::bots::models::Snapshot, crate::bots::error::Error> {
         use crate::bots::error::Error;
         self.history.ensure_available().map_err(Error::storage)?;
-        for conversation in &mut self.snapshot.conversations {
-            conversation.unread=self.history.unread(&conversation.id,&self.snapshot.account.username,self.cursors.get(&conversation.id).copied().unwrap_or(0),conversation.content_revision).map_err(|_| {
+        let unreads = self
+            .history
+            .unread_batch(
+                &self.snapshot.account.username,
+                self.snapshot.conversations.iter().map(|c| {
+                    (
+                        c.id.as_str(),
+                        self.cursors.get(&c.id).copied().unwrap_or(0),
+                        c.content_revision,
+                    )
+                }),
+            )
+            .map_err(Error::storage)?;
+        for (conversation, unread) in self.snapshot.conversations.iter_mut().zip(unreads) {
+            conversation.unread = unread.map_err(|_| {
                 tracing::warn!(conversation_id=%conversation.id,"Bot conversation unread metadata unavailable");
             }).ok();
         }
@@ -209,12 +223,14 @@ impl UnreadPlan {
     pub(crate) fn finish(self) -> Result<BTreeMap<String, Unread>, EngineError> {
         self.history.ensure_available()?;
         let mut unread = BTreeMap::new();
-        for job in self.conversations {
-            unread.insert(
-                job.view,
-                self.history
-                    .unread(&job.id, &self.user, job.read, job.revision)?,
-            );
+        let results = self.history.unread_batch(
+            &self.user,
+            self.conversations
+                .iter()
+                .map(|c| (c.id.as_str(), c.read, c.revision)),
+        )?;
+        for (job, result) in self.conversations.into_iter().zip(results) {
+            unread.insert(job.view, result?);
         }
         self.history.ensure_available()?;
         Ok(unread)

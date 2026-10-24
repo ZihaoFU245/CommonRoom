@@ -240,6 +240,16 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Publish metadata invalidation only after the owning savepoint succeeds.
+    /// An outer command receipt can still roll it back and reload authoritative state.
+    pub(super) fn finish_metadata_commit(&mut self, notice: MetadataNotice) {
+        self.read_model.advance();
+        self.revision = self.revision.wrapping_add(1);
+        self.record_metadata(notice);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

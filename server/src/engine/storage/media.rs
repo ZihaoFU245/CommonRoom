@@ -4,15 +4,11 @@ use rusqlite::OptionalExtension;
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, uploader TEXT NOT NULL, conversation TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, ready INTEGER NOT NULL, unreferenced INTEGER, staging_clean INTEGER NOT NULL DEFAULT 0, json TEXT NOT NULL, expires INTEGER, published INTEGER, deleting INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, cleanup_attempt INTEGER NOT NULL DEFAULT 0, staging_attempt INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS media_expiry ON media(deleted,deleting,expires,unreferenced);
-CREATE INDEX IF NOT EXISTS media_uploader ON media(uploader,created);
 CREATE TABLE IF NOT EXISTS message_media(conversation TEXT NOT NULL, sequence INTEGER NOT NULL, media_id TEXT NOT NULL REFERENCES media(id), PRIMARY KEY(conversation,sequence,media_id), FOREIGN KEY(conversation,sequence) REFERENCES messages(conversation,sequence) ON DELETE CASCADE) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS message_media_id ON message_media(media_id);
 ";
 
 pub(super) const INDEXES: &str = "
-DROP INDEX IF EXISTS media_expiry;
-DROP INDEX IF EXISTS media_uploader;
 CREATE INDEX IF NOT EXISTS media_quota ON media(uploader,deleted,published,created,size);
 CREATE INDEX IF NOT EXISTS media_due_retry ON media(cleanup_attempt,created) WHERE deleted=0 AND deleting=1;
 CREATE INDEX IF NOT EXISTS media_due_expiry ON media(expires,created) WHERE deleted=0 AND deleting=0;
@@ -70,6 +66,28 @@ pub(super) fn reconcile(
             .collect::<Result<_, _>>()
             .map_err(EngineError::unavailable)?
     };
+    reconcile_references(db, conversation, message, ids, previous)
+}
+
+pub(super) fn reconcile_insert(
+    db: &Connection,
+    conversation: &str,
+    message: &Message,
+) -> Result<(), EngineError> {
+    let ids = media_references(&message.text);
+    if ids.is_empty() {
+        return Ok(());
+    }
+    reconcile_references(db, conversation, message, ids, BTreeSet::new())
+}
+
+fn reconcile_references(
+    db: &Connection,
+    conversation: &str,
+    message: &Message,
+    ids: BTreeSet<String>,
+    previous: BTreeSet<String>,
+) -> Result<(), EngineError> {
     // Validate before replacing references, allowing an editor to preserve another
     // author's attachment that is already published in this conversation.
     for id in &ids {
@@ -84,12 +102,13 @@ pub(super) fn reconcile(
     if ids == previous {
         return Ok(());
     }
-    db.execute(
-        "DELETE FROM message_media WHERE conversation=?1 AND sequence=?2",
-        params![conversation, message.sequence],
-    )
-    .map_err(EngineError::unavailable)?;
-    for id in ids {
+    for id in previous.difference(&ids) {
+        db.execute(
+            "DELETE FROM message_media WHERE conversation=?1 AND sequence=?2 AND media_id=?3",
+            params![conversation, message.sequence, id],
+        )?;
+    }
+    for id in ids.difference(&previous) {
         db.execute(
             "INSERT INTO message_media VALUES(?1,?2,?3)",
             params![conversation, message.sequence, id],
@@ -421,5 +440,87 @@ mod tests {
         let changes = db.total_changes();
         reconcile(&db, &conversation, &message).unwrap();
         assert_eq!(db.total_changes(), changes);
+    }
+    #[test]
+    fn attachment_edits_preserve_shared_refs_and_rollback_partial_deltas() {
+        let mut e = crate::engine::tests::engine();
+        let room = e.data.rooms["lobby"].id.clone();
+        let mut uploads = Vec::new();
+        for _ in 0..3 {
+            let mut upload = e.allocate_media("alice", &room, "file.png", 8).unwrap();
+            upload.ready = true;
+            upload.object_key = upload.final_key();
+            upload.content_type = "image/png".into();
+            e.finish_media("alice", &upload).unwrap();
+            uploads.push(upload.id);
+        }
+        let link = |id: &str| format!("![file](https://example.com/api/media/{id}/file)");
+        e.execute(
+            Some("alice"),
+            Some("lobby"),
+            &format!("{} {}", link(&uploads[0]), link(&uploads[1])),
+        )
+        .unwrap();
+        let message = crate::engine::tests::room_messages(&e, "lobby")[0]
+            .id
+            .clone();
+        e.store.db.lock().unwrap().execute_batch(&format!("CREATE TEMP TRIGGER keep_shared_reference BEFORE DELETE ON message_media WHEN OLD.media_id='{}' BEGIN SELECT RAISE(ABORT,'unchanged reference churn'); END;", uploads[0])).unwrap();
+        e.execute(
+            Some("alice"),
+            Some("lobby"),
+            &format!(
+                "/edit {message} {} {}",
+                link(&uploads[0]),
+                link(&uploads[2])
+            ),
+        )
+        .unwrap();
+        let refs = || {
+            e.store
+                .db
+                .lock()
+                .unwrap()
+                .prepare("SELECT media_id FROM message_media WHERE conversation=?1")
+                .unwrap()
+                .query_map([&room], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<BTreeSet<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(refs(), [uploads[0].clone(), uploads[2].clone()].into());
+        let before = crate::engine::tests::room_messages(&e, "lobby");
+        let revision = e.data.rooms["lobby"].revision;
+        e.store.db.lock().unwrap().execute_batch("CREATE TEMP TRIGGER reject_reference BEFORE INSERT ON message_media BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(
+            e.execute(
+                Some("alice"),
+                Some("lobby"),
+                &format!(
+                    "/edit {message} {} {}",
+                    link(&uploads[0]),
+                    link(&uploads[1])
+                )
+            )
+            .is_err()
+        );
+        assert!(crate::engine::tests::room_messages(&e, "lobby") == before);
+        assert_eq!(e.data.rooms["lobby"].revision, revision);
+        let db = e.store.db.lock().unwrap();
+        let refs: BTreeSet<String> = db
+            .prepare("SELECT media_id FROM message_media WHERE conversation=?1")
+            .unwrap()
+            .query_map([&room], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(refs, [uploads[0].clone(), uploads[2].clone()].into());
+        assert!(
+            db.query_row::<bool, _, _>(
+                "SELECT unreferenced IS NULL FROM media WHERE id=?1",
+                [&uploads[2]],
+                |r| r.get(0)
+            )
+            .unwrap()
+        );
     }
 }

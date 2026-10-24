@@ -102,14 +102,7 @@ impl Engine {
                 "Storage unavailable; rename was not applied.".into(),
             ));
         }
-        // Stored authors and quotes were rewritten transactionally. Discard any
-        // transient command rows so no caller can observe the former name.
-        for room in self.data.rooms.values_mut() {
-            room.messages.clear();
-        }
-        for chat in self.data.private.values_mut() {
-            chat.messages.clear();
-        }
+        self.working = None;
         self.store.read_positions.remove(new_name);
         if let Some(positions) = self.store.read_positions.remove(name) {
             self.store.read_positions.insert(new_name.into(), positions);
@@ -130,9 +123,7 @@ impl Engine {
             &self.authorization,
         );
         self.advance_colors();
-        self.read_model.advance();
-        self.revision = self.revision.wrapping_add(1);
-        self.record_metadata(notice);
+        self.finish_metadata_commit(notice);
         Ok(format!("Renamed {name} to {new_name}."))
     }
     pub fn is_admin(&self, name: &str) -> bool {
@@ -560,9 +551,7 @@ impl Engine {
         }
         self.bot_index = crate::bots::models::Index::build(&self.data);
         self.advance_colors();
-        self.read_model.advance();
-        self.revision = self.revision.wrapping_add(1);
-        self.record_metadata(notice);
+        self.finish_metadata_commit(notice);
         Ok(format!(
             "Deleted account {name} and its private conversations. Room messages retained as {deleted_author}."
         ))

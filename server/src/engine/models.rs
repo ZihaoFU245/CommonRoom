@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
@@ -42,13 +42,11 @@ pub struct Room {
     pub id: String,
     pub owner_id: String,
     pub members: BTreeSet<String>,
-    pub messages: VecDeque<Message>,
     pub revision: u64,
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct PrivateChat {
     pub id: String,
-    pub messages: VecDeque<Message>,
     pub revision: u64,
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

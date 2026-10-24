@@ -2,20 +2,15 @@
 
 ## Database compatibility
 
-Empty databases initialize as v19. The supported v17 baseline and v18 databases
-upgrade transactionally to v19; v19 reopens directly. Earlier schemas and
-unversioned existing databases are rejected before journal, schema or data changes.
+Empty databases initialize transactionally as the current HEAD schema, v19.
+Existing databases must already be v19. All other versions, including v17/v18,
+and unversioned existing databases are rejected before journal, schema or data
+changes. There are no legacy migration paths. This refactor does not change the
+v19 SQLite or JSON layout and does not rewrite existing databases at startup.
 
-The v17 upgrade replaces raw session keys with domain-separated Blake2s digests,
-initializes retained-row counters and creates a bounded authentication audit.
-The v18-to-v19 step converts inherited own-color rights into direct grants for
-existing room participants and adds `w:account.color.any` to ownership grants.
-Global/account/private color grants are no longer valid. Metadata values, history,
-credentials and cursors remain intact. The upgrade runs once; restarts cannot
-restore revoked own-color grants. Previously ineffective revocations did not persist a
-restriction, so reissue those revocations after upgrading. Failure rolls back policy, new tables/triggers,
-session changes and schema version together. Older binaries cannot open v19.
-Production sites at the root path use `__Host-chat_session` cookies.
+Session keys are domain-separated Blake2s digests. Root-path production sessions
+use `__Host-chat_session` cookies. Color capabilities are direct room grants;
+revoked grants stay revoked across restart and rename.
 
 Authentication events retain the most recent 2,048 verified login outcomes and
 valid logouts, including time, canonical client IP when available and valid
@@ -53,7 +48,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary reads v19 and upgrades v18 and the supported v17 baseline. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary reads only the current v19 schema. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -243,6 +238,15 @@ Metadata updates save changed accounts and audit entries atomically. Other value
 never included in public snapshots; the global avatar link is a public profile projection. User media limits are independent of grants;
 `/user get` and `/user set` enforce current access on every selected account.
 
+Message mutation bodies are owned transient rows outside room/private metadata.
+The message transaction writes the row, reference changes, counter, retention and
+revision together. New attachment-free messages skip reference-table reads;
+identity rewrites and edits with unchanged attachment IDs skip reconciliation.
+Reactions persist one explicit membership delta without cloning/diffing a full
+reaction map; edit rollback coordinates retain only the previous attachment IDs.
+Changed reference sets insert/delete only their differences. Startup and failed
+command recovery share authoritative metadata/cursor loaders.
+
 Metadata mutation now requires su at execution time. Global admin group bundles
 provide only metadata read access; stored direct write flags cannot override the
 su check. No metadata rows or existing values are rewritten for this policy change.
@@ -261,7 +265,7 @@ The optional `color` metadata key names one of 16 fixed palette colors. `@global
 account's default; a stable room ID branch overrides it in that room. Private conversations
 use the global value. Writers reject other values, and the key is rejected in private branches. Like
 other metadata, colors follow renames and are removed with their room or account. These values
-use existing account JSON without layout changes. Policy capabilities migrate with schema v19.
+use existing account JSON without layout changes. Policy capabilities use the current v19 schema.
 
 ## Avatars
 
@@ -269,7 +273,7 @@ The optional `metadata["@global"]["avatar"]` is an HTTPS image URL or a canonica
 `/api/avatars/<id>/file` link. Only this profile key has a self-service HTTP writer;
 ordinary metadata mutations still require su. The writer preserves other metadata
 and rolls back failed persistence. These values use existing account JSON and
-media rows, so color values need no layout change; policy capabilities migrate with schema v19.
+media rows, so color values need no layout change; policy capabilities use the current v19 schema.
 
 Uploaded avatars use media records with conversation `@avatar` and permanent
 retention. Immutable file bytes live at `avatars/<stable-account-id>/<upload-id>`

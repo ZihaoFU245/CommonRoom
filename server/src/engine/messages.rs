@@ -1,6 +1,18 @@
 use super::*;
 use authorization::{Action, Scope};
 
+pub(super) struct WorkingMessage {
+    pub(super) conversation: String,
+    pub(super) message: Message,
+    pub(super) reaction: Option<ReactionChange>,
+}
+
+pub(super) struct ReactionChange {
+    pub(super) user: String,
+    pub(super) reaction: String,
+    pub(super) active: bool,
+}
+
 pub(super) enum ReactionError {
     NotFound,
     Limit,
@@ -23,6 +35,36 @@ pub(super) fn reply_quote(original: &Message) -> Reply {
 }
 
 impl Engine {
+    pub(super) fn working_message(&self, conversation: &str) -> Option<&Message> {
+        self.working
+            .as_ref()
+            .filter(|row| row.conversation == conversation)
+            .map(|row| &row.message)
+    }
+
+    fn advance_conversation(&mut self, scope: &Scope) -> Result<(), EngineError> {
+        let id = match scope {
+            Scope::Room(id) | Scope::Private(id) => id,
+            _ => return Err(EngineError::NotFound("Conversation not found.".into())),
+        };
+        let view = self.bot_index.conversations.get(id);
+        let revision = match scope {
+            Scope::Room(_) => view
+                .and_then(|view| self.data.rooms.get_mut(view))
+                .filter(|r| r.id == *id)
+                .map(|r| &mut r.revision),
+            Scope::Private(_) => view
+                .and_then(|view| view.strip_prefix("@private:"))
+                .and_then(|key| self.data.private.get_mut(key))
+                .filter(|c| c.id == *id)
+                .map(|c| &mut c.revision),
+            _ => None,
+        }
+        .ok_or_else(|| EngineError::NotFound("Conversation not found.".into()))?;
+        *revision = revision.wrapping_add(1);
+        Ok(())
+    }
+
     // Callers resolve and authorize the target before using these mutation helpers.
     pub(super) fn append_text(
         &mut self,
@@ -71,10 +113,11 @@ impl Engine {
             .get_mut(name)
             .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
         message.mentions.retain(|name| room.members.contains(name));
-        if room.messages.len() == self.max_messages {
-            room.messages.pop_front();
-        }
-        room.messages.push_back(message);
+        self.working = Some(WorkingMessage {
+            reaction: None,
+            conversation: room.id.clone(),
+            message,
+        });
         room.revision = room.revision.wrapping_add(1);
         Ok(())
     }
@@ -99,25 +142,15 @@ impl Engine {
         reaction: &str,
         active: Option<bool>,
     ) -> Result<bool, ReactionError> {
-        let (messages, revision) = match scope {
-            Scope::Room(id) => self
-                .data
-                .rooms
-                .values_mut()
-                .find(|r| r.id == *id)
-                .map(|r| (&mut r.messages, &mut r.revision)),
-            Scope::Private(id) => self
-                .data
-                .private
-                .values_mut()
-                .find(|c| c.id == *id)
-                .map(|c| (&mut c.messages, &mut c.revision)),
-            _ => None,
-        }
-        .ok_or(ReactionError::NotFound)?;
-        let message = messages
-            .iter_mut()
-            .find(|m| m.id == message_id)
+        let id = match scope {
+            Scope::Room(id) | Scope::Private(id) => id,
+            _ => return Err(ReactionError::NotFound),
+        };
+        let message = self
+            .working
+            .as_mut()
+            .filter(|row| row.conversation == *id && row.message.id == message_id)
+            .map(|row| &mut row.message)
             .ok_or(ReactionError::NotFound)?;
         let present = message
             .reactions
@@ -142,7 +175,14 @@ impl Engine {
                 message.reactions.remove(reaction);
             }
         }
-        *revision = revision.wrapping_add(1);
+        let row = self.working.as_mut().ok_or(ReactionError::NotFound)?;
+        row.reaction = Some(ReactionChange {
+            user: user.into(),
+            reaction: reaction.into(),
+            active,
+        });
+        self.advance_conversation(scope)
+            .map_err(|_| ReactionError::NotFound)?;
         Ok(true)
     }
     // Resolve only the selected room, or a retained target for global su actions.
@@ -157,11 +197,12 @@ impl Engine {
             if !self.is_su(actor) || *scope != Scope::Server {
                 return None;
             }
-            self.data
-                .rooms
-                .iter()
-                .find(|(_, target)| target.messages.iter().any(|message| message.id == id))
-                .map(|(name, _)| name.clone())
+            let row = self.working.as_ref().filter(|row| row.message.id == id)?;
+            self.bot_index
+                .conversations
+                .get(&row.conversation)
+                .filter(|view| !view.starts_with("@private:"))
+                .cloned()
         })
     }
 
@@ -181,16 +222,20 @@ impl Engine {
         let scope = if let Some(name) = &room {
             self.room_scope(name)?
         } else {
+            let row = self
+                .working
+                .as_ref()
+                .filter(|row| row.message.id == id)
+                .ok_or("Message not found in this conversation.")?;
             let key = self
-                .data
-                .private
-                .iter()
-                .find(|(key, chat)| {
+                .bot_index
+                .conversations
+                .get(&row.conversation)
+                .and_then(|view| view.strip_prefix("@private:"))
+                .filter(|key| {
                     self.allows(actor, &self.private_scope(key), Action::Read)
-                        && !matches!(context,Scope::Private(id) if *id!=chat.id)
-                        && chat.messages.iter().any(|message| message.id == id)
+                        && !matches!(context, Scope::Private(id) if *id != row.conversation)
                 })
-                .map(|(key, _)| key)
                 .ok_or("Message not found in this conversation.")?;
             self.private_scope(key)
         };
@@ -253,10 +298,11 @@ impl Engine {
                 id,
                 ..PrivateChat::default()
             });
-        if chat.messages.len() == self.max_messages {
-            chat.messages.pop_front();
-        }
-        chat.messages.push_back(message);
+        self.working = Some(WorkingMessage {
+            reaction: None,
+            conversation: chat.id.clone(),
+            message,
+        });
         chat.revision = chat.revision.wrapping_add(1);
         Ok(())
     }
@@ -276,7 +322,7 @@ impl Engine {
             "/retract" => {
                 require_len(parts, 2, "/retract message-id")?;
                 let id = parts[1];
-                let (room, scope) =
+                let (_, scope) =
                     self.message_action_scope(actor, room, &context.scope, id, true)?;
                 self.require_target_command(actor, &scope, parts[0])?;
                 self.require(actor, &scope, Action::Read)?;
@@ -288,33 +334,13 @@ impl Engine {
                     .and_then(|name| self.data.users.get(name))
                     .map_or("console", |u| u.id.as_str())
                     .to_owned();
-                let (messages, revision) = match &scope {
-                    Scope::Room(_) => {
-                        let target =
-                            self.data
-                                .rooms
-                                .get_mut(room.as_deref().ok_or_else(|| {
-                                    EngineError::NotFound("Room not found.".into())
-                                })?)
-                                .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
-                        (&mut target.messages, &mut target.revision)
-                    }
-                    Scope::Private(id) => {
-                        let chat = self
-                            .data
-                            .private
-                            .values_mut()
-                            .find(|chat| chat.id == *id)
-                            .ok_or_else(|| {
-                                EngineError::NotFound("Private conversation not found.".into())
-                            })?;
-                        (&mut chat.messages, &mut chat.revision)
-                    }
+                let conversation_id = match &scope {
+                    Scope::Room(id) | Scope::Private(id) => id.clone(),
                     _ => return Err("Invalid message scope.".into()),
                 };
-                let original = messages
-                    .iter()
-                    .find(|m| m.id == id)
+                let original = self
+                    .working_message(&conversation_id)
+                    .filter(|m| m.id == id)
                     .ok_or("Message not found in this conversation (it may have expired).")?;
                 if !can_delete_any && original.author_id != actor_id {
                     return Err(EngineError::Forbidden(
@@ -322,20 +348,11 @@ impl Engine {
                     ));
                 }
                 let deleted_sequence = original.sequence;
-                let conversation_id = match &scope {
-                    Scope::Room(id) | Scope::Private(id) => id.clone(),
-                    _ => return Err("Invalid message scope.".into()),
-                };
                 self.store
                     .pending_deletes
                     .push((conversation_id, deleted_sequence));
-                messages.retain(|m| m.id != id);
-                for message in messages {
-                    if message.reply.as_ref().is_some_and(|quote| quote.id == id) {
-                        message.reply = None;
-                    }
-                }
-                *revision = revision.wrapping_add(1);
+                self.working = None;
+                self.advance_conversation(&scope)?;
                 self.audit(actor, "/retract", id);
                 Ok("Message deleted.".into())
             }
@@ -384,22 +401,10 @@ impl Engine {
                         Action::Send
                     },
                 )?;
-                let original = if let Some(name) = room {
-                    let target = self
-                        .data
-                        .rooms
-                        .get(name)
-                        .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
-                    target.messages.iter().find(|m| m.id == id)
-                } else {
-                    self.data
-                        .private
-                        .values()
-                        .find(|chat| matches!(&scope,Scope::Private(id) if *id==chat.id))
-                        .and_then(|chat| chat.messages.iter().find(|message| message.id == id))
-                }
-                .cloned()
-                .ok_or("Message not found in this conversation (it may have expired).")?;
+                let conversation_id = match &scope {
+                    Scope::Room(id) | Scope::Private(id) => id,
+                    _ => return Err("Invalid message scope.".into()),
+                };
                 if parts[0] == "/react" {
                     if value.chars().count() > crate::limits::MAX_REACTION_CHARS
                         || value.chars().any(char::is_control)
@@ -412,6 +417,11 @@ impl Engine {
                         .map_err(EngineError::unavailable)?;
                     return Ok("Reaction updated.".into());
                 }
+                let original = self
+                    .working_message(conversation_id)
+                    .filter(|m| m.id == id)
+                    .cloned()
+                    .ok_or("Message not found in this conversation (it may have expired).")?;
                 if value.chars().count() > crate::limits::MAX_MESSAGE_CHARS {
                     return Err("Messages support at most 4000 characters.".into());
                 }
@@ -431,36 +441,28 @@ impl Engine {
                         return Ok("Message unchanged.".into());
                     }
                     let mut mentions = mentioned_names(value);
-                    let (messages, revision) = if let Some(name) = room {
+                    if let Some(name) = room {
                         let target = self
                             .data
                             .rooms
-                            .get_mut(name)
+                            .get(name)
                             .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
                         mentions.retain(|name| target.members.contains(name));
-                        (&mut target.messages, &mut target.revision)
                     } else {
                         mentions.retain(|name| {
                             name == &original.from || original.to.as_ref() == Some(name)
                         });
-                        let chat = self
-                            .data
-                            .private
-                            .values_mut()
-                            .find(|chat| matches!(&scope, Scope::Private(id) if chat.id == *id))
-                            .ok_or_else(|| {
-                                EngineError::NotFound("Private conversation not found.".into())
-                            })?;
-                        (&mut chat.messages, &mut chat.revision)
-                    };
-                    let target = messages
-                        .iter_mut()
-                        .find(|message| message.id == id)
-                        .ok_or("Message not found in this conversation.")?;
-                    target.text = value.into();
-                    target.mentions = mentions;
-                    target.edited = true;
-                    *revision = revision.wrapping_add(1);
+                    }
+                    let mut message = original;
+                    message.text = value.into();
+                    message.mentions = mentions;
+                    message.edited = true;
+                    self.working = Some(WorkingMessage {
+                        reaction: None,
+                        conversation: conversation_id.clone(),
+                        message,
+                    });
+                    self.advance_conversation(&scope)?;
                     return Ok("Message edited.".into());
                 }
                 let recipient = if room.is_none() {
@@ -488,14 +490,14 @@ impl Engine {
                         .mentions
                         .retain(|name| name == user || Some(name.as_str()) == recipient);
                     let key = self
-                        .data
-                        .private
-                        .iter()
-                        .find(|(_, chat)| Scope::Private(chat.id.clone()) == scope)
-                        .map(|(key, _)| key.clone())
+                        .bot_index
+                        .conversations
+                        .get(conversation_id)
+                        .and_then(|view| view.strip_prefix("@private:"))
                         .ok_or_else(|| {
                             EngineError::NotFound("Private conversation not found.".into())
-                        })?;
+                        })?
+                        .to_owned();
                     self.push_private_to(&key, message)?;
                 }
                 Ok(String::new())

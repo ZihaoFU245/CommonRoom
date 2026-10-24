@@ -58,9 +58,7 @@ impl Engine {
             &self.authorization,
             &self.authorization,
         );
-        self.read_model.advance();
-        self.revision = self.revision.wrapping_add(1);
-        self.record_metadata(notice);
+        self.finish_metadata_commit(notice);
         Ok(format!("Renamed #{name} to #{new_name}."))
     }
 

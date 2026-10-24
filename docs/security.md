@@ -209,7 +209,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-The current schema is v19. New empty databases initialize transactionally; the supported v17 baseline and v18 upgrade atomically, and v19 reopens directly. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+The current HEAD schema is v19. New empty databases initialize transactionally; existing databases must already be v19. Legacy migration paths are removed. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains

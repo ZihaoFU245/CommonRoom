@@ -74,11 +74,11 @@ real-application browser scenario. Later stages must rerun checks for changed be
 All 36 findings are complete. The final requirement audit and current validation
 results are recorded below. Earlier stage summaries describe their status at that time.
 
-The supported database baseline is commit
-`793f9bb65683f63130c234f78856b8813362f45f` (v17). Only this baseline
-upgrades to v18. Earlier migrations and their obsolete success fixtures are removed;
-unsupported-version rejection tests remain. Root production cookies change name and
-require one sign-in; scoped cookies preserve their original token and expiry.
+Database support now accepts only the current HEAD schema, v19, and initializes
+empty databases transactionally. The earlier migration findings below record
+historical work; their migration code and upgrade-success fixtures have since
+been removed. Unsupported-version rejection, digest-based sessions and current
+persistence/rollback tests remain.
 
 Review correction: `read_command` is an independently callable authorization
 boundary. `execute_inner` returns immediately when its read fast path matches,
