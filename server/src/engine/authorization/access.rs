@@ -363,7 +363,8 @@ impl Engine {
         Ok(())
     }
     pub(in crate::engine) fn add_owner_grants(&mut self, id: String, scope: Scope) {
-        let rights = manager_rights();
+        let mut rights = manager_rights();
+        rights.actions |= Action::ColorAny.bit();
         let mut permissions: BTreeSet<_> = rights.names().into_iter().collect();
         permissions.extend(
             COMMANDS

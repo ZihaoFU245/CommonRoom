@@ -1610,6 +1610,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
                 if actor == Some("alice") {
                     expected.extend(member.iter().copied());
                     expected.extend(manager.iter().copied());
+                    expected.insert("w:account.color.any");
                 }
                 if actor == Some("bob") {
                     expected.extend(member.iter().copied());

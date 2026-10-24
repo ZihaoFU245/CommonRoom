@@ -37,6 +37,7 @@ actions! {
     RenameOwn => "w:account.rename.own",
     RenameAny => "x:account.rename.any",
     ColorOwn => "w:account.color.own",
+    ColorAny => "w:account.color.any",
     Password => "w:account.password.own",
     Invite => "x:member.add",
     Kick => "x:member.remove",
@@ -476,6 +477,10 @@ impl CompiledPolicy {
             let mut mask = Rights::default();
             for p in &grant.permissions {
                 mask.insert(p)?;
+            }
+            // Owner grants predate ColorAny in existing databases.
+            if grant.owner && matches!(grant.scope, Scope::Room(_)) {
+                mask.add(rights(&[Action::ColorAny], &[]));
             }
             let ids: Vec<_> = match &grant.subject {
                 Subject::Account(id) => vec![id.clone()],

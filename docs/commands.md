@@ -43,7 +43,11 @@ from Settings › Preferences after enabling Show name colors, with
 `w:account.color.own` at that scope.
 Read your own metadata;
 other users require `r:account.metadata` at global/account scope or room policy
-management. Only su can set, remove or bulk-update metadata. Global admins
+management. Only su can set, remove or bulk-update other metadata. The exception is `color`: holders of
+`w:account.color.any` may set/reset it for accounts in that scope using `/user set`
+or `/user reset`, including `@all`. Room owners receive this permission automatically.
+For example, `/user set bob color blue #support` assigns a room color;
+`/user reset bob color #support` restores inheritance. Global admins
 receive `r:account.metadata` for reading; room policy managers may inspect their
 members' room metadata. `x:account.metadata` remains reserved for su, and an
 explicit write flag does not bypass this restriction. Stdin and authorized
@@ -404,8 +408,8 @@ metadata limit. Bulk cleanup authorizes every target and its limit before deleti
 inheritance. `/user reset bob @all #support` clears every override in that room
 branch; `/user reset bob @all @global` clears only the global root. Other branches
 remain unchanged. `@all` may also select users, as in
-`/user reset @all @all #support`. Metadata resets are su-only, use the same scope
-and bulk selection rules as `/user set`, and prune empty branches. Account-wide
+`/user reset @all @all #support`. Metadata resets require su, except `color` with `w:account.color.any`; they use
+the same scope and bulk selection rules as `/user set`, and prune empty branches. Account-wide
 quota reset defaults to `@global` even from a room.
 
 Password reset uses `/user reset bob password new-password`; it targets one

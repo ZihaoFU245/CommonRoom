@@ -829,3 +829,8 @@ without gaps or overlapping alpha, including reply headers, reaction rows and
 message actions. Minute boundaries, author changes, private-pair changes, local
 midnight and unread dividers split runs; retractions reconnect eligible neighbors.
 Disabling bars preserves the original five-minute header grouping.
+
+Color-any authorization tests cover existing and new room owners, ownership
+transfer, scoped grants and revocation, global grants, member-only targeting,
+bulk color assignment/reset, inheritance, unrelated metadata denial, palette
+validation, and atomic rollback/version stability on failed writes.

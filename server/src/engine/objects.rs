@@ -85,7 +85,7 @@ impl Engine {
         actor: Option<&str>,
         name: &str,
         scope: &Scope,
-        write: bool,
+        write: Option<&str>,
     ) -> Result<(), EngineError> {
         let account = self
             .data
@@ -101,7 +101,10 @@ impl Engine {
         if self.is_su(actor) {
             return Ok(());
         }
-        if write {
+        if let Some(key) = write {
+            if key == super::colors::COLOR_KEY {
+                return self.require(actor, scope, Action::ColorAny);
+            }
             return Err(EngineError::Forbidden(
                 "Only su can change user metadata.".into(),
             ));
@@ -174,10 +177,10 @@ impl Engine {
                 let scope = self.object_scope(context.actor, context.view, scope)?;
                 let mut output = BTreeMap::new();
                 for name in self.metadata_targets(context.actor, who, &scope)? {
-                    self.metadata_access(context.actor, &name, &scope, false)?;
+                    self.metadata_access(context.actor, &name, &scope, None)?;
                     // Room authority must not reveal arbitrary global account metadata.
                     let global_read = self
-                        .metadata_access(context.actor, &name, &Scope::Server, false)
+                        .metadata_access(context.actor, &name, &Scope::Server, None)
                         .is_ok();
                     let mut sections = BTreeMap::new();
                     if global_read {
@@ -338,7 +341,7 @@ impl Engine {
         context: &dispatch::CommandContext<'_>,
     ) -> Result<String, EngineError> {
         if let ["/user", "set", who, key, value, rest @ ..] = context.parts {
-            if !self.is_su(context.actor) {
+            if !self.is_su(context.actor) && *key != super::colors::COLOR_KEY {
                 return Err(EngineError::Forbidden(
                     "Only su can change user metadata.".into(),
                 ));
@@ -364,7 +367,7 @@ impl Engine {
             };
             let targets = self.metadata_targets(context.actor, who, &selection)?;
             for name in &targets {
-                self.metadata_access(context.actor, name, &scope, true)?;
+                self.metadata_access(context.actor, name, &scope, Some(key))?;
                 if value != "@unset"
                     && let Some(entries) = self.data.users[name].metadata.get(&scope_key)
                     && entries.len() >= 32
@@ -398,7 +401,7 @@ impl Engine {
             return Ok(format!("Updated metadata for {} users.", targets.len()));
         }
         if let ["/user", "reset", who, key, rest @ ..] = context.parts {
-            if !self.is_su(context.actor) {
+            if !self.is_su(context.actor) && *key != super::colors::COLOR_KEY {
                 return Err(EngineError::Forbidden(
                     "Only su can change user metadata.".into(),
                 ));
@@ -426,7 +429,7 @@ impl Engine {
             };
             let targets = self.metadata_targets(context.actor, who, &selection)?;
             for name in &targets {
-                self.metadata_access(context.actor, name, &scope, true)?;
+                self.metadata_access(context.actor, name, &scope, Some(key))?;
             }
             let before = MetadataChange::accounts(&self.data, targets.iter().cloned(), false);
             for name in &targets {

@@ -284,7 +284,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
 pub fn requirements(command: &str) -> &'static str {
     match command {
         "/user" => {
-            "Account/member listing, account lifecycle or metadata permissions on the target; metadata writes are su-only; metadata values never grant access"
+            "Account/member listing, account lifecycle or metadata permissions on the target; metadata writes require su except color with w:account.color.any; metadata values never grant access"
         }
         "/room" => "Room discovery, creation or management permissions on the target room",
         "/sudo" => "x:command.sudo and /sudo at @global; temporary superuser authority",
@@ -361,14 +361,16 @@ fn form_description(command: &Command, usage: &str) -> &'static str {
     match (command.name, parts.as_slice()) {
         ("/user", ["ls", ..]) => "List accounts globally or members of a room",
         ("/user", ["get", ..]) => "Read one user's metadata, or use @all for the scope",
-        ("/user", ["set", ..]) => "Set scoped metadata for one user or @all (su only)",
+        ("/user", ["set", ..]) => "Set scoped metadata (su, or color with w:account.color.any)",
         ("/user", ["rename", ..]) => "Rename yourself or an authorized account",
         ("/user", ["new", ..]) => "Create an account; the default group is user",
         ("/user", ["delete", ..]) => "Delete an account and its private conversations",
         ("/user", ["disable", ..]) => "Disable an account and revoke its sessions",
         ("/user", ["enable", ..]) => "Enable an account",
         ("/user", ["passwd", ..]) => "Change your password and sign out other sessions",
-        ("/user", ["reset", ..]) => "Reset scoped metadata (su only), or reset a password",
+        ("/user", ["reset", ..]) => {
+            "Reset scoped metadata (su, or color with w:account.color.any), or reset a password"
+        }
         ("/room", ["ls", ..]) => "List rooms you can discover or read",
         ("/room", ["new", ..]) => "Create an invitation-only room",
         ("/room", ["delete", ..]) => "Delete a room and its messages",

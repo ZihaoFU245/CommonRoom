@@ -242,9 +242,14 @@ Metadata updates save changed accounts and audit entries atomically. Other value
 never included in public snapshots; the global avatar link is a public profile projection. User media limits are independent of grants;
 `/user get` and `/user set` enforce current access on every selected account.
 
-Metadata mutation now requires su at execution time. Global admin group bundles
+Metadata mutation requires su at execution time, except `color` writes authorized
+by `w:account.color.any` at the target scope. Global admin group bundles
 provide only metadata read access; stored direct write flags cannot override the
-su check. No metadata rows or existing values are rewritten for this policy change.
+su check for other metadata. No metadata rows or existing values are rewritten
+for this policy change.
+
+Room owner grants compiled from existing data include `w:account.color.any`; no
+schema migration is required. Ownership transfer replaces the owner grant.
 
 `history.clean_min_age` is a typed cleanup limit: `0` disables cleanup, `-1`
 is unrestricted, and positive values store minimum message age in seconds.

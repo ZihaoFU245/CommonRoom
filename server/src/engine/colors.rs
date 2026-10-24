@@ -318,7 +318,7 @@ mod tests {
         assert!(e.color_directory().rooms.is_empty());
     }
     #[test]
-    fn color_permission_is_scoped_additive_and_other_accounts_stay_su_only() {
+    fn color_own_permission_is_scoped_and_cannot_change_other_accounts() {
         let mut e = super::super::tests::engine();
         let lobby = e.data.rooms["lobby"].id.clone();
         e.execute(None, None, "/revoke bob user @global").unwrap();
@@ -338,7 +338,7 @@ mod tests {
             .unwrap();
         e.set_color("bob", Some(&lobby), Some("teal")).unwrap();
         assert!(
-            e.execute(Some("alice"), Some("lobby"), "/user set bob color red")
+            e.execute(Some("eve"), Some("lobby"), "/user set bob color red")
                 .is_err()
         );
         assert!(
@@ -352,6 +352,92 @@ mod tests {
         assert_eq!(e.data.users["bob"].metadata["@global"][COLOR_KEY], "lime");
         assert_eq!(e.data.users["eve"].metadata[&lobby][COLOR_KEY], "sky");
     }
+    #[test]
+    fn color_any_is_owner_scoped_and_only_allows_color_metadata() {
+        let mut e = super::super::tests::engine();
+        let lobby = e.data.rooms["lobby"].id.clone();
+        e.execute(None, None, "/user set bob color blue @global")
+            .unwrap();
+        e.execute(None, None, "/room new other").unwrap();
+        e.execute(None, None, "/room add bob #other").unwrap();
+        for command in [
+            "/user set bob color red #lobby",
+            "/user set @all color teal #lobby",
+            "/user reset @all color #lobby",
+            "/user set bob color violet #lobby",
+            "/user set bob color @unset #lobby",
+        ] {
+            e.execute(Some("alice"), Some("lobby"), command).unwrap();
+        }
+        assert_eq!(
+            e.metadata_value("bob", &Scope::Room(lobby.clone()), COLOR_KEY),
+            Some("blue")
+        );
+        for command in [
+            "/user set bob color red @global",
+            "/user set bob color red #other",
+            "/user set bob label value #lobby",
+            "/user reset bob @all #lobby",
+            "/user reset bob label #lobby",
+            "/user set bob color invalid #lobby",
+        ] {
+            assert!(
+                e.execute(Some("alice"), Some("lobby"), command).is_err(),
+                "{command}"
+            );
+        }
+        e.provision("outsider", "test-hash".into(), false, false)
+            .unwrap();
+        assert!(
+            e.execute(
+                Some("alice"),
+                Some("lobby"),
+                "/user set outsider color red #lobby"
+            )
+            .is_err()
+        );
+        e.execute(None, None, "/grant bob #lobby w:account.color.any")
+            .unwrap();
+        e.execute(Some("bob"), Some("lobby"), "/user set eve color pink")
+            .unwrap();
+        e.execute(None, None, "/revoke bob #lobby w:account.color.any")
+            .unwrap();
+        assert!(
+            e.execute(Some("bob"), Some("lobby"), "/user set eve color red")
+                .is_err()
+        );
+        e.execute(Some("alice"), Some("lobby"), "/room owner eve")
+            .unwrap();
+        assert!(
+            e.execute(Some("alice"), Some("lobby"), "/user set bob color red")
+                .is_err()
+        );
+        e.execute(Some("eve"), Some("lobby"), "/user set bob color red")
+            .unwrap();
+        // Simulate a persisted owner grant written before ColorAny existed.
+        for grant in &mut e.data.policy.grants {
+            if grant.owner {
+                grant.permissions.remove(Action::ColorAny.name());
+            }
+        }
+        e.rebuild_authorization().unwrap();
+        e.execute(Some("eve"), Some("lobby"), "/user reset bob color")
+            .unwrap();
+        e.execute(None, None, "/grant bob @global w:account.color.any")
+            .unwrap();
+        e.execute(Some("bob"), None, "/user set eve color cyan @global")
+            .unwrap();
+        let before = e.data.clone();
+        let version = e.color_version();
+        e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_color_any BEFORE UPDATE ON entities WHEN OLD.kind='account' BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+        assert!(
+            e.execute(Some("eve"), Some("lobby"), "/user set @all color blue")
+                .is_err()
+        );
+        assert!(e.data == before);
+        assert_eq!(e.color_version(), version);
+    }
+
     #[test]
     fn room_overrides_disclose_only_names_that_room_already_reveals() {
         let mut e = super::super::tests::engine();

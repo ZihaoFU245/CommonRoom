@@ -142,7 +142,8 @@ const USER: &str = r#"
 - Custom values inherit only where global account read authority allows inspection.
 - Room deletion prunes its branch from every account atomically.
 - Read your own metadata freely; other accounts require r:account.metadata (global/account) or room policy-management authority.
-- Only su can set, remove, reset or bulk-update metadata, including media limits.
+- Only su can change metadata, except `color` with `w:account.color.any` at the target scope.
+- Room owners receive `w:account.color.any`: `/user set bob color blue #support` sets a member color, and `/user reset bob color #support` restores inheritance. Both support `@all` users.
 - `/user reset bob media.max_size #support` removes one override and restores inheritance.
 - `/user reset bob @all #support` clears only that room branch; `@global` clears only the root.
 - `/user reset @all @all #support` resets every selected member's room branch.
