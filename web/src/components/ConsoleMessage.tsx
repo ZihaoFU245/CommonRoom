@@ -12,6 +12,11 @@ import {
 import type { MessageDate } from "../features/conversation/messages.ts";
 import { useMessageEditorLayout } from "../hooks/useMessageEditorLayout.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
+import {
+  loadRecentReactions,
+  orderReactions,
+  saveRecentReaction,
+} from "../features/preferences/reactions.ts";
 import { Mention } from "./Mention.tsx";
 import { useNameColor } from "./NameColorContext.ts";
 
@@ -344,25 +349,43 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 ref={placement.picker}
                 class={`reaction-picker ${placement.above ? "above" : ""}`}
               >
-                <div class="reaction-choices">
-                  {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      disabled={pending}
-                      aria-label={`Add reaction ${value}`}
-                      onClick={() => {
-                        onReact(message, value);
-                        setReactionOpen(false);
-                      }}
-                    >
-                      {value}
-                    </button>
-                  ))}
+                <div
+                  class="reaction-choices"
+                  onWheel={(event) => {
+                    const strip = event.currentTarget;
+                    if (
+                      Math.abs(event.deltaY) <= Math.abs(event.deltaX) ||
+                      strip.scrollWidth <= strip.clientWidth
+                    )
+                      return;
+                    event.preventDefault();
+                    strip.scrollLeft +=
+                      event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
+                        ? event.deltaY
+                        : event.deltaY * 40;
+                  }}
+                >
+                  {reactionOpen &&
+                    orderReactions(loadRecentReactions()).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        disabled={pending}
+                        aria-label={`Add reaction ${value}`}
+                        onClick={() => {
+                          saveRecentReaction(value);
+                          onReact(message, value);
+                          setReactionOpen(false);
+                        }}
+                      >
+                        {value}
+                      </button>
+                    ))}
                 </div>
                 <form
                   onSubmit={(event) => {
                     event.preventDefault();
+                    saveRecentReaction(reaction);
                     onReact(message, reaction);
                     setReaction("");
                     setReactionOpen(false);
