@@ -166,7 +166,8 @@ impl ReadModel {
                     .iter()
                     .map(|(name, url)| (name.len() + url.len()) * 2 + 128)
                     .sum::<usize>(),
-            );
+            )
+            .saturating_add(plan.colors.bytes());
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(
                 (id, false),
@@ -250,7 +251,7 @@ impl Engine {
                 .map(|conversation| conversation.id)
                 .collect()
         } else {
-            self.snapshot_plan(user)
+            self.snapshot_plan_for(user, false)
                 .ok_or("Snapshot unavailable.")?
                 .jobs
                 .into_iter()
@@ -296,10 +297,10 @@ mod tests {
     fn projections(engine: &Engine, user: &str) -> (serde_json::Value, serde_json::Value) {
         let browser = engine.snapshot_plan(user).unwrap().finish().unwrap().0;
         let bot = engine.bot_snapshot_plan(user).unwrap().finish().unwrap();
-        (
-            serde_json::to_value(browser).unwrap(),
-            serde_json::to_value(bot).unwrap(),
-        )
+        let mut browser = serde_json::to_value(browser).unwrap();
+        // An explicit cold-cache rebuild advances this opaque synchronization stamp.
+        browser.as_object_mut().unwrap().remove("color_version");
+        (browser, serde_json::to_value(bot).unwrap())
     }
     #[test]
     fn temporary_sudo_projections_never_reuse_or_publish_persisted_authority_templates() {

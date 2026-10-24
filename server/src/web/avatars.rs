@@ -33,7 +33,7 @@ pub(crate) async fn set(
             .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
             .to_owned();
         if !engine.avatar_matches(user, input.url.as_deref()) {
-            app.admission.avatar_change(&account)?;
+            app.admission.profile_change(&account)?;
         }
         if engine
             .set_avatar(user, input.url, false)
@@ -118,7 +118,7 @@ pub(crate) async fn complete(
     authenticated(&app, &headers, move |app, user| {
         let mut engine = app.engine_api()?;
         let account = engine.active_account_id(user).ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?.to_owned();
-        if !engine.avatar_matches(user, Some(&crate::engine::avatars::avatar_path(&media.id))) { app.admission.avatar_change(&account)?; }
+        if !engine.avatar_matches(user, Some(&crate::engine::avatars::avatar_path(&media.id))) { app.admission.profile_change(&account)?; }
         if engine.finish_avatar(user,&media).map_err(ApiError::from)? {
             let _=app.changes.send(Change::Avatar(account));
         }

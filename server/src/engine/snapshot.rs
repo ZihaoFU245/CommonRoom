@@ -16,6 +16,7 @@ pub(crate) struct SnapshotPlan {
     pub(super) jobs: Vec<Conversation>,
     pub(super) history: Arc<HistoryStore>,
     pub(super) avatars: BTreeMap<String, String>,
+    pub(super) colors: super::colors::ColorDirectory,
 }
 impl SnapshotPlan {
     pub(crate) fn finish(mut self) -> Result<(Snapshot, bool), EngineError> {
@@ -76,7 +77,7 @@ impl SnapshotPlan {
         }
         self.snapshot.direct.sort_by_key(|message| message.sequence);
         self.history.ensure_available()?;
-        let visible: BTreeSet<&str> = self
+        let mut visible: BTreeSet<&str> = self
             .snapshot
             .users
             .iter()
@@ -107,6 +108,32 @@ impl SnapshotPlan {
             .into_iter()
             .filter(|(name, _)| visible.contains(name.as_str()))
             .collect();
+        visible.extend(super::colors::message_names(&self.snapshot.direct));
+        for room in &self.snapshot.rooms {
+            visible.extend(super::colors::message_names(&room.messages));
+        }
+        self.snapshot.colors = self
+            .colors
+            .global
+            .into_iter()
+            .filter(|(name, _)| visible.contains(name.as_str()))
+            .collect();
+        // A room override also reveals room access, so it is limited to names
+        // this room already discloses: visible members, tail authors and the viewer.
+        for room in &mut self.snapshot.rooms {
+            let Some(overrides) = self.colors.rooms.remove(&room.id) else {
+                continue;
+            };
+            let names = super::colors::message_names(&room.messages);
+            room.colors = overrides
+                .into_iter()
+                .filter(|(name, _)| {
+                    *name == self.snapshot.username
+                        || room.members.contains(name)
+                        || names.contains(name.as_str())
+                })
+                .collect();
+        }
         Ok((self.snapshot, complete))
     }
 }
@@ -135,6 +162,8 @@ impl BotSnapshotPlan {
 
 /// A conversation notification owns its authorization result and read coordinates.
 pub(crate) struct ConversationPlan {
+    pub(super) colors: super::colors::ColorDirectory,
+    pub(super) color_version: String,
     pub(super) user: String,
     pub(super) conversation: Conversation,
     pub(super) history: Arc<HistoryStore>,
@@ -157,9 +186,15 @@ impl ConversationPlan {
         let unread = self
             .history
             .unread(&job.id, &self.user, job.read, job.revision)?;
-        Ok(
-            serde_json::json!({"kind":"conversation","view":job.view,"id":job.id,"messages":page.messages,"unread":unread}),
-        )
+        let mut frame = serde_json::json!({"kind":"conversation","view":job.view,"id":job.id,"messages":page.messages,"unread":unread});
+        if !self.color_version.is_empty() {
+            frame["name_colors"] = serde_json::to_value(self.colors.for_messages(
+                self.color_version,
+                Some(&job.id),
+                &page.messages,
+            ))?;
+        }
+        Ok(frame)
     }
 }
 pub(crate) struct UnreadPlan {

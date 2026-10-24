@@ -129,6 +129,7 @@ impl Engine {
             &self.authorization,
             &self.authorization,
         );
+        self.advance_colors();
         self.read_model.advance();
         self.revision = self.revision.wrapping_add(1);
         self.record_metadata(notice);
@@ -558,6 +559,7 @@ impl Engine {
             positions.retain(|view, _| !removed.contains(view));
         }
         self.bot_index = crate::bots::models::Index::build(&self.data);
+        self.advance_colors();
         self.read_model.advance();
         self.revision = self.revision.wrapping_add(1);
         self.record_metadata(notice);

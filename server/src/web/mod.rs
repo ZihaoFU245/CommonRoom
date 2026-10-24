@@ -1,6 +1,7 @@
 pub(crate) mod admission;
 pub(crate) mod auth;
 mod avatars;
+mod colors;
 mod error;
 pub(crate) use error::ApiError;
 mod bot_commands;
@@ -174,6 +175,7 @@ pub fn router(app: App) -> Router {
         .route("/api/session", get(auth::session_status))
         .route("/api/history", get(history::history))
         .route("/api/read", post(history::read))
+        .route("/api/color", post(colors::set))
         .route("/api/bot-commands", get(bot_commands::get))
         .route("/api/health", get(|| async { Json(json!({ "ok": true })) }))
         .route("/ws", get(socket::upgrade));

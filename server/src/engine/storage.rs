@@ -164,7 +164,9 @@ impl Engine {
         for chat in data.private.values_mut() {
             chat.messages.clear();
         }
-        Ok(Self {
+        let mut engine = Self {
+            color_revision: 0,
+            committed_colors: Default::default(),
             bot_index: crate::bots::models::Index::build(&data),
             authorization,
             presence: Default::default(),
@@ -193,7 +195,9 @@ impl Engine {
                 pending_cleanups: Vec::new(),
                 _lock: lock,
             },
-        })
+        };
+        engine.committed_colors = engine.color_directory();
+        Ok(engine)
     }
     pub fn set_limits(
         &mut self,
@@ -313,6 +317,7 @@ impl Engine {
         } else {
             self.bot_index = crate::bots::models::Index::build(&self.data);
         }
+        self.advance_colors();
         self.read_model.advance();
         self.revision = self.revision.wrapping_add(1);
         self.record_metadata(notice);

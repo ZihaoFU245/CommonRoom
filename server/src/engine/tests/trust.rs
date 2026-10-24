@@ -1534,6 +1534,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "r:account.list",
         "w:account.password.own",
         "w:account.rename.own",
+        "w:account.color.own",
         "w:private.create",
     ]);
     let admin = BTreeSet::from([
@@ -1541,6 +1542,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "r:account.list",
         "w:account.password.own",
         "w:account.rename.own",
+        "w:account.color.own",
         "w:private.create",
         "w:room.create",
         "x:account.create",
@@ -1563,6 +1565,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "w:message.react",
         "w:message.retract.own",
         "w:message.edit.own",
+        "w:account.color.own",
         "x:room.join",
     ]);
     let manager = BTreeSet::from([

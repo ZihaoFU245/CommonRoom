@@ -75,6 +75,9 @@ pub struct RoomView {
     pub name: String,
     pub members: BTreeSet<String>,
     pub messages: super::history::MessagePage,
+    /// Room-scoped color overrides; the snapshot's global `colors` apply otherwise.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub colors: BTreeMap<String, String>,
 }
 #[derive(Clone, Serialize)]
 pub struct Unread {
@@ -86,6 +89,8 @@ pub struct Unread {
 }
 #[derive(Serialize)]
 pub struct History {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_colors: Option<super::colors::MessageColors>,
     pub view: String,
     pub messages: super::history::MessagePage,
     pub revision: u64,
@@ -105,6 +110,8 @@ pub struct SyncVersion {
 }
 #[derive(Clone, Serialize)]
 pub struct Snapshot {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub color_version: String,
     pub sync: SyncVersion,
     pub kind: &'static str,
     pub username: String,
@@ -118,6 +125,8 @@ pub struct Snapshot {
     pub admin: bool,
     pub users: Vec<String>,
     pub avatars: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub colors: BTreeMap<String, String>,
     pub online: Vec<String>,
     pub rooms: Vec<RoomView>,
     pub direct: Vec<Message>,

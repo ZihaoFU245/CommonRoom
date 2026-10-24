@@ -3,7 +3,7 @@ use super::*;
 use super::{auth::authenticate, security::check_origin_or_bot};
 use axum::{
     extract::{
-        State,
+        Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::HeaderMap,
@@ -12,12 +12,28 @@ use axum::{
 use std::time::Duration;
 use std::time::Instant;
 
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct Options {
+    colors: Option<u8>,
+}
+
 pub(crate) async fn upgrade(
     State(app): State<App>,
-    headers: HeaderMap,
+    Query(options): Query<Options>,
+    mut headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     check_origin_or_bot(&app, &headers)?;
+    if options.colors.is_some_and(|value| value > 1) {
+        return Err(error(StatusCode::BAD_REQUEST, "Invalid color preference."));
+    }
+    headers.remove("x-chat-name-colors");
+    if options.colors == Some(1) {
+        headers.insert(
+            "x-chat-name-colors",
+            axum::http::HeaderValue::from_static("1"),
+        );
+    }
     let auth_app = app.clone();
     let auth_headers = headers.clone();
     let username = tokio::task::spawn_blocking(move || authenticate(&auth_app, &auth_headers))

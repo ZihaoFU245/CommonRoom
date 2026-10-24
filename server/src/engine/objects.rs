@@ -501,6 +501,9 @@ impl Engine {
         if key == "media.user_quota" && *scope != Scope::Server {
             return Err("media.user_quota is account-wide; use @global.".into());
         }
+        if key == super::colors::COLOR_KEY && matches!(scope, Scope::Private(_)) {
+            return Err("color applies at @global or in a room.".into());
+        }
         if value == "@unset" {
             return Ok(value.into());
         }
@@ -537,6 +540,12 @@ impl Engine {
                     return Err("Invalid media retention.".into());
                 }
                 Ok(n.to_string())
+            }
+            super::colors::COLOR_KEY if !super::colors::valid_color(value) => {
+                Err(EngineError::Invalid(format!(
+                    "color must be one of: {}.",
+                    super::colors::NAME_COLORS.join(", ")
+                )))
             }
             key if key.starts_with("media.") => Err("Unknown media metadata key.".into()),
             _ => Ok(value.into()),

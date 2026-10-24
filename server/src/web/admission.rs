@@ -70,10 +70,10 @@ pub(crate) fn io_permit(pool: &Arc<Semaphore>) -> Result<IoPermit, String> {
 }
 impl Admission {
     /// Self-service profile writes have a separate bounded account budget.
-    pub(crate) fn avatar_change(&self, account: &str) -> Result<(), super::ApiError> {
-        self.avatar_change_at(account, std::time::Instant::now())
+    pub(crate) fn profile_change(&self, account: &str) -> Result<(), super::ApiError> {
+        self.profile_change_at(account, std::time::Instant::now())
     }
-    fn avatar_change_at(
+    fn profile_change_at(
         &self,
         account: &str,
         now: std::time::Instant,
@@ -98,7 +98,7 @@ impl Admission {
         if entry.1 >= 4 {
             return Err(super::error(
                 StatusCode::TOO_MANY_REQUESTS,
-                "At most 4 avatar changes per 10 seconds per account.",
+                "At most 4 profile changes per 10 seconds per account.",
             ));
         }
         entry.1 += 1;
@@ -261,20 +261,20 @@ mod tests {
         let admission = Admission::default();
         let now = std::time::Instant::now();
         for _ in 0..4 {
-            admission.avatar_change_at("alice", now).unwrap();
+            admission.profile_change_at("alice", now).unwrap();
         }
         assert_eq!(
-            admission.avatar_change_at("alice", now).unwrap_err().0,
+            admission.profile_change_at("alice", now).unwrap_err().0,
             axum::http::StatusCode::TOO_MANY_REQUESTS
         );
-        admission.avatar_change_at("bob", now).unwrap();
+        admission.profile_change_at("bob", now).unwrap();
         admission
-            .avatar_change_at("alice", now + std::time::Duration::from_secs(10))
+            .profile_change_at("alice", now + std::time::Duration::from_secs(10))
             .unwrap();
         assert_eq!(admission.state.lock().unwrap().avatars.len(), 1);
         for i in 0..4095 {
             admission
-                .avatar_change_at(
+                .profile_change_at(
                     &format!("account-{i}"),
                     now + std::time::Duration::from_secs(10),
                 )
@@ -282,7 +282,7 @@ mod tests {
         }
         assert!(
             admission
-                .avatar_change_at("overflow", now + std::time::Duration::from_secs(10))
+                .profile_change_at("overflow", now + std::time::Duration::from_secs(10))
                 .is_err()
         );
         assert_eq!(admission.state.lock().unwrap().avatars.len(), 4096);

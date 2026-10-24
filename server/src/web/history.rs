@@ -49,7 +49,7 @@ pub(crate) async fn history(
             (id, revision, engine.history_store().clone())
         };
         // WAL readers overlap the writer without holding the engine lock across disk I/O.
-        let page = store
+        let mut page = store
             .page_checked(&id, revision, range, &input.view)
             .map_err(crate::engine::EngineError::from)
             .map_err(ApiError::from)?;
@@ -63,6 +63,9 @@ pub(crate) async fn history(
                 StatusCode::CONFLICT,
                 "History changed; retry the current page.",
             ));
+        }
+        if super::colors::enabled(&headers) {
+            page.name_colors = Some(engine.message_colors(&id, &page.messages));
         }
         Ok(Json(page))
     })

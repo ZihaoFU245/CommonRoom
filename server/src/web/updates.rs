@@ -147,7 +147,11 @@ pub(crate) fn browser_with_interests(
                         }
                     }
                     Change::Conversation(id) => {
-                        if let Some(plan) = engine.conversation_plan(&user, id)? {
+                        if let Some(plan) = engine.conversation_plan_for(
+                            &user,
+                            id,
+                            super::colors::enabled(headers),
+                        )? {
                             ids.insert(plan.id().into());
                             plans.push(Plan::Conversation(plan));
                         }

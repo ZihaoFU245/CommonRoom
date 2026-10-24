@@ -1310,6 +1310,373 @@ async fn unauthenticated_uploads_do_not_reveal_storage_configuration_or_hint_val
 }
 
 #[tokio::test]
+async fn name_color_reads_require_explicit_opt_in_for_every_transport() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let app = login_test_app();
+    let id = {
+        let mut engine = app.engine_api().unwrap();
+        engine.execute(None, None, "/room new team").unwrap();
+        engine.execute(None, None, "/room add alice #team").unwrap();
+        engine.set_color("alice", None, Some("red")).unwrap();
+        engine
+            .execute(Some("alice"), Some("team"), "Color opt-in")
+            .unwrap();
+        let hash = engine.password_hash("alice").unwrap().to_owned();
+        engine
+            .login("color-opt-in".into(), "alice", &hash, None)
+            .unwrap();
+        engine.data.rooms["team"].id.clone()
+    };
+    let mut plain = HeaderMap::new();
+    plain.insert(header::COOKIE, "chat_session=color-opt-in".parse().unwrap());
+    let mut enabled = plain.clone();
+    enabled.insert("x-chat-name-colors", "1".parse().unwrap());
+    let baseline = snapshots::value(&app, &plain, false).unwrap();
+    for headers in [&plain, &enabled, &plain] {
+        let wants_colors = colors::enabled(headers);
+        let frame = snapshots::value(&app, headers, false).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value.get("colors").is_some(), wants_colors);
+        assert_eq!(value.get("color_version").is_some(), wants_colors);
+        if !wants_colors {
+            assert_eq!(frame, baseline);
+        }
+        let (_, frames) =
+            updates::browser(&app, headers, false, &[Change::Conversation(id.clone())]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
+        assert_eq!(value.get("name_colors").is_some(), wants_colors);
+        let request = Request::builder()
+            .uri("/api/history?view=team")
+            .header(header::ORIGIN, "http://localhost:5173");
+        let request = request.body(Body::empty()).unwrap();
+        let (mut parts, body) = request.into_parts();
+        parts.headers.extend(headers.clone());
+        let response = router(app.clone())
+            .oneshot(Request::from_parts(parts, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap()).unwrap();
+        assert_eq!(value.get("name_colors").is_some(), wants_colors);
+    }
+}
+
+#[tokio::test]
+async fn history_colors_project_older_authors_and_recheck_room_access() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let app = login_test_app();
+    let first = {
+        let mut e = app.engine_api().unwrap();
+        for name in ["bob", "eve"] {
+            e.provision(name, "hash".into(), false, false).unwrap();
+        }
+        e.execute(None, None, "/room new team").unwrap();
+        e.execute(None, None, "/room add alice #team").unwrap();
+        e.execute(None, None, "/room add eve #team").unwrap();
+        e.execute(None, None, "/revoke bob user @global").unwrap();
+        e.execute(None, None, "/grant bob #team r:message.read")
+            .unwrap();
+        let room = e.data.rooms["team"].id.clone();
+        e.set_color("alice", None, Some("blue")).unwrap();
+        e.set_color("alice", Some(&room), Some("red")).unwrap();
+        e.execute(Some("alice"), Some("team"), "Old author")
+            .unwrap();
+        let first = e.history("bob", "team").unwrap().messages[0].sequence;
+        for _ in 0..51 {
+            e.execute(Some("eve"), Some("team"), "New author").unwrap();
+        }
+        e.login("color-reader".into(), "bob", "hash", None).unwrap();
+        first
+    };
+    let routes = router(app.clone());
+    for revoked in [false, true] {
+        if revoked {
+            app.engine_api()
+                .unwrap()
+                .execute(None, None, "/revoke bob #team r:message.read")
+                .unwrap();
+        }
+        let response = routes
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/history?view=team&before={}&limit=1",
+                        first + 1
+                    ))
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::COOKIE, "chat_session=color-reader")
+                    .header("x-chat-name-colors", "1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if revoked {
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        } else {
+            assert_eq!(response.status(), StatusCode::OK);
+            let page: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap())
+                    .unwrap();
+            assert_eq!(page["messages"][0]["from"], "alice");
+            assert_eq!(page["name_colors"]["values"], json!({"alice":"red"}));
+            assert_eq!(
+                page["name_colors"]["version"],
+                app.engine_read().unwrap().color_version()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn color_api_is_scoped_permission_checked_and_broadcast_as_metadata() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
+    for name in ["alice", "bob"] {
+        engine.provision(name, "hash".into(), false, false).unwrap();
+        engine.login(name.into(), name, "hash", None).unwrap();
+    }
+    engine.execute(None, None, "/room new team").unwrap();
+    engine.execute(None, None, "/room add alice #team").unwrap();
+    engine
+        .execute(None, None, "/revoke bob user @global")
+        .unwrap();
+    let team = engine.data.rooms["team"].id.clone();
+    let (changes, mut notifications) = broadcast::channel(8);
+    let app = App {
+        media: None,
+        engine: Arc::new(RwLock::new(engine)),
+        attempts: Default::default(),
+        changes,
+        config: Arc::new(Config::default()),
+        admission: Default::default(),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        snapshots: Default::default(),
+        bot_runtimes: Default::default(),
+        stopping: Default::default(),
+        shutdown: Default::default(),
+    };
+    let routes = router(app.clone());
+    let team_body = format!(r#"{{"color":"teal","room":"{team}"}}"#);
+    for (cookie, origin, body, status) in [
+        (
+            "",
+            "http://localhost:5173",
+            r#"{"color":"red"}"#,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "alice",
+            "https://evil.example",
+            r#"{"color":"red"}"#,
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            r##"{"color":"#ff0000"}"##,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            r#"{"color":"red","user":"bob"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "bob",
+            "http://localhost:5173",
+            r#"{"color":"red"}"#,
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "bob",
+            "http://localhost:5173",
+            team_body.as_str(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            r#"{"color":"red"}"#,
+            StatusCode::OK,
+        ),
+        (
+            "alice",
+            "http://localhost:5173",
+            team_body.as_str(),
+            StatusCode::OK,
+        ),
+    ] {
+        let response = routes
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/color")
+                    .header(header::ORIGIN, origin)
+                    .header(header::COOKIE, format!("chat_session={cookie}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{cookie} {body}");
+    }
+    let bob = app
+        .engine_read()
+        .unwrap()
+        .active_account_id("bob")
+        .unwrap()
+        .to_owned();
+    for _ in 0..2 {
+        assert!(matches!(
+            notifications.try_recv(),
+            Ok(Change::Metadata(notice)) if notice.targets(&bob)
+        ));
+    }
+    assert!(notifications.try_recv().is_err());
+    let engine = app.engine_read().unwrap();
+    let metadata = &engine.data.users["alice"].metadata;
+    assert_eq!(metadata["@global"]["color"], "red");
+    assert_eq!(metadata[&team]["color"], "teal");
+    assert!(engine.data.users["bob"].metadata.is_empty());
+}
+
+#[tokio::test]
+async fn color_budget_counts_valid_changes_only_and_keeps_rejected_writes_atomic() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    async fn post(app: &App, path: &str, body: serde_json::Value) -> StatusCode {
+        router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::COOKIE, "chat_session=fixture")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+    for invalid in ["palette", "room", "permission", "capacity"] {
+        let app = login_test_app();
+        {
+            let mut e = app.engine_api().unwrap();
+            let hash = e.password_hash("alice").unwrap().to_owned();
+            e.login("fixture".into(), "alice", &hash, None).unwrap();
+            if invalid == "permission" {
+                e.execute(None, None, "/revoke alice user @global").unwrap();
+            }
+            if invalid == "capacity" {
+                e.data.users.get_mut("alice").unwrap().metadata.insert(
+                    "@global".into(),
+                    (0..32)
+                        .map(|i| (format!("key{i}"), "value".into()))
+                        .collect(),
+                );
+            }
+        }
+        let (body, status) = match invalid {
+            "palette" => (json!({"color":"invalid"}), StatusCode::BAD_REQUEST),
+            "room" => (
+                json!({"color":"red", "room":"missing"}),
+                StatusCode::NOT_FOUND,
+            ),
+            "permission" => (json!({"color":"red"}), StatusCode::FORBIDDEN),
+            _ => (json!({"color":"red"}), StatusCode::BAD_REQUEST),
+        };
+        for _ in 0..5 {
+            assert_eq!(
+                post(&app, "/api/color", body.clone()).await,
+                status,
+                "{invalid}"
+            );
+        }
+        {
+            let mut e = app.engine_api().unwrap();
+            if invalid == "permission" {
+                e.execute(None, None, "/grant alice user @global").unwrap();
+            }
+            if invalid == "capacity" {
+                e.data.users.get_mut("alice").unwrap().metadata.clear();
+            }
+        }
+        let mut notices = app.changes.subscribe();
+        for color in ["red", "blue", "green", "violet"] {
+            assert_eq!(
+                post(&app, "/api/color", json!({"color":color})).await,
+                StatusCode::OK,
+                "{invalid}"
+            );
+            assert!(matches!(notices.try_recv(), Ok(Change::Metadata(_))));
+        }
+        let (version, revision) = {
+            let e = app.engine_read().unwrap();
+            (e.color_version(), e.revision)
+        };
+        assert_eq!(
+            post(&app, "/api/color", json!({"color":"violet"})).await,
+            StatusCode::OK,
+            "no-op is free even after budget exhaustion"
+        );
+        assert_eq!(
+            post(&app, "/api/color", json!({"color":"pink"})).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let e = app.engine_read().unwrap();
+        assert_eq!(e.data.users["alice"].metadata["@global"]["color"], "violet");
+        assert_eq!(e.color_version(), version);
+        assert_eq!(e.revision, revision);
+        assert!(notices.try_recv().is_err());
+    }
+    let app = login_test_app();
+    {
+        let mut e = app.engine_api().unwrap();
+        let hash = e.password_hash("alice").unwrap().to_owned();
+        e.login("fixture".into(), "alice", &hash, None).unwrap();
+        e.set_avatar_hosts(["example.com".into()].into());
+    }
+    assert_eq!(
+        post(
+            &app,
+            "/api/avatars",
+            json!({"url":"https://example.com/avatar.png"})
+        )
+        .await,
+        StatusCode::OK
+    );
+    for color in ["red", "blue", "green"] {
+        assert_eq!(
+            post(&app, "/api/color", json!({"color":color})).await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        post(&app, "/api/color", json!({"color":"pink"})).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "avatars share the same profile-change budget"
+    );
+}
+
+#[tokio::test]
 async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast() {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;

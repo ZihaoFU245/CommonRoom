@@ -411,6 +411,7 @@ impl HistoryStore {
             }) {
                 let page = cache.pages.remove(index).ok_or("History cache changed.")?;
                 let result = History {
+                    name_colors: None,
                     view: view.into(),
                     revision,
                     messages: page.messages.latest(limit),
@@ -455,7 +456,7 @@ impl HistoryStore {
             let after = messages.last().map(|m|m.sequence).unwrap_or(if ascending { range.after.or(range.end).unwrap_or(9_007_199_254_740_991) } else { upper });
             let has_before = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence<?2)", params![id,before], |r| r.get(0)).map_err(EngineError::unavailable)?;
             let has_after = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence>?2)", params![id,after], |r| r.get(0)).map_err(EngineError::unavailable)?;
-            Ok(Some(History { view:view.into(),messages: MessagePage::new(messages, sizes),revision,has_before,has_after }))
+            Ok(Some(History { name_colors: None,view:view.into(),messages: MessagePage::new(messages, sizes),revision,has_before,has_after }))
         })?.ok_or(HistoryError::Changed)?;
         // Large preceding rows must not prevent an around request from reaching its anchor.
         if let Some(around) = range.around

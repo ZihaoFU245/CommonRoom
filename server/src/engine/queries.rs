@@ -69,10 +69,25 @@ impl Engine {
         view: &str,
         range: history::HistoryRange,
     ) -> Result<History, EngineError> {
+        self.history_page_with_colors(user, view, range, false)
+    }
+    #[cfg(test)]
+    pub fn history_page_with_colors(
+        &self,
+        user: &str,
+        view: &str,
+        range: history::HistoryRange,
+        colors: bool,
+    ) -> Result<History, EngineError> {
         let (_, id, revision) = self.conversation(user, view)?;
-        self.history_store()
+        let mut page = self
+            .history_store()
             .page_checked(&id, revision, range, view)
-            .map_err(EngineError::from)
+            .map_err(EngineError::from)?;
+        if colors {
+            page.name_colors = Some(self.message_colors(&id, &page.messages));
+        }
+        Ok(page)
     }
     pub fn mark_read(&mut self, user: &str, view: &str, through: u64) -> Result<bool, EngineError> {
         let (key, id, _) = self.conversation(user, view)?;
@@ -160,7 +175,7 @@ impl Engine {
         user: &str,
     ) -> Result<super::snapshot::UnreadPlan, EngineError> {
         let plan = self
-            .snapshot_plan(user)
+            .snapshot_plan_for(user, false)
             .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         Ok(super::snapshot::UnreadPlan {
             user: user.into(),
@@ -168,10 +183,19 @@ impl Engine {
             history: plan.history,
         })
     }
+    #[cfg(test)]
     pub(crate) fn conversation_plan(
         &self,
         user: &str,
         id: &str,
+    ) -> Result<Option<super::snapshot::ConversationPlan>, EngineError> {
+        self.conversation_plan_for(user, id, true)
+    }
+    pub(crate) fn conversation_plan_for(
+        &self,
+        user: &str,
+        id: &str,
+        name_colors: bool,
     ) -> Result<Option<super::snapshot::ConversationPlan>, EngineError> {
         if !self.active(user) {
             return Err(EngineError::Forbidden("Account unavailable.".into()));
@@ -193,6 +217,16 @@ impl Engine {
         };
         Ok(Some(super::snapshot::ConversationPlan {
             user: user.into(),
+            colors: if name_colors {
+                self.conversation_color_directory(&id)
+            } else {
+                Default::default()
+            },
+            color_version: if name_colors {
+                self.color_version()
+            } else {
+                String::new()
+            },
             conversation: super::snapshot::Conversation {
                 view,
                 id,
@@ -220,7 +254,15 @@ impl Engine {
     pub fn snapshot(&self, name: &str) -> Option<Snapshot> {
         self.try_snapshot(name).ok().flatten()
     }
+    #[cfg(test)]
     pub(crate) fn snapshot_plan(&self, name: &str) -> Option<super::snapshot::SnapshotPlan> {
+        self.snapshot_plan_for(name, true)
+    }
+    pub(crate) fn snapshot_plan_for(
+        &self,
+        name: &str,
+        name_colors: bool,
+    ) -> Option<super::snapshot::SnapshotPlan> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         if let Some(mut plan) = self.read_model.browser(&account.id) {
             for job in &mut plan.jobs {
@@ -231,6 +273,10 @@ impl Engine {
                 .saturating_add(self.presence.revision)
                 .saturating_add(self.read_clock);
             plan.snapshot.online = self.online(name);
+            if name_colors {
+                plan.snapshot.color_version = self.color_version();
+                plan.colors = self.color_directory();
+            }
             return Some(plan);
         }
         let account_scope = Scope::Account(account.id.clone());
@@ -240,6 +286,7 @@ impl Engine {
         let visible = self.visible_conversations(name, &scope_rights);
         let directory = self.snapshot_directory(name, &scope_rights);
         let snapshot = Snapshot {
+            color_version: String::new(),
             sync: SyncVersion {
                 instance: self.instance.clone(),
                 revision: self
@@ -270,6 +317,7 @@ impl Engine {
             ),
             policy_revision: self.data.policy.revision,
             avatars: BTreeMap::new(),
+            colors: BTreeMap::new(),
             online: self.online(name),
             users: directory.users,
             rooms: visible.rooms,
@@ -279,13 +327,18 @@ impl Engine {
             commands: server_commands,
             available_rooms: directory.available_rooms,
         };
-        let plan = super::snapshot::SnapshotPlan {
+        let mut plan = super::snapshot::SnapshotPlan {
             snapshot,
             jobs: visible.jobs,
             history: self.history_store().clone(),
             avatars: directory.avatars,
+            colors: Default::default(),
         };
         self.read_model.remember_browser(account.id.clone(), &plan);
+        if name_colors {
+            plan.snapshot.color_version = self.color_version();
+            plan.colors = self.color_directory();
+        }
         Some(plan)
     }
     fn snapshot_scope_rights(&self, name: &str, account_scope: &Scope) -> SnapshotRights {
@@ -342,6 +395,7 @@ impl Engine {
                     BTreeSet::new()
                 },
                 messages: Default::default(),
+                colors: BTreeMap::new(),
             });
         }
         for (key, chat) in &self.data.private {
@@ -386,6 +440,7 @@ impl Engine {
                         BTreeSet::new()
                     },
                     messages: Default::default(),
+                    colors: BTreeMap::new(),
                 });
             }
         }

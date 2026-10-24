@@ -36,6 +36,7 @@ actions! {
     Direct => "w:private.create",
     RenameOwn => "w:account.rename.own",
     RenameAny => "x:account.rename.any",
+    ColorOwn => "w:account.color.own",
     Password => "w:account.password.own",
     Invite => "x:member.add",
     Kick => "x:member.remove",
@@ -242,6 +243,7 @@ fn member_rights() -> Rights {
             Action::React,
             Action::EditOwn,
             Action::RetractOwn,
+            Action::ColorOwn,
         ],
         &[
             "/user", "/room", "/members", "/history", "/react", "/edit", "/retract", "/reply",
@@ -298,6 +300,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             Action::Directory,
             Action::Password,
             Action::RenameOwn,
+            Action::ColorOwn,
             Action::Direct,
         ],
         &[

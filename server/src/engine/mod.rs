@@ -12,6 +12,7 @@ mod bot_api;
 #[path = "../bots/commands.rs"]
 mod bots;
 mod cleanup;
+pub(crate) mod colors;
 mod dispatch;
 mod error;
 mod helpers;
@@ -65,6 +66,8 @@ pub struct Engine {
     #[cfg(test)]
     pub(crate) data: Data,
     pub revision: u64,
+    color_revision: u64,
+    committed_colors: colors::ColorDirectory,
     recovery_failed: bool,
     metadata_dirty: bool,
     read_model: read_model::ReadModel,

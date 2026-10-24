@@ -5,7 +5,7 @@ use axum::extract::ws::Utf8Bytes;
 use std::collections::HashMap;
 use std::{collections::VecDeque, sync::OnceLock};
 
-type Key = (String, bool, crate::engine::SnapshotStamp, u64);
+type Key = (String, bool, crate::engine::SnapshotStamp, u64, bool);
 #[derive(Clone)]
 struct Baseline {
     frame: Utf8Bytes,
@@ -24,13 +24,14 @@ impl SnapshotCache {
             return value.clone();
         }
         self.entries.retain(|old, (_, size)| {
-            let keep = old.0 != key.0 || old.1 != key.1;
+            let keep = old.0 != key.0 || old.1 != key.1 || old.4 != key.4;
             if !keep {
                 self.bytes = self.bytes.saturating_sub(*size);
             }
             keep
         });
-        self.order.retain(|old| old.0 != key.0 || old.1 != key.1);
+        self.order
+            .retain(|old| old.0 != key.0 || old.1 != key.1 || old.4 != key.4);
         let value = Arc::new(OnceLock::new());
         self.entries.insert(key.clone(), (value.clone(), 0));
         self.order.push_back(key.clone());
@@ -64,6 +65,7 @@ pub(crate) fn value(
     headers: &axum::http::HeaderMap,
     bot: bool,
 ) -> Result<Utf8Bytes, EngineError> {
+    let name_colors = super::colors::enabled(headers);
     // Capture only owned metadata under the guard. Disk reads, assembly and
     // serialization run outside it; never deliver a frame after its authority
     // or revision changes. Bounded retry avoids monopolizing a busy writer.
@@ -73,32 +75,33 @@ pub(crate) fn value(
             let user = super::auth::identity(&engine, &app.config, headers)
                 .ok_or_else(|| EngineError::Forbidden("Credential revoked.".into()))?;
             engine.history_store().ensure_available()?;
-            key(&engine, user.clone(), bot, &user)?
+            key(&engine, user.clone(), bot, &user, name_colors)?
         };
         let result = cached(app, initial.clone(), || {
-            let (plan, bot_snapshot) = {
-                let engine = app.engine_read()?;
-                let user = super::auth::identity(&engine, &app.config, headers)
-                    .ok_or_else(|| EngineError::Forbidden("Credential revoked.".into()))?;
-                if key(&engine, user.clone(), bot, &user)? != initial {
-                    return Err(EngineError::Conflict(
-                        "Snapshot changed; retry shortly.".into(),
-                    ));
-                }
-                if bot {
-                    (
-                        None,
-                        Some(engine.bot_snapshot_plan(&user).map_err(EngineError::from)?),
-                    )
-                } else {
-                    (
-                        Some(engine.snapshot_plan(&user).ok_or_else(|| {
-                            EngineError::Unavailable("Snapshot unavailable.".into())
-                        })?),
-                        None,
-                    )
-                }
-            };
+            let (plan, bot_snapshot) =
+                {
+                    let engine = app.engine_read()?;
+                    let user = super::auth::identity(&engine, &app.config, headers)
+                        .ok_or_else(|| EngineError::Forbidden("Credential revoked.".into()))?;
+                    if key(&engine, user.clone(), bot, &user, name_colors)? != initial {
+                        return Err(EngineError::Conflict(
+                            "Snapshot changed; retry shortly.".into(),
+                        ));
+                    }
+                    if bot {
+                        (
+                            None,
+                            Some(engine.bot_snapshot_plan(&user).map_err(EngineError::from)?),
+                        )
+                    } else {
+                        (
+                            Some(engine.snapshot_plan_for(&user, name_colors).ok_or_else(
+                                || EngineError::Unavailable("Snapshot unavailable.".into()),
+                            )?),
+                            None,
+                        )
+                    }
+                };
             let (serialized, complete) = if let Some(plan) = plan {
                 let (snapshot, complete) = plan.finish()?;
                 (serde_json::to_string(&snapshot), complete)
@@ -123,7 +126,7 @@ pub(crate) fn value(
         let user = super::auth::identity(&engine, &app.config, headers)
             .ok_or_else(|| EngineError::Forbidden("Credential revoked.".into()))?;
         engine.history_store().ensure_available()?;
-        if key(&engine, user.clone(), bot, &user)? == initial {
+        if key(&engine, user.clone(), bot, &user, name_colors)? == initial {
             return result;
         }
     }
@@ -132,7 +135,13 @@ pub(crate) fn value(
     ))
 }
 
-fn key(engine: &Engine, profile: String, bot: bool, user: &str) -> Result<Key, EngineError> {
+fn key(
+    engine: &Engine,
+    profile: String,
+    bot: bool,
+    user: &str,
+    name_colors: bool,
+) -> Result<Key, EngineError> {
     let presence = if !bot
         && engine.allows(
             Some(user),
@@ -143,7 +152,13 @@ fn key(engine: &Engine, profile: String, bot: bool, user: &str) -> Result<Key, E
     } else {
         0
     };
-    Ok((profile, bot, engine.snapshot_stamp(user, bot)?, presence))
+    Ok((
+        profile,
+        bot,
+        engine.snapshot_stamp(user, bot)?,
+        presence,
+        name_colors,
+    ))
 }
 
 pub(crate) fn bot_value(
@@ -156,13 +171,13 @@ pub(crate) fn bot_value(
             let engine = app.engine_read()?;
             let user = context.user(&engine)?;
             engine.history_store().ensure_available()?;
-            key(&engine, profile.clone(), true, &user)?
+            key(&engine, profile.clone(), true, &user, false)?
         };
         let result = cached(app, initial.clone(), || {
             let plan = {
                 let engine = app.engine_read()?;
                 let user = context.user(&engine)?;
-                if key(&engine, profile.clone(), true, &user)? != initial {
+                if key(&engine, profile.clone(), true, &user, false)? != initial {
                     return Err(EngineError::Conflict(
                         "Snapshot changed; retry shortly.".into(),
                     ));
@@ -181,7 +196,7 @@ pub(crate) fn bot_value(
         let engine = app.engine_read()?;
         let user = context.user(&engine)?;
         engine.history_store().ensure_available()?;
-        if key(&engine, profile.clone(), true, &user)? == initial {
+        if key(&engine, profile.clone(), true, &user, false)? == initial {
             return result.map_err(crate::bots::error::Error::from);
         }
     }

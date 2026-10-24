@@ -129,9 +129,18 @@ impl MetadataNotice {
                     .and_then(|metadata| metadata.get("avatar"))
                     .cloned()
             };
+            fn colors(account: &Account) -> Vec<(&String, &String)> {
+                account
+                    .metadata
+                    .iter()
+                    .filter_map(|(scope, entries)| Some((scope, entries.get(colors::COLOR_KEY)?)))
+                    .collect()
+            }
             // Generic su metadata edits may affect historical-author profiles.
             // The public avatar API emits its narrower profile event instead.
-            notice.all |= previous.and_then(avatar) != current.and_then(avatar);
+            notice.all |= previous.and_then(avatar) != current.and_then(avatar)
+                || previous.map(colors).unwrap_or_default()
+                    != current.map(colors).unwrap_or_default();
         }
         for id in keys(before.keys.map(|keys| &keys.bots), before.bots, &data.bots) {
             let previous = before.bots.and_then(|bots| bots.get(&id));
@@ -248,6 +257,8 @@ mod tests {
                 if let Some(object) = value.as_object_mut() {
                     object.remove("sync");
                     object.remove("policy_revision");
+                    // Synchronization stamps may advance without changing this viewer's content.
+                    object.remove("color_version");
                 }
                 (account.id.clone(), value)
             })
