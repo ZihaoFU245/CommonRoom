@@ -61,6 +61,12 @@ reuse of cached response sizes, byte limits after restart, overlapping worker
 lifetimes, recency and storage-error recovery. `timelineScroll.test.js` covers
 temporary animation overflow retaining bottom intent and manual release.
 
+Browser command-output regressions submit `/debug on` without a command grant in
+rooms, Command view and private chats, then submit another message or command.
+The room case uses 1,000 messages and exercises the first lazy formatter load:
+command output must stay mounted while loading so virtual row measurements cannot
+oscillate between Suspense fallback and content heights and hang the tab.
+
 Blank-message regressions share Unicode cases between the browser and server.
 They reject whitespace, control, invisible-format and placeholder-only text on
 room/private sends, replies, edits and bot sends, preserve real Unicode text,

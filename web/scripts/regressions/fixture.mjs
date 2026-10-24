@@ -659,6 +659,136 @@ await test("same-minute message bars join without gaps and break on minute, auth
   );
 });
 
+for (const view of ["team", "@command", "@direct:bob"]) {
+  await test(`normal users can keep composing after denied debug commands in ${view}`, async () => {
+    const savedHash = location.hash;
+    history.replaceState(null, "", `#room=${encodeURIComponent(view)}`);
+    const OriginalSocket = window.WebSocket;
+    const frames = [];
+    const state = {
+      ...empty,
+      commands: [
+        {
+          name: "/help",
+          usage: "/help",
+          description: "Help",
+          requirements: "",
+          section: "General",
+          admin: false,
+          console: false,
+        },
+      ],
+      rooms: [
+        {
+          name: "team",
+          id: "team-id",
+          owner: "owner",
+          members: ["alice"],
+          permissions: ["r:message.read", "w:message.create"],
+          commands: [],
+          messages: Array.from({ length: 1000 }, (_, i) => message(i + 1)),
+        },
+      ],
+      private_peers: ["bob"],
+      direct: [{ ...message(1001), to: "bob" }],
+      private_access: {
+        "@direct:bob": {
+          id: "private-id",
+          permissions: ["r:message.read", "w:message.create"],
+          commands: [],
+        },
+      },
+      unread: {
+        team: { revision: 1, count: 0, first: null, oldest: 1, through: 1000 },
+      },
+    };
+    class TestSocket {
+      static OPEN = 1;
+      static CLOSED = 3;
+      readyState = 1;
+      constructor() {
+        queueMicrotask(() => {
+          this.onopen?.();
+          this.onmessage?.({ data: JSON.stringify(state) });
+        });
+      }
+      send(raw) {
+        const frame = JSON.parse(raw);
+        frames.push(frame);
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: JSON.stringify({
+              kind: "notice",
+              id: frame.id,
+              text: "sent",
+            }),
+          }),
+        );
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    api.botCommands = async (id) => ({ conversation_id: id, bots: [] });
+    api.mediaConfig = async () => ({ enabled: false, max_size: 0 });
+    api.read = async () => ({ ok: true });
+    api.me = async () => state;
+    api.history = async () => ({
+      view: "team",
+      messages: state.rooms[0].messages,
+      revision: 1,
+      has_before: false,
+      has_after: false,
+    });
+    window.WebSocket = TestSocket;
+    try {
+      render(
+        h(Chat, {
+          initial: state,
+          onLogout() {},
+          appearance: {
+            theme: "light",
+            seeds: defaultSeeds,
+            setTheme() {},
+            setSeeds() {},
+          },
+        }),
+        tests,
+      );
+      await until(() => tests.querySelector(".composer textarea"));
+      const input = tests.querySelector(".composer textarea");
+      input.value = "/debug on";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(50);
+      tests
+        .querySelector(".composer")
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+      await until(() => tests.querySelector(".console-output.error"));
+      check(frames.length === 0, "missing command grant is rejected locally");
+      const nextText = view === "@command" ? "/help" : "still responsive";
+      input.value = nextText;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(50);
+      tests
+        .querySelector(".composer")
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+      await until(() => frames.length === 1);
+      check(
+        frames[0].text.includes(nextText),
+        "submission sends after rejection",
+      );
+    } finally {
+      render(null, tests);
+      window.WebSocket = OriginalSocket;
+      history.replaceState(null, "", savedHash || location.pathname);
+    }
+  });
+}
+
 await test("chat colors update for newly disclosed live and paged authors and reset in place", async () => {
   const OriginalSocket = window.WebSocket;
   let socket;

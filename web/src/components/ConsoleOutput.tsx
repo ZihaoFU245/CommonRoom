@@ -1,13 +1,42 @@
 import type { LocalOutput } from "../api/protocol.ts";
 import { outputMarkdown } from "../features/conversation/manual.ts";
-import { lazy, Suspense } from "preact/compat";
-import { useMemo } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 
-const Manual = lazy(() =>
-  import("./Manual.tsx").then((module) => ({ default: module.Manual })),
-);
+type Renderer = (typeof import("./Manual.tsx"))["Manual"];
+let cached: Renderer | undefined;
+let pending: Promise<Renderer> | undefined;
+function load(): Promise<Renderer> {
+  pending ??= import("./Manual.tsx")
+    .then((module) => {
+      cached = module.Manual;
+      return cached;
+    })
+    .catch((error: unknown) => {
+      pending = undefined;
+      throw error;
+    });
+  return pending;
+}
 
 export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
+  // Suspending a virtual row hides its content and can make synchronous
+  // measurements alternate between fallback and content heights indefinitely.
+  const [Manual, setManual] = useState<Renderer | undefined>(() => cached);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    if (Manual) return;
+    let cancelled = false;
+    load()
+      .then((renderer) => {
+        if (!cancelled) setManual(() => renderer);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [Manual]);
   const text = useMemo(
     () => outputMarkdown(entry),
     [entry.command, entry.result, entry.error, entry.room],
@@ -21,9 +50,10 @@ export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
         <span aria-hidden="true">›</span>
         <code>{entry.command}</code>
       </div>
-      <Suspense fallback={<pre>{entry.result ?? "…"}</pre>}>
-        <Manual text={text} />
-      </Suspense>
+      {Manual ? <Manual text={text} /> : <pre>{entry.result ?? "…"}</pre>}
+      {error && (
+        <p role="status">Unable to load formatting. Reload to retry.</p>
+      )}
     </article>
   );
 }
