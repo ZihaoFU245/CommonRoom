@@ -1,5 +1,16 @@
 # Commands
 
+`/version` is a browser-local command that shows the UI package version and full
+Git `HEAD` commit captured when the UI was built (or the development server
+started). It appears in completion and `/help`, needs no command grant, and keeps
+its output in the current tab. Extra arguments are rejected.
+
+Run `chat --version` (or `./chat --version`) to print the server package version
+and full build-time commit and exit before opening data or starting the listener.
+Both commands work in debug and release builds. Builds from source archives
+without Git metadata show `unknown` for the commit. The UI and server report
+their own builds, so separately deployed artifacts may show different commits.
+
 Type commands in the composer. `/help` lists commands permitted here; `/man user`,
 `/man room`, and `/man grant` explain syntax and authorization. Commands check both
 the selected context and the target. Output stays in this view and tab until reload.

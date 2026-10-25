@@ -13,6 +13,15 @@ const aliasCommand: Command = {
   admin: false,
   console: false,
 };
+const versionCommand: Command = {
+  name: "/version",
+  usage: "/version",
+  description: "Show the UI build version and Git commit",
+  requirements: "",
+  section: "General",
+  admin: false,
+  console: false,
+};
 
 export function browserCommands(
   commands: Command[],
@@ -22,6 +31,7 @@ export function browserCommands(
     ...commands.filter((command) => !Object.hasOwn(aliases, command.name)),
     aliasCommand,
     markdownCommand,
+    versionCommand,
     ...Object.entries(aliases).map(([name, target]) => ({
       ...aliasCommand,
       name,
@@ -35,6 +45,7 @@ export function aliasHelp(aliases: Aliases): string {
   return [
     `## Browser\n\n- \`${markdownCommand.usage}\` — ${markdownCommand.description}`,
     `- \`${aliasCommand.usage}\` — ${aliasCommand.description}`,
+    `- \`${versionCommand.usage}\` — ${versionCommand.description}`,
     ...Object.entries(aliases).map(
       ([name, target]) =>
         `- ${inlineCode(name)} — Alias for ${inlineCode(redactCommand(target))}`,
