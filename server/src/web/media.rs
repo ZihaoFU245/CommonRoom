@@ -196,18 +196,34 @@ pub(crate) async fn complete(
     Ok(media_json(&app, &media))
 }
 
+#[derive(Default, Deserialize)]
+pub(crate) struct MediaInfoQuery {
+    #[serde(default)]
+    include_expired: bool,
+}
 pub(crate) async fn info(
     State(app): State<App>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(options): Query<MediaInfoQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     authenticated(&app, &headers, move |app, user| {
-        let media = app
-            .engine_read_api()?
-            .readable_media(user, &id)
-            .map_err(|e| super::error::hidden(e, "Attachment not found."))?;
-        Ok(media_json(app, &media))
+        let engine = app.engine_read_api()?;
+        let media = if options.include_expired {
+            engine.media_info(user, &id)
+        } else {
+            engine.readable_media(user, &id)
+        }
+        .map_err(|e| super::error::hidden(e, "Attachment not found."))?;
+        let Json(mut value) = media_json(app, &media);
+        value["expires"] = json!(media.expires);
+        value["expired"] = json!(
+            media
+                .expires
+                .is_some_and(|t| t <= crate::engine::media::timestamp())
+        );
+        Ok(Json(value))
     })
     .await
 }

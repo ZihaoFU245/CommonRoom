@@ -234,6 +234,7 @@ fn published_media_expires_while_referenced_and_surrounding_text_remains_editabl
         )
         .unwrap();
     assert!(e.readable_media("alice", &media.id).is_err());
+    assert!(e.media_info("alice", &media.id).is_ok());
     assert!(
         e.execute(Some("alice"), Some("lobby"), &link(&media))
             .is_err()
@@ -248,6 +249,11 @@ fn published_media_expires_while_referenced_and_surrounding_text_remains_editabl
     assert_eq!(e.expired_media().unwrap().len(), 1);
     e.remove_media_record(&media.id).unwrap();
     assert!(e.stored_media(&media.id).unwrap().deleted);
+    assert_eq!(
+        e.media_info("alice", &media.id).unwrap().filename,
+        media.filename
+    );
+    assert!(e.media_info("nobody", &media.id).is_err());
     assert!(e.media_attached(&media.id).unwrap());
     assert!(e.readable_media("alice", &media.id).is_err());
 }

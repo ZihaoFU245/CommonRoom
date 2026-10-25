@@ -7,6 +7,8 @@ import {
   attachmentKind,
   attachmentLink,
   isCompletedMedia,
+  isMediaInfo,
+  managedMediaLink,
   isUploadTicket,
   mediaMarkdown,
   uploadFile,
@@ -326,4 +328,22 @@ test("filename hints preserve complete encoded Unicode within the header limit",
     assert.doesNotThrow(() => decodeURIComponent(hint));
   }
   assert.equal(filenameHint("résumé.pdf"), encodeURIComponent("résumé.pdf"));
+});
+
+test("expiry metadata validates and generic files use canonical same-origin links", () => {
+  assert.ok(isMediaInfo({ ...media, expires: 123, expired: true }));
+  assert.ok(isMediaInfo({ ...media, expires: null, expired: false }));
+  for (const invalid of [
+    {},
+    { expires: -1, expired: true },
+    { expires: 123, expired: "yes" },
+  ])
+    assert.equal(isMediaInfo({ ...media, ...invalid }), false);
+  const base = "https://chat.example.com/commonroom/";
+  assert.deepEqual(managedMediaLink(media.path, base), {
+    id,
+    path: media.path,
+  });
+  assert.equal(managedMediaLink(`https://evil.test${media.path}`, base), null);
+  assert.equal(managedMediaLink(`${media.path}?download=true`, base), null);
 });

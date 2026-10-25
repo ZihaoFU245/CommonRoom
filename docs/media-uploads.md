@@ -105,7 +105,12 @@ message reference. Chat redirects to a signed GET valid for at most 60 seconds,
 capped by remaining media life. Redirects/storage responses use `no-store`. A scoped `media-cache.js` service worker
 persists immutable bytes under the stable application media URL. Every reuse first
 checks `/info` with the current session (no S3 I/O), including every seek/range
-request, so expiry, retraction and lost access still stop reads immediately. This
+request. Authorized readers can retrieve expired metadata with
+`/info?include_expired=true`; normal `/info` and file reads continue to reject
+expiry, and the worker never serves expired cached bytes. The UI replaces expired images,
+players, previews and file links with a themed “Attachment expired” card showing
+the original filename. Expiry is rechecked while mounted and on tab resume.
+Expiry, retraction and lost access still stop new byte reads immediately. This
 intentionally pays one authorization/database request per range; there is no auth TTL. Reloads, preview/download switches and playback retry URLs
 reuse those bytes. Full cached objects serve byte ranges locally. Only complete
 200 responses are cached; partial playback responses stream without occupying cache

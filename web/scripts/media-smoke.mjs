@@ -457,7 +457,9 @@ try {
   assert.equal((await request(infoPath, alice)).status, 404);
   assert.equal((await request(path, alice)).status, 404);
   await send(`[note](${new URL(media.path, base).href})`);
-  assert.deepEqual(await (await request(infoPath, bob)).json(), media);
+  const info = await (await request(infoPath, bob)).json();
+  assert.deepEqual(info, { ...media, expires: info.expires, expired: false });
+  assert.ok(Number.isSafeInteger(info.expires));
   assert.equal((await request(infoPath, eve)).status, 404);
   assert.equal((await request(infoPath, null)).status, 401);
   const response = await request(path, bob);

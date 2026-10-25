@@ -370,6 +370,17 @@ impl Engine {
         }
         Ok(())
     }
+    // Retained, authorized messages may display metadata for expired attachments.
+    // This never grants access to the bytes or exposes unreferenced uploads.
+    pub(crate) fn media_info(&self, user: &str, id: &str) -> Result<Media, EngineError> {
+        let (media, attached) = self.stored_media_with_reference(id)?;
+        self.media_scope(user, &media.conversation, MediaAccess::Read)?;
+        let expired = media.expires.is_some_and(|t| t <= now());
+        if !attached || (!expired && (!media.ready || media.deleting || media.deleted)) {
+            return Err(EngineError::NotFound("Attachment not found.".into()));
+        }
+        Ok(media)
+    }
     pub(crate) fn readable_media(&self, user: &str, id: &str) -> Result<Media, EngineError> {
         let (media, attached) = self.stored_media_with_reference(id)?;
         self.media_scope(user, &media.conversation, MediaAccess::Read)?;

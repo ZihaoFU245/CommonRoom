@@ -316,8 +316,13 @@ probe needs no listing/write permission; missing-object 403/404 responses prove
 reachability, while S3 still enforces actual PUT permissions and size constraints.
 
 Media attachment metadata: authenticated `GET /api/media/{id}/info` returns the
-same `{media_id,path,filename,content_type,size}` shape as upload completion.
-Only published, unexpired, readable attachments are visible (otherwise 404).
+upload-completion fields `{media_id,path,filename,content_type,size}` plus
+`expires` (Unix seconds, or null for permanent files) and `expired` (boolean).
+Only retained, published attachments readable by the current viewer are visible
+(otherwise 404). Normal info and file reads reject expiry with 404, preserving
+access enforcement for existing clients and media workers. The UI explicitly requests
+`/info?include_expired=true` to retrieve metadata, including the original filename,
+for expired attachments even after object cleanup; it grants no access to bytes.
 No storage request is made. `GET /api/media/{id}/file?download=true` forces
 attachment disposition; the default permits native recognized media playback.
 Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
@@ -328,7 +333,8 @@ under canonical file URLs (playback/download queries share content). Each cached
 read still calls the authenticated `/info` endpoint; no S3 GET is needed on a hit.
 Only full 200 responses are cached; hits refresh eviction recency, and ranges can
 be served from a complete cached object. Every range still checks `/info` so
-access revocations take effect immediately. Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
+access revocations take effect immediately. Expired metadata stops cache reuse
+with 410 and never fetches storage. Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
 for bounds, full-object caching and fallback behavior.
 
 ## Object commands and upload hints

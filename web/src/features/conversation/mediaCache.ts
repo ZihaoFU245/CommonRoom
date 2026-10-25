@@ -15,6 +15,7 @@ interface Metadata {
   size: number;
   content_type: string;
   filename: string;
+  expired?: boolean;
 }
 async function waitForWrite(
   work: Promise<void> | undefined,
@@ -58,7 +59,8 @@ function metadata(value: unknown): value is Metadata {
     "content_type" in value &&
     typeof value.content_type === "string" &&
     "filename" in value &&
-    typeof value.filename === "string"
+    typeof value.filename === "string" &&
+    (!("expired" in value) || typeof value.expired === "boolean")
   );
 }
 export function mediaCachePath(request: Request, base: string): URL | null {
@@ -217,6 +219,7 @@ export class MediaCache {
     if (!auth.ok) return new Response(null, { status: auth.status });
     const info: unknown = await auth.json();
     if (!metadata(info)) return Response.error();
+    if (info.expired === true) return new Response(null, { status: 410 });
     const output = headers(info, url.searchParams.get("download") === "true");
     const range = request.headers.get("Range");
     const key = new URL(url.pathname, url);

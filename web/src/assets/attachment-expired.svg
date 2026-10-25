@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title">
+  <title id="title">Expired attachment</title>
+  <!-- Paper and folded corner. -->
+  <path fill="#E4E1E5" d="M80 0h166a40 40 0 0 1 28 12l112 112a40 40 0 0 1 12 28v261a49 49 0 0 1-49 49H80a49 49 0 0 1-49-49V49A49 49 0 0 1 80 0Z"/>
+  <path fill="#F9F7F8" d="M111 0h120v105a62 62 0 0 0 62 62h105v246a49 49 0 0 1-49 49H111a49 49 0 0 1-49-49V49a49 49 0 0 1 49-49Z"/>
+  <path fill="#A39BA6" d="M262 4a40 40 0 0 1 12 8l112 112a40 40 0 0 1 9 12H293a31 31 0 0 1-31-31V4Z"/>
+  <!-- Document lines. -->
+  <path stroke="#A39BA6" stroke-width="16" stroke-linecap="round" d="M91 147h127M89 209h231M89 271h231M89 333h129"/>
+  <!-- Expired badge, with a subtle lower-left shadow. -->
+  <circle cx="376" cy="408" r="105" fill="#C91F30"/>
+  <defs><clipPath id="badge"><circle cx="376" cy="408" r="105"/></clipPath></defs>
+  <circle cx="396" cy="388" r="105" fill="#E34455" clip-path="url(#badge)"/>
+  <path stroke="#F9F7F8" stroke-width="32" stroke-linecap="round" d="m346 379 58 58m0-58-58 58"/>
+</svg>

@@ -1,6 +1,11 @@
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { requestAbort } from "./requestAbort.ts";
-import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
+import {
+  isUploadTicket,
+  isCompletedMedia,
+  isMediaConfig,
+  isMediaInfo,
+} from "./media.ts";
 import {
   isSnapshot,
   isHistory,
@@ -93,6 +98,13 @@ export const api = {
     request(
       `media/${encodeURIComponent(id)}/info`,
       isCompletedMedia,
+      undefined,
+      signal,
+    ),
+  mediaStatus: (id: string, signal: AbortSignal) =>
+    request(
+      `media/${encodeURIComponent(id)}/info?include_expired=true`,
+      isMediaInfo,
       undefined,
       signal,
     ),

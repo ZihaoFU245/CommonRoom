@@ -2323,3 +2323,140 @@ async fn avatar_http_budget_preserves_noops_other_accounts_and_committed_profile
         "https://example.com/3.png"
     );
 }
+
+#[tokio::test]
+async fn expired_attachment_metadata_is_opt_in_and_never_grants_file_access() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut engine = Engine::open(&path).unwrap();
+    for (user, admin) in [("alice", true), ("bob", false)] {
+        engine.provision(user, "hash".into(), admin, false).unwrap();
+        engine.login(user.into(), user, "hash", None).unwrap();
+    }
+    engine
+        .execute(Some("alice"), None, "/room new files")
+        .unwrap();
+    let room = engine.data.rooms["files"].id.clone();
+    let mut media = engine
+        .allocate_media("alice", &room, "report-原稿.pdf", 8)
+        .unwrap();
+    media.ready = true;
+    media.object_key = media.final_key();
+    media.content_type = "application/pdf".into();
+    engine.finish_media("alice", &media).unwrap();
+    let file = format!("/api/media/{}/file", media.id);
+    let link = format!("[report]({file})");
+    engine.execute(Some("alice"), Some("files"), &link).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute("UPDATE media SET expires=1 WHERE id=?1", [&media.id])
+        .unwrap();
+    let mut app = login_test_app();
+    app.engine = Arc::new(RwLock::new(engine));
+    app.media = Some(crate::media::tests::test_storage("http://127.0.0.1:1"));
+    let info = format!("/api/media/{}/info", media.id);
+    let status_path = format!("{info}?include_expired=true");
+    for cleaned in [false, true] {
+        if cleaned {
+            let engine = app.engine_read().unwrap();
+            engine.expired_media().unwrap();
+            engine.remove_media_record(&media.id).unwrap();
+        }
+        for (uri, user, origin, expected) in [
+            (
+                info.as_str(),
+                "alice",
+                "http://localhost:5173",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                file.as_str(),
+                "alice",
+                "http://localhost:5173",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                status_path.as_str(),
+                "alice",
+                "http://localhost:5173",
+                StatusCode::OK,
+            ),
+            (
+                status_path.as_str(),
+                "bob",
+                "http://localhost:5173",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                status_path.as_str(),
+                "",
+                "http://localhost:5173",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                status_path.as_str(),
+                "alice",
+                "https://evil.example",
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let response = router(app.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::ORIGIN, origin)
+                        .header(header::COOKIE, format!("chat_session={user}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                expected,
+                "{uri} / {user} / cleaned={cleaned}"
+            );
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            if expected == StatusCode::OK {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                        .unwrap();
+                assert_eq!(value["filename"], "report-原稿.pdf");
+                assert_eq!(value["expired"], true);
+                assert_eq!(value["expires"], 1);
+            }
+        }
+    }
+    let message_id = app
+        .engine_read()
+        .unwrap()
+        .history("alice", "files")
+        .unwrap()
+        .messages[0]
+        .id
+        .clone();
+    app.engine()
+        .unwrap()
+        .execute(
+            Some("alice"),
+            Some("files"),
+            &format!("/retract {message_id}"),
+        )
+        .unwrap();
+    let response = router(app)
+        .oneshot(
+            Request::builder()
+                .uri(status_path)
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::COOKIE, "chat_session=alice")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

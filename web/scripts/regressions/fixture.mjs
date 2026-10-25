@@ -8,6 +8,8 @@ import { MessageList } from "../../src/components/MessageList.tsx";
 import { Chat } from "../../src/components/Chat.tsx";
 import { Login } from "../../src/components/Login.tsx";
 import { Settings } from "../../src/components/Settings.tsx";
+import { MarkdownContent } from "../../src/components/MarkdownContent.tsx";
+import { markdownNodes } from "../../src/features/conversation/markdown.ts";
 import { api } from "../../src/api/client.ts";
 import {
   defaultSeeds,
@@ -1527,6 +1529,102 @@ await test("login requests saved name colors in its first authenticated snapshot
     api.me = me;
     if (saved === null) localStorage.removeItem(key);
     else localStorage.setItem(key, saved);
+  }
+});
+
+await test("expired attachments preserve filenames across media kinds and themes", async () => {
+  const id = "d5cd8a44-d8b7-4c63-91fe-3cc63f106178";
+  const path = new URL(`api/media/${id}/file`, document.baseURI).pathname;
+  const filename = "quarterly-report-原稿.pdf";
+  let expired = true;
+  let denied = false;
+  api.mediaStatus = async () => {
+    if (denied) throw new Error("Network unavailable");
+    return {
+      media_id: id,
+      path,
+      filename,
+      size: 123,
+      content_type: "application/pdf",
+      expires: Math.ceil(Date.now() / 1000) + 1,
+      expired,
+    };
+  };
+  const theme = document.documentElement.dataset.theme;
+  try {
+    for (const mode of ["light", "dark"]) {
+      document.documentElement.dataset.theme = mode;
+      for (const markdown of [
+        `![image](${path})`,
+        `[video](${path} "media:video")`,
+        `[audio](${path} "media:audio")`,
+        `[document](${path} "media:html")`,
+        `[drawing](${path} "media:svg")`,
+        `[download](${path})`,
+      ]) {
+        render(
+          h(MarkdownContent, { nodes: markdownNodes(markdown), mentions: [] }),
+          tests,
+        );
+        await until(() => tests.querySelector(".attachment-expired"));
+        check(
+          tests.textContent.includes(filename),
+          "original filename is retained",
+        );
+        check(
+          tests.textContent.includes("Attachment expired"),
+          "expiry label is explicit",
+        );
+        check(
+          !tests.querySelector(
+            "img:not(.attachment-expired-icon),video,audio,a,button",
+          ),
+          "expired attachments have no broken media or dead actions",
+        );
+        const icon = tests.querySelector(".attachment-expired-icon");
+        await until(() => icon.complete);
+        check(icon.naturalWidth > 0, "approved SVG icon loads successfully");
+        const bounds = icon.getBoundingClientRect();
+        check(
+          bounds.width === bounds.height && bounds.width > 0,
+          "icon retains square proportions",
+        );
+        check(
+          getComputedStyle(tests.querySelector(".attachment-expired"))
+            .backgroundColor !== "rgba(0, 0, 0, 0)",
+          "placeholder uses themed surface",
+        );
+        render(null, tests);
+      }
+    }
+    expired = false;
+    render(
+      h(MarkdownContent, {
+        nodes: markdownNodes(`[download](${path})`),
+        mentions: [],
+      }),
+      tests,
+    );
+    await until(() => tests.querySelector("a"));
+    expired = true;
+    await until(() => tests.querySelector(".attachment-expired"));
+    render(null, tests);
+    denied = true;
+    render(
+      h(MarkdownContent, {
+        nodes: markdownNodes(`[download](${path})`),
+        mentions: [],
+      }),
+      tests,
+    );
+    await until(() => tests.querySelector("a"));
+    check(
+      !tests.querySelector(".attachment-expired"),
+      "network/access failures are not labeled expiry",
+    );
+  } finally {
+    if (theme === undefined) delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
   }
 });
 

@@ -17,6 +17,21 @@ export interface CompletedMedia {
   content_type: string;
   size: number;
 }
+export interface MediaInfo extends CompletedMedia {
+  expires: number | null;
+  expired: boolean;
+}
+export function isMediaInfo(value: unknown): value is MediaInfo {
+  return (
+    isCompletedMedia(value) &&
+    record(value) &&
+    typeof value.expired === "boolean" &&
+    (value.expires === null ||
+      (typeof value.expires === "number" &&
+        Number.isSafeInteger(value.expires) &&
+        value.expires >= 0))
+  );
+}
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -197,6 +212,12 @@ export function attachmentLink(href: string, title: string, base: string) {
       ? hint
       : null;
   if (!kind) return null;
+  const parsed = managedMediaLink(href, base);
+  return parsed ? { ...parsed, kind } : null;
+}
+
+/** Only canonical attachment URLs belonging to this application. */
+export function managedMediaLink(href: string, base: string) {
   try {
     const url = new URL(href, base);
     const root = new URL(base);
@@ -208,7 +229,7 @@ export function attachmentLink(href: string, title: string, base: string) {
       !url.search &&
       !url.hash &&
       url.pathname === new URL(`api/media/${parsed.id}/file`, root).pathname
-      ? { ...parsed, kind }
+      ? parsed
       : null;
   } catch {
     return null;

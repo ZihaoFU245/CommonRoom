@@ -32,12 +32,18 @@ function fixture(filePath = path) {
   const storage = { open: async () => cache };
   const calls = [];
   let status = 200;
+  let expired = false;
   let contentType = "image/png";
   const network = async (url, options) => {
     calls.push({ url: String(url), options });
     if (String(url).endsWith("/info"))
       return Response.json(
-        { size: 6, content_type: contentType, filename: "test'file.html" },
+        {
+          size: 6,
+          content_type: contentType,
+          filename: "test'file.html",
+          expired,
+        },
         { status },
       );
     if (options.headers.Range)
@@ -65,6 +71,9 @@ function fixture(filePath = path) {
     saved,
     reads,
     puts: () => puts,
+    expire: () => {
+      expired = true;
+    },
     deny: () => {
       status = 403;
     },
@@ -536,4 +545,18 @@ test("failed fills release waiters and every caller still checks authorization",
     403,
     "persisted bytes do not bypass authorization",
   );
+});
+
+test("expired metadata never serves cached bytes or fetches storage", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  assert.equal((await f.load(instance)).status, 200);
+  await Promise.all(f.work);
+  f.expire();
+  for (const range of [undefined, "bytes=0-2"]) {
+    const response = await f.load(instance, "", range);
+    assert.equal(response.status, 410);
+    assert.equal(await response.text(), "");
+  }
+  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
 });

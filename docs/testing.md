@@ -870,3 +870,14 @@ growth and protect untouched tables instead of fixing send cost to trigger count
 For server-only work, run `rtk cargo fmt --all --check`,
 `rtk cargo clippy --all-targets --locked -- -D warnings` and
 `rtk cargo test --locked`. These do not enter the optional `simpleBot/` worker.
+
+## Expired attachment placeholders
+
+Engine and HTTP regressions preserve expired metadata before/after object cleanup
+only for current readers with retained references. Normal info/file requests stay
+404 after expiry; `include_expired=true` reveals filename/expiry metadata only,
+with session/origin checks and 404 after retraction. Media-cache tests ensure
+expired metadata cannot serve cached full or range responses. Browser regressions
+cover all attachment kinds, original Unicode filenames, light/dark surfaces,
+live expiry and network failures that must not be labeled as expiry. Visual checks
+include desktop and 320px compact layouts.
