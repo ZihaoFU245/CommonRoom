@@ -6,6 +6,7 @@ mod cursors;
 mod entities;
 mod maintenance;
 mod messages;
+mod migration;
 mod receipts;
 mod schema;
 #[cfg(test)]
@@ -34,10 +35,11 @@ pub(super) struct Store {
 
 impl Store {
     fn checkpoint(&self) -> Result<(), EngineError> {
-        self.db
-            .lock()
-            .map_err(EngineError::unavailable)?
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        let db = self.db.lock().map_err(EngineError::unavailable)?;
+        if db.is_postgres() {
+            return db.ensure_available().map_err(EngineError::from);
+        }
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(EngineError::from)
     }
 }
@@ -74,7 +76,10 @@ impl Engine {
         write_delta_view(&tx, &self.data, baseline.view())?;
         for room in rooms {
             tx.execute(
-                "DELETE FROM read_positions WHERE conversation=?1",
+                sql(
+                    "DELETE FROM read_positions WHERE conversation=?1",
+                    "DELETE FROM read_positions WHERE conversation=$1",
+                ),
                 params![format!("room:{room}")],
             )
             .map_err(EngineError::from)?;

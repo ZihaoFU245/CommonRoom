@@ -3,18 +3,20 @@ use super::*;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE auth_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,client TEXT,username TEXT,outcome TEXT NOT NULL CHECK(outcome IN ('success','failure','logout')));";
 pub(super) fn write_auth_event(db: &Connection, event: &AuthEvent) -> Result<(), EngineError> {
-    db.execute(
-        "INSERT INTO auth_events(at,client,username,outcome) VALUES(?1,?2,?3,?4)",
+    let sequence: i64 = db.query_row(
+        sql("INSERT INTO auth_events(at,client,username,outcome) VALUES(?1,?2,?3,?4) RETURNING sequence", "INSERT INTO auth_events(at,client,username,outcome) VALUES($1,$2,$3,$4) RETURNING sequence"),
         params![
             event.at,
             event.client,
             event.username,
             event.outcome.label()
-        ],
+        ], |row| row.get(0),
     )?;
-    let sequence = db.last_insert_rowid();
     db.execute(
-        "DELETE FROM auth_events WHERE sequence<=?1",
+        sql(
+            "DELETE FROM auth_events WHERE sequence<=?1",
+            "DELETE FROM auth_events WHERE sequence<=$1",
+        ),
         [sequence.saturating_sub(2048)],
     )?;
     Ok(())
@@ -40,7 +42,7 @@ impl Engine {
         let tx = db.savepoint().map_err(EngineError::from)?;
         write_map_delta(&tx, "session", &self.data.sessions, Some(before))?;
         tx.execute(
-            "DELETE FROM entities WHERE kind='session' AND json_extract(json,'$.expires')<=?1",
+            sql("DELETE FROM entities WHERE kind='session' AND json_extract(json,'$.expires')<=?1", "DELETE FROM entities WHERE kind='session' AND ((projection #>> '{expires}'))::bigint<=$1"),
             [now()],
         )
         .map_err(EngineError::from)?;

@@ -127,13 +127,14 @@ for (const mode of ["debug", "release"]) {
   );
 }
 
-for (const { custom, offline } of [
-  { custom: false, offline: false },
-  { custom: true, offline: false },
-  { custom: false, offline: true },
+for (const { withS3, custom, offline } of [
+  { withS3: false, custom: false, offline: false },
+  { withS3: true, custom: false, offline: false },
+  { withS3: true, custom: true, offline: false },
+  { withS3: true, custom: false, offline: true },
 ]) {
   test(
-    `debug starts chat without launching RustFS (overrides=${custom}, offline=${offline})`,
+    `debug leaves S3 startup to the caller (S3=${withS3}, overrides=${custom}, offline=${offline})`,
     { skip: process.platform === "win32" },
     (t) => {
       const { root } = fixture(t);
@@ -184,41 +185,59 @@ setTimeout(()=>process.exit(1),3000).unref();
           RUSTFS_ACCESS_KEY: "fixture-access",
           RUSTFS_SECRET_KEY: "fixture-secret",
         });
-      const result = spawnSync("sh", [join(root, "auto/debug.sh")], {
-        cwd: tmpdir(),
-        env,
-        input: "/whoami\n",
-        encoding: "utf8",
-        timeout: 5000,
-      });
+      const result = spawnSync(
+        "sh",
+        [join(root, "auto/debug.sh"), ...(withS3 ? ["--with-s3"] : [])],
+        {
+          cwd: tmpdir(),
+          env,
+          input: "/whoami\n",
+          encoding: "utf8",
+          timeout: 5000,
+        },
+      );
       assert.ifError(result.error);
-      assert.equal(result.status, 0, result.stdout + result.stderr);
-      assert.equal(result.stderr.includes("Local S3 setup failed"), offline);
+      assert.equal(
+        result.status,
+        offline ? 1 : 0,
+        result.stdout + result.stderr,
+      );
+      assert.equal(existsSync(join(root, "s3-was-started")), false);
+      if (offline) {
+        assert.equal(existsSync(join(root, "debug-env.json")), false);
+        return;
+      }
       const captured = JSON.parse(
         readFileSync(join(root, "debug-env.json"), "utf8"),
       );
       assert.deepEqual(captured, {
         stdin: "/whoami\n",
-        s3: custom
-          ? {
-              CHAT_S3_ENDPOINT: "http://127.0.0.1:29000",
-              CHAT_S3_PUBLIC_ENDPOINT: "http://localhost:29000",
-              CHAT_S3_BUCKET: "fixture-media",
-              CHAT_S3_REGION: "fixture-region",
-              CHAT_S3_PATH_STYLE: "false",
-              CHAT_S3_ACCESS_KEY: "fixture-access",
-              CHAT_S3_SECRET_KEY: "fixture-secret",
-            }
-          : {
-              CHAT_S3_ENDPOINT: "http://127.0.0.1:19000",
-              CHAT_S3_PUBLIC_ENDPOINT: "http://127.0.0.1:19000",
-              CHAT_S3_BUCKET: "commonroom-draft",
-              CHAT_S3_REGION: "us-east-1",
-              CHAT_S3_PATH_STYLE: "true",
-              CHAT_S3_ACCESS_KEY: "cr",
-              CHAT_S3_SECRET_KEY: "pass",
-            },
+        s3: !withS3
+          ? {}
+          : custom
+            ? {
+                CHAT_S3_ENDPOINT: "http://127.0.0.1:19000",
+                CHAT_S3_PUBLIC_ENDPOINT: "http://127.0.0.1:19000",
+                CHAT_S3_BUCKET: "fixture-media",
+                CHAT_S3_REGION: "us-east-1",
+                CHAT_S3_PATH_STYLE: "true",
+                CHAT_S3_ACCESS_KEY: "fixture-access",
+                CHAT_S3_SECRET_KEY: "fixture-secret",
+              }
+            : {
+                CHAT_S3_ENDPOINT: "http://127.0.0.1:19000",
+                CHAT_S3_PUBLIC_ENDPOINT: "http://127.0.0.1:19000",
+                CHAT_S3_BUCKET: "commonroom-draft",
+                CHAT_S3_REGION: "us-east-1",
+                CHAT_S3_PATH_STYLE: "true",
+                CHAT_S3_ACCESS_KEY: "cr",
+                CHAT_S3_SECRET_KEY: "pass",
+              },
       });
+      if (!withS3) {
+        assert.equal(existsSync(join(root, "local-s3-setup.json")), false);
+        return;
+      }
       assert.deepEqual(
         JSON.parse(readFileSync(join(root, "local-s3-setup.json"), "utf8")),
         {

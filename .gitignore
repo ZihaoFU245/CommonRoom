@@ -3,6 +3,7 @@
 /web/dist/
 /web/dist-debug/
 /data/
+/pgdata/
 /chat
 /ui.tar.xz
 *.sqlite*

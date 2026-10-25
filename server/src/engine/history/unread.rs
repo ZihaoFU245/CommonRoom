@@ -76,7 +76,7 @@ impl HistoryStore {
         previous: Option<UnreadEntry>,
     ) -> Result<Unread, EngineError> {
         let (oldest, through): (u64, u64) = db.prepare_cached(
-                "SELECT coalesce((SELECT oldest FROM retention WHERE conversation=?1),0),coalesce((SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence DESC LIMIT 1),0)"
+                sql("SELECT coalesce((SELECT oldest FROM retention WHERE conversation=?1),0),coalesce((SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence DESC LIMIT 1),0)", "SELECT coalesce((SELECT oldest FROM retention WHERE conversation=$1),0),coalesce((SELECT sequence FROM messages WHERE conversation=$1 ORDER BY sequence DESC LIMIT 1),0)")
                 )?.query_row([id], |row| Ok((row.get(0)?,row.get(1)?)),
             ).map_err(EngineError::unavailable)?;
         if let Some(previous) = previous.filter(|previous| {
@@ -90,7 +90,7 @@ impl HistoryStore {
             // not affect this proof. Retention moving the oldest row falls
             // back to the complete query.
             let (appended, added): (u64, usize) = db.prepare_cached(
-                    "SELECT count(*),coalesce(sum(sequence>?3 AND json_extract(json,'$.from')!=?4),0) FROM messages WHERE conversation=?1 AND sequence>?2"
+                    sql("SELECT count(*),coalesce(sum(sequence>?3 AND json_extract(json,'$.from')!=?4),0) FROM messages WHERE conversation=?1 AND sequence>?2", "SELECT count(*),coalesce(count(*) FILTER (WHERE sequence>$3 AND (projection #>> '{from}')!=$4),0) FROM messages WHERE conversation=$1 AND sequence>$2")
                     )?.query_row(params![id,previous.unread.through,read,user], |row| Ok((row.get(0)?,row.get(1)?)),
                 ).map_err(EngineError::unavailable)?;
             if revision.wrapping_sub(previous.revision) == appended {
@@ -98,7 +98,7 @@ impl HistoryStore {
                     0
                 } else {
                     db.prepare_cached(
-                            "SELECT count(*) FROM messages WHERE conversation=?1 AND sequence>?2 AND sequence<=?3 AND json_extract(json,'$.from')!=?4"
+                            sql("SELECT count(*) FROM messages WHERE conversation=?1 AND sequence>?2 AND sequence<=?3 AND json_extract(json,'$.from')!=?4", "SELECT count(*) FROM messages WHERE conversation=$1 AND sequence>$2 AND sequence<=$3 AND (projection #>> '{from}')!=$4")
                             )?.query_row(params![id,previous.read,read.min(previous.unread.through),user], |row| row.get(0),
                         ).map_err(EngineError::unavailable)?
                 };
@@ -114,7 +114,7 @@ impl HistoryStore {
                         previous.unread.first
                     } else {
                         db.prepare_cached(
-                                "SELECT min(sequence) FROM messages WHERE conversation=?1 AND sequence>?2 AND json_extract(json,'$.from')!=?3"
+                                sql("SELECT min(sequence) FROM messages WHERE conversation=?1 AND sequence>?2 AND json_extract(json,'$.from')!=?3", "SELECT min(sequence) FROM messages WHERE conversation=$1 AND sequence>$2 AND (projection #>> '{from}')!=$3")
                                 )?.query_row(params![id,read,user], |row|row.get(0),
                             ).map_err(EngineError::unavailable)?
                     };
@@ -130,7 +130,7 @@ impl HistoryStore {
             }
         }
         let (count,first) = db.prepare_cached(
-                "SELECT count(*),min(sequence) FROM messages WHERE conversation=?1 AND sequence>?2 AND json_extract(json,'$.from')!=?3"
+                sql("SELECT count(*),min(sequence) FROM messages WHERE conversation=?1 AND sequence>?2 AND json_extract(json,'$.from')!=?3", "SELECT count(*),min(sequence) FROM messages WHERE conversation=$1 AND sequence>$2 AND (projection #>> '{from}')!=$3")
                 )?.query_row(params![id,read,user], |row|Ok((row.get(0)?,row.get(1)?)),
             ).map_err(EngineError::unavailable)?;
         self.unread_full.fetch_add(1, Ordering::Relaxed);

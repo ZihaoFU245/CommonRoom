@@ -13,9 +13,24 @@ pub struct Config {
     pub max_users: usize,
     pub max_rooms: usize,
     pub max_messages: usize,
+    pub database: DatabaseConfig,
     pub media: MediaConfig,
     pub avatar_hosts: Vec<String>,
     pub s3: Option<S3Config>,
+}
+/// Backend selection is persisted; connection URLs and credentials are not.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseConfig {
+    pub backend: DatabaseBackend,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DatabaseBackend {
+    #[default]
+    Sqlite,
+    Postgres,
 }
 /// Provider-neutral connection settings. Credentials are environment-only.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -141,6 +156,7 @@ impl Default for Config {
             max_users: 64,
             max_rooms: 64,
             max_messages: 1000,
+            database: DatabaseConfig::default(),
             media: MediaConfig::default(),
             avatar_hosts: Vec::new(),
             s3: None,
@@ -154,6 +170,27 @@ impl Default for Config {
     }
 }
 impl Config {
+    /// Read backend selection without normalizing or writing configuration. The
+    /// selected database/folder owner must be acquired before settings are saved.
+    pub fn read_database(data: &std::path::Path) -> Result<DatabaseConfig, String> {
+        match std::fs::read(data.join("config.json")) {
+            Ok(bytes) => serde_json::from_slice::<Self>(&bytes)
+                .map(|config| config.database)
+                .map_err(|error| format!("Invalid data/config.json: {error}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(DatabaseConfig::default())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub fn load_for_database(
+        data: &std::path::Path,
+        selected: &DatabaseConfig,
+    ) -> Result<Self, String> {
+        Self::load_inner(data, Some(selected))
+    }
+
     pub fn display(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|_| "Could not display configuration.".into())
     }
@@ -163,7 +200,15 @@ impl Config {
         config["history_cache"] = history_cache;
         serde_json::to_string_pretty(&config).map_err(|_| "Could not display configuration.".into())
     }
+    #[cfg(test)]
     pub fn load(data: &std::path::Path) -> Result<Self, String> {
+        Self::load_inner(data, None)
+    }
+
+    fn load_inner(
+        data: &std::path::Path,
+        selected: Option<&DatabaseConfig>,
+    ) -> Result<Self, String> {
         let path = data.join("config.json");
         let raw = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
@@ -178,6 +223,15 @@ impl Config {
         } else {
             None
         };
+        let database = saved
+            .as_ref()
+            .map_or_else(DatabaseConfig::default, |config| config.database.clone());
+        if selected.is_some_and(|selected| *selected != database) {
+            return Err(
+                "Database settings changed during startup; restart to use the new selection."
+                    .into(),
+            );
+        }
         let production =
             !cfg!(debug_assertions) || std::env::var("CHAT_PRODUCTION").as_deref() == Ok("1");
         let production = production || saved.as_ref().is_some_and(|c| c.production);
@@ -223,6 +277,7 @@ impl Config {
             max_users: saved.as_ref().map_or(64, |c| c.max_users),
             max_rooms: saved.as_ref().map_or(64, |c| c.max_rooms),
             max_messages: saved.as_ref().map_or(1000, |c| c.max_messages),
+            database,
             s3: saved.as_ref().and_then(|c| c.s3.clone()),
             avatar_hosts: saved
                 .as_ref()
@@ -368,6 +423,57 @@ pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Re
 mod tests {
     use super::*;
     #[test]
+    fn database_selection_defaults_legacy_configs_and_rejects_secrets_without_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        assert_eq!(
+            Config::read_database(dir.path()).unwrap().backend,
+            DatabaseBackend::Sqlite
+        );
+        assert!(!path.exists());
+        std::fs::write(&path, r#"{"max_messages":42}"#).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let selected = Config::read_database(dir.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let config = Config::load_for_database(dir.path(), &selected).unwrap();
+        assert_eq!(config.max_messages, 42);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["database"], serde_json::json!({"backend":"sqlite"}));
+        for value in [
+            serde_json::json!({"database":{"backend":"postgre"}}),
+            serde_json::json!({"database":{"backend":"postgres","url":"secret-url"}}),
+            serde_json::json!({"database":{"backend":"postgres","password":"secret-password"}}),
+            serde_json::json!({"s3":{"access_key":"secret-key"}}),
+            serde_json::json!({"s3":{"secret_key":"secret-key"}}),
+            serde_json::json!({"s3":{"session_token":"secret-token"}}),
+        ] {
+            let raw = value.to_string();
+            std::fs::write(&path, &raw).unwrap();
+            assert!(Config::read_database(dir.path()).is_err());
+            assert!(Config::load(dir.path()).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+    #[test]
+    fn database_selection_change_during_startup_is_rejected_before_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let selected = Config::read_database(dir.path()).unwrap();
+        let raw = r#"{"database":{"backend":"postgres"}}"#;
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, raw).unwrap();
+        assert!(Config::load_for_database(dir.path(), &selected).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        let selected = Config::read_database(dir.path()).unwrap();
+        assert_eq!(selected.backend, DatabaseBackend::Postgres);
+        let config = Config::load_for_database(dir.path(), &selected).unwrap();
+        let display: serde_json::Value = serde_json::from_str(&config.display().unwrap()).unwrap();
+        assert_eq!(
+            display["database"],
+            serde_json::json!({"backend":"postgres"})
+        );
+    }
+    #[test]
     fn external_avatar_hosts_and_direct_bot_trust_are_validated_before_saving() {
         for host in ["example.com", "www.gravatar.com", "127.0.0.1"] {
             assert!(valid_avatar_host(host));
@@ -468,6 +574,9 @@ mod tests {
             max_users: 8,
             max_rooms: 12,
             max_messages: 7,
+            database: DatabaseConfig {
+                backend: DatabaseBackend::Postgres,
+            },
             media: MediaConfig::default(),
             avatar_hosts: vec!["www.gravatar.com".into()],
             s3: None,
@@ -494,6 +603,7 @@ mod tests {
         assert_eq!(restored.max_users, 8);
         assert_eq!(restored.max_rooms, 12);
         assert_eq!(restored.max_messages, 7);
+        assert_eq!(restored.database, original.database);
     }
     #[test]
     fn base_url_is_normalized_and_safe_for_html_and_cookies() {

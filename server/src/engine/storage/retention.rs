@@ -1,6 +1,6 @@
 //! Per-conversation retained-row counters and pruning.
 use super::*;
-use rusqlite::OptionalExtension;
+use crate::engine::database::OptionalExtension;
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE retention(conversation TEXT PRIMARY KEY, count INTEGER NOT NULL CHECK(count>=0), oldest INTEGER) WITHOUT ROWID;
@@ -19,7 +19,10 @@ END;
 pub(super) fn prune(db: &Connection, id: &str, limit: usize) -> Result<usize, EngineError> {
     let count: u64 = db
         .query_row(
-            "SELECT count FROM retention WHERE conversation=?1",
+            sql(
+                "SELECT count FROM retention WHERE conversation=?1",
+                "SELECT count FROM retention WHERE conversation=$1",
+            ),
             [id],
             |row| row.get(0),
         )
@@ -31,7 +34,7 @@ pub(super) fn prune(db: &Connection, id: &str, limit: usize) -> Result<usize, En
         return Ok(0);
     }
     // Walk only rows being deleted, never the retained window.
-    db.execute("DELETE FROM messages WHERE conversation=?1 AND sequence IN (SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence LIMIT ?2)", params![id,excess]).map_err(EngineError::from)
+    db.execute(sql("DELETE FROM messages WHERE conversation=?1 AND sequence IN (SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence LIMIT ?2)", "DELETE FROM messages WHERE conversation=$1 AND sequence IN (SELECT sequence FROM messages WHERE conversation=$1 ORDER BY sequence LIMIT $2)"), params![id,excess]).map_err(EngineError::from)
 }
 
 impl Engine {
@@ -63,7 +66,10 @@ impl Engine {
             if deleted > 0 {
                 let revision = revision.wrapping_add(1);
                 tx.execute(
-                    "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                    sql(
+                        "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                        "UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2",
+                    ),
                     params![kind, key, revision],
                 )
                 .map_err(EngineError::from)?;

@@ -10,7 +10,7 @@ impl Engine {
         key: &str,
         through: u64,
     ) -> Result<(), EngineError> {
-        self.store.db.lock().map_err(EngineError::unavailable)?.execute("INSERT INTO read_positions VALUES(?1,?2,?3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+        self.store.db.lock().map_err(EngineError::unavailable)?.execute(sql("INSERT INTO read_positions VALUES(?1,?2,?3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)", "INSERT INTO read_positions VALUES($1,$2,$3) ON CONFLICT(username,conversation) DO UPDATE SET sequence=GREATEST(read_positions.sequence,excluded.sequence)"),
             params![user,key,through])?;
         Ok(())
     }
@@ -28,13 +28,19 @@ impl Engine {
         // A reused room name must not inherit another room's orphaned cursors.
         transaction
             .execute(
-                "DELETE FROM read_positions WHERE conversation=?1",
+                sql(
+                    "DELETE FROM read_positions WHERE conversation=?1",
+                    "DELETE FROM read_positions WHERE conversation=$1",
+                ),
                 params![format!("room:{new_name}")],
             )
             .map_err(EngineError::from)?;
         transaction
             .execute(
-                "UPDATE read_positions SET conversation=?1 WHERE conversation=?2",
+                sql(
+                    "UPDATE read_positions SET conversation=?1 WHERE conversation=?2",
+                    "UPDATE read_positions SET conversation=$1 WHERE conversation=$2",
+                ),
                 params![format!("room:{new_name}"), format!("room:{name}")],
             )
             .map_err(EngineError::from)?;

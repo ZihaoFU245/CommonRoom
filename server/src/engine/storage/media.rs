@@ -1,6 +1,6 @@
 use super::*;
+use crate::engine::database::OptionalExtension;
 use crate::engine::media::{Media, media_references};
-use rusqlite::OptionalExtension;
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, uploader TEXT NOT NULL, conversation TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, ready INTEGER NOT NULL, unreferenced INTEGER, staging_clean INTEGER NOT NULL DEFAULT 0, json TEXT NOT NULL, expires INTEGER, published INTEGER, deleting INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, cleanup_attempt INTEGER NOT NULL DEFAULT 0, staging_attempt INTEGER NOT NULL DEFAULT 0);
@@ -20,13 +20,19 @@ CREATE TRIGGER IF NOT EXISTS media_reference_removed AFTER DELETE ON message_med
 END;
 ";
 
-const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (
+const TOMBSTONES_SQL: crate::engine::database::Sql<'static> = sql(
+    "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)",
+    "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<$1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL)",
+);
+const STARTUP_CLEANUP_SQL: crate::engine::database::Sql<'static> = sql(
+    "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)",
+    "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL)",
+);
+const CLAIM_CLEANUP_SQL: crate::engine::database::Sql<'static> = sql("SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (
                 SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)
                 UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)
                 UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)
-            ) ORDER BY cleanup_attempt,created LIMIT ?3";
+            ) ORDER BY cleanup_attempt,created LIMIT ?3", "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<$4 ORDER BY cleanup_attempt,created LIMIT $3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=$1 AND cleanup_attempt<$4 ORDER BY expires,created LIMIT $3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=$2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<$4 ORDER BY unreferenced,created LIMIT $3)\n            ) ORDER BY cleanup_attempt,created LIMIT $3");
 
 // Disabled accounts intentionally retain their avatar reference for re-enabling.
 // Uncorrelated NOT IN builds one transient lookup per statement; account JSON
@@ -38,11 +44,10 @@ fn delete_tombstones(db: &Connection, cutoff: u64) -> Result<(), EngineError> {
     Ok(())
 }
 // Columns are authoritative for mutable state; legacy JSON copies are ignored.
-fn media_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
+fn media_row(row: &crate::engine::database::Row<'_>) -> crate::engine::database::Result<Media> {
     let json: String = row.get(0)?;
-    let mut media: Media = serde_json::from_str(&json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-    })?;
+    let mut media: Media = serde_json::from_str(&json)
+        .map_err(|_| crate::engine::database::Error::Conversion("Invalid stored media JSON"))?;
     media.ready = row.get(1)?;
     media.expires = row.get(2)?;
     media.deleting = row.get(3)?;
@@ -58,7 +63,10 @@ pub(super) fn reconcile(
     let ids = media_references(&message.text);
     let previous: BTreeSet<String> = {
         let mut query = db
-            .prepare("SELECT media_id FROM message_media WHERE conversation=?1 AND sequence=?2")
+            .prepare(sql(
+                "SELECT media_id FROM message_media WHERE conversation=?1 AND sequence=?2",
+                "SELECT media_id FROM message_media WHERE conversation=$1 AND sequence=$2",
+            ))
             .map_err(EngineError::unavailable)?;
         query
             .query_map(params![conversation, message.sequence], |row| row.get(0))
@@ -94,7 +102,7 @@ fn reconcile_references(
         if previous.contains(id) {
             continue;
         }
-        let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation=?2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (uploader=?3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)))", params![id,conversation,message.author_id,now()], |r| r.get(0)).map_err(EngineError::unavailable)?;
+        let valid: bool = db.query_row(sql("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation=?2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (uploader=?3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)))", "SELECT EXISTS(SELECT 1 FROM media WHERE id=$1 AND conversation=$2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>$4) AND (uploader=$3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=$1 AND conversation=$2)))"), params![id,conversation,message.author_id,now()], |r| r.get(0)).map_err(EngineError::unavailable)?;
         if !valid {
             return Err(EngineError::NotFound("Upload not found.".into()));
         }
@@ -104,18 +112,27 @@ fn reconcile_references(
     }
     for id in previous.difference(&ids) {
         db.execute(
-            "DELETE FROM message_media WHERE conversation=?1 AND sequence=?2 AND media_id=?3",
+            sql(
+                "DELETE FROM message_media WHERE conversation=?1 AND sequence=?2 AND media_id=?3",
+                "DELETE FROM message_media WHERE conversation=$1 AND sequence=$2 AND media_id=$3",
+            ),
             params![conversation, message.sequence, id],
         )?;
     }
     for id in ids.difference(&previous) {
         db.execute(
-            "INSERT INTO message_media VALUES(?1,?2,?3)",
+            sql(
+                "INSERT INTO message_media VALUES(?1,?2,?3)",
+                "INSERT INTO message_media VALUES($1,$2,$3)",
+            ),
             params![conversation, message.sequence, id],
         )
         .map_err(EngineError::unavailable)?;
         db.execute(
-            "UPDATE media SET unreferenced=NULL,published=COALESCE(published,?2) WHERE id=?1",
+            sql(
+                "UPDATE media SET unreferenced=NULL,published=COALESCE(published,?2) WHERE id=?1",
+                "UPDATE media SET unreferenced=NULL,published=COALESCE(published,$2) WHERE id=$1",
+            ),
             params![id, now()],
         )
         .map_err(EngineError::unavailable)?;
@@ -149,7 +166,7 @@ impl Engine {
     pub(crate) fn store_media_allocation(&self, media: &Media) -> Result<(), EngineError> {
         let mut db = self.store.db.lock().map_err(EngineError::unavailable)?;
         let tx = db.savepoint().map_err(EngineError::unavailable)?;
-        let (bytes, pending, recent): (u64,u64,u64) = tx.query_row("SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END),0),COALESCE(SUM(deleted=0 AND published IS NULL),0),COALESCE(SUM(created>?2),0) FROM media WHERE uploader=?1", params![media.uploader,now().saturating_sub(60)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(EngineError::unavailable)?;
+        let (bytes, pending, recent): (u64,u64,u64) = tx.query_row(sql("SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END),0),COALESCE(SUM(deleted=0 AND published IS NULL),0),COALESCE(SUM(created>?2),0) FROM media WHERE uploader=?1", "SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END)::bigint,0),COALESCE(count(*) FILTER (WHERE deleted=0 AND published IS NULL),0),COALESCE(count(*) FILTER (WHERE created>$2),0) FROM media WHERE uploader=$1"), params![media.uploader,now().saturating_sub(60)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(EngineError::unavailable)?;
         let quota = self
             .data
             .users
@@ -183,7 +200,10 @@ impl Engine {
         {
             let exists: bool = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='private' AND key=?1)",
+                    sql(
+                        "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='private' AND key=?1)",
+                        "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='private' AND key=$1)",
+                    ),
                     [key],
                     |row| row.get(0),
                 )
@@ -194,7 +214,7 @@ impl Engine {
         }
         let json = serde_json::to_string(media).map_err(EngineError::unavailable)?;
         tx.execute(
-            "INSERT INTO media(id,uploader,conversation,size,created,ready,unreferenced,staging_clean,json) VALUES(?1,?2,?3,?4,?5,0,?5,0,?6)",
+            sql("INSERT INTO media(id,uploader,conversation,size,created,ready,unreferenced,staging_clean,json) VALUES(?1,?2,?3,?4,?5,0,?5,0,?6)", "INSERT INTO media(id,uploader,conversation,size,created,ready,unreferenced,staging_clean,json) VALUES($1,$2,$3,$4,$5,0,$5,0,$6)"),
             params![
                 media.id,
                 media.uploader,
@@ -212,7 +232,7 @@ impl Engine {
         id: &str,
     ) -> Result<(Media, bool), EngineError> {
         let db = self.store.db.lock().map_err(EngineError::unavailable)?;
-        db.query_row("SELECT json,ready,expires,deleting,deleted,EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) FROM media WHERE id=?1", [id], |row| Ok((media_row(row)?, row.get(5)?)))
+        db.query_row(sql("SELECT json,ready,expires,deleting,deleted,EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) FROM media WHERE id=?1", "SELECT json,ready,expires,deleting,deleted,EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) FROM media WHERE id=$1"), [id], |row| Ok((media_row(row)?, row.get(5)?)))
             .optional().map_err(EngineError::unavailable)?.ok_or_else(|| EngineError::NotFound("Upload not found.".into()))
     }
     pub(crate) fn stored_media(&self, id: &str) -> Result<Media, EngineError> {
@@ -232,7 +252,7 @@ impl Engine {
         let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         let changed = db
             .execute(
-                "UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND ready=0 AND deleting=0 AND deleted=0",
+                sql("UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND ready=0 AND deleting=0 AND deleted=0", "UPDATE media SET ready=1,json=$2,unreferenced=$3,expires=$4,published=CASE WHEN conversation='@avatar' THEN $3 ELSE published END WHERE id=$1 AND ready=0 AND deleting=0 AND deleted=0"),
                 params![media.id, json, now(), media.expires],
             )
             .map_err(EngineError::unavailable)?;
@@ -250,7 +270,10 @@ impl Engine {
             .lock()
             .map_err(EngineError::unavailable)?
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)",
+                sql(
+                    "SELECT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM message_media WHERE media_id=$1)",
+                ),
                 [id],
                 |r| r.get(0),
             )
@@ -269,7 +292,10 @@ impl Engine {
         let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         let changed = db
             .execute(
-                "UPDATE media SET deleting=1 WHERE id=?1 AND published IS NULL AND deleted=0",
+                sql(
+                    "UPDATE media SET deleting=1 WHERE id=?1 AND published IS NULL AND deleted=0",
+                    "UPDATE media SET deleting=1 WHERE id=$1 AND published IS NULL AND deleted=0",
+                ),
                 [id],
             )
             .map_err(EngineError::unavailable)?;
@@ -314,7 +340,10 @@ impl Engine {
         };
         for media in &result {
             tx.execute(
-                "UPDATE media SET deleting=1,cleanup_attempt=?2 WHERE id=?1",
+                sql(
+                    "UPDATE media SET deleting=1,cleanup_attempt=?2 WHERE id=?1",
+                    "UPDATE media SET deleting=1,cleanup_attempt=$2 WHERE id=$1",
+                ),
                 params![media.id, timestamp],
             )
             .map_err(EngineError::unavailable)?;
@@ -336,7 +365,7 @@ impl Engine {
         let mut db = self.store.db.lock().map_err(EngineError::unavailable)?;
         let tx = db.savepoint().map_err(EngineError::unavailable)?;
         let ids = {
-            let mut query = tx.prepare("SELECT id FROM media WHERE staging_clean=0 AND created<=?1 AND staging_attempt<?3 ORDER BY staging_attempt,created LIMIT ?2").map_err(EngineError::unavailable)?;
+            let mut query = tx.prepare(sql("SELECT id FROM media WHERE staging_clean=0 AND created<=?1 AND staging_attempt<?3 ORDER BY staging_attempt,created LIMIT ?2", "SELECT id FROM media WHERE staging_clean=0 AND created<=$1 AND staging_attempt<$3 ORDER BY staging_attempt,created LIMIT $2")).map_err(EngineError::unavailable)?;
             query
                 .query_map(
                     params![
@@ -352,7 +381,10 @@ impl Engine {
         };
         for id in &ids {
             tx.execute(
-                "UPDATE media SET staging_attempt=?2 WHERE id=?1",
+                sql(
+                    "UPDATE media SET staging_attempt=?2 WHERE id=?1",
+                    "UPDATE media SET staging_attempt=$2 WHERE id=$1",
+                ),
                 params![id, timestamp],
             )
             .map_err(EngineError::unavailable)?;
@@ -365,14 +397,23 @@ impl Engine {
             .db
             .lock()
             .map_err(EngineError::unavailable)?
-            .execute("UPDATE media SET staging_clean=1 WHERE id=?1", [id])
+            .execute(
+                sql(
+                    "UPDATE media SET staging_clean=1 WHERE id=?1",
+                    "UPDATE media SET staging_clean=1 WHERE id=$1",
+                ),
+                [id],
+            )
             .map_err(EngineError::unavailable)?;
         Ok(())
     }
     pub(crate) fn remove_media_record(&self, id: &str) -> Result<(), EngineError> {
         let db = self.store.db.lock().map_err(EngineError::unavailable)?;
         db.execute(
-            "UPDATE media SET deleted=1,deleting=0,ready=0 WHERE id=?1 AND deleting=1",
+            sql(
+                "UPDATE media SET deleted=1,deleting=0,ready=0 WHERE id=?1 AND deleting=1",
+                "UPDATE media SET deleted=1,deleting=0,ready=0 WHERE id=$1 AND deleting=1",
+            ),
             [id],
         )
         .map_err(EngineError::unavailable)?;
@@ -395,9 +436,7 @@ mod tests {
             let mut query = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
             let bindings = vec![1_i64; query.parameter_count()];
             let plan: Vec<(i64, i64, String)> = query
-                .query_map(rusqlite::params_from_iter(bindings), |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(3)?))
-                })
+                .query_map(bindings, |row| Ok((row.get(0)?, row.get(1)?, row.get(3)?)))
                 .unwrap()
                 .map(Result::unwrap)
                 .collect();

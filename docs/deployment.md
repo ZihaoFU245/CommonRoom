@@ -1,5 +1,12 @@
 # Deployment
 
+The instructions below default to SQLite. To use PostgreSQL, set
+`database.backend` to `postgres` in `config.json`, put `CHAT_DATABASE_URL` in the
+service environment, and follow [PostgreSQL](postgresql.md)
+for initialization or transfer of an existing HEAD SQLite database. Retain the
+local data folder for configuration and worker state; PostgreSQL requires its own
+database backups in addition to that folder and the object store.
+
 This guide takes a release build to a public HTTPS site: artifacts, first start,
 configuration, a reverse proxy, and optional S3-compatible media storage.
 
@@ -176,6 +183,7 @@ rejected at startup.
 | Variable | Purpose |
 | --- | --- |
 | `CHAT_DATA` | Data folder. Default `./data`. |
+| `CHAT_DATABASE_URL` | PostgreSQL connection secret, required only when the selected config sets `database.backend=postgres`; never saved. |
 | `CHAT_ORIGIN` | Public HTTPS origin, e.g. `https://chat.example.com`. Required on the first production start and saved. |
 | `CHAT_BIND` | Listener address. Saved when overridden. |
 | `CHAT_TRUST` | Proxy IP. Saved when overridden. |

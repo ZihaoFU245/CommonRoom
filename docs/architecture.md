@@ -1,12 +1,26 @@
 # Architecture
 
-CommonRoom has one Rust API/WebSocket executable, a separately built static UI served by Nginx, and one portable data folder. The web is a Preact application written in strict TypeScript. Node and pnpm are development/build dependencies, not production services.
+`config.json` explicitly selects `database.backend` (`sqlite` by default or
+`postgres`). The PostgreSQL URL is supplied only through `CHAT_DATABASE_URL` and
+never changes the selected backend by itself. Startup reads selection without
+saving, acquires ownership, then normalizes configuration after rechecking that
+the selection has not changed.
+`engine/database/` owns synchronous connections, typed parameters/rows, explicit
+SQL dialect selection, prepared statements, transaction scopes and lossless JSON
+projections. Storage/history modules retain domain persistence coordination and
+explicit backend SQL. PostgreSQL readers use repeatable-read read-only snapshots;
+its writer session holds exclusive database ownership. Backend switching does not
+alter the engine's single-process ownership or wire contracts. See
+[PostgreSQL](postgresql.md) for runtime and offline transfer details. SQLite/WAL and
+portable-folder details below apply to the SQLite backend.
+
+CommonRoom has one Rust API/WebSocket executable, a separately built static UI served by Nginx, and a local configuration folder. SQLite keeps its portable database in that folder; PostgreSQL stores chat data externally. The web is a Preact application written in strict TypeScript. Node and pnpm are development/build dependencies, not production services.
 
 ## Server ownership
 
 `server/src/main.rs` wires process lifecycle, configuration, shared application state, and graceful shutdown. `console.rs` owns the stdin superuser interface. `config.rs` loads and validates saved settings; settings require a restart.
 
-`engine/mod.rs` defines the engine and module boundary. `Engine` coordinates domain changes through separate owners: `Store` holds the SQLite
+`engine/mod.rs` defines the engine and module boundary. `Engine` coordinates domain changes through separate owners: `Store` holds the selected database
 writer, history readers, process lock, persisted cursors and pending maintenance;
 `Presence` owns transient connections; `CompiledPolicy` owns compiled authorization;
 and media state owns limits and avatar-host policy. Raw `Data` is private in production.
@@ -115,7 +129,7 @@ New sends/replies/reactions broadcast a `conversation` update only to authorized
 
 History uses stable sequence cursors, not deep OFFSET pagination. Requesting a range near sequence 1,000 reads that page directly without reading the first 999 messages. `around` probes at most half a page backwards before reading the page. Browsing beyond a 1,000-entry window evicts the opposite end; returning to it reloads only that page. The old all-history HTTP/UI path and all-history startup loader are removed. See [Data](data.md) and [Protocol](protocol.md).
 
-This release is a single-process service. Multiple application replicas must not share a data folder; an OS lock enforces one owner. Horizontal scaling would require shared persistence and cross-process event delivery. A reverse proxy/load balancer currently supplies TLS and routes to that single process.
+This release is a single-process service. An OS lock enforces one local data-folder owner for either backend; a session advisory lock additionally enforces one PostgreSQL database owner. Ownership precedes configuration normalization. Horizontal scaling still requires shared metadata/presence coordination and cross-process event delivery. A reverse proxy/load balancer currently supplies TLS and routes to that single process.
 
 Socket baselines share serialized buffers per account and browser/bot profile.
 The cache is bounded to 128 entries/32 MiB and keyed by mutation revision,

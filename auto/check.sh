@@ -9,6 +9,8 @@ cargo test --locked
 node --check web/scripts/smoke.mjs
 node --check web/scripts/media-smoke.mjs
 sh -n auto/start-s3.sh
+sh -n auto/start-postgres.sh
+sh -n auto/debug.sh
 # The separately maintained demo is optional in a server-only checkout.
 if [ -d simpleBot ]; then
     node web/node_modules/@typescript/native/bin/tsc -p simpleBot/tsconfig.json

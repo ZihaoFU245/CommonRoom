@@ -41,6 +41,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         media::setup_local_s3().await?;
         return Ok(());
     }
+    if std::env::args().nth(1).as_deref() == Some("--migrate-sqlite") {
+        let source = std::env::args_os()
+            .nth(2)
+            .ok_or("Usage: chat --migrate-sqlite /path/to/chat.sqlite (set CHAT_DATABASE_URL)")?;
+        if std::env::args_os().nth(3).is_some() {
+            return Err("Unexpected migration arguments".into());
+        }
+        let destination = std::env::var("CHAT_DATABASE_URL")
+            .map_err(|_| "Migration requires CHAT_DATABASE_URL")?;
+        let report = tokio::task::spawn_blocking(move || {
+            Engine::migrate_sqlite(Path::new(&source), &destination)
+        })
+        .await??;
+        for (table, rows) in report.rows {
+            println!("{table}: {rows} verified rows");
+        }
+        println!(
+            "Migration committed. SQLite source preserved. Set database.backend=postgres in config.json and start chat with CHAT_DATABASE_URL set."
+        );
+        return Ok(());
+    }
     let data_dir = std::env::var("CHAT_DATA").unwrap_or_else(|_| "data".into());
     std::fs::create_dir_all(&data_dir)?;
     #[cfg(unix)]
@@ -48,14 +69,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let mut engine = Engine::open(&Path::new(&data_dir).join("chat.sqlite"))?;
-    let config = Config::load(Path::new(&data_dir))?;
-    engine.set_limits(config.max_users, config.max_rooms, config.max_messages)?;
-    engine.configure_media(config.media.clone());
-    engine.set_avatar_hosts(config.avatar_hosts.iter().cloned().collect());
-    if !engine.has_accounts() {
-        tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
-    }
+    // Read the explicit backend without writing; acquire ownership before
+    // configuration normalization. A secret URL never selects the backend.
+    // Construct either synchronous database driver on a blocking worker.
+    let database = Config::read_database(Path::new(&data_dir))?;
+    let selected_database = database.clone();
+    let database_path = Path::new(&data_dir).join("chat.sqlite");
+    let mut engine = tokio::task::spawn_blocking(move || -> Result<Engine, engine::EngineError> {
+        match selected_database.backend {
+            config::DatabaseBackend::Sqlite => Engine::open(&database_path),
+            config::DatabaseBackend::Postgres => {
+                let url = std::env::var("CHAT_DATABASE_URL")
+                    .ok()
+                    .filter(|url| !url.trim().is_empty())
+                    .ok_or("database.backend=postgres requires CHAT_DATABASE_URL.")?;
+                Engine::open_postgres_in_folder(&url, &database_path)
+            }
+        }
+    })
+    .await??;
+    let config = Config::load_for_database(Path::new(&data_dir), &database)?;
     let media = media::MediaStorage::from_config(config.production, config.s3.as_ref())?;
     if media.as_ref().is_some_and(|storage| {
         config
@@ -65,8 +98,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) {
         return Err("Media storage must use a separate origin from the chat application.".into());
     }
-    if media.is_some() {
-        engine.prepare_media_cleanup()?;
+    let setup_config = config.clone();
+    let media_enabled = media.is_some();
+    let engine = tokio::task::spawn_blocking(move || -> Result<Engine, engine::EngineError> {
+        engine.set_limits(
+            setup_config.max_users,
+            setup_config.max_rooms,
+            setup_config.max_messages,
+        )?;
+        engine.configure_media(setup_config.media.clone());
+        engine.set_avatar_hosts(setup_config.avatar_hosts.iter().cloned().collect());
+        if media_enabled {
+            engine.prepare_media_cleanup()?;
+        }
+        Ok(engine)
+    })
+    .await??;
+    if !engine.has_accounts() {
+        tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
     }
     let (changes, _) = broadcast::channel(256);
     let app = App {

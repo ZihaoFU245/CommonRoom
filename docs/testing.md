@@ -1,5 +1,44 @@
 # Testing
 
+## PostgreSQL backend and SQLite transfer
+
+The ordinary Rust suite runs SQLite without an external database. PostgreSQL
+contracts are opt-in ignored tests that create/drop unique schemas in an explicitly
+selected test database. Use a disposable PostgreSQL 18 container, not a production
+database. Run them serially because database ownership is deliberately exclusive:
+
+```sh
+container run -d --name chat-postgres-test --memory 1G --cpus 2 \
+  -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=devpass -e POSTGRES_DB=chat_test \
+  -p 127.0.0.1:55432:5432 docker.io/library/postgres:18
+export CHAT_TEST_POSTGRES_URL='postgresql://dev:devpass@127.0.0.1:55432/chat_test'
+rtk cargo test --locked postgres_ -- --ignored --test-threads=1
+rtk cargo build --locked
+rtk proxy python3 auto/test-postgres.py
+container stop chat-postgres-test
+container delete chat-postgres-test
+```
+
+Wait for PostgreSQL readiness before running tests. These contracts exercise
+SQLite transfer of all 14 tables, unchanged source bytes, target rollback on a
+checksum mismatch, rejection of active/nonempty/unsupported targets, preserved
+password hashes/sessions/retry receipts/cursors, Unicode and embedded NUL text,
+media lifecycle and download revalidation, native command/message failure rollback,
+repeatable reader snapshots, restart and connection-loss recovery. Container
+cleanup is required even when a test fails. The existing SQLite suite retains its
+integrity, crash, rollback, query-plan and mutation-cost checks.
+
+`auto/test-postgres.py` requires the target's default schema to be empty. It
+provisions a temporary SQLite server through the real stdin console, verifies HTTP
+login, runs the binary's transfer command, then checks PostgreSQL HTTP sessions,
+password login, restart and graceful shutdown twice. It leaves the migrated test
+tables in PostgreSQL for container removal; use a fresh container to repeat it.
+It also verifies that a rejected second process cannot rewrite saved configuration
+for either backend, a URL alone cannot select PostgreSQL, and missing/empty URLs
+cannot silently fall back to SQLite after PostgreSQL is selected in configuration.
+Configuration regressions cover legacy SQLite defaults, backend changes during
+startup, and rejection of database URLs/passwords and S3 credentials in saved JSON.
+
 ## Required checks
 
 From the repository root:
@@ -30,7 +69,10 @@ rtk pnpm --dir web test:integration
 running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 `auto/debug.sh` runs the existing debug binary and previews `web/dist-debug/`
-at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild.
+at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild. It defaults
+to SQLite/no S3, with opt-in `--with-s3` and `--with-postgres` flags. See
+[Development](development.md) for the generated per-run config and data folder.
+
 `auto/clean.sh` removes server/UI build artifacts, Vite caches, and
 `tmp/rustfs-local/` (including local buckets, logs and temporary files).
 Stop debug and RustFS first. It preserves `tmp/rustfs`, other `tmp/` files,
@@ -591,13 +633,14 @@ HTTP/WebSocket upload checks, run `rtk proxy node web/scripts/media-smoke.mjs`
 after building the debug server; see [Media uploads](media-uploads.md). Its binary and
 temporary data live under ignored `tmp/`.
 
-`auto/debug.sh` supplies local RustFS connection defaults (`127.0.0.1:19000`,
-private bucket `commonroom-draft`, path-style addressing and development credentials).
-Explicit `CHAT_S3_*` variables override these defaults; `RUSTFS_ACCESS_KEY` and
-`RUSTFS_SECRET_KEY` also supply matching local credentials when set. It starts
-only chat and the UI. Start RustFS manually in another terminal with
-`./auto/start-s3.sh`; stopping debug does not stop that independently started service.
-Create the private bucket and CORS policy as described in [Media uploads](media-uploads.md).
+`auto/debug.sh --with-s3` connects to an already-running local S3 service at
+`127.0.0.1:19000`, with private bucket `commonroom-draft`, path-style addressing
+and development credentials.
+The launcher configures chat credentials and prepares the bucket/CORS settings.
+Start S3 separately; debug never starts or stops it. With no flag it does no S3
+setup or checks.
+See [Development](development.md) for overrides and [Media uploads](media-uploads.md)
+for independently deployed storage.
 
 Media availability regressions hold local S3 requests open while checking that
 ordinary chat reads still pass with a one-permit API budget and another file's

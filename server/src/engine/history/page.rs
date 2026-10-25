@@ -157,12 +157,12 @@ impl HistoryStore {
         self.misses.fetch_add(1, Ordering::Relaxed);
         let result = self.read(|db| {
             let tx = db.unchecked_transaction().map_err(EngineError::unavailable)?;
-            let stored: u64 = tx.query_row("SELECT revision FROM entities WHERE kind IN ('room','private') AND json_extract(json,'$.id')=?1", [id], |r| r.get(0)).map_err(EngineError::unavailable)?;
+            let stored: u64 = tx.query_row(sql("SELECT revision FROM entities WHERE kind IN ('room','private') AND json_extract(json,'$.id')=?1", "SELECT revision FROM entities WHERE kind IN ('room','private') AND (projection #>> '{id}')=$1"), [id], |r| r.get(0)).map_err(EngineError::unavailable)?;
             if stored != revision { return Ok(None); }
             let ascending=range.after.is_some() || range.start.is_some() || range.around.is_some();
             let start=if let Some(around)=range.around {
-                use rusqlite::OptionalExtension;
-                tx.query_row("SELECT sequence FROM messages WHERE conversation=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT 1 OFFSET ?3",params![id,around,limit/2],|r|r.get::<_,u64>(0)).optional().map_err(EngineError::unavailable)?.unwrap_or(0)
+                use crate::engine::database::OptionalExtension;
+                tx.query_row(sql("SELECT sequence FROM messages WHERE conversation=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT 1 OFFSET ?3", "SELECT sequence FROM messages WHERE conversation=$1 AND sequence<=$2 ORDER BY sequence DESC LIMIT 1 OFFSET $3"),params![id,around,limit/2],|r|r.get::<_,u64>(0)).optional().map_err(EngineError::unavailable)?.unwrap_or(0)
             } else {range.start.unwrap_or(0)};
             let lower=start.max(range.after.map(|sequence|sequence.saturating_add(1)).unwrap_or(1));
             let upper=range.end.unwrap_or(9_007_199_254_740_991).min(range.before.map(|sequence|sequence.saturating_sub(1)).unwrap_or(9_007_199_254_740_991));

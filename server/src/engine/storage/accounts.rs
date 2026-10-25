@@ -11,7 +11,7 @@ pub(super) fn rewrite_account_messages(
         .unwrap_or_else(|| format!("{name} (deleted)"));
     let mut after = 0u64;
     loop {
-        let mut query=db.prepare("SELECT m.conversation,m.json FROM message_accounts a JOIN messages m ON m.conversation=a.conversation AND m.sequence=a.sequence WHERE a.name=?2 AND a.sequence>?1 ORDER BY a.sequence LIMIT 100").map_err(EngineError::from)?;
+        let mut query=db.prepare(sql("SELECT m.conversation,m.json FROM message_accounts a JOIN messages m ON m.conversation=a.conversation AND m.sequence=a.sequence WHERE a.name=?2 AND a.sequence>?1 ORDER BY a.sequence LIMIT 100", "SELECT m.conversation,m.json FROM message_accounts a JOIN messages m ON m.conversation=a.conversation AND m.sequence=a.sequence WHERE a.name=$2 AND a.sequence>$1 ORDER BY a.sequence LIMIT 100")).map_err(EngineError::from)?;
         let rows = query
             .query_map(params![after, name], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -54,13 +54,19 @@ pub(super) fn rewrite_account_messages(
     }
     if let Some(new) = new_name {
         db.execute(
-            "UPDATE OR IGNORE reactions SET username=?1 WHERE username=?2",
+            sql("UPDATE OR IGNORE reactions SET username=?1 WHERE username=?2", "INSERT INTO reactions(conversation,sequence,reaction,username) SELECT conversation,sequence,reaction,$1 FROM reactions WHERE username=$2 ON CONFLICT DO NOTHING"),
             params![new, name],
         )
         .map_err(EngineError::from)?;
     }
-    db.execute("DELETE FROM reactions WHERE username=?1", [name])
-        .map_err(EngineError::from)?;
+    db.execute(
+        sql(
+            "DELETE FROM reactions WHERE username=?1",
+            "DELETE FROM reactions WHERE username=$1",
+        ),
+        [name],
+    )
+    .map_err(EngineError::from)?;
     Ok(())
 }
 
@@ -68,7 +74,7 @@ pub(super) fn account_conversations(
     db: &Connection,
     name: &str,
 ) -> Result<BTreeSet<String>, EngineError> {
-    let mut query = db.prepare("SELECT conversation FROM message_accounts WHERE name=?1 UNION SELECT conversation FROM reactions WHERE username=?1").map_err(EngineError::from)?;
+    let mut query = db.prepare(sql("SELECT conversation FROM message_accounts WHERE name=?1 UNION SELECT conversation FROM reactions WHERE username=?1", "SELECT conversation FROM message_accounts WHERE name=$1 UNION SELECT conversation FROM reactions WHERE username=$1")).map_err(EngineError::from)?;
     query
         .query_map([name], |r| r.get(0))
         .map_err(EngineError::from)?
@@ -99,26 +105,38 @@ impl Engine {
         // A reused name must never inherit orphaned cursors from an old account.
         transaction
             .execute(
-                "DELETE FROM read_positions WHERE username=?1",
+                sql(
+                    "DELETE FROM read_positions WHERE username=?1",
+                    "DELETE FROM read_positions WHERE username=$1",
+                ),
                 params![new_name],
             )
             .map_err(EngineError::from)?;
         transaction
             .execute(
-                "UPDATE read_positions SET username=?1 WHERE username=?2",
+                sql(
+                    "UPDATE read_positions SET username=?1 WHERE username=?2",
+                    "UPDATE read_positions SET username=$1 WHERE username=$2",
+                ),
                 params![new_name, name],
             )
             .map_err(EngineError::from)?;
         for (old, new) in conversations {
             transaction
                 .execute(
-                    "DELETE FROM read_positions WHERE conversation=?1",
+                    sql(
+                        "DELETE FROM read_positions WHERE conversation=?1",
+                        "DELETE FROM read_positions WHERE conversation=$1",
+                    ),
                     params![new],
                 )
                 .map_err(EngineError::from)?;
             transaction
                 .execute(
-                    "UPDATE read_positions SET conversation=?1 WHERE conversation=?2",
+                    sql(
+                        "UPDATE read_positions SET conversation=?1 WHERE conversation=?2",
+                        "UPDATE read_positions SET conversation=$1 WHERE conversation=$2",
+                    ),
                     params![new, old],
                 )
                 .map_err(EngineError::from)?;
@@ -157,14 +175,20 @@ impl Engine {
         write_delta_view(&transaction, &self.data, before.view())?;
         transaction
             .execute(
-                "DELETE FROM read_positions WHERE username=?1",
+                sql(
+                    "DELETE FROM read_positions WHERE username=?1",
+                    "DELETE FROM read_positions WHERE username=$1",
+                ),
                 params![name],
             )
             .map_err(EngineError::from)?;
         for key in removed {
             transaction
                 .execute(
-                    "DELETE FROM read_positions WHERE conversation=?1",
+                    sql(
+                        "DELETE FROM read_positions WHERE conversation=?1",
+                        "DELETE FROM read_positions WHERE conversation=$1",
+                    ),
                     params![key],
                 )
                 .map_err(EngineError::from)?;

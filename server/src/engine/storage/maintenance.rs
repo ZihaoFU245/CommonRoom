@@ -1,6 +1,9 @@
 use super::*;
 
-pub(in crate::engine) const CLEANUP_COUNTS_SQL: &str = "SELECT targets.value, count(DISTINCT m.sequence), count(refs.media_id) FROM json_each(?1) AS targets LEFT JOIN messages AS m ON m.conversation=targets.value AND json_extract(m.json,'$.time')<?2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value";
+pub(in crate::engine) const CLEANUP_COUNTS_SQL: crate::engine::database::Sql<'static> = sql(
+    "SELECT targets.value, count(DISTINCT m.sequence), count(refs.media_id) FROM json_each(?1) AS targets LEFT JOIN messages AS m ON m.conversation=targets.value AND json_extract(m.json,'$.time')<?2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value",
+    "SELECT targets.value, count(DISTINCT m.sequence), count(refs.media_id) FROM jsonb_array_elements_text($1::text::jsonb) AS targets LEFT JOIN messages AS m ON m.conversation=targets.value AND ((m.projection #>> '{time}'))::bigint<$2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value",
+);
 
 pub(super) fn write_history_deletions(
     tx: &Connection,
@@ -8,20 +11,55 @@ pub(super) fn write_history_deletions(
     cleanups: &[(String, u64)],
 ) -> Result<(), EngineError> {
     for (id, sequence) in deletes {
-        let message_id:String=tx.query_row("SELECT json_extract(json,'$.id') FROM messages WHERE conversation=?1 AND sequence=?2",params![id,sequence],|r|r.get(0)).map_err(EngineError::from)?;
-        tx.execute("UPDATE messages SET json=json_set(json,'$.reply',NULL) WHERE conversation=?1 AND json_extract(json,'$.reply.id')=?2",params![id,message_id]).map_err(EngineError::from)?;
+        let message_id:String=tx.query_row(sql("SELECT json_extract(json,'$.id') FROM messages WHERE conversation=?1 AND sequence=?2", "SELECT (projection #>> '{id}') FROM messages WHERE conversation=$1 AND sequence=$2"),params![id,sequence],|r|r.get(0)).map_err(EngineError::from)?;
+        if tx.is_postgres() {
+            scrub_postgres_replies(tx, id, &message_id)?;
+        } else {
+            tx.execute("UPDATE messages SET json=json_set(json,'$.reply',NULL) WHERE conversation=?1 AND json_extract(json,'$.reply.id')=?2",params![id,message_id])?;
+        }
         tx.execute(
-            "DELETE FROM messages WHERE conversation=?1 AND sequence=?2",
+            sql(
+                "DELETE FROM messages WHERE conversation=?1 AND sequence=?2",
+                "DELETE FROM messages WHERE conversation=$1 AND sequence=$2",
+            ),
             params![id, sequence],
         )
         .map_err(EngineError::from)?;
     }
     for (id, cutoff) in cleanups {
         tx.execute(
-            "DELETE FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2",
+            sql("DELETE FROM messages WHERE conversation=?1 AND json_extract(json,'$.time')<?2", "DELETE FROM messages WHERE conversation=$1 AND ((projection #>> '{time}'))::bigint<$2"),
             params![id, cutoff],
         )
         .map_err(EngineError::from)?;
+    }
+    Ok(())
+}
+
+// PostgreSQL cannot parse escaped NULs inside arbitrary message text as JSONB.
+// Seek via the safe reply projection, then rewrite bounded payload batches in Rust.
+fn scrub_postgres_replies(
+    db: &Connection,
+    conversation: &str,
+    target: &str,
+) -> Result<(), EngineError> {
+    let mut after = 0u64;
+    loop {
+        let mut query=db.prepare_cached("SELECT json FROM messages WHERE conversation=$1 AND (projection #>> '{reply,id}')=$2 AND sequence>$3 ORDER BY sequence LIMIT 100")?;
+        let batch = query
+            .query_map(params![conversation, target, after], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if batch.is_empty() {
+            break;
+        }
+        for raw in batch {
+            let mut message: Message = serde_json::from_str(&raw)?;
+            after = message.sequence;
+            message.reply = None;
+            put_message(db, conversation, &message)?;
+        }
     }
     Ok(())
 }
@@ -103,7 +141,10 @@ impl Engine {
         {
             if ids.contains(id) {
                 tx.execute(
-                    "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                    sql(
+                        "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                        "UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2",
+                    ),
                     params![kind, key, revision],
                 )
                 .map_err(EngineError::from)?;

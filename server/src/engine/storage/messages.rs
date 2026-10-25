@@ -37,7 +37,12 @@ pub(super) fn put_message(
         mentions: &message.mentions,
     };
     let json = serde_json::to_string(&record).map_err(EngineError::from)?;
-    db.prepare_cached("INSERT INTO messages VALUES(?1,?2,?3) ON CONFLICT(conversation,sequence) DO UPDATE SET json=excluded.json WHERE json!=excluded.json")?.execute(params![key,message.sequence,json]).map_err(EngineError::from)?;
+    if db.is_postgres() {
+        let projection = database::message_projection(&json)?;
+        db.execute("INSERT INTO messages(conversation,sequence,json,projection) VALUES($1,$2,$3,$4::text::jsonb) ON CONFLICT(conversation,sequence) DO UPDATE SET json=excluded.json,projection=excluded.projection WHERE messages.json!=excluded.json",params![key,message.sequence,json,projection])?;
+    } else {
+        db.execute("INSERT INTO messages VALUES(?1,?2,?3) ON CONFLICT(conversation,sequence) DO UPDATE SET json=excluded.json WHERE json!=excluded.json",params![key,message.sequence,json])?;
+    }
     Ok(())
 }
 impl Engine {
@@ -75,10 +80,18 @@ impl Engine {
                 .and_then(|row| row.reaction.as_ref())
                 .ok_or_else(|| EngineError::Internal("Missing reaction change.".into()))?;
             if delta.active {
-                tx.prepare_cached("INSERT INTO reactions VALUES(?1,?2,?3,?4)")?
-                    .execute(params![id, current.sequence, delta.reaction, delta.user])?;
+                tx.prepare_cached(sql(
+                    "INSERT INTO reactions VALUES(?1,?2,?3,?4)",
+                    "INSERT INTO reactions VALUES($1,$2,$3,$4)",
+                ))?
+                .execute(params![
+                    id,
+                    current.sequence,
+                    delta.reaction,
+                    delta.user
+                ])?;
             } else {
-                tx.prepare_cached("DELETE FROM reactions WHERE conversation=?1 AND sequence=?2 AND reaction=?3 AND username=?4")?.execute(params![id, current.sequence, delta.reaction, delta.user])?;
+                tx.prepare_cached(sql("DELETE FROM reactions WHERE conversation=?1 AND sequence=?2 AND reaction=?3 AND username=?4", "DELETE FROM reactions WHERE conversation=$1 AND sequence=$2 AND reaction=$3 AND username=$4"))?.execute(params![id, current.sequence, delta.reaction, delta.user])?;
             }
         } else {
             put_message(&tx, id, current)?;
@@ -93,7 +106,10 @@ impl Engine {
         if matches!(change.mutation, MessageMutation::Append) {
             retention::prune(&tx, id, self.max_messages)?;
             tx.execute(
-                "UPDATE counters SET sequence=?1 WHERE id=1",
+                sql(
+                    "UPDATE counters SET sequence=?1 WHERE id=1",
+                    "UPDATE counters SET sequence=$1 WHERE id=1",
+                ),
                 params![self.data.next_sequence],
             )
             .map_err(EngineError::from)?;
@@ -107,20 +123,29 @@ impl Engine {
             put_entity(&tx, kind, &change.key, &private_metadata(chat))?;
         }
         tx.execute(
-            "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+            sql(
+                "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
+                "UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2",
+            ),
             params![kind, change.key, revision],
         )
         .map_err(EngineError::from)?;
         if let Some(receipt) = receipt {
             tx.execute(
-                "DELETE FROM bot_receipts WHERE created<=?1",
+                sql(
+                    "DELETE FROM bot_receipts WHERE created<=?1",
+                    "DELETE FROM bot_receipts WHERE created<=$1",
+                ),
                 [receipt
                     .created
                     .saturating_sub(crate::bots::models::RECEIPT_TTL)],
             )
             .map_err(EngineError::from)?;
             tx.execute(
-                "INSERT INTO bot_receipts VALUES(?1,?2,?3,?4,?5,?6)",
+                sql(
+                    "INSERT INTO bot_receipts VALUES(?1,?2,?3,?4,?5,?6)",
+                    "INSERT INTO bot_receipts VALUES($1,$2,$3,$4,$5,$6)",
+                ),
                 params![
                     receipt.account_id,
                     receipt.key,

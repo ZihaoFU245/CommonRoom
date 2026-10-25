@@ -1,5 +1,12 @@
 # Data
 
+SQLite is the default backend. Select `database.backend=postgres` in `config.json`
+and provide its URL through `CHAT_DATABASE_URL` to use PostgreSQL;
+see [PostgreSQL](postgresql.md) for startup, the verified offline SQLite transfer
+command, and PostgreSQL backups. The file layout and copy-folder procedures below
+describe SQLite deployments. PostgreSQL deployments still keep local configuration
+and worker files, but chat accounts/history live in PostgreSQL.
+
 ## Database compatibility
 
 Empty databases initialize transactionally as the current HEAD schema, v19.

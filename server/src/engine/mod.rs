@@ -13,6 +13,7 @@ mod bot_api;
 mod bots;
 mod cleanup;
 pub(crate) mod colors;
+mod database;
 mod dispatch;
 mod error;
 mod helpers;
@@ -42,6 +43,7 @@ mod tests;
 mod trust_tests;
 
 use changes::MetadataChange;
+use database::{Connection, params, sql};
 pub(crate) use dispatch::CommandChange;
 use dispatch::CommandContext;
 pub use dispatch::sudo_command;
@@ -52,7 +54,6 @@ pub(crate) use history::HistoryStore;
 pub use history::{HistoryError, HistoryRange};
 pub use models::*;
 pub(crate) use read_model::{MetadataClock, SnapshotStamp};
-use rusqlite::{Connection, params};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::Path,
@@ -94,6 +95,11 @@ impl Engine {
                 "Server state recovery failed; restart the service.".into(),
             ));
         }
+        self.store
+            .db
+            .lock()
+            .map_err(EngineError::unavailable)?
+            .ensure_available()?;
         Ok(())
     }
 }

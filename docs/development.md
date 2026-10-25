@@ -34,15 +34,33 @@ rtk proxy ./auto/build.sh debug
 rtk proxy ./auto/debug.sh
 ```
 
-`debug.sh` runs the existing server binary and serves `web/dist-debug/` with
-Vite preview at http://127.0.0.1:5173, proxying `/api` and `/ws` to
-`127.0.0.1:3000`. The server's stdin console remains available. Ctrl + C or
-either process exiting stops both. This uses the default root hosting and
-backend port; use Nginx for other saved listener/base-path or production settings.
-For local media, run `auto/start-s3.sh` in another terminal first. Debug uses
-matching local S3 settings, creates the private development bucket if needed,
-and applies browser CORS; RustFS stays managed by its own terminal.
-It does not rebuild. Rebuild the relevant artifact after changing web assets or Rust code. Release
+`debug.sh` runs the existing Rust debug binary and previews `web/dist-debug/`
+at http://127.0.0.1:5173, proxying the API/WebSocket to `127.0.0.1:3000`.
+It defaults to SQLite with no S3 operations. Debug data and its generated
+`config.json` live in the repository's `data/` directory.
+
+```sh
+rtk proxy ./auto/debug.sh
+rtk proxy ./auto/debug.sh --with-s3
+rtk proxy ./auto/debug.sh --with-postgres
+rtk proxy ./auto/debug.sh --with-s3 --with-postgres
+```
+
+Start dependencies in separate terminals before enabling them:
+
+```sh
+rtk proxy ./auto/start-s3.sh
+rtk proxy ./auto/start-postgres.sh
+```
+
+`--with-s3` connects to an already-running local S3 service and prepares the
+bucket/CORS settings. The optional RustFS helper requires `tmp/rustfs`; another
+local S3 service can be started separately. `--with-postgres` connects to an
+already-running database, defaulting to `postgresql://cr:pass@127.0.0.1:5432/devdb`;
+`CHAT_DATABASE_URL` can override it. Debug never starts or stops either dependency.
+Credentials remain environment-only. The Rust debug build defaults to development
+mode; release builds are always production. Node is only used for the existing UI
+preview. Ctrl+C or a service exiting stops chat and UI. It does not rebuild. Release
 packaging uses `rtk proxy ./auto/build.sh release` and produces `./chat` and
 `./ui.tar.xz` (containing `dist/`).
 
@@ -51,11 +69,17 @@ Run `rtk proxy ./auto/clean.sh` to remove `target/`, both UI bundles, Vite
 caches, `./chat`, `./ui.tar.xz`, and RustFS runtime files in `tmp/rustfs-local/`
 (including local buckets). Stop running debug and RustFS processes first.
 Cleaning preserves `tmp/rustfs`, other `tmp/` files, `data/`, installed
-dependencies, and lockfiles.
+dependencies, lockfiles, and the PostgreSQL cluster in `pgdata/`.
 Both build modes skip source checks and tests. Run `rtk proxy ./auto/check.sh`
 separately before deploying.
 
 Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` contains real account credentials, sessions, and private history; do not delete or modify it for tests. Tests create their own temporary folders. Stop a server before copying its entire data folder.
+
+SQLite is the default. For PostgreSQL, select `database.backend=postgres` in
+`config.json` and set `CHAT_DATABASE_URL` to an isolated database; see
+[PostgreSQL](postgresql.md) for connection settings and the
+built-in SQLite transfer. Database I/O and synchronous-driver construction/destruction
+must remain off the async runtime's worker threads.
 
 ## Browser compatibility
 
@@ -93,7 +117,7 @@ Node/Deno development and bot-worker requirements remain separate.
   writes the matching CSS motion variables before rendering; the stylesheet keeps
   first-paint fallbacks. Message and preview motion retain their separate 180 ms
   timing. Respect reduced motion and clean up animation controllers/listeners.
-- Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep SQL in `engine/storage.rs`/`engine/storage/` and `engine/history.rs`/`engine/history/`, and avoid holding the engine read/write lock across `.await`.
+- Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep domain SQL in `engine/storage.rs`/`engine/storage/` and `engine/history.rs`/`engine/history/`; connection/session/COPY mechanics belong in `engine/database/`. Avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
 - Preserve compatibility with existing HEAD-schema `data/`. Any schema change needs a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). Current startup supports only fresh and HEAD-schema databases; do not restore obsolete migration paths.
@@ -127,10 +151,8 @@ grants Deno binary execution before worker startup; direct invocations must supp
 permissions. The tool starts in the workspace and leaves filesystem, environment
 and network policy to the deployment. See [SimpleBot](../simpleBot/README.md#optional-shell-and-binary-execution).
 
-`auto/debug.sh` supplies local RustFS connection defaults (`127.0.0.1:19000`,
-private bucket `commonroom-draft`, path-style addressing and development credentials).
-Explicit `CHAT_S3_*` variables override these defaults; `RUSTFS_ACCESS_KEY` and
-`RUSTFS_SECRET_KEY` also supply matching local credentials when set. It starts
-only chat and the UI. Start RustFS manually in another terminal with
-`./auto/start-s3.sh`; stopping debug does not stop that independently started service.
-Create the private bucket and CORS policy as described in [Media uploads](media-uploads.md).
+`auto/debug.sh --with-s3` uses local RustFS at `127.0.0.1:19000`, bucket
+`commonroom-draft`, and `cr` / `pass` development credentials. `RUSTFS_ACCESS_KEY`,
+`RUSTFS_SECRET_KEY` and `CHAT_S3_BUCKET` can override those defaults. Start the
+service separately with `auto/start-s3.sh` or another local S3 launcher; do not
+run a second instance on the same ports.

@@ -7,7 +7,12 @@ pub(super) fn put_entity(
     value: &impl serde::Serialize,
 ) -> Result<(), EngineError> {
     let json = serde_json::to_string(value).map_err(EngineError::from)?;
-    db.prepare_cached("INSERT INTO entities(kind,key,json) VALUES(?1,?2,?3) ON CONFLICT(kind,key) DO UPDATE SET json=excluded.json WHERE json!=excluded.json")?.execute(params![kind,key,json]).map_err(EngineError::from)?;
+    if db.is_postgres() {
+        let projection = database::entity_projection(&json)?;
+        db.execute("INSERT INTO entities(kind,key,json,projection) VALUES($1,$2,$3,$4::text::jsonb) ON CONFLICT(kind,key) DO UPDATE SET json=excluded.json,projection=excluded.projection WHERE entities.json!=excluded.json",params![kind,key,json,projection])?;
+    } else {
+        db.execute("INSERT INTO entities(kind,key,json) VALUES(?1,?2,?3) ON CONFLICT(kind,key) DO UPDATE SET json=excluded.json WHERE json!=excluded.json",params![kind,key,json])?;
+    }
     Ok(())
 }
 // Keep the existing JSON representation while borrowing metadata directly.
@@ -76,7 +81,7 @@ pub(super) fn write_state(db: &Connection, data: &Data) -> Result<(), EngineErro
         },
     };
     let json = serde_json::to_string(&metadata)?;
-    db.execute("INSERT INTO state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE json!=excluded.json", params![json])?;
+    db.execute(sql("INSERT INTO state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE json!=excluded.json", "INSERT INTO state VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE state.json!=excluded.json"), params![json])?;
     Ok(())
 }
 pub(in crate::engine) fn load_entities(
@@ -155,7 +160,7 @@ pub(in crate::engine) fn load_entities(
 }
 
 pub(super) fn write_audit(db: &Connection, data: &Data) -> Result<(), EngineError> {
-    use rusqlite::OptionalExtension;
+    use crate::engine::database::OptionalExtension;
     let last: Option<String> = db
         .query_row(
             "SELECT entry_id FROM audit_entries ORDER BY sequence DESC LIMIT 1",
@@ -172,7 +177,7 @@ pub(super) fn write_audit(db: &Connection, data: &Data) -> Result<(), EngineErro
         let raw = serde_json::to_string(entry).map_err(EngineError::from)?;
         inserted += db
             .execute(
-                "INSERT OR IGNORE INTO audit_entries(entry_id,json) VALUES(?1,?2)",
+                sql("INSERT OR IGNORE INTO audit_entries(entry_id,json) VALUES(?1,?2)", "INSERT INTO audit_entries(entry_id,json) VALUES($1,$2) ON CONFLICT(entry_id) DO NOTHING"),
                 params![entry.id, raw],
             )
             .map_err(EngineError::from)?;
@@ -182,7 +187,7 @@ pub(super) fn write_audit(db: &Connection, data: &Data) -> Result<(), EngineErro
     if inserted > 0
         && let Some(first) = data.policy.audit.front()
     {
-        db.execute("DELETE FROM audit_entries WHERE sequence < (SELECT sequence FROM audit_entries WHERE entry_id=?1)", [&first.id]).map_err(EngineError::from)?;
+        db.execute(sql("DELETE FROM audit_entries WHERE sequence < (SELECT sequence FROM audit_entries WHERE entry_id=?1)", "DELETE FROM audit_entries WHERE sequence < (SELECT sequence FROM audit_entries WHERE entry_id=$1)"), [&first.id]).map_err(EngineError::from)?;
     }
     Ok(())
 }
@@ -211,7 +216,10 @@ pub(super) fn write_map_keys<T: serde::Serialize + PartialEq>(
                 (Some(value), old) if Some(value) != old => put_entity(db, kind, key, value)?,
                 (None, Some(_)) => {
                     db.execute(
-                        "DELETE FROM entities WHERE kind=?1 AND key=?2",
+                        sql(
+                            "DELETE FROM entities WHERE kind=?1 AND key=?2",
+                            "DELETE FROM entities WHERE kind=$1 AND key=$2",
+                        ),
                         params![kind, key],
                     )
                     .map_err(EngineError::from)?;
@@ -228,7 +236,10 @@ pub(super) fn write_map_keys<T: serde::Serialize + PartialEq>(
     }
     for key in before.keys().filter(|key| !values.contains_key(*key)) {
         db.execute(
-            "DELETE FROM entities WHERE kind=?1 AND key=?2",
+            sql(
+                "DELETE FROM entities WHERE kind=?1 AND key=?2",
+                "DELETE FROM entities WHERE kind=$1 AND key=$2",
+            ),
             params![kind, key],
         )
         .map_err(EngineError::from)?;
@@ -326,17 +337,29 @@ pub(super) fn write_delta_view(
                     put_entity(db, kind, key, &private_metadata(chat))?;
                 }
                 db.execute(
-                    "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2 AND revision!=?3",
+                    sql(
+                        "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2 AND revision!=?3",
+                        "UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2 AND revision!=$3",
+                    ),
                     params![kind, key, revision],
                 )
                 .map_err(EngineError::from)?;
             } else if let Some((id, _)) = previous {
                 if !current_ids.contains(id) {
-                    db.execute("DELETE FROM messages WHERE conversation=?1", [id])
-                        .map_err(EngineError::from)?;
+                    db.execute(
+                        sql(
+                            "DELETE FROM messages WHERE conversation=?1",
+                            "DELETE FROM messages WHERE conversation=$1",
+                        ),
+                        [id],
+                    )
+                    .map_err(EngineError::from)?;
                 }
                 db.execute(
-                    "DELETE FROM entities WHERE kind=?1 AND key=?2",
+                    sql(
+                        "DELETE FROM entities WHERE kind=?1 AND key=?2",
+                        "DELETE FROM entities WHERE kind=$1 AND key=$2",
+                    ),
                     params![kind, key],
                 )
                 .map_err(EngineError::from)?;
@@ -351,12 +374,18 @@ pub(super) fn write_delta_view(
                 && !data.users.values().any(|current| current.id == old.id)
         }) {
             db.execute(
-                "DELETE FROM bot_receipts WHERE account_id=?1",
+                sql(
+                    "DELETE FROM bot_receipts WHERE account_id=?1",
+                    "DELETE FROM bot_receipts WHERE account_id=$1",
+                ),
                 [&account.id],
             )
             .map_err(EngineError::from)?;
             db.execute(
-                "DELETE FROM bot_command_receipts WHERE account_id=?1",
+                sql(
+                    "DELETE FROM bot_command_receipts WHERE account_id=?1",
+                    "DELETE FROM bot_command_receipts WHERE account_id=$1",
+                ),
                 [&account.id],
             )
             .map_err(EngineError::from)?;
@@ -364,7 +393,10 @@ pub(super) fn write_delta_view(
     }
     if data.next_sequence != before.next_sequence {
         db.execute(
-            "UPDATE counters SET sequence=?1 WHERE id=1",
+            sql(
+                "UPDATE counters SET sequence=?1 WHERE id=1",
+                "UPDATE counters SET sequence=$1 WHERE id=1",
+            ),
             [data.next_sequence],
         )
         .map_err(EngineError::from)?;

@@ -63,6 +63,11 @@ impl From<rusqlite::Error> for EngineError {
         Self::unavailable(cause)
     }
 }
+impl From<super::database::Error> for EngineError {
+    fn from(cause: super::database::Error) -> Self {
+        Self::unavailable(cause)
+    }
+}
 impl From<serde_json::Error> for EngineError {
     fn from(cause: serde_json::Error) -> Self {
         Self::unavailable(cause)

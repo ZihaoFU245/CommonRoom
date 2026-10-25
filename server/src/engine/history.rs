@@ -18,9 +18,18 @@ const CACHE_BYTES: usize = 32 * 1024 * 1024;
 const PAGE_BYTES: usize = 1024 * 1024;
 const CACHE_SHARDS: usize = 4;
 const UNREAD_ENTRIES_PER_SHARD: usize = 4096 / CACHE_SHARDS;
-const PAGE_ASC_SQL: &str = "SELECT json FROM messages WHERE conversation=?1 AND sequence>=?2 AND sequence<=?3 ORDER BY sequence ASC LIMIT ?4";
-const PAGE_DESC_SQL: &str = "SELECT json FROM messages WHERE conversation=?1 AND sequence>=?2 AND sequence<=?3 ORDER BY sequence DESC LIMIT ?4";
-const PAGE_EDGES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence<?2),EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence>?3)";
+const PAGE_ASC_SQL: crate::engine::database::Sql<'static> = sql(
+    "SELECT json FROM messages WHERE conversation=?1 AND sequence>=?2 AND sequence<=?3 ORDER BY sequence ASC LIMIT ?4",
+    "SELECT json FROM messages WHERE conversation=$1 AND sequence>=$2 AND sequence<=$3 ORDER BY sequence ASC LIMIT $4",
+);
+const PAGE_DESC_SQL: crate::engine::database::Sql<'static> = sql(
+    "SELECT json FROM messages WHERE conversation=?1 AND sequence>=?2 AND sequence<=?3 ORDER BY sequence DESC LIMIT ?4",
+    "SELECT json FROM messages WHERE conversation=$1 AND sequence>=$2 AND sequence<=$3 ORDER BY sequence DESC LIMIT $4",
+);
+const PAGE_EDGES_SQL: crate::engine::database::Sql<'static> = sql(
+    "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence<?2),EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence>?3)",
+    "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=$1 AND sequence<$2),EXISTS(SELECT 1 FROM messages WHERE conversation=$1 AND sequence>$3)",
+);
 
 // Count exact serialized bytes without allocating a temporary JSON buffer per row.
 #[derive(Default)]
@@ -104,7 +113,7 @@ impl HistoryStore {
         }
         Ok(())
     }
-    pub fn open(location: &str, memory: bool) -> Result<Self, EngineError> {
+    pub fn open_backend(location: &str, memory: bool, postgres: bool) -> Result<Self, EngineError> {
         let mut readers = Vec::new();
         for _ in 0..4 {
             let flags = if memory {
@@ -112,12 +121,14 @@ impl HistoryStore {
             } else {
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI
             };
-            let db =
-                Connection::open_with_flags(location, flags).map_err(EngineError::unavailable)?;
-            db.busy_timeout(std::time::Duration::from_secs(2))
-                .map_err(EngineError::unavailable)?;
-            db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-2048;")
-                .map_err(EngineError::unavailable)?;
+            let db = if postgres {
+                Connection::postgres(location, true)?
+            } else {
+                let db = Connection::open_with_flags(location, flags)?;
+                db.busy_timeout(std::time::Duration::from_secs(2))?;
+                db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-2048;")?;
+                db
+            };
             readers.push(Mutex::new(db));
         }
         Ok(Self {
@@ -156,17 +167,20 @@ impl HistoryStore {
             return Ok(false);
         }
         self.read(|db| {
-            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM json_each(?1) AS c JOIN messages AS m ON m.conversation=c.value WHERE json_extract(m.json,'$.from')=?2)", params![serde_json::to_string(conversations)?, author], |row| row.get(0))?)
+            Ok(db.query_row(sql("SELECT EXISTS(SELECT 1 FROM json_each(?1) AS c JOIN messages AS m ON m.conversation=c.value WHERE json_extract(m.json,'$.from')=?2)", "SELECT EXISTS(SELECT 1 FROM jsonb_array_elements_text($1::text::jsonb) AS c JOIN messages AS m ON m.conversation=c.value WHERE (m.projection #>> '{from}')=$2)"), params![serde_json::to_string(conversations)?, author], |row| row.get(0))?)
         })
     }
 
     pub(crate) fn has_author(&self, id: &str, author: &str) -> Result<bool, EngineError> {
-        self.read(|db| db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND json_extract(json,'$.from')=?2)", params![id, author], |row| row.get(0)).map_err(EngineError::unavailable))
+        self.read(|db| db.query_row(sql("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND json_extract(json,'$.from')=?2)", "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=$1 AND (projection #>> '{from}')=$2)"), params![id, author], |row| row.get(0)).map_err(EngineError::unavailable))
     }
     pub(crate) fn contains_sequence(&self, id: &str, sequence: u64) -> Result<bool, EngineError> {
         self.read(|db| {
             db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence=?2)",
+                sql(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND sequence=?2)",
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=$1 AND sequence=$2)",
+                ),
                 params![id, sequence],
                 |r| r.get(0),
             )
@@ -189,13 +203,16 @@ impl HistoryStore {
     }
     pub fn locate(&self, message_id: &str) -> Result<Option<(String, Message)>, EngineError> {
         self.read(|db| {
-            use rusqlite::OptionalExtension;
+            use crate::engine::database::OptionalExtension;
             let tx = db
                 .unchecked_transaction()
                 .map_err(EngineError::unavailable)?;
             let row: Option<(String, String)> = tx
                 .query_row(
-                    "SELECT conversation,json FROM messages WHERE json_extract(json,'$.id')=?1",
+                    sql(
+                        "SELECT conversation,json FROM messages WHERE json_extract(json,'$.id')=?1",
+                        "SELECT conversation,json FROM messages WHERE (projection #>> '{id}')=$1",
+                    ),
                     [message_id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -217,9 +234,10 @@ pub(super) fn load_reactions(
     message: &mut Message,
 ) -> Result<(), EngineError> {
     let mut query = db
-        .prepare_cached(
+        .prepare_cached(sql(
             "SELECT reaction,username FROM reactions WHERE conversation=?1 AND sequence=?2",
-        )
+            "SELECT reaction,username FROM reactions WHERE conversation=$1 AND sequence=$2",
+        ))
         .map_err(EngineError::unavailable)?;
     let rows = query
         .query_map(params![id, message.sequence], |r| {
@@ -246,7 +264,7 @@ fn load_page_reactions(
     for (index, message) in messages.iter().enumerate() {
         positions.insert(message.sequence, index);
     }
-    let mut query = db.prepare_cached("SELECT sequence,reaction,username FROM reactions WHERE conversation=?1 AND sequence BETWEEN ?2 AND ?3").map_err(EngineError::unavailable)?;
+    let mut query = db.prepare_cached(sql("SELECT sequence,reaction,username FROM reactions WHERE conversation=?1 AND sequence BETWEEN ?2 AND ?3", "SELECT sequence,reaction,username FROM reactions WHERE conversation=$1 AND sequence BETWEEN $2 AND $3")).map_err(EngineError::unavailable)?;
     let rows = query
         .query_map(params![id, low, high], |r| {
             Ok((
