@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { frameCsp } from "./src/features/conversation/framePolicy.ts";
 import { fileURLToPath } from "node:url";
 import {
@@ -170,7 +172,32 @@ function mediaWorker(): Plugin {
   };
 }
 
+const packageInfo: unknown = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+);
+if (
+  !packageInfo ||
+  typeof packageInfo !== "object" ||
+  !("version" in packageInfo) ||
+  typeof packageInfo.version !== "string"
+)
+  throw new Error("Missing web package version.");
+let commit = "unknown";
+try {
+  commit = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+} catch {
+  // Source archives may be built without Git metadata.
+}
+
 export default defineConfig({
+  define: {
+    "import.meta.env.CHAT_VERSION": JSON.stringify(packageInfo.version),
+    "import.meta.env.CHAT_COMMIT": JSON.stringify(commit),
+  },
   base: "./",
   // Pin the supported Chrome floor while retaining the other Vite 7 targets.
   build: {

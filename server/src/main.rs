@@ -20,6 +20,14 @@ use web::App;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "chat {} (commit {})",
+            env!("CARGO_PKG_VERSION"),
+            env!("CHAT_COMMIT")
+        );
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_ansi(false)
         .with_writer(io::stdout)

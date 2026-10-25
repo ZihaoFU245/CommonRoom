@@ -27,6 +27,17 @@ export function useCommandPreferences(
     setAliases(removeAlias(aliases, name));
   }
   function handleLocalCommand(text: string) {
+    if (text.split(/\s+/u)[0] === "/version") {
+      if (text !== "/version") {
+        append(text, "Usage: /version", true);
+        return "error";
+      }
+      append(
+        text,
+        `CommonRoom UI ${import.meta.env.CHAT_VERSION} (commit ${import.meta.env.CHAT_COMMIT})`,
+      );
+      return "done";
+    }
     if (text.split(/\s+/u)[0] === "/markdown") {
       try {
         const enabled = setMarkdown(text.replace(/\s+/gu, " "));
