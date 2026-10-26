@@ -95,6 +95,11 @@ test("loaded avatars stay painted during replacement and new identities never in
   const reused = images(render(replacement, false, { name: "Bob" }));
   assert.equal(reused.length, 1);
   assert.equal(reused[0].props.hidden, true);
+  assert.notEqual(
+    reused[0].key,
+    painted.key,
+    "a new name remounts the cached image and receives onLoad again",
+  );
   assert.equal(render(undefined), null);
 
   globalThis.externalAllowed = false;

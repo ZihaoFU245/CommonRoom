@@ -41,7 +41,8 @@ export function Avatar({
         (image) =>
           image && (
             <img
-              key={image}
+              // A rename must reload the reused URL so onLoad reveals the new identity.
+              key={`${name}:${image}`}
               class={`user-avatar${large ? " large" : ""}`}
               src={image}
               alt={decorative ? "" : `${name}'s avatar`}

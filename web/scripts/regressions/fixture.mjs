@@ -5,6 +5,7 @@ import { useReadTracking } from "../../src/hooks/useReadTracking.ts";
 import { useCommands } from "../../src/hooks/useCommands.ts";
 import { MediaCache } from "../../src/features/conversation/mediaCache.ts";
 import { MessageList } from "../../src/components/MessageList.tsx";
+import { Avatar } from "../../src/components/Avatar.tsx";
 import { Chat } from "../../src/components/Chat.tsx";
 import { Login } from "../../src/components/Login.tsx";
 import { Settings } from "../../src/components/Settings.tsx";
@@ -1927,6 +1928,20 @@ await test("mounted reply jumps release bottom following and clean up motion", a
     render(null, tests);
     window.matchMedia = original;
   }
+});
+
+await test("renaming an account reveals its cached avatar without a refresh", async () => {
+  const source = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><rect width="28" height="28" fill="orange"/></svg>')}`;
+  const draw = (name) =>
+    render(h(Avatar, { name, url: undefined, preview: source }), tests);
+  draw("alice");
+  await until(() => tests.querySelector("img:not([hidden])")?.complete);
+  draw("alice-renamed");
+  await until(() => tests.querySelector("img:not([hidden])")?.complete);
+  check(
+    tests.querySelectorAll("img").length === 1,
+    "rename leaves one visible avatar",
+  );
 });
 
 document.querySelector("#results").textContent = JSON.stringify(

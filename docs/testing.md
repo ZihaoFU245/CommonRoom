@@ -677,6 +677,10 @@ of unsent attachments. Benchmarks remain explicitly opt-in and ignored by normal
 
 ## Avatar coverage
 
+The browser rename regression loads an avatar, changes the account name while
+retaining the image URL, and verifies that the cached image becomes visible
+without refreshing. New identities still cannot retain another name's frame.
+
 Engine tests cover self-service URL validation, metadata isolation, allocation
 limits, stable ownership, invalid MIME, rename/restart persistence, failed-write
 rollback, expired uploads and account replacement. HTTP tests check session and
