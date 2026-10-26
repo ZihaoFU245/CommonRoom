@@ -503,6 +503,7 @@ function Fixture() {
         onEdit: async () => true,
         onReply: () => {},
         onDelete: () => {},
+        loadSequence: () => {},
         historyElement: container,
         virtualTimeline: handle,
         end,

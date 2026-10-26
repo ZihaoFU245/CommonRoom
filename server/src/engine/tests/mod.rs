@@ -515,6 +515,7 @@ fn message_actions_are_scoped_toggle_and_preserve_reply_quotes() {
     let reply = &room_messages(&e, "lobby")[0];
     assert_eq!(reply.reply.as_ref().unwrap().id, original.id);
     assert_eq!(reply.reply.as_ref().unwrap().text, original.text);
+    assert_eq!(reply.reply.as_ref().unwrap().sequence, original.sequence);
     assert_eq!(reply.mentions, BTreeSet::from(["alice".into()]));
     assert!(e.execute(Some("bob"), Some("lobby"), &react).is_err());
     e.execute(Some("alice"), None, "/new room secret").unwrap();

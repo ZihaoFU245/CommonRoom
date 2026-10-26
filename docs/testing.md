@@ -108,6 +108,10 @@ rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --noc
 
 ## UI verification
 
+Reply-quote browser regressions cover originals outside the virtual window and
+outside loaded history. A known original sequence requests one around-page;
+legacy quotes without a sequence can still reveal a loaded virtual row.
+
 After changes to components/hooks, inspect both a wide desktop and compact view. Verify login, sidebar collapse and scrolling, room/private selection, local commands and hints, composing Unicode text, replies/reactions, settings, unread badges/jump, and reconnect behavior. Refresh must erase command output while restoring server chat history. Check browser errors and HTTP/WebSocket failures.
 
 The isolated browser fixture at `/scripts/markdown/` on the Vite dev server

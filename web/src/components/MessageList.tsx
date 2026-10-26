@@ -1,4 +1,5 @@
-import { useMemo, useState } from "preact/hooks";
+import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEvent } from "../hooks/useEvent.ts";
 import type { HtmlGateChoice, HtmlGateMode } from "./HtmlGateContext.ts";
 import { HtmlGateContext } from "./HtmlGateContext.ts";
 import type { RefObject } from "preact";
@@ -7,7 +8,12 @@ import { useVirtualTimeline } from "../hooks/useVirtualTimeline.ts";
 import { useTimelineMotion } from "../hooks/useTimelineMotion.ts";
 import { ContentMotionContext } from "../hooks/useContentResizeMotion.ts";
 import { memo } from "preact/compat";
-import type { Command, Message, TimelineEntry } from "../api/protocol.ts";
+import type {
+  Command,
+  Message,
+  Reply,
+  TimelineEntry,
+} from "../api/protocol.ts";
 import {
   messageDate,
   groupedMessage,
@@ -36,6 +42,7 @@ interface Props {
   onEdit: (message: Message, value: string) => Promise<boolean>;
   onReply: (message: Message) => void;
   onDelete: (message: Message) => void;
+  loadSequence: (sequence: number) => void;
   historyElement: RefObject<HTMLElement>;
   virtualTimeline: RefObject<VirtualTimelineHandle>;
   end: RefObject<HTMLDivElement>;
@@ -61,6 +68,7 @@ export const MessageList = memo(function MessageList({
   onEdit,
   onReply,
   onDelete,
+  loadSequence,
   historyElement,
   virtualTimeline,
   end,
@@ -141,6 +149,78 @@ export const MessageList = memo(function MessageList({
     atBottom,
     window,
   );
+  // A reply can point outside the virtual window, so scroll the timeline to its
+  // sequence and center the row once that window renders.
+  const pendingReply = useRef<string | null>(null);
+  const highlight = useRef<Animation | null>(null);
+  useLayoutEffect(() => {
+    const reduced = globalThis.matchMedia("(prefers-reduced-motion: reduce)");
+    const stopHighlight = () => {
+      highlight.current?.cancel();
+      highlight.current = null;
+    };
+    reduced.addEventListener("change", stopHighlight);
+    return () => {
+      pendingReply.current = null;
+      stopHighlight();
+      reduced.removeEventListener("change", stopHighlight);
+    };
+  }, [motionScope]);
+  const reveal = (id: string) => {
+    const element = document.getElementById(id);
+    if (!element || !historyElement.current?.contains(element)) return false;
+    atBottom.current = false;
+    element.scrollIntoView({ block: "center" });
+    // Reuse the hover wash so a jump is easy to follow, then let it fade.
+    highlight.current?.cancel();
+    highlight.current = null;
+    if (globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches)
+      return true;
+    highlight.current = element.animate(
+      [
+        { backgroundColor: "var(--wash)" },
+        { backgroundColor: "var(--wash)", offset: 0.6 },
+        { backgroundColor: "transparent" },
+      ],
+      { duration: 1200, easing: "ease-out" },
+    );
+    return true;
+  };
+  const jumpToReply = useEvent((reply: Reply) => {
+    // A second click supersedes a jump whose history request is still pending.
+    pendingReply.current = null;
+    const id = `message-${reply.id}`;
+    if (reveal(id)) return;
+    const entry = entries.find(
+      (entry) => entry.kind === "message" && entry.message.id === reply.id,
+    );
+    if (entry?.kind === "message") {
+      atBottom.current = false;
+      pendingReply.current = id;
+      virtualTimeline.current?.scrollToSequence(entry.message.sequence);
+      return;
+    }
+    // The original is outside the loaded history; page around it by sequence.
+    if (reply.sequence === undefined || reply.sequence === 0) return;
+    atBottom.current = false;
+    pendingReply.current = id;
+    loadSequence(reply.sequence);
+  });
+  useLayoutEffect(() => {
+    const id = pendingReply.current;
+    if (id === null) return;
+    if (reveal(id)) {
+      pendingReply.current = null;
+      return;
+    }
+    const entry = entries.find(
+      (entry) =>
+        entry.kind === "message" && `message-${entry.message.id}` === id,
+    );
+    if (entry?.kind !== "message") return;
+    atBottom.current = false;
+    virtualTimeline.current?.scrollToSequence(entry.message.sequence);
+  }, [entries, window.start, window.end, window.layoutVersion]);
   const renderedEntries = window.visible.map((entry, localIndex) => {
     const index = window.start + localIndex;
     if (entry.kind !== "message")
@@ -209,6 +289,7 @@ export const MessageList = memo(function MessageList({
           onReact={onReact}
           onDelete={onDelete}
           onReply={onReply}
+          onJumpToReply={jumpToReply}
         />
       </div>
     );

@@ -72,7 +72,7 @@ Password commands recheck sudo authorization after asynchronous hashing.
 The acknowledgement contains the wrapped command's result or error. `/sudo /room join room`
 saves the caller's membership and room user grants and broadcasts updated snapshots.
 
-Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text}`, and mention usernames. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
+Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text,sequence}`, and mention usernames. Quotes stored before `sequence` was added report zero for it and cannot be paged to. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
 `commands`, filtered `members`, and up to 50 latest messages (1,000 tail messages globally per snapshot; some tails may be empty). Read grants govern

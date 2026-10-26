@@ -31,6 +31,7 @@ pub(super) fn reply_quote(original: &Message) -> Reply {
         id: original.id.clone(),
         from: original.from.clone(),
         text: original.text.chars().take(160).collect(),
+        sequence: original.sequence,
     }
 }
 

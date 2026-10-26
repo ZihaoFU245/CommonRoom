@@ -4,7 +4,7 @@ import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { memo } from "preact/compat";
 import { MarkdownMessage as Markdown } from "./MarkdownMessage.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Message } from "../api/protocol.ts";
+import type { Message, Reply } from "../api/protocol.ts";
 import {
   mentionedText,
   mentionedCommand,
@@ -38,6 +38,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   onReact,
   onReply,
   onDelete,
+  onJumpToReply,
 }: {
   message: Message;
   avatar?: string | undefined;
@@ -61,6 +62,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   onReact: (message: Message, value: string) => void;
   onReply: (message: Message) => void;
   onDelete: (message: Message) => void;
+  onJumpToReply: (reply: Reply) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -147,12 +149,12 @@ export const ConsoleMessage = memo(function ConsoleMessage({
         {reply && (
           <button
             class="reply-quote"
-            onClick={() =>
-              document
-                .getElementById(`message-${reply.id}`)
-                ?.scrollIntoView({ block: "center" })
+            onClick={() => onJumpToReply(reply)}
+            title={
+              reply.sequence === undefined || reply.sequence === 0
+                ? "Jump to original message if it is loaded"
+                : "Jump to original message"
             }
-            title="Jump to original message if it is loaded"
           >
             <strong data-name-color={replyColor}>↳ {reply.from}</strong>
             <span dir="auto">{reply.text}</span>

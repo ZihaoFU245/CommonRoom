@@ -598,6 +598,7 @@ await test("same-minute message bars join without gaps and break on minute, auth
           onReact() {},
           onReply() {},
           onDelete() {},
+          loadSequence() {},
           onEdit: async () => true,
           onScroll() {},
         }),
@@ -1625,6 +1626,306 @@ await test("expired attachments preserve filenames across media kinds and themes
   } finally {
     if (theme === undefined) delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = theme;
+  }
+});
+
+for (const width of [1000, 320]) {
+  await test(`legacy reply quotes reveal originals outside the virtual window (${width}px)`, async () => {
+    const start = Math.floor(Date.now() / 60000) * 60;
+    const entries = Array.from({ length: 60 }, (_, index) => {
+      const item = {
+        ...message(index + 1),
+        from: "alice",
+        time: start + index,
+        text: `message ${index + 1} `.repeat(6),
+      };
+      return {
+        kind: "message",
+        key: item.id,
+        order: item.sequence,
+        message: item,
+      };
+    });
+    entries.at(-1).message.reply = {
+      id: "m-1",
+      from: "alice",
+      text: "message 1",
+    };
+    const history = { current: null },
+      timeline = { current: null },
+      end = { current: null },
+      bottom = { current: true };
+    render(
+      h(
+        "div",
+        {
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            height: "500px",
+            width: `${width}px`,
+          },
+        },
+        h(MessageList, {
+          motionScope: "quote-jump-test",
+          revision: 1,
+          historyReady: true,
+          entries,
+          username: "alice",
+          pending: false,
+          debug: false,
+          allowHtml: false,
+          latex: false,
+          permissions: ["r:message.read", "w:message.create"],
+          commands: [{ name: "/reply" }],
+          unreadBoundary: null,
+          atBottom: bottom,
+          historyElement: history,
+          virtualTimeline: timeline,
+          end,
+          onReact() {},
+          onReply() {},
+          onDelete() {},
+          loadSequence() {},
+          onEdit: async () => true,
+          onScroll() {},
+        }),
+      ),
+      tests,
+    );
+    await until(() => tests.querySelector("#message-m-1"));
+    const viewport = tests.querySelector(".message-list");
+    viewport.scrollTop = viewport.scrollHeight;
+    viewport.dispatchEvent(new Event("scroll"));
+    await until(() => tests.querySelector("#message-m-60"));
+    await until(() => tests.querySelector("#message-m-1") === null);
+    check(
+      tests.querySelector("#message-m-60"),
+      "last message is rendered at bottom",
+    );
+    tests.querySelector(".reply-quote").click();
+    await until(() => tests.querySelector("#message-m-1"));
+    const element = tests.querySelector("#message-m-1");
+    const target = element.getBoundingClientRect();
+    const bounds = viewport.getBoundingClientRect();
+    check(
+      target.top >= bounds.top && target.bottom <= bounds.bottom,
+      "original message is scrolled into view",
+    );
+    const probe = document.createElement("div");
+    probe.style.background = "var(--wash)";
+    tests.append(probe);
+    const wash = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    check(
+      getComputedStyle(element).backgroundColor === wash,
+      "original message flashes the hover wash",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+    check(
+      getComputedStyle(element).backgroundColor === "rgba(0, 0, 0, 0)",
+      "the highlight fades after the jump",
+    );
+  });
+
+  await test(`reply quotes page to originals outside the loaded history (${width}px)`, async () => {
+    const start = Math.floor(Date.now() / 60000) * 60;
+    const page = (first, last) =>
+      Array.from({ length: last - first + 1 }, (_, index) => {
+        const item = {
+          ...message(first + index),
+          from: "alice",
+          time: start + first + index,
+          text: `message ${first + index} `.repeat(6),
+        };
+        return {
+          kind: "message",
+          key: item.id,
+          order: item.sequence,
+          message: item,
+        };
+      });
+    const initial = page(101, 160);
+    initial.at(-1).message.reply = {
+      id: "m-1",
+      from: "alice",
+      text: "message 1",
+      sequence: 1,
+    };
+    const loaded = page(1, 60);
+    const history = { current: null },
+      timeline = { current: null },
+      end = { current: null },
+      bottom = { current: true };
+    const requested = [];
+    let paged = false;
+    const mount = (entries) =>
+      render(
+        h(
+          "div",
+          {
+            style: {
+              display: "flex",
+              flexDirection: "column",
+              height: "500px",
+              width: `${width}px`,
+            },
+          },
+          h(MessageList, {
+            motionScope: "quote-page-test",
+            revision: 1,
+            historyReady: true,
+            entries,
+            username: "alice",
+            pending: false,
+            debug: false,
+            allowHtml: false,
+            latex: false,
+            permissions: ["r:message.read", "w:message.create"],
+            commands: [{ name: "/reply" }],
+            unreadBoundary: null,
+            atBottom: bottom,
+            historyElement: history,
+            virtualTimeline: timeline,
+            end,
+            onReact() {},
+            onReply() {},
+            onDelete() {},
+            loadSequence(sequence) {
+              requested.push(sequence);
+              setTimeout(() => {
+                paged = true;
+                mount(loaded);
+              }, 0);
+            },
+            onEdit: async () => true,
+            onScroll() {},
+          }),
+        ),
+        tests,
+      );
+    mount(initial);
+    await until(() => tests.querySelector("#message-m-101"));
+    const viewport = tests.querySelector(".message-list");
+    viewport.scrollTop = viewport.scrollHeight;
+    viewport.dispatchEvent(new Event("scroll"));
+    await until(() => tests.querySelector("#message-m-160"));
+    tests.querySelector(".reply-quote").click();
+    await until(() => paged);
+    await until(() => tests.querySelector("#message-m-1"));
+    check(
+      requested.length === 1 && requested[0] === 1,
+      "the missing original is requested by sequence",
+    );
+    const element = tests.querySelector("#message-m-1");
+    const target = element.getBoundingClientRect();
+    const bounds = viewport.getBoundingClientRect();
+    check(
+      target.top >= bounds.top && target.bottom <= bounds.bottom,
+      "the paged-to original is scrolled into view",
+    );
+  });
+}
+
+await test("mounted reply jumps release bottom following and clean up motion", async () => {
+  const original = window.matchMedia;
+  const listeners = new Set();
+  let reduced = false;
+  window.matchMedia = (query) =>
+    query === "(prefers-reduced-motion: reduce)"
+      ? {
+          get matches() {
+            return reduced;
+          },
+          addEventListener(_type, listener) {
+            listeners.add(listener);
+          },
+          removeEventListener(_type, listener) {
+            listeners.delete(listener);
+          },
+        }
+      : original.call(window, query);
+  const entries = [1, 2, 3].map((sequence) => ({
+    kind: "message",
+    key: `m-${sequence}`,
+    order: sequence,
+    message: message(sequence),
+  }));
+  entries[2].message.reply = { id: "m-1", from: "alice", text: "hello" };
+  const bottom = { current: true };
+  let scope = "mounted-reply";
+  const mount = () =>
+    render(
+      h(
+        "div",
+        {
+          style: { height: "300px", display: "flex", flexDirection: "column" },
+        },
+        h(MessageList, {
+          motionScope: scope,
+          revision: 1,
+          historyReady: true,
+          entries,
+          username: "alice",
+          pending: false,
+          debug: false,
+          allowHtml: false,
+          latex: false,
+          permissions: [],
+          commands: [],
+          unreadBoundary: null,
+          atBottom: bottom,
+          historyElement: { current: null },
+          virtualTimeline: { current: null },
+          end: { current: null },
+          onReact() {},
+          onReply() {},
+          onDelete() {},
+          onScroll() {},
+          loadSequence() {
+            throw new Error("loaded originals must not fetch history");
+          },
+          onEdit: async () => true,
+        }),
+      ),
+      tests,
+    );
+  try {
+    mount();
+    await until(() => tests.querySelector(".reply-quote"));
+    const target = tests.querySelector("#message-m-1");
+    tests.querySelector(".reply-quote").click();
+    check(
+      bottom.current === false,
+      "mounted jumps release bottom intent synchronously",
+    );
+    const animation = target.getAnimations()[0];
+    check(animation, "a mounted target is highlighted");
+    reduced = true;
+    for (const listener of listeners) listener();
+    check(
+      animation.playState === "idle",
+      "reduced motion cancels the highlight",
+    );
+    tests.querySelector(".reply-quote").click();
+    check(
+      target.getAnimations().length === 0,
+      "reduced motion skips new highlights",
+    );
+    reduced = false;
+    tests.querySelector(".reply-quote").click();
+    const beforeSwitch = target.getAnimations()[0];
+    scope = "another-conversation";
+    mount();
+    await until(() => beforeSwitch.playState === "idle");
+    tests.querySelector(".reply-quote").click();
+    const beforeUnmount = target.getAnimations()[0];
+    render(null, tests);
+    check(beforeUnmount.playState === "idle", "unmount cancels the highlight");
+    check(listeners.size === 0, "unmount removes preference listeners");
+  } finally {
+    render(null, tests);
+    window.matchMedia = original;
   }
 });
 

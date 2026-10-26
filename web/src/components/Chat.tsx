@@ -401,6 +401,7 @@ export function Chat({
     setReplyTarget({ ...message, view: selected });
     input.current?.focus();
   });
+  const handleLoadSequence = useEvent(loadSequence);
   const handleScroll = useEvent(() => {
     const element = historyElement.current;
     if (element)
@@ -663,6 +664,7 @@ export function Chat({
             onEdit={handleEdit}
             onReply={handleReply}
             onDelete={handleDelete}
+            loadSequence={handleLoadSequence}
             virtualTimeline={virtualTimeline}
             historyElement={historyElement}
             end={end}

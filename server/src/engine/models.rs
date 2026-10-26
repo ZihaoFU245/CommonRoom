@@ -36,6 +36,9 @@ pub struct Reply {
     pub id: String,
     pub from: String,
     pub text: String,
+    /// Quotes saved before this field existed decode as zero (unknown).
+    #[serde(default)]
+    pub sequence: u64,
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Room {
@@ -132,4 +135,16 @@ pub struct Snapshot {
     pub commands: Vec<crate::commands::Command>,
     pub available_rooms: Vec<String>,
     pub unread: BTreeMap<String, Unread>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reply;
+
+    #[test]
+    fn reply_quotes_saved_before_sequence_decode_as_zero() -> Result<(), serde_json::Error> {
+        let reply: Reply = serde_json::from_str(r#"{"id":"one","from":"alice","text":"hello"}"#)?;
+        assert_eq!(reply.sequence, 0);
+        Ok(())
+    }
 }

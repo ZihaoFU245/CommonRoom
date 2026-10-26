@@ -3,6 +3,8 @@ export interface Reply {
   id: string;
   from: string;
   text: string;
+  /** Zero or absent for quotes stored before sequence tracking. */
+  sequence?: number;
 }
 export interface Message {
   edited?: boolean;
@@ -201,7 +203,8 @@ const reply = (v: unknown): v is Reply =>
   record(v) &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&
-  typeof v.text === "string";
+  typeof v.text === "string" &&
+  (v.sequence === undefined || integer(v.sequence));
 export const isMessage = (v: unknown): v is Message =>
   record(v) &&
   (v.markdown === undefined || typeof v.markdown === "boolean") &&

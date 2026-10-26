@@ -95,7 +95,9 @@ field does not change the SQLite schema or require a migration.
 Message JSON may include an `edited` boolean. Missing values default to false.
 This additive field uses the existing message storage. Edits update the
 message payload and conversation revision in one transaction; failed writes
-roll back both. Existing reply quotes retain the text captured when replying.
+roll back both. Existing reply quotes retain the text and original sequence
+captured when replying; quotes saved before the sequence field decode it as
+zero (unknown) without a migration.
 
 ## Bot retry receipts
 

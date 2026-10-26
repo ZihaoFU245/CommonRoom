@@ -189,7 +189,9 @@ messages in a focused tab advance the read cursor, which syncs across devices.
 
 Hover actions (always shown on touch devices) provide reply, retract, and
 emoji/custom reactions. Replies quote a 160-character preview and jump to the
-original when loaded. Retracting clears retained reply previews; expiring a
+original, loading its history page when its sequence is known. Older quotes can
+still reveal originals in the loaded history, including unmounted virtual rows.
+Retracting clears retained reply previews; expiring a
 message preserves them. Reactions accept 1–128 Unicode characters without
 controls, with up to 32 reactions per message. `/debug on` shows expandable
 metadata only where permitted; it resets on refresh or permission revocation.

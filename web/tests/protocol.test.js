@@ -25,6 +25,18 @@ const message = {
   reply: { id: "old", from: "bob", text: "hello" },
   mentions: ["bob"],
 };
+test("reply quotes may carry the original's sequence", () => {
+  assert.equal(
+    isMessage({ ...message, reply: { ...message.reply, sequence: 7 } }),
+    true,
+  );
+  assert.equal(isMessage(message), true);
+  for (const sequence of [-1, 1.5, "7"])
+    assert.equal(
+      isMessage({ ...message, reply: { ...message.reply, sequence } }),
+      false,
+    );
+});
 const snapshot = {
   kind: "snapshot",
   username: "alice",

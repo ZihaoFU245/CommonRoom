@@ -469,6 +469,7 @@ function Fixture() {
       onReact: () => {},
       onReply: () => {},
       onDelete: () => {},
+      loadSequence: () => {},
       onEdit: async () => true,
     }),
     h(
