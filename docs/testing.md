@@ -831,6 +831,7 @@ display stops color requests. HTTP/live baseline tests cover default omission an
 cache separation between opted-in and default clients on the same account.
 
 Settings browser coverage additionally exercises the themed scope listbox,
+macOS Safari-style pointer activation without native button focus,
 arrow-key navigation, focus restoration, Escape without closing the parent dialog,
 option/picker AutoAnimate transitions and live reduced-motion changes. Geometry
 assertions require the message bar to span header, reply and body, with an inset

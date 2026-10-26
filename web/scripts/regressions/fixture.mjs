@@ -2055,6 +2055,65 @@ await test("Safari IME confirmation never sends or selects composer hints", asyn
   check(sent === 2, "leaving the input resets an interrupted composition");
 });
 
+await test("name-color menus survive mouse clicks without native button focus", async () => {
+  const { NameColorSettings } =
+    await import("../../src/components/settings/NameColorSettings.tsx");
+  render(
+    h(
+      "section",
+      { class: "settings-content", tabIndex: 0 },
+      h(NameColorSettings, {
+        state: { ...empty, colors: { alice: "red" } },
+        onNameColorChange: async () => {},
+      }),
+    ),
+    tests,
+  );
+  const section = tests.querySelector("section");
+  const trigger = tests.querySelector(
+    ".name-color-toggle:not(.name-scope-toggle)",
+  );
+  const panel = () => tests.querySelector("#name-color-options:not([inert])");
+  function mouseClick(button) {
+    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const down = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    });
+    // macOS Safari does not focus clicked buttons. Model its default focus
+    // fallback to the surrounding focusable dialog content instead.
+    if (button.dispatchEvent(down)) section.focus();
+    button.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    button.click();
+  }
+  mouseClick(trigger);
+  await until(panel);
+  mouseClick(
+    panel().querySelector('.name-color-option[data-name-color="blue"]'),
+  );
+  await sleep(20);
+  check(
+    panel()?.querySelector(".name-color-preview strong").dataset.nameColor ===
+      "blue",
+    "swatch mouse activation keeps the picker open and previews the chosen color",
+  );
+  const cancel = [...panel().querySelectorAll("button")].find(
+    (button) => button.textContent === "Cancel",
+  );
+  mouseClick(cancel);
+  await until(() => !panel());
+  check(
+    document.activeElement === trigger,
+    "Cancel restores focus after a pointer click",
+  );
+  mouseClick(trigger);
+  await until(panel);
+  section.focus();
+  await until(() => !panel());
+  check(!panel(), "keyboard focus leaving the menu still dismisses it");
+});
+
 document.querySelector("#results").textContent = JSON.stringify(
   results,
   null,

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import type { JSX } from "preact";
 import { useSettingsMotion } from "../../hooks/useSettingsMotion.ts";
 import { errorMessage } from "../../api/protocol.ts";
 import {
@@ -10,6 +11,14 @@ import {
 import type { SettingsProps } from "./types.ts";
 
 const colorPermission = "w:account.color.own";
+
+function focusColorControl(event: JSX.TargetedMouseEvent<HTMLButtonElement>) {
+  if (event.button !== 0) return;
+  // macOS Safari can focus the surrounding dialog instead of a clicked button,
+  // causing the outside-focus listener to dismiss the menu before activation.
+  event.preventDefault();
+  event.currentTarget.focus({ preventScroll: true });
+}
 
 function Chevron() {
   return (
@@ -118,6 +127,7 @@ function ScopeField({
           aria-controls="name-color-scopes"
           aria-labelledby="name-color-scope-label name-color-scope-value"
           disabled={saving}
+          onMouseDown={focusColorControl}
           onClick={menu.toggleOpen}
           onKeyDown={(event) => {
             if (["ArrowDown", "ArrowUp"].includes(event.key)) {
@@ -210,6 +220,7 @@ function ScopeField({
                 role="option"
                 tabIndex={scope.id === selected.id ? 0 : -1}
                 aria-selected={scope.id === selected.id}
+                onMouseDown={focusColorControl}
                 onClick={() => {
                   onChoose(scope.id);
                   menu.close(true);
@@ -267,6 +278,7 @@ function NameColorField({
           aria-expanded={menu.open}
           aria-labelledby="name-color-label name-color-value"
           aria-disabled={saving}
+          onMouseDown={focusColorControl}
           onClick={toggle}
         >
           <span
@@ -310,16 +322,22 @@ function NameColorField({
                 aria-pressed={color === draft}
                 aria-label={label}
                 title={label}
+                onMouseDown={focusColorControl}
                 onClick={() => setDraft(color)}
               />
             ))}
             <div class="name-color-actions">
-              <button type="button" onClick={() => menu.close(true)}>
+              <button
+                type="button"
+                onMouseDown={focusColorControl}
+                onClick={() => menu.close(true)}
+              >
                 Cancel
               </button>
               <button
                 type="button"
                 class="primary"
+                onMouseDown={focusColorControl}
                 onClick={() => {
                   menu.close(true);
                   onChoose(draft);
