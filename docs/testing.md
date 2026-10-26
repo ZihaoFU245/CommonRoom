@@ -108,6 +108,11 @@ rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --noc
 
 ## UI verification
 
+The composer IME browser regression replays Safari's unmarked candidate keys,
+key code 229, and confirming Enter immediately after compositionend. It also
+checks consecutive compositions, blur recovery, Shift+Enter and a deliberate
+later Enter; candidate confirmation must not submit or consume hint shortcuts.
+
 Reply-quote browser regressions cover originals outside the virtual window and
 outside loaded history. A known original sequence requests one around-page;
 legacy quotes without a sequence can still reveal a loaded virtual row.

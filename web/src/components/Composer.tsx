@@ -3,6 +3,7 @@ import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
 import { useEffect, useRef } from "preact/hooks";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
+import { useCompositionGuard } from "../hooks/useCompositionGuard.ts";
 interface Props {
   mediaUpload?: {
     enabled: boolean;
@@ -60,6 +61,7 @@ export function Composer({
   selectCaret,
 }: Props) {
   const hintList = useRef<HTMLUListElement>(null);
+  const composition = useCompositionGuard(keydown);
   useEffect(() => {
     hintList.current
       ?.querySelector('[aria-selected="true"]')
@@ -242,7 +244,7 @@ export function Composer({
             }
             value={draft}
             onInput={(event) => edit(event.currentTarget.value)}
-            onKeyDown={keydown}
+            {...composition}
             onSelect={selectCaret}
             onClick={selectCaret}
             onKeyUp={selectCaret}

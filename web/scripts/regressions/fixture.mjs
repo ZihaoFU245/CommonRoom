@@ -6,6 +6,8 @@ import { useCommands } from "../../src/hooks/useCommands.ts";
 import { MediaCache } from "../../src/features/conversation/mediaCache.ts";
 import { MessageList } from "../../src/components/MessageList.tsx";
 import { Avatar } from "../../src/components/Avatar.tsx";
+import { Composer } from "../../src/components/Composer.tsx";
+import { useCommandComposer } from "../../src/hooks/useCommandComposer.ts";
 import { Chat } from "../../src/components/Chat.tsx";
 import { Login } from "../../src/components/Login.tsx";
 import { Settings } from "../../src/components/Settings.tsx";
@@ -1942,6 +1944,115 @@ await test("renaming an account reveals its cached avatar without a refresh", as
     tests.querySelectorAll("img").length === 1,
     "rename leaves one visible avatar",
   );
+});
+
+await test("Safari IME confirmation never sends or selects composer hints", async () => {
+  const input = { current: null };
+  let sent = 0;
+  const send = (event) => {
+    event.preventDefault();
+    sent++;
+  };
+  function Probe() {
+    const composer = useCommandComposer({
+      botCommands: [],
+      selected: "team",
+      direct: false,
+      peer: null,
+      state: empty,
+      room: undefined,
+      input,
+      pending: false,
+      aliases: {},
+      serverCommands: [],
+      availableCommands: [],
+      send,
+    });
+    return h(Composer, {
+      minimumComposerHeight: 40,
+      actualComposerHeight: 40,
+      hints: composer.hints,
+      activeHint: composer.activeHint,
+      replyTarget: null,
+      input,
+      consoleView: false,
+      draft: composer.draft,
+      pending: false,
+      canWrite: true,
+      startResize() {},
+      moveResize() {},
+      endResize() {},
+      resizeComposer() {},
+      acceptHint: composer.acceptHint,
+      cancelReply() {},
+      send,
+      edit: composer.edit,
+      keydown: composer.keydown,
+      selectCaret: composer.selectCaret,
+    });
+  }
+  render(h(Probe), tests);
+  const textarea = tests.querySelector("textarea");
+  textarea.value = "中文";
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  await sleep(10);
+  const key = (init = {}) => {
+    const event = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    });
+    textarea.dispatchEvent(event);
+    return event;
+  };
+  check(
+    !key({ isComposing: true }).defaultPrevented && sent === 0,
+    "native composing Enter stays with the IME",
+  );
+  check(
+    !key({ keyCode: 229 }).defaultPrevented && sent === 0,
+    "Safari's IME key code is ignored even without isComposing",
+  );
+  textarea.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  check(
+    !key().defaultPrevented && sent === 0,
+    "composition events guard unmarked candidate Enter",
+  );
+  textarea.dispatchEvent(
+    new CompositionEvent("compositionend", { bubbles: true }),
+  );
+  check(
+    !key().defaultPrevented && sent === 0,
+    "Safari's late Enter after compositionend only commits the candidate",
+  );
+  textarea.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  await sleep(10);
+  check(
+    !key({ key: "Tab" }).defaultPrevented && sent === 0,
+    "a new composition cancels the previous reset timer",
+  );
+  textarea.dispatchEvent(
+    new CompositionEvent("compositionend", { bubbles: true }),
+  );
+  await sleep(10);
+  check(
+    !key({ shiftKey: true }).defaultPrevented && sent === 0,
+    "Shift+Enter still inserts a newline after composition",
+  );
+  key();
+  check(sent === 1, "a deliberate later Enter sends normally");
+  textarea.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  textarea.focus();
+  textarea.blur();
+  key();
+  check(sent === 2, "leaving the input resets an interrupted composition");
 });
 
 document.querySelector("#results").textContent = JSON.stringify(
