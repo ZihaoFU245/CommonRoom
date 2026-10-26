@@ -161,20 +161,20 @@ export function uploadFile(
       finish(
         xhr.status >= 200 && xhr.status < 300
           ? undefined
-          : new Error(`Storage upload failed (${xhr.status}).`),
+          : new Error(
+              xhr.status === 413
+                ? "This file is too large. Choose a smaller file."
+                : "Couldn't upload this file. Please try again.",
+            ),
       );
     xhr.onerror = () =>
       finish(
         new Error(
-          "Storage upload failed. Check the connection and storage CORS settings.",
+          "Couldn't upload this file. Check your connection and try again.",
         ),
       );
     xhr.ontimeout = () =>
-      finish(
-        new Error(
-          "Storage upload timed out after 15 minutes. Retry on a faster connection.",
-        ),
-      );
+      finish(new Error("The upload took too long. Please try again."));
     xhr.onabort = () =>
       finish(new DOMException("Upload cancelled.", "AbortError"));
     signal.addEventListener("abort", abort, { once: true });

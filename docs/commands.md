@@ -238,7 +238,9 @@ Preferences also provides Show name colors, Show message color bars and Show nam
 borders. All three default off and are saved independently on this device. Enabling
 name colors loads the picker and requests profile colors for snapshots, live updates
 and history; disabling it stops those requests. Choose a global color or a room
-override in the revealed controls. The original reply quote bar remains visible
+override in the revealed controls. Apply waits for confirmation; failures show an inline
+error and retain the selected color for retry. Failed avatar uploads similarly
+retain the selected image and crop. The original reply quote bar remains visible
 regardless of the optional message side bars. When message bars are enabled, a
 Bar opacity slider adjusts only the bar from 0–100%, defaults to 50%, and saves
 on this device; author text and the reply quote bar retain their normal colors.

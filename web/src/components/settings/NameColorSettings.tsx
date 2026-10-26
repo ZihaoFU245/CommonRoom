@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import { useSettingsMotion } from "../../hooks/useSettingsMotion.ts";
-import { errorMessage } from "../../api/protocol.ts";
+import { saveErrorMessage } from "../../features/preferences/saveFeedback.ts";
 import {
   nameColorLabel,
   nameColorOf,
@@ -252,14 +252,34 @@ function NameColorField({
   fallbackColor: NameColor | undefined;
   username: string;
   saving: boolean;
-  onChoose: (color: NameColor | null) => void;
+  onChoose: (color: NameColor | null) => Promise<void>;
 }) {
   const menu = useColorMenu();
   const [draft, setDraft] = useState<NameColor | null>(value ?? null);
+  const [failure, setFailure] = useState("");
+  const applying = useRef(false);
+  const failureElement = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    if (failure && menu.open)
+      failureElement.current?.scrollIntoView({ block: "nearest" });
+  }, [failure, menu.open]);
   function toggle() {
     if (saving) return;
-    if (!menu.open) setDraft(value ?? null);
+    if (!menu.open && !failure) setDraft(value ?? null);
     menu.toggleOpen();
+  }
+  function apply() {
+    if (saving || applying.current) return;
+    applying.current = true;
+    setFailure("");
+    onChoose(draft)
+      .then(() => {
+        menu.close(menu.container.current?.contains(document.activeElement));
+      })
+      .catch((error: unknown) => setFailure(saveErrorMessage(error)))
+      .finally(() => {
+        applying.current = false;
+      });
   }
   const options: { color: NameColor | null; label: string }[] = [
     { color: null, label: fallback },
@@ -297,6 +317,7 @@ function NameColorField({
             data-name-popup
             role="dialog"
             aria-label="Name colors"
+            aria-busy={saving}
             onKeyDown={(event) => {
               if (event.key !== "Escape") return;
               event.preventDefault();
@@ -322,31 +343,50 @@ function NameColorField({
                 aria-pressed={color === draft}
                 aria-label={label}
                 title={label}
+                disabled={saving}
                 onMouseDown={focusColorControl}
-                onClick={() => setDraft(color)}
+                onClick={() => {
+                  setFailure("");
+                  setDraft(color);
+                }}
               />
             ))}
             <div class="name-color-actions">
               <button
                 type="button"
+                disabled={saving}
                 onMouseDown={focusColorControl}
-                onClick={() => menu.close(true)}
+                onClick={() => {
+                  setFailure("");
+                  menu.close(true);
+                }}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 class="primary"
+                aria-disabled={saving}
                 onMouseDown={focusColorControl}
-                onClick={() => {
-                  menu.close(true);
-                  onChoose(draft);
+                onClick={(event) => {
+                  event.currentTarget.focus({ preventScroll: true });
+                  apply();
                 }}
               >
-                Apply
+                {saving ? "Saving…" : "Apply"}
               </button>
             </div>
+            {failure && (
+              <p ref={failureElement} class="account-error" role="alert">
+                {failure}
+              </p>
+            )}
           </div>
+        )}
+        {!menu.open && failure && (
+          <p class="account-error" role="alert">
+            {failure}
+          </p>
         )}
       </div>
     </div>
@@ -375,17 +415,20 @@ export function NameColorSettings({
   ];
   const [selected, setSelected] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [failure, setFailure] = useState("");
+  const [feedback, setFeedback] = useState("");
   const scope = scopes.find((item) => item.id === selected) ?? scopes[0];
   if (!scope) return null;
   const value = nameColorOf(scope.colors ?? {}, state.username);
-  function change(color: NameColor | null) {
+  async function change(color: NameColor | null) {
     if (!scope || (color ?? undefined) === value) return;
     setSaving(true);
-    setFailure("");
-    onNameColorChange(color, scope.id)
-      .catch((error: unknown) => setFailure(errorMessage(error)))
-      .finally(() => setSaving(false));
+    setFeedback("");
+    try {
+      await onNameColorChange(color, scope.id);
+      setFeedback("Name color saved.");
+    } finally {
+      setSaving(false);
+    }
   }
   return (
     <>
@@ -408,9 +451,9 @@ export function NameColorSettings({
         saving={saving}
         onChoose={change}
       />
-      {failure && (
-        <p class="account-error" role="alert">
-          {failure}
+      {feedback && (
+        <p class="account-feedback" role="status">
+          {feedback}
         </p>
       )}
     </>

@@ -2664,6 +2664,10 @@ button:focus-visible {
   justify-content: flex-end;
   padding-top: 0.25rem;
 }
+.name-color-picker > .account-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 
 .attachment-expired {
   display: inline-flex;

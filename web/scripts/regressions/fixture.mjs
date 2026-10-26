@@ -13,7 +13,7 @@ import { Login } from "../../src/components/Login.tsx";
 import { Settings } from "../../src/components/Settings.tsx";
 import { MarkdownContent } from "../../src/components/MarkdownContent.tsx";
 import { markdownNodes } from "../../src/features/conversation/markdown.ts";
-import { api } from "../../src/api/client.ts";
+import { api, ApiError } from "../../src/api/client.ts";
 import {
   defaultSeeds,
   contrast,
@@ -1364,14 +1364,11 @@ await test("color picker previews locally, applies once and preserves keyboard f
     "Apply submits exactly one final color",
   );
   check(
-    document.activeElement === trigger && !trigger.disabled,
-    "saving keeps trigger focusable and focused",
+    document.activeElement === action("Saving…"),
+    "saving keeps Apply focused and displays its pending state",
   );
   trigger.click();
-  check(
-    !panel(),
-    "saving blocks reopening without disabling the focused trigger",
-  );
+  check(panel(), "saving keeps the draft open and blocks toggling the picker");
   state = { ...state, colors: { alice: "blue" } };
   draw();
   saving.resolve();
@@ -2112,6 +2109,245 @@ await test("name-color menus survive mouse clicks without native button focus", 
   section.focus();
   await until(() => !panel());
   check(!panel(), "keyboard focus leaving the menu still dismisses it");
+});
+
+for (const failure of [
+  { status: 403, message: "Permission to change this color was revoked." },
+  {
+    status: 503,
+    message: "Storage unavailable.",
+    display: "Couldn't save your changes right now. Please try again.",
+  },
+  {
+    status: 502,
+    message: "Server request failed (502).",
+    plain: true,
+    display: "Couldn't save your changes right now. Please try again.",
+  },
+  {
+    message: "Network connection lost.",
+    display:
+      "Couldn't connect to the server. Check your connection and try again.",
+  },
+]) {
+  await test(`color save failures stay visible and preserve retry drafts (${failure.status ?? "network"})`, async () => {
+    const { NameColorSettings } =
+      await import("../../src/components/settings/NameColorSettings.tsx");
+    const originalFetch = window.fetch;
+    let fail = true,
+      requests = 0;
+    window.fetch = async () => {
+      requests++;
+      if (!fail) return new Response(JSON.stringify({ ok: true }));
+      if (!failure.status) throw new TypeError(failure.message);
+      return new Response(
+        failure.plain
+          ? "Bad gateway"
+          : JSON.stringify({ error: failure.message }),
+        { status: failure.status },
+      );
+    };
+    try {
+      render(
+        h(NameColorSettings, {
+          state: { ...empty, colors: { alice: "red" } },
+          onNameColorChange: api.color,
+        }),
+        tests,
+      );
+      tests.querySelector(".name-color-toggle:not(.name-scope-toggle)").click();
+      const panel = () =>
+        tests.querySelector("#name-color-options:not([inert])");
+      await until(panel);
+      panel().style.maxHeight = "160px";
+      panel()
+        .querySelector('[data-name-color="blue"].name-color-option')
+        .click();
+      await until(
+        () =>
+          panel().querySelector('.name-color-option[aria-pressed="true"]')
+            .dataset.nameColor === "blue",
+      );
+      panel().querySelector(".primary").click();
+      panel().querySelector(".primary").click();
+      await until(() => tests.querySelector('[role="alert"]'));
+      check(
+        requests === 1,
+        "repeated Apply clicks cannot duplicate an in-flight save",
+      );
+      check(
+        panel()?.querySelector('[role="alert"]').textContent ===
+          (failure.display ?? failure.message),
+        "the server or network error is visible beside Apply",
+      );
+      const alert = panel()
+        .querySelector('[role="alert"]')
+        .getBoundingClientRect();
+      const bounds = panel().getBoundingClientRect();
+      check(
+        alert.top >= bounds.top && alert.bottom <= bounds.bottom,
+        "the error scrolls into view in a constrained picker",
+      );
+      check(
+        panel().querySelector('.name-color-option[aria-pressed="true"]').dataset
+          .nameColor === "blue",
+        "failed color choice stays selected for retry",
+      );
+      check(
+        !tests.querySelector('[role="status"]'),
+        "failure never reports success",
+      );
+      fail = false;
+      panel().querySelector(".primary").click();
+      await until(() => !panel());
+      check(requests === 2, "retry sends exactly one additional request");
+      check(
+        tests.querySelector('[role="status"]').textContent ===
+          "Name color saved.",
+        "success is reported only after acknowledgement",
+      );
+    } finally {
+      window.fetch = originalFetch;
+    }
+  });
+}
+
+await test("account save errors preserve drafts and remain visible until a successful retry", async () => {
+  const { AccountEditor } =
+    await import("../../src/components/settings/AccountEditor.tsx");
+  const state = {
+    ...empty,
+    account_access: {
+      ...empty.account_access,
+      commands: [{ name: "/user" }],
+      permissions: ["w:account.rename.own", "w:account.password.own"],
+    },
+  };
+  let response = { kind: "error", id: 1, text: "Username already exists." };
+  let network = false;
+  const props = {
+    state,
+    pending: false,
+    section: "account",
+    onAccountCommand: async () => {
+      if (network)
+        throw new Error("Disconnected. Wait for the connection to recover.");
+      return response;
+    },
+  };
+  render(h(AccountEditor, props), tests);
+  tests.querySelector(".account-setting-action").click();
+  await until(() => tests.querySelector("#account-name"));
+  const input = tests.querySelector("#account-name");
+  input.value = "new-name";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await sleep(10);
+  const submit = () =>
+    tests
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  submit();
+  await until(
+    () => tests.querySelector('[role="alert"]')?.textContent === response.text,
+  );
+  check(input.value === "new-name", "server rejection retains the name draft");
+  response = {
+    kind: "error",
+    id: 4,
+    text: "Storage unavailable; rename was not applied.",
+  };
+  submit();
+  await until(
+    () =>
+      tests.querySelector('[role="alert"]')?.textContent ===
+      "Couldn't save your changes right now. Please try again.",
+  );
+  network = true;
+  submit();
+  await until(() =>
+    tests.querySelector('[role="alert"]')?.textContent.includes("Disconnected"),
+  );
+  check(input.value === "new-name", "network rejection retains the name draft");
+  network = false;
+  response = { kind: "notice", id: 2, text: "Username changed." };
+  submit();
+  await until(() => !tests.querySelector("#account-name"));
+  check(
+    tests.querySelector('[role="status"]').textContent === response.text,
+    "successful retry closes the editor and reports confirmation",
+  );
+  render(null, tests);
+  response = { kind: "error", id: 3, text: "Current password is incorrect." };
+  render(h(AccountEditor, { ...props, section: "security" }), tests);
+  tests.querySelector(".account-setting-action").click();
+  await until(() => tests.querySelector("#account-old-password"));
+  for (const [id, value] of [
+    ["account-old-password", "old"],
+    ["account-new-password", "new"],
+    ["account-confirm-password", "new"],
+  ]) {
+    const field = tests.querySelector(`#${id}`);
+    field.value = value;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  await sleep(10);
+  submit();
+  await until(
+    () => tests.querySelector('[role="alert"]')?.textContent === response.text,
+  );
+  check(
+    tests.querySelector("#account-new-password").value === "new",
+    "rejected password saves preserve inputs for correction",
+  );
+});
+
+await test("avatar upload failures retain the crop and expose a retryable error", async () => {
+  const { AvatarSettings } =
+    await import("../../src/components/AvatarSettings.tsx");
+  let attempts = 0;
+  api.allocateAvatar = async () => {
+    attempts++;
+    throw new ApiError(503, "Avatar storage unavailable.");
+  };
+  api.abandonMedia = async () => ({ ok: true });
+  render(h(AvatarSettings, { state: empty }), tests);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 32;
+  const blob = await new Promise((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  const transfer = new DataTransfer();
+  transfer.items.add(new File([blob], "avatar.png", { type: "image/png" }));
+  const file = tests.querySelector('input[type="file"]');
+  file.files = transfer.files;
+  file.dispatchEvent(new Event("change", { bubbles: true }));
+  const confirm = () =>
+    [...tests.querySelectorAll("button")].find(
+      (button) => button.textContent.trim() === "Confirm and upload",
+    );
+  await until(() => confirm() && !confirm().disabled);
+  const crop = tests.querySelector(".avatar-crop canvas");
+  confirm().click();
+  await until(
+    () =>
+      tests.querySelector('[role="alert"]')?.textContent ===
+        "Couldn't save your changes right now. Please try again." &&
+      !confirm()?.disabled,
+  );
+  check(
+    tests.querySelector(".avatar-crop canvas") === crop,
+    "the selected image and crop remain available after failure",
+  );
+  check(
+    !tests.textContent.includes("Avatar updated."),
+    "failed uploads never claim success",
+  );
+  confirm().click();
+  await until(() => attempts === 4 && !confirm()?.disabled);
+  check(
+    tests.querySelector(".avatar-crop canvas") === crop,
+    "the same crop can be retried without selecting a file again",
+  );
 });
 
 document.querySelector("#results").textContent = JSON.stringify(

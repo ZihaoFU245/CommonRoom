@@ -175,7 +175,7 @@ test("verified attachments stay separate from text and release only on acknowled
   status = 413;
   await hook.start(new File(["test"], "notes.txt"));
   hook = render();
-  assert.match(hook.error, /413/);
+  assert.match(hook.error, /too large/);
   assert.equal(hook.busy, false);
   assert.equal(hook.attachment, null);
   assert.deepEqual(removed, [id]);

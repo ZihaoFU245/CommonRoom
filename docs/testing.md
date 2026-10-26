@@ -108,6 +108,15 @@ rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --noc
 
 ## UI verification
 
+Save-feedback browser regressions exercise actual color HTTP requests returning
+403/502/503 and network errors, retaining the selected color and showing an alert
+beside Apply until a successful retry. The picker remains open while saving.
+Account-command rejection/disconnection retains edits and exposes an alert;
+failed avatar uploads retain the selected image and crop for another attempt.
+Save feedback keeps actionable validation/permission errors, explains expired
+sessions and connection/timeouts, and replaces server/storage diagnostics with
+plain retry instructions. Upload errors do not ask users to configure CORS.
+
 The composer IME browser regression replays Safari's unmarked candidate keys,
 key code 229, and confirming Enter immediately after compositionend. It also
 checks consecutive compositions, blur recovery, Shift+Enter and a deliberate

@@ -1,7 +1,7 @@
 import { controlMotion } from "../../features/preferences/motion.ts";
 import autoAnimate from "@formkit/auto-animate";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { errorMessage } from "../../api/protocol.ts";
+import { saveErrorMessage } from "../../features/preferences/saveFeedback.ts";
 import type { SettingsProps } from "./types.ts";
 
 export function AccountEditor({
@@ -72,9 +72,13 @@ export function AccountEditor({
       .then((result) => {
         if (currentOperation !== operation.current) return;
         setFailed(result.kind === "error");
-        setFeedback(result.text);
-        if (password) clearPassword();
+        setFeedback(
+          result.kind === "error"
+            ? saveErrorMessage(new Error(result.text))
+            : result.text,
+        );
         if (result.kind !== "error") {
+          if (password) clearPassword();
           restoreEditorFocus.current = true;
           setEditor(null);
         }
@@ -82,7 +86,7 @@ export function AccountEditor({
       .catch((error: unknown) => {
         if (currentOperation !== operation.current) return;
         setFailed(true);
-        setFeedback(errorMessage(error));
+        setFeedback(saveErrorMessage(error));
       });
   }
   return (
@@ -138,7 +142,7 @@ export function AccountEditor({
                   type="submit"
                   disabled={pending || !canRename || name === state.username}
                 >
-                  Save
+                  {pending ? "Saving…" : "Save"}
                 </button>
                 <button
                   type="button"
@@ -154,7 +158,7 @@ export function AccountEditor({
           {feedback && (
             <p
               class={failed ? "account-error" : "account-feedback"}
-              role="status"
+              role={failed ? "alert" : "status"}
             >
               {feedback}
             </p>
@@ -238,7 +242,7 @@ export function AccountEditor({
               </p>
               <div class="account-editor-actions">
                 <button type="submit" disabled={pending || !canChangePassword}>
-                  Save password
+                  {pending ? "Saving…" : "Save password"}
                 </button>
                 <button
                   type="button"
@@ -254,7 +258,7 @@ export function AccountEditor({
           {feedback && (
             <p
               class={failed ? "account-error" : "account-feedback"}
-              role="status"
+              role={failed ? "alert" : "status"}
             >
               {feedback}
             </p>

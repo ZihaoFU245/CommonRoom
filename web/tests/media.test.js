@@ -160,6 +160,19 @@ test("direct upload omits chat cookies, reports progress and aborts", async (t) 
   xhr.status = 200;
   xhr.onload();
   await success;
+  for (const [event, message] of [
+    ["onload", "Couldn't upload this file. Please try again."],
+    [
+      "onerror",
+      "Couldn't upload this file. Check your connection and try again.",
+    ],
+    ["ontimeout", "The upload took too long. Please try again."],
+  ]) {
+    const failed = uploadFile(ticket, file, new AbortController().signal);
+    xhr.status = 503;
+    xhr[event]();
+    await assert.rejects(failed, { message });
+  }
 });
 
 test("native attachment hints preserve Markdown and cannot target external origins", () => {

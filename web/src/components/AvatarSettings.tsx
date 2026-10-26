@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import autoAnimate from "@formkit/auto-animate";
 import { Avatar } from "./Avatar.tsx";
 import type { Snapshot } from "../api/protocol.ts";
-import { errorMessage } from "../api/protocol.ts";
+import { saveErrorMessage } from "../features/preferences/saveFeedback.ts";
 import { api } from "../api/client.ts";
 import { uploadFile } from "../api/media.ts";
 import {
@@ -24,6 +24,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [failed, setFailed] = useState(false);
   const [preview, setPreview] = useState<string>();
   const [avatarVersion, setAvatarVersion] = useState(0);
   const [committed, setCommitted] = useState<{
@@ -122,7 +123,9 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
     return () => cancelAnimationFrame(frame);
   }, [image, zoom, x, y]);
   function run(work: () => Promise<unknown>) {
+    if (busy) return;
     setBusy(true);
+    setFailed(false);
     setFeedback("Updating avatar…");
     work()
       .then(() => {
@@ -130,7 +133,8 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
       })
       .catch((error: unknown) => {
         setPreview(undefined);
-        setFeedback(errorMessage(error));
+        setFailed(true);
+        setFeedback(saveErrorMessage(error));
       })
       .finally(() => {
         setBusy(false);
@@ -163,8 +167,6 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
     signal.throwIfAborted();
     setPreview(URL.createObjectURL(blob));
     setMenu(false);
-    setFile(null);
-    setImage(null);
     avatarButton.current?.focus();
     const uploadId = crypto.randomUUID();
     let allocated = false;
@@ -183,14 +185,15 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
       const complete = await api.completeAvatar(ticket.media_id, signal);
       setCommitted({ path: complete.path, previous: currentAvatar });
       setPreview(undefined);
+      setFile(null);
+      setImage(null);
     } catch (error) {
       setPreview(undefined);
       // A failed optimistic frame must not survive if the previous URL also fails.
       setAvatarVersion((version) => version + 1);
+      setFailed(true);
       setFeedback(
-        signal.aborted
-          ? "Cancelling upload…"
-          : "Upload failed; releasing reservation…",
+        signal.aborted ? "Upload cancelled." : saveErrorMessage(error),
       );
       // Recover a lost allocation response with the same ID before abandoning.
       // A replay cannot reserve another slot, even when the first request is late.
@@ -232,7 +235,10 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
         </div>
       </div>
       {feedback && (
-        <p class="account-summary" role="status">
+        <p
+          class={failed ? "account-error" : "account-summary"}
+          role={failed ? "alert" : "status"}
+        >
           {feedback}
         </p>
       )}
@@ -298,6 +304,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           event.currentTarget.value = "";
           if (!selected) return;
           setFeedback("");
+          setFailed(false);
           if (
             !["image/png", "image/jpeg", "image/webp"].includes(
               selected.type,
