@@ -79,7 +79,14 @@ Completion and cleanup serialize mutation of the same object; engine locks are r
 before network I/O. Current identity/grants are rechecked after verification.
 
 The composer holds a separate attachment card/preview with Remove, while text
-remains editable. Upload/verification blocks every send path. Sending combines
+remains editable. Pasting an image from the clipboard attaches it through the
+same upload path as the attach picker: the paste is consumed, no Markdown or
+image URL reaches the textarea, and an unnamed screenshot receives a filename
+from its image type. The picker and pasted images share one availability rule,
+so both are refused while console view, read-only access, an in-flight upload, a
+pending send, an existing attachment, or a `/command` draft applies. A paste
+without an image file keeps the browser's ordinary text behavior.
+Upload/verification blocks every send path. Sending combines
 text and an application media path as Markdown; a media-only message is allowed.
 Raw attachment Markdown never enters the textarea. Preview object URLs are local
 and released on removal, publication and navigation. Completed but unsent media

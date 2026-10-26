@@ -2,6 +2,10 @@ import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
 import { useEffect, useRef } from "preact/hooks";
+import {
+  canAttachFile,
+  clipboardAttachment,
+} from "../features/conversation/attachments.ts";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { useCompositionGuard } from "../hooks/useCompositionGuard.ts";
 interface Props {
@@ -67,6 +71,26 @@ export function Composer({
       ?.querySelector('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest" });
   }, [activeHint, hints.length]);
+  const attachVisible = !!mediaUpload?.enabled && !consoleView && canWrite;
+  const attachAllowed =
+    !!mediaUpload &&
+    canAttachFile({
+      enabled: mediaUpload.enabled,
+      consoleView,
+      canWrite,
+      pending,
+      uploading: mediaUpload.busy,
+      attached: !!mediaUpload.attachment,
+      draft,
+    });
+  // A pasted image becomes the attachment the file picker would produce.
+  function paste(event: JSX.TargetedClipboardEvent<HTMLTextAreaElement>) {
+    if (!mediaUpload || !attachAllowed) return;
+    const file = clipboardAttachment(event.clipboardData);
+    if (!file) return;
+    event.preventDefault();
+    mediaUpload.start(file).catch(() => undefined);
+  }
   return (
     <div class="composer-area">
       <div
@@ -193,7 +217,7 @@ export function Composer({
       )}
       <form class="composer" onSubmit={send}>
         <div class="composer-input">
-          {mediaUpload?.enabled && !consoleView && canWrite && (
+          {mediaUpload && attachVisible && (
             <label
               class="attach-button"
               title={`Attach a file (up to ${mediaUpload.maxSize.toLocaleString()} bytes)`}
@@ -204,12 +228,7 @@ export function Composer({
               <input
                 type="file"
                 aria-label="Attach a file"
-                disabled={
-                  pending ||
-                  mediaUpload.busy ||
-                  !!mediaUpload.attachment ||
-                  draft.trim().startsWith("/")
-                }
+                disabled={!attachAllowed}
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
@@ -244,6 +263,7 @@ export function Composer({
             }
             value={draft}
             onInput={(event) => edit(event.currentTarget.value)}
+            onPaste={paste}
             {...composition}
             onSelect={selectCaret}
             onClick={selectCaret}
