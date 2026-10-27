@@ -108,6 +108,88 @@ pub(in crate::web) async fn storage_server()
     });
     (storage, server)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+async fn postgres_cancelled_completions_keep_object_lock_until_commit() {
+    let fixture = crate::engine::database::tests::PostgresFixture::new();
+    let mut app = app(Engine::open_postgres(&fixture.url).unwrap());
+    app.io_jobs = Arc::new(tokio::sync::Semaphore::new(64));
+    let (storage, server) = storage_server().await;
+    app.media = Some(storage.clone());
+    let store = app.engine_read().unwrap().media_store();
+    let blocker = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+    let inspect = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+    for avatar in [false, true] {
+        let (base, input) = if avatar {
+            ("/api/avatars/uploads", json!({"size":8}))
+        } else {
+            (
+                "/api/media/uploads",
+                json!({"conversation_id":"@direct:bob","filename":"photo.png","size":8}),
+            )
+        };
+        let reserved = request(&app, "alice", "POST", base, input).await;
+        assert_eq!(reserved.0, StatusCode::OK, "{}", reserved.1);
+        let id = reserved.1["media_id"].as_str().unwrap().to_owned();
+        let hold = blocker.unchecked_transaction().unwrap();
+        hold.query_row(
+            "SELECT id FROM media WHERE id=$1 FOR UPDATE",
+            [&id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+        let path = format!("{base}/{id}/complete");
+        let completing = tokio::spawn({
+            let app = app.clone();
+            let path = path.clone();
+            async move { request(&app, "alice", "POST", &path, json!(null)).await }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let waiting: bool = inspect.query_row("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE media SET ready=1%')", [], |row| row.get(0)).unwrap();
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "completion did not reach the media lock"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(app.engine.try_read().is_ok());
+        completing.abort();
+        assert!(completing.await.unwrap_err().is_cancelled());
+        assert!(!store.load(&id).await.unwrap().0.ready);
+        assert!(
+            storage.lock_media(&id).is_err(),
+            "cancelled HTTP released accepted completion's object lock"
+        );
+        let retry = request(&app, "alice", "POST", &path, json!(null)).await;
+        assert_eq!(retry.0, StatusCode::SERVICE_UNAVAILABLE, "{}", retry.1);
+        hold.rollback().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if store.load(&id).await.unwrap().0.ready && storage.lock_media(&id).is_ok() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let retry = request(&app, "alice", "POST", &path, json!(null)).await;
+        assert_eq!(retry.0, StatusCode::OK, "{}", retry.1);
+        if avatar {
+            assert_eq!(
+                app.engine_read().unwrap().data.users["alice"].metadata["@global"]["avatar"],
+                crate::engine::avatars::avatar_path(&id)
+            );
+        }
+    }
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
 async fn contract(mut app: App, db: crate::engine::database::Connection, postgres: bool) {
     let (storage, server) = storage_server().await;
     app.media = Some(storage);

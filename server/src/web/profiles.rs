@@ -8,7 +8,10 @@ pub(super) enum Update {
         room: Option<String>,
         value: Option<String>,
     },
-    Complete(crate::engine::media::Media),
+    Complete(
+        crate::engine::media::Media,
+        tokio::sync::OwnedMutexGuard<()>,
+    ),
 }
 pub(super) async fn update(
     app: &App,
@@ -27,32 +30,41 @@ pub(super) async fn update(
             .conversation(format!("account:{}", identity.account))
             .await?;
         let color = matches!(&update, Update::Color { .. });
-        let current = if let Update::Complete(media) = &update {
+        let current = if let Update::Complete(media, _) = &update {
             Some(store.load(&media.id).await?.0)
         } else {
             None
         };
-        let pending = app
+        // The accepted worker owns the object lock through commit/publication,
+        // including when its HTTP caller is cancelled.
+        let (pending, _object_lock) = app
             .with_conversation(&ordering, {
                 let identity = identity.clone();
                 move |engine| -> Result<_, ApiError> {
                     super::media::verify_identity(&identity, engine)?;
                     Ok(match update {
-                        Update::Avatar(value) => {
-                            engine.prepare_avatar_set(&identity.user, value.as_deref())?
-                        }
-                        Update::Color { room, value } => engine.prepare_color_set(
-                            &identity.user,
-                            room.as_deref(),
-                            value.as_deref(),
-                        )?,
-                        Update::Complete(media) => engine.prepare_avatar_completion(
-                            &identity.user,
-                            media,
-                            current.as_ref().ok_or_else(|| {
-                                error(StatusCode::SERVICE_UNAVAILABLE, "Missing avatar state.")
-                            })?,
-                        )?,
+                        Update::Avatar(value) => (
+                            engine.prepare_avatar_set(&identity.user, value.as_deref())?,
+                            None,
+                        ),
+                        Update::Color { room, value } => (
+                            engine.prepare_color_set(
+                                &identity.user,
+                                room.as_deref(),
+                                value.as_deref(),
+                            )?,
+                            None,
+                        ),
+                        Update::Complete(media, lock) => (
+                            engine.prepare_avatar_completion(
+                                &identity.user,
+                                media,
+                                current.as_ref().ok_or_else(|| {
+                                    error(StatusCode::SERVICE_UNAVAILABLE, "Missing avatar state.")
+                                })?,
+                            )?,
+                            Some(lock),
+                        ),
                     })
                 }
             })

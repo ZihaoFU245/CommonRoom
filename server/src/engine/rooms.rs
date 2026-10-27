@@ -1,6 +1,12 @@
 use super::*;
 use authorization::{Action, Group, Scope, Subject};
 
+pub(super) struct RoomRenamePlan {
+    before: MetadataChange,
+    name: String,
+    new_name: String,
+    room: Room,
+}
 impl Engine {
     pub(super) fn rename_room(
         &mut self,
@@ -9,33 +15,10 @@ impl Engine {
         new_name: &str,
         command: &str,
     ) -> Result<String, EngineError> {
-        let scope = self.room_scope(name)?;
-        self.require_target_command(actor, &scope, command)?;
-        self.require(actor, &scope, Action::RenameRoom)?;
-        if !valid_name(new_name) {
-            return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
-        }
-        if name == new_name {
+        let Some(plan) = self.room_rename_plan(actor, name, new_name, command)? else {
             return Ok("Room name unchanged.".into());
-        }
-        if self.data.rooms.contains_key(new_name) {
-            return Err(EngineError::Conflict("Room already exists.".into()));
-        }
-        let before = MetadataChange::keyed(
-            &self.data,
-            changes::DirtyKeys {
-                rooms: [name.to_owned(), new_name.to_owned()].into(),
-                ..Default::default()
-            },
-        );
-        self.audit(actor, "/rename room", &format!("{name} -> {new_name}"));
-        let mut room = self
-            .data
-            .rooms
-            .remove(name)
-            .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?;
-        room.revision = room.revision.wrapping_add(1);
-        self.data.rooms.insert(new_name.into(), room);
+        };
+        let (reply, before, _, _) = self.apply_room_rename(actor, plan);
         if let Err(error) = self.store_room_rename(name, new_name, &before) {
             before.restore(&mut self.data);
             tracing::error!(error = %error, "Room rename failed");
@@ -59,7 +42,65 @@ impl Engine {
             &self.authorization,
         );
         self.finish_metadata_commit(notice);
-        Ok(format!("Renamed #{name} to #{new_name}."))
+        Ok(reply)
+    }
+
+    pub(super) fn room_rename_plan(
+        &self,
+        actor: Option<&str>,
+        name: &str,
+        new_name: &str,
+        command: &str,
+    ) -> Result<Option<RoomRenamePlan>, EngineError> {
+        let scope = self.room_scope(name)?;
+        self.require_target_command(actor, &scope, command)?;
+        self.require(actor, &scope, Action::RenameRoom)?;
+        if !valid_name(new_name) {
+            return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
+        }
+        if name == new_name {
+            return Ok(None);
+        }
+        if self.data.rooms.contains_key(new_name) {
+            return Err(EngineError::Conflict("Room already exists.".into()));
+        }
+        Ok(Some(RoomRenamePlan {
+            before: MetadataChange::keyed(
+                &self.data,
+                changes::DirtyKeys {
+                    rooms: [name.to_owned(), new_name.to_owned()].into(),
+                    ..Default::default()
+                },
+            ),
+            name: name.into(),
+            new_name: new_name.into(),
+            room: self
+                .data
+                .rooms
+                .get(name)
+                .ok_or_else(|| EngineError::NotFound("Room not found.".into()))?
+                .clone(),
+        }))
+    }
+    pub(super) fn apply_room_rename(
+        &mut self,
+        actor: Option<&str>,
+        mut plan: RoomRenamePlan,
+    ) -> (String, MetadataChange, String, String) {
+        self.audit(
+            actor,
+            "/rename room",
+            &format!("{} -> {}", plan.name, plan.new_name),
+        );
+        plan.room.revision = plan.room.revision.wrapping_add(1);
+        self.data.rooms.remove(&plan.name);
+        self.data.rooms.insert(plan.new_name.clone(), plan.room);
+        (
+            format!("Renamed #{} to #{}.", plan.name, plan.new_name),
+            plan.before,
+            format!("room:{}", plan.name),
+            format!("room:{}", plan.new_name),
+        )
     }
 
     pub(super) fn apply_rooms(

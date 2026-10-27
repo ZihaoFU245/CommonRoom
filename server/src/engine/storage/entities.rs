@@ -171,6 +171,15 @@ pub(super) fn write_delta_view<'a>(
     data: &'a Data,
     before: changes::DataView<'_>,
 ) -> Result<(), EngineError> {
+    write_delta_entities(batch, data, before)?;
+    write_audit(batch, data);
+    Ok(())
+}
+pub(super) fn write_delta_entities(
+    batch: &mut MetadataWrite<'_>,
+    data: &Data,
+    before: changes::DataView<'_>,
+) -> Result<(), EngineError> {
     write_map_keys(
         batch,
         "account",
@@ -286,7 +295,6 @@ pub(super) fn write_delta_view<'a>(
             });
         }
     }
-    write_audit(batch, data);
     if data.policy.revision != before.policy.revision
         || data.policy.assignments != before.policy.assignments
         || data.policy.grants != before.policy.grants

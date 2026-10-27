@@ -9,6 +9,14 @@ struct MetadataEntry {
     source: String,
 }
 
+pub(super) struct AccountMetadataPlan {
+    before: MetadataChange,
+    accounts: BTreeMap<String, Account>,
+    operation: &'static str,
+    target: String,
+    reply: String,
+}
+
 impl Engine {
     pub(super) fn object_scope(
         &self,
@@ -366,6 +374,60 @@ impl Engine {
         &mut self,
         context: &dispatch::CommandContext<'_>,
     ) -> Result<String, EngineError> {
+        if let Some(plan) = self.account_metadata_plan(context)? {
+            let (reply, before) = self.apply_account_metadata(context.actor, plan);
+            self.commit_account_metadata(before)?;
+            Ok(reply)
+        } else {
+            self.query_objects(context)
+        }
+    }
+    pub(super) fn prepare_account_metadata(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        input: &str,
+    ) -> Result<AccountMetadataPlan, EngineError> {
+        crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
+        crate::commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
+        if actor.is_some_and(|name| !self.active(name)) {
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
+        }
+        let command = input.split_whitespace().next().unwrap_or("");
+        self.require_command(actor, view, command)?;
+        let parts = input.split_whitespace().collect::<Vec<_>>();
+        let context = CommandContext {
+            actor,
+            command,
+            room: view.filter(|v| !v.starts_with('@')),
+            input,
+            parts: &parts,
+            view,
+            scope: self.command_scope(actor, view)?,
+            markdown: false,
+            author: actor.unwrap_or("console"),
+        };
+        match self.account_metadata_plan(&context)? {
+            Some(plan) => Ok(plan),
+            None => {
+                self.query_objects(&context)?;
+                Err("Expected an account metadata mutation.".into())
+            }
+        }
+    }
+    pub(super) fn apply_account_metadata(
+        &mut self,
+        actor: Option<&str>,
+        plan: AccountMetadataPlan,
+    ) -> (String, MetadataChange) {
+        self.data.users.extend(plan.accounts);
+        self.audit(actor, plan.operation, &plan.target);
+        (plan.reply, plan.before)
+    }
+    fn account_metadata_plan(
+        &self,
+        context: &dispatch::CommandContext<'_>,
+    ) -> Result<Option<AccountMetadataPlan>, EngineError> {
         if let ["/user", "set", who, key, value, rest @ ..] = context.parts {
             if *key != super::colors::COLOR_KEY && !self.is_su(context.actor) {
                 return Err(EngineError::Forbidden(
@@ -407,13 +469,12 @@ impl Engine {
                 }
             }
             let before = MetadataChange::accounts(&self.data, targets.iter().cloned(), false);
-            for name in &targets {
-                let metadata = &mut self
-                    .data
-                    .users
-                    .get_mut(name)
-                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
-                    .metadata;
+            let mut accounts = targets
+                .iter()
+                .map(|name| (name.clone(), self.data.users[name].clone()))
+                .collect::<BTreeMap<_, _>>();
+            for account in accounts.values_mut() {
+                let metadata = &mut account.metadata;
                 let entries = metadata.entry(scope_key.clone()).or_default();
                 if value == "@unset" {
                     entries.remove(*key);
@@ -422,13 +483,13 @@ impl Engine {
                 }
                 metadata.retain(|_, values| !values.is_empty());
             }
-            self.audit(
-                context.actor,
-                "/user set",
-                &format!("{who} {key} {}", self.scope_label(&scope)),
-            );
-            self.commit_account_metadata(before)?;
-            return Ok(format!("Updated metadata for {} users.", targets.len()));
+            return Ok(Some(AccountMetadataPlan {
+                before,
+                accounts,
+                operation: "/user set",
+                target: format!("{who} {key} {}", self.scope_label(&scope)),
+                reply: format!("Updated metadata for {} users.", targets.len()),
+            }));
         }
         if let ["/user", "reset", who, key, rest @ ..] = context.parts {
             if *key != super::colors::COLOR_KEY && !self.is_su(context.actor) {
@@ -466,13 +527,12 @@ impl Engine {
                 }
             }
             let before = MetadataChange::accounts(&self.data, targets.iter().cloned(), false);
-            for name in &targets {
-                let metadata = &mut self
-                    .data
-                    .users
-                    .get_mut(name)
-                    .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
-                    .metadata;
+            let mut accounts = targets
+                .iter()
+                .map(|name| (name.clone(), self.data.users[name].clone()))
+                .collect::<BTreeMap<_, _>>();
+            for account in accounts.values_mut() {
+                let metadata = &mut account.metadata;
                 if *key == "@all" {
                     metadata.remove(&scope_key);
                 } else if let Some(entries) = metadata.get_mut(&scope_key) {
@@ -480,21 +540,21 @@ impl Engine {
                 }
                 metadata.retain(|_, entries| !entries.is_empty());
             }
-            self.audit(
-                context.actor,
-                "/user reset",
-                &format!("{who} {key} {}", self.scope_label(&scope)),
-            );
-            self.commit_account_metadata(before)?;
-            return Ok(format!(
-                "Reset metadata for {} users at {}.",
-                targets.len(),
-                if scope == Scope::Server {
-                    "@global".into()
-                } else {
-                    format!("#{}", self.scope_label(&scope))
-                }
-            ));
+            return Ok(Some(AccountMetadataPlan {
+                before,
+                accounts,
+                operation: "/user reset",
+                target: format!("{who} {key} {}", self.scope_label(&scope)),
+                reply: format!(
+                    "Reset metadata for {} users at {}.",
+                    targets.len(),
+                    if scope == Scope::Server {
+                        "@global".into()
+                    } else {
+                        format!("#{}", self.scope_label(&scope))
+                    }
+                ),
+            }));
         }
         if context.parts.starts_with(&["/user", "reset"]) {
             return Err(
@@ -502,9 +562,12 @@ impl Engine {
                     .into(),
             );
         }
-        self.query_objects(context)
+        Ok(None)
     }
-    fn commit_account_metadata(&mut self, before: MetadataChange) -> Result<(), EngineError> {
+    pub(super) fn commit_account_metadata(
+        &mut self,
+        before: MetadataChange,
+    ) -> Result<(), EngineError> {
         if let Err(error) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
             before.restore(&mut self.data);
             return Err(error);

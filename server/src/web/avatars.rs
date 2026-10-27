@@ -101,7 +101,7 @@ pub(crate) async fn complete(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
-    let _lock = storage
+    let object_lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let mut media = owner(&app, &headers, id).await?;
@@ -120,7 +120,12 @@ pub(crate) async fn complete(
         .map_err(super::media::storage_failure)?;
     }
     let id = media.id.clone();
-    super::profiles::update(&app, headers, super::profiles::Update::Complete(media)).await?;
+    super::profiles::update(
+        &app,
+        headers,
+        super::profiles::Update::Complete(media, object_lock),
+    )
+    .await?;
     Ok(Json(
         json!({"ok":true,"media_id":id,"path":crate::engine::avatars::avatar_path(&id)}),
     ))

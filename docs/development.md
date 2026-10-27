@@ -96,6 +96,47 @@ the full target set. Audited deletions additionally hold the audit permit throug
 commit/publication; sends and cursors do not need that permit. No runtime belongs to a
 connection, and pools drain before ownership locks are released.
 
+Read-only browser commands use owned plans. `/history`, elevated cleanup previews
+and `/configs` await native readers/statistics outside engine guards; memory-only
+commands use the same capture/revalidation path. Sudo query phases elevate only
+inside their synchronous guard and recheck authority before delivery. Avatar/color
+updates use per-account ordering and atomic profile/media transactions. Accepted
+attachment/avatar completions own the object mutex through commit/publication;
+transport cancellation must not make a pending object available for finalization
+again while its first database commit is still running.
+
+Basic administrative mutations use `App::with_metadata` and an asynchronously
+acquired exclusive metadata permit. The permit remains held through native commit
+and publication, while the engine guard covers only preparation/publication.
+`PendingMetadata` owns resolved target snapshots and serialized typed operations;
+preparation restores the original memory state before returning. Only committed
+deltas become visible. Publication must run even if final response authorization
+fails after a session expires during database I/O.
+
+Account metadata and room rename share pure plans with compatibility callers.
+Credential commands hash before acquiring the native metadata permit and recheck
+authority/identity afterward. Login/logout use `SessionWrite` for atomic session
+and event persistence; accepted login work retains its attempt/password permits
+through cancellation. Browser socket/session authentication checks native storage
+health outside engine guards, then verifies the stable principal again. Presence
+updates must remain memory-only.
+
+Versioned bot credential/conversation mutations use owned metadata deltas and
+retain accepted work through commit/publication. Bot source facts and receipt
+lookup use reader leases, then recheck live credentials and target authority before
+delivery. Socket authentication, activity and command discovery await health outside
+engine guards; their final metadata/runtime checks are memory-only. The outer bot
+command effect/receipt transaction still uses the compatibility path and must be
+migrated atomically, including rejected outcomes, replay and capacity behavior.
+
+Elevated message and cleanup commands use the same native operation paths as
+ordinary browser writes. Each synchronous capture/preparation stage revalidates
+session identity and sudo grants, installs authority only within that phase, then
+restores compiled authorization before awaiting storage. Conversation permits
+retain ordering through commit/publication; publication of committed work must
+finish even after transport cancellation. Initial message lookup without a known
+conversation holds no metadata permit, so later preparation must recheck sudo.
+
 ## Browser compatibility
 
 The minimum supported Chrome version is 114. Production JavaScript and CSS targets

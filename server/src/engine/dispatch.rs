@@ -40,6 +40,15 @@ impl Engine {
         view: Option<&str>,
         input: &str,
     ) -> Option<Result<String, EngineError>> {
+        self.prepare_read_command(actor, view, input)
+            .map(|plan| plan.and_then(CommandRead::finish))
+    }
+    pub(crate) fn prepare_read_command(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        input: &str,
+    ) -> Option<Result<CommandRead, EngineError>> {
         let command = input.split_whitespace().next().unwrap_or("");
         if let Err(error) = commands::validate_room_arguments(input) {
             return Some(Err(EngineError::Invalid(error)));
@@ -64,6 +73,7 @@ impl Engine {
                     | "/ls"
                     | "/members"
                     | "/history"
+                    | "/bot"
             )
         ) {
             return None;
@@ -72,6 +82,14 @@ impl Engine {
             && !matches!(
                 parts.as_slice(),
                 ["/user", "ls" | "get", ..] | ["/room", "ls"]
+            )
+        {
+            return None;
+        }
+        if command == "/bot"
+            && !matches!(
+                parts.as_slice(),
+                ["/bot", "ls" | "info", ..] | ["/bot", "token", "ls", ..]
             )
         {
             return None;
@@ -93,18 +111,27 @@ impl Engine {
                 markdown: false,
                 author: actor.unwrap_or("console"),
             };
-            if command == "/clean" {
-                self.preview_cleanup(&context)
+            if command == "/bot" {
+                self.query_bot_command(actor, view, &parts)
+                    .ok_or("Command is not read-only.")?
+                    .map(CommandRead::Text)
+            } else if command == "/clean" {
+                self.resolve_cleanup_plan(&context)
+                    .map(CommandRead::Preview)
             } else if matches!(command, "/user" | "/room") {
-                self.query_objects(&context)
+                self.query_objects(&context).map(CommandRead::Text)
             } else if parts[0] == "/permissions" {
-                self.apply_permissions(&context)
+                self.apply_permissions(&context).map(CommandRead::Text)
+            } else if parts[0] == "/history" {
+                self.history_command_plan(&context)
+                    .map(CommandRead::History)
             } else {
-                self.apply_queries(&context)
+                self.apply_queries(&context).map(CommandRead::Text)
             }
         })())
     }
 
+    #[cfg(test)]
     pub fn execute(
         &mut self,
         actor: Option<&str>,

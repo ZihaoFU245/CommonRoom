@@ -179,7 +179,29 @@ impl super::Connection {
         native_metadata!(self, account_conversations, name)
     }
 }
+impl super::Connection {
+    async fn account_conversations_async(&mut self, name: &str) -> Result<BTreeSet<String>> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            super::Backend::Sqlite(db) => {
+                super::sqlite::metadata::account_conversations(db, name).await
+            }
+            super::Backend::Postgres(db) => {
+                super::postgres::metadata::account_conversations(db, name).await
+            }
+            super::Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+}
 impl super::Handle {
+    pub(crate) async fn account_conversations(&self, name: &str) -> Result<BTreeSet<String>> {
+        self.acquire_read()
+            .await?
+            .account_conversations_async(name)
+            .await
+    }
+
     pub(crate) fn save_metadata_blocking(
         &self,
         request: &MetadataWrite<'_>,

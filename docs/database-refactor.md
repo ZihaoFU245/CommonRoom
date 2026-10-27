@@ -514,3 +514,293 @@ rerun relevant contracts and real media smoke.
 This work builds on `767e1b9` and deliberately preserves a resumable incomplete
 state. Do not describe the driver conversion or this avatar/profile checkpoint as
 completion of the application refactor.
+
+## Native command-query and completion-lock checkpoint (2026-10-27)
+
+The object-lock cancellation window recorded above is now fixed for attachment
+and avatar completion. The accepted worker owns the lock through database commit
+and publication. A PostgreSQL regression blocks each media completion update,
+cancels its HTTP caller, requires a concurrent completion to remain busy, then
+releases the update and verifies readiness, avatar publication and successful
+idempotent retry. S3 finalization still runs outside general API admission leases.
+
+`engine/command_read.rs` now owns history command parsing, authorization and output
+formatting. `CommandRead` carries immediate text, a native history page plan or a
+cleanup-preview plan. Legacy console/bot callers use compatibility completion;
+browser read-only commands await native completion. The old production synchronous
+history-page wrappers are test-only, and the duplicate blocking browser `/configs`
+and read-command paths are removed.
+
+`web/query_commands.rs` captures query plans and delivery stamps under short
+guards, awaits history/health/cache statistics outside those guards, then checks
+identity, authority and stamps again. It retries a changed captured state once.
+Temporary `/sudo` authority exists only inside each synchronous capture; the shared
+metadata fence is released before database reads. Revocation can therefore finish
+while a history query is blocked, and stale output is rejected. Native `/configs`
+uses `HistoryStore::stats_async`; synchronous statistics remain for console and
+outer bot command paths until those are migrated.
+
+Ordinary and PostgreSQL parity contracts compare history/range/private output,
+memory-only query output, elevated previews and configuration output against the
+existing domain behavior, preserving permissions and memory/revision state. The
+PostgreSQL revocation contract covers ordinary read grants and elevated authority.
+
+Verified after these changes: 385 ordinary Rust tests passed (30 ignored), all 27
+opt-in PostgreSQL contracts passed serially, all-target Clippy with warnings denied
+passed, and formatting/diff checks passed. Rebuilt real-server/media verification
+is tracked below as it completes. The full refactor remains unfinished:
+administrative/account/credential mutations, elevated writes, outer bot receipt/
+savepoint control, console operations and final synchronous adapter removal remain.
+
+Rebuilt debug/release HTTP/WebSocket integration, real RustFS media smoke and
+fresh-target PostgreSQL migration/lifecycle smoke all passed at this query
+checkpoint. The filled migration database is `chat_refactor_queries_01a176e8`.
+
+## Native basic-administration checkpoint (2026-10-27)
+
+Basic browser administration now uses owned native metadata transactions:
+account enable/disable, grant/revoke (including group/bulk variants), room
+creation/deletion, invitation/kick/join/leave and ownership transfer. Their
+`/sudo` variants elevate only during synchronous preparation. The metadata fence
+is acquired asynchronously and retained exclusively through commit/publication;
+the engine guard is released during all database work. This exclusion stabilizes
+authority and serializes global policy changes without occupying the engine lock.
+
+`engine/metadata_write.rs::PendingMetadata` owns resolved-key before/after snapshots,
+serialized typed operations, every new audit entry, compiled committed policy and
+notification audiences. Preparation reuses the memory-only domain handlers and
+restores the original state before returning, including on validation/serialization
+failure. SQL remains in the independent backend operation modules. Commit failure
+leaves memory/caches/notices unchanged. Publication applies only selected metadata,
+retains the append counter and updates indices, colors, cursors and notices.
+Committed publication always runs even when response delivery fails because the
+request's session expired during I/O; self-revocation still publishes its effect.
+
+`storage/entities.rs` separates owned entity/state deltas from borrowed audit
+writing so accepted metadata plans need no reference to engine memory. Native
+administration appends its new audit entries and relies on the backend's existing
+1,000-entry pruning. A group assignment that first admits a participant records
+both its admission and group audit entries. Legacy callers retain the shared delta
+builder and audit persistence until their entry points are migrated.
+
+`web/mutations.rs` adds an owned `MetadataPermit` alongside conversation permits;
+both use the same short engine-phase implementation with coordinator validation.
+Legacy `App::engine` still acquires that exclusive fence synchronously before the
+engine guard. Do not call it from a worker already holding `MetadataPermit`.
+
+Verified: 386 ordinary Rust tests (32 ignored), all 29 opt-in PostgreSQL contracts
+serially, all-target Clippy with warnings denied, formatting and diff checks.
+New shared SQLite/PostgreSQL contracts verify injected state-write failure rolls
+back a newly inserted room, no memory/revision/color/notification leak, permissions,
+membership/ownership, session revocation, room history/cursor removal, all audit
+entries, append-counter preservation and restart persistence. A PostgreSQL contract
+blocks the state row, observes old metadata and usable memory-only queries, cancels
+the initiating HTTP work, then requires committed publication before a queued
+metadata operation. Its second case expires the initiating credential while blocked
+and still requires both committed publications and notifications.
+
+Remaining full scope: account/room renames, account deletion, metadata/retention
+object commands, account provisioning/password/auth lifecycle, bot management,
+remaining elevated message/history mutations, outer bot command receipts/savepoints,
+console entry points and removal of obsolete production synchronous adapters.
+Offline transfer/test injection and original ordering/cache/ownership invariants
+remain required. Real-binary verification for these latest administration changes
+must be recorded separately from the preceding query checkpoint.
+
+The rebuilt debug and release HTTP/WebSocket harness passed again for this
+administration checkpoint. The current debug binary also passed the real RustFS
+avatar/attachment smoke and the fresh-target PostgreSQL provisioning/verified
+transfer/HTTP restart/shutdown/ownership/unchanged-source smoke. The filled target
+is `chat_refactor_admin_01a176e8`; use another fresh empty target on the next run.
+The ignored root `chat` executable was refreshed from the current release build.
+
+## Native account commands and authentication checkpoint (2026-10-27)
+
+Bulk `/user set` and metadata reset, room rename, password change, account
+creation and password reset now use the native metadata path. Pure owned account
+and room plans share validation with compatibility callers. Room rename commits
+metadata, revisions and cursor-key movement together. Credential commands hash on
+bounded workers without engine guards or metadata fencing, then recheck principal,
+command/action grants, expected hash and reset target identity before persistence.
+Accepted credential work retains admission and publishes after transport loss.
+The synchronous password-change wrapper has no production callers and is test-only.
+
+`engine/session_write.rs` owns native session deltas and authentication-event
+persistence. Login/logout commit session insertion/eviction/removal and their event
+in one transaction, then publish session memory and revision under a short guard.
+The exclusive metadata permit stabilizes account/session state across the await.
+Failed-login events use their own native write. Login attempt reservations and
+password permits remain owned by accepted work through completion/cancellation;
+login continues to use no general HTTP I/O permit. Compatibility login/logout and
+authentication-event/session save methods are now test-only.
+
+Browser socket upgrade/reauthentication and session-status checks await database
+health outside engine guards and revalidate stable credential identity afterward.
+Presence changes perform memory checks only. The former guarded mutable API helper
+and synchronous browser authentication helper now have test-only callers.
+
+Shared SQLite/PostgreSQL application contracts cover bulk metadata failure after
+an earlier account update, scope/quota/color rules, room/cursor rename rollback,
+password/session rollback and credential replacement. PostgreSQL cancellation
+contracts cover password reset followed by queued revocation and login blocked on
+its event write followed by queued disable; unrelated session reads remain usable.
+Native auth contracts inject event failure into both login and logout and require
+session memory, revision and notifications to remain unchanged. The ordinary
+failed-login/audit-field/throttling and sudo regressions still pass.
+
+Latest verification: 387 ordinary Rust tests passed (35 ignored), all 32 opt-in
+PostgreSQL contracts passed serially, Clippy with warnings denied passed, and
+formatting/diff checks passed. Debug/release HTTP/WebSocket integration passed for
+the preceding native account-command changes; the latest session/socket changes
+are being rebuilt and must have their real-binary result recorded independently.
+The disposable PostgreSQL cluster was confirmed stopped and restarted from its
+existing scratch directory on port 55439; do not assume its old PID is still live.
+
+Remaining: account rename/deletion, bot management and read/control entry points,
+remaining elevated message/history writes, outer bot command receipts/savepoints,
+console migration, startup/maintenance bridge audit and obsolete production adapter
+removal. The complete original goal is still active and unfinished.
+
+The current native session/socket debug and release builds passed the full
+HTTP/WebSocket harness. Real RustFS avatar/attachment smoke and the fresh-target
+PostgreSQL migration/lifecycle smoke also passed. That smoke filled
+`chat_refactor_auth_01a176e8`; use a new empty target next time. The ignored root
+`chat` artifact now matches this release build. No source changes followed these
+builds other than documentation and test-fixture permission diagnostics.
+
+## Native account identity and slash-bot administration checkpoint (2026-10-27)
+
+Account rename/deletion now use native transactions. Rename produces an authorized
+`AccountRenameRead`, awaits indexed history/reaction references on a reader outside
+the engine guard, then prepares its owned delta under the same metadata permit.
+Stable target ID and actor authority are rechecked before preparation. Sessions,
+directory/membership keys, affected revisions, history/reaction/mention/reply
+rewrites, name-based cursors and audit commit together. Deletion similarly commits
+anonymization, private-chat removal, session/receipt/cursor cleanup and bot ownership
+recovery before publication. `PendingMetadata` applies the corresponding cursor/
+account effects only after commit. Reusing a deleted username never reuses its ID,
+credentials, history ownership or upload ownership. Compatibility entry points
+share the memory mutation and validation logic with these native paths.
+
+Slash `/bot` creation, owner assignment, credential issuance/revocation and removal
+also use owned native metadata deltas. Read-only bot listing/info/credential listing
+use the async query path and do not reveal credential secrets. The versioned bot
+HTTP control/command-receipt paths remain separate unfinished work; do not infer
+their completion from the slash-command migration.
+
+Verified: 388 ordinary Rust tests passed (37 ignored), all 34 PostgreSQL contracts
+passed serially, all-target Clippy with warnings denied and formatting/diff checks
+passed. Current debug/release builds passed the full HTTP/WebSocket harness,
+including account deletion, username reuse and bot operations. Shared identity
+contracts inject failure after cursor/history work and require full DB/memory/
+notification rollback, then verify sessions, reactions, reply/mention names, private
+and room cursors, unaffected revisions, retained uploads, bot ownership and restart.
+PostgreSQL cancellation contracts block rename reference lookup and deletion cursor
+cleanup while ordinary authorized queries remain usable, cancel the HTTP caller,
+and require publication before queued disable or username replacement.
+
+Remaining original scope: versioned bot control/read/credential paths and outer
+command receipt/savepoint transactions; elevated message/history writes; console
+migration; startup/maintenance bridge audit; obsolete production adapter removal;
+and final full-scope verification. The goal is not complete at this checkpoint.
+
+
+## Native versioned bot control checkpoint (2026-10-27)
+
+Versioned bot credential issuance and conversation creation now prepare owned
+metadata deltas, await native writes outside engine guards, then publish under the
+same exclusive metadata permit. Existing private conversations use a native health
+check and return without a spurious metadata notice. Accepted tasks retain their
+admission permits through cancellation and commit/publication. Pure credential
+validation/mutation is shared with test compatibility callers; the obsolete
+synchronous empty-private creation wrapper has been removed.
+
+Bot source-message facts and command receipt lookup await native reader operations,
+then recheck live credential scope, target revision and author identity before
+returning. Receipt reads now use reader leases unless already inside an explicit
+command transaction. Bot command/schema discovery is memory-only after native
+health/authentication. Socket upgrade, heartbeat, activity and control admission
+also await health outside guards; catalogue registration, refresh and responses
+use short memory-only capture. Browser bot-command discovery uses stable session
+identity with the same native health/revalidation path. The former browser
+`engine_read_api` bridge now has only test callers.
+
+Shared SQLite/PostgreSQL contracts inject failure into credential metadata updates
+and private-directory insertion, require unchanged DB/memory/revision/notices,
+then exercise successful scoped credentials, repeated private creation and live
+catalogue credential revocation. PostgreSQL additionally blocks source lookup and
+revokes the bot while readers leave the engine available, and cancels HTTP
+credential issuance while its state update is locked: accepted work must commit
+and publish before queued disable. Current-source verification passed all 389
+ordinary Rust tests (40 ignored), all 37 opt-in PostgreSQL contracts serially,
+all-target Clippy with warnings denied, formatting and diff checks. Debug/release
+builds succeeded. The real HTTP/WebSocket harness result is recorded below when
+complete.
+
+Remaining original scope: outer bot command effect/receipt transactions and nested
+savepoint removal; remaining elevated message/history writes; console migration;
+startup/maintenance bridge audit; obsolete production adapter removal; final full
+verification. The complete goal remains active.
+
+The current native bot-control debug/release binaries passed the full real
+HTTP/WebSocket integration harness, including durable keyed sends, live bot
+worker discovery/reconnect, scoped credentials/revocation and production routing.
+The ignored root `chat` executable matches this release build. No current-turn
+S3 or fresh-target transfer smoke was run: the preceding identity/auth checkpoints
+record their most recent results. Those checks remain part of final verification.
+
+
+## Native elevated message/history writes checkpoint (2026-10-27)
+
+Browser `/sudo /tell`, `/reply`, `/edit`, `/react`, `/retract` and `/clean` now
+route through native owned plans and asynchronous reads/writes. Shared capture
+and phase helpers validate the stable session and install temporary command
+authority only for synchronous planning. Ordinary initial captures retain their
+read guard path; elevated initial captures take a short mutable guard under an
+empty shared metadata permit, then release that permit before acquiring sorted
+conversation locks. Every later preparation/media-validation phase checks sudo
+again, with no temporary authority surviving a database await. Publication never
+requires elevation and still runs after cancellation of accepted writes.
+
+Shared SQLite/PostgreSQL contracts cover denied ordinary writes, elevated replies,
+private sends, cross-room edits/retractions, reactions and cleanup, stable author
+identity/reply quotes, audit entries and unchanged authorization. Injected message
+insertion failure must roll back sequence, revisions, memory, history and notices.
+PostgreSQL contracts block the initial unscoped message lookup, revoke sudo and
+require rejection after lookup resumes. Separate cancellation cases block an
+accepted reply or cleanup, cancel the caller, and require commit/publication before
+queued sudo revocation while the engine remains readable and unelevated. Restart
+checks require persisted cleanup/private history and no elevated account state.
+
+Remaining complete scope: native outer bot command effects plus atomic outcome
+receipts/savepoint removal; console operations; fallback command errors;
+startup/maintenance bridge audit; obsolete production adapter removal; final
+full-scope verification. The original goal remains active and incomplete.
+
+Current-source verification: 390 ordinary Rust tests passed (43 ignored), all 40
+opt-in PostgreSQL contracts passed serially, all-target Clippy with warnings denied,
+formatting and diff checks passed. The shared elevated-write contract also exercises
+referenced attachments: media records are read without sudo/engine guards, then
+media authorization is rechecked in a fresh synchronous sudo phase. Debug/release
+builds succeeded; their integration harness result is recorded below when complete.
+
+
+Cleanup previews (`--dry-run`) route directly through the owned read-only query
+path, including sudo previews. They no longer acquire conversation mutation
+permits or retain the metadata fence during counting. The query path revalidates
+authority and delivery stamps after native reader work. Final current-source
+checks after this routing adjustment must be recorded independently below.
+
+Final routing adjustment passed 390 ordinary Rust tests, all 40 PostgreSQL
+contracts, Clippy with warnings denied, formatting and diff checks. Current debug
+and release builds succeeded; the earlier integration harness passed before the
+preview routing adjustment, and its final rerun is in progress. Real RustFS media
+smoke passed against the current debug build, including attachments, avatars,
+restart, storage outage rejection and recovery. No fresh-target PostgreSQL
+migration/lifecycle smoke was rerun in this checkpoint.
+
+The final current-source debug/release HTTP/WebSocket integration harness passed.
+The ignored root `chat` executable matches this release build. The elevated native
+write and read-only cleanup-preview changes are verified; the full refactor remains
+unfinished in the outer bot command transaction, console/fallback paths and final
+bridge removal/audit described above.

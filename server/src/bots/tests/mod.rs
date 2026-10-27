@@ -2382,3 +2382,5 @@ async fn postgres_async_sends_release_engine_and_order_metadata_after_cancelled_
         }
     }
 }
+
+mod native_control;

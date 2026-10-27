@@ -1,0 +1,215 @@
+use super::super::media::tests::app;
+use super::*;
+use axum::http::{HeaderMap, header};
+
+async fn command(app: &App, user: &str, view: Option<&str>, text: &str) -> Result<String, String> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        format!("chat_session={user}").parse().unwrap(),
+    );
+    super::super::commands::execute_input(
+        app,
+        &headers,
+        user,
+        &Input {
+            id: 1,
+            room: view.map(str::to_owned),
+            text: text.into(),
+            markdown: false,
+        },
+    )
+    .await
+    .map(|(text, change)| {
+        assert!(change.is_none());
+        text
+    })
+}
+async fn contract(mut app: App) {
+    app.io_jobs = Arc::new(tokio::sync::Semaphore::new(64));
+    {
+        let mut engine = app.engine().unwrap();
+        engine.execute(None, None, "/room new history").unwrap();
+        engine
+            .execute(None, None, "/room add bob #history")
+            .unwrap();
+        engine
+            .execute(Some("bob"), Some("history"), "first query message")
+            .unwrap();
+        engine
+            .execute(Some("bob"), None, "/tell alice private query message")
+            .unwrap();
+        for permission in ["/sudo", "x:command.sudo"] {
+            engine
+                .execute(None, None, &format!("/grant bob @global {permission}"))
+                .unwrap();
+        }
+    }
+    let before = app.engine_read().unwrap().data.clone();
+    let revision = app.engine_read().unwrap().revision;
+    for (user, view, text) in [
+        ("bob", None, "/help"),
+        ("bob", None, "/whoami"),
+        ("bob", None, "/ls room"),
+        ("bob", Some("history"), "/members"),
+        ("alice", None, "/user ls"),
+        ("alice", None, "/user get bob"),
+        ("bob", Some("history"), "/permissions"),
+        ("bob", Some("history"), "/history"),
+        ("bob", None, "/history #history"),
+        ("bob", Some("history"), "/history 1 100"),
+        ("alice", Some("@direct:bob"), "/history"),
+        ("bob", None, "/sudo /history #history"),
+        ("bob", None, "/sudo /whoami"),
+        ("bob", None, "/sudo /clean -1 #history --dry-run"),
+    ] {
+        assert!(supports(text).unwrap());
+        let expected = app
+            .engine()
+            .unwrap()
+            .execute(Some(user), view, text)
+            .unwrap();
+        assert_eq!(
+            command(&app, user, view, text).await.unwrap(),
+            expected,
+            "{text}"
+        );
+    }
+    let expected = app
+        .config
+        .display_with_history(app.engine_read().unwrap().history_store().stats().unwrap())
+        .unwrap();
+    assert_eq!(
+        command(&app, "bob", None, "/sudo /configs").await.unwrap(),
+        expected
+    );
+    assert!(command(&app, "bob", None, "/configs").await.is_err());
+    for text in [
+        "/history",
+        "/history #missing",
+        "/history 4 1",
+        "/configs unexpected",
+        "/sudo /sudo /help",
+    ] {
+        assert!(command(&app, "bob", None, text).await.is_err(), "{text}");
+    }
+    let engine = app.engine_read().unwrap();
+    assert!(engine.data == before);
+    assert_eq!(engine.revision, revision);
+    assert!(!engine.is_su(Some("bob")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_read_commands_preserve_output_permissions_and_state() {
+    let directory = tempfile::tempdir().unwrap();
+    contract(app(
+        Engine::open(&directory.path().join("chat.sqlite")).unwrap()
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+async fn postgres_native_read_commands_preserve_output_permissions_and_state() {
+    let fixture = crate::engine::database::tests::PostgresFixture::new();
+    contract(app(Engine::open_postgres(&fixture.url).unwrap())).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+async fn postgres_history_commands_release_engine_and_recheck_revocation() {
+    for sudo in [false, true] {
+        let fixture = crate::engine::database::tests::PostgresFixture::new();
+        let mut app = app(Engine::open_postgres(&fixture.url).unwrap());
+        app.io_jobs = Arc::new(tokio::sync::Semaphore::new(64));
+        {
+            let mut engine = app.engine().unwrap();
+            engine.execute(None, None, "/room new secret").unwrap();
+            engine
+                .execute(None, Some("secret"), "must not leak")
+                .unwrap();
+            engine.execute(None, None, "/revoke bob user").unwrap();
+            for permission in if sudo {
+                vec!["/sudo", "x:command.sudo"]
+            } else {
+                vec!["/history", "r:message.read"]
+            } {
+                engine
+                    .execute(
+                        None,
+                        None,
+                        &format!(
+                            "/grant bob {} {permission}",
+                            if sudo { "@global" } else { "#secret" }
+                        ),
+                    )
+                    .unwrap();
+            }
+        }
+        let blocker = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+        let hold = blocker.unchecked_transaction().unwrap();
+        hold.execute_batch("LOCK TABLE messages IN ACCESS EXCLUSIVE MODE")
+            .unwrap();
+        let reading = tokio::spawn({
+            let app = app.clone();
+            async move {
+                command(
+                    &app,
+                    "bob",
+                    None,
+                    if sudo {
+                        "/sudo /history #secret"
+                    } else {
+                        "/history #secret"
+                    },
+                )
+                .await
+            }
+        });
+        let inspect = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let waiting: bool = inspect.query_row("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM messages%')", [], |row| row.get(0)).unwrap();
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "history command did not reach its reader"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(app.engine.try_read().is_ok());
+        assert!(!app.engine_read().unwrap().is_su(Some("bob")));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tokio::task::spawn_blocking({
+                let app = app.clone();
+                move || {
+                    app.engine()
+                        .unwrap()
+                        .execute(
+                            None,
+                            None,
+                            if sudo {
+                                "/revoke bob @global x:command.sudo"
+                            } else {
+                                "/revoke bob #secret r:message.read"
+                            },
+                        )
+                        .unwrap();
+                }
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        hold.rollback().unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), reading)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err(), "revoked read leaked history: {result:?}");
+        assert!(!app.engine_read().unwrap().is_su(Some("bob")));
+    }
+}

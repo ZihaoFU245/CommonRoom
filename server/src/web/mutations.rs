@@ -20,6 +20,12 @@ pub(crate) struct Coordinator {
 }
 #[derive(Clone)]
 pub(crate) struct ConversationPermit(Arc<Reservation>);
+#[derive(Clone)]
+pub(crate) struct MetadataPermit(Arc<MetadataReservation>);
+struct MetadataReservation {
+    coordinator: Arc<Coordinator>,
+    _metadata: OwnedRwLockWriteGuard<()>,
+}
 struct Reservation {
     coordinator: Arc<Coordinator>,
     ids: Vec<String>,
@@ -27,6 +33,12 @@ struct Reservation {
     _metadata: OwnedRwLockReadGuard<()>,
 }
 impl Coordinator {
+    pub(crate) async fn metadata(self: &Arc<Self>) -> MetadataPermit {
+        MetadataPermit(Arc::new(MetadataReservation {
+            coordinator: self.clone(),
+            _metadata: self.metadata.clone().write_owned().await,
+        }))
+    }
     pub(crate) fn exclusive(&self) -> Result<OwnedRwLockWriteGuard<()>, EngineError> {
         if let Ok(permit) = self.metadata.clone().try_write_owned() {
             return Ok(permit);
@@ -84,6 +96,19 @@ impl ConversationPermit {
         Arc::ptr_eq(&self.0.coordinator, coordinator)
     }
 }
+trait EnginePermit: Clone + Send + 'static {
+    fn belongs_to(&self, coordinator: &Arc<Coordinator>) -> bool;
+}
+impl EnginePermit for ConversationPermit {
+    fn belongs_to(&self, coordinator: &Arc<Coordinator>) -> bool {
+        ConversationPermit::belongs_to(self, coordinator)
+    }
+}
+impl EnginePermit for MetadataPermit {
+    fn belongs_to(&self, coordinator: &Arc<Coordinator>) -> bool {
+        Arc::ptr_eq(&self.0.coordinator, coordinator)
+    }
+}
 impl Drop for Reservation {
     fn drop(&mut self) {
         self.conversations.clear();
@@ -115,11 +140,33 @@ impl DerefMut for EngineGuard<'_> {
     }
 }
 impl super::App {
-    /// Only owned message preparation/publication belongs here. Database work
+    /// Only owned operation preparation/publication belongs here. Database work
     /// must be awaited outside the engine guard, while the permit remains held.
     pub(crate) async fn with_conversation<T, E>(
         &self,
         permit: &ConversationPermit,
+        mutate: impl FnOnce(&mut Engine) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<EngineError> + Send + 'static,
+    {
+        self.with_ordering(permit, mutate).await
+    }
+    pub(crate) async fn with_metadata<T, E>(
+        &self,
+        permit: &MetadataPermit,
+        mutate: impl FnOnce(&mut Engine) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<EngineError> + Send + 'static,
+    {
+        self.with_ordering(permit, mutate).await
+    }
+    async fn with_ordering<T, E, P: EnginePermit>(
+        &self,
+        permit: &P,
         mutate: impl FnOnce(&mut Engine) -> Result<T, E> + Send + 'static,
     ) -> Result<T, E>
     where

@@ -119,7 +119,10 @@ async fn owner(
     .await
 }
 enum MediaMutation {
-    Ready(crate::engine::media::Media),
+    Ready(
+        crate::engine::media::Media,
+        tokio::sync::OwnedMutexGuard<()>,
+    ),
     Abandon(String),
 }
 async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Result<(), ApiError> {
@@ -133,7 +136,7 @@ async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Resu
         let (identity, store) = native_context(&app, headers).await?;
         let ordering = app.mutations.conversations(vec![]).await?;
         let id = match &mutation {
-            MediaMutation::Ready(media) => &media.id,
+            MediaMutation::Ready(media, _) => &media.id,
             MediaMutation::Abandon(id) => id,
         };
         let (current, attached) = store.load(id).await?;
@@ -143,7 +146,7 @@ async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Resu
                 move |engine| -> Result<_, ApiError> {
                     verify_identity(&identity, engine)?;
                     match &mutation {
-                        MediaMutation::Ready(_) => {
+                        MediaMutation::Ready(_, _) => {
                             engine.authorize_media_owner(&identity.user, &current, attached)?;
                             if current.ready {
                                 return Err(crate::engine::EngineError::Conflict(
@@ -160,10 +163,18 @@ async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Resu
                 }
             })
             .await?;
-        match mutation {
-            MediaMutation::Ready(media) => store.ready(&media).await?,
-            MediaMutation::Abandon(id) => store.abandon(&id).await?,
-        }
+        // Keep finalization exclusive until accepted database work finishes,
+        // even if cancellation drops the outer HTTP future.
+        let _object_lock = match mutation {
+            MediaMutation::Ready(media, lock) => {
+                store.ready(&media).await?;
+                Some(lock)
+            }
+            MediaMutation::Abandon(id) => {
+                store.abandon(&id).await?;
+                None
+            }
+        };
         app.with_conversation(&ordering, move |engine| verify_identity(&identity, engine))
             .await
     })
@@ -344,7 +355,7 @@ pub(crate) async fn complete(
     let storage = storage(&app)?;
     // Authenticate before taking an object lock; recheck after it is acquired.
     owner(&app, &headers, id.clone()).await?;
-    let _lock = storage
+    let object_lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let mut media = owner(&app, &headers, id).await?;
@@ -361,7 +372,12 @@ pub(crate) async fn complete(
             )
         })?
         .map_err(storage_failure)?;
-        mutate(&app, &headers, MediaMutation::Ready(media.clone())).await?;
+        mutate(
+            &app,
+            &headers,
+            MediaMutation::Ready(media.clone(), object_lock),
+        )
+        .await?;
     }
     Ok(media_json(&app, &media))
 }

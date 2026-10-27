@@ -76,7 +76,7 @@ impl CleanupPlan {
     }
 }
 impl Engine {
-    fn resolve_cleanup_plan(
+    pub(super) fn resolve_cleanup_plan(
         &self,
         context: &CommandContext<'_>,
     ) -> Result<CleanupPlan, EngineError> {
@@ -218,16 +218,6 @@ impl Engine {
             cleanups,
         )
         .map(Some)
-    }
-    pub(super) fn preview_cleanup(
-        &self,
-        context: &CommandContext<'_>,
-    ) -> Result<String, EngineError> {
-        let plan = self.cleanup_plan(context)?;
-        if !plan.preview {
-            return Err(EngineError::Invalid(format!("Usage: {USAGE}")));
-        }
-        Ok(plan.report())
     }
     pub(super) fn apply_cleanup(
         &mut self,

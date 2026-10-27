@@ -296,15 +296,19 @@ impl Runtime {
         let mut runtime = std::mem::take(self);
         let app = app.clone();
         let context = context.clone();
-        let (runtime, result) = tokio::task::spawn_blocking(move || {
-            let result = match control {
-                Some(control) => runtime.control(&app, &context, control),
-                None => runtime.refresh(&app, &context).map(|()| None),
-            };
-            (runtime, result)
-        })
-        .await
-        .map_err(Error::storage)?;
+        context.verify_async(&app).await?;
+        let state = app.clone();
+        let (runtime, result) = app
+            .inspect_engine(move |engine, _| -> Result<_, Error> {
+                let result = match control {
+                    Some(control) => runtime.control_state(&state, engine, &context, control),
+                    None => runtime
+                        .refresh_state(&state, engine, &context)
+                        .map(|()| None),
+                };
+                Ok((runtime, result))
+            })
+            .await?;
         *self = runtime;
         result
     }
@@ -314,19 +318,28 @@ impl Runtime {
     pub(crate) fn active(&self) -> bool {
         self.lease.is_some()
     }
+    #[cfg(test)]
     pub(crate) fn refresh(&mut self, app: &App, context: &Context) -> Result<(), Error> {
+        let engine = app.engine_read().map_err(Error::storage)?;
+        self.refresh_state(app, &engine, context)
+    }
+    fn refresh_state(
+        &mut self,
+        app: &App,
+        engine: &crate::engine::Engine,
+        context: &Context,
+    ) -> Result<(), Error> {
         let Some(lease) = &self.lease else {
             return Ok(());
         };
-        let engine = app.engine_read().map_err(Error::storage)?;
-        let user = context.user(&engine)?;
+        let user = context.user(engine)?;
         let ids: BTreeSet<_> = engine
             .bot_index
             .conversations
             .keys()
             .filter(|id| {
-                context.permits(&engine, "read", Some(id)).is_ok()
-                    && context.permits(&engine, "send", Some(id)).is_ok()
+                context.permits(engine, "read", Some(id)).is_ok()
+                    && context.permits(engine, "send", Some(id)).is_ok()
                     && engine.bot_target(&user, id, Action::Read).is_ok()
                     && engine.bot_target(&user, id, Action::Send).is_ok()
             })
@@ -367,18 +380,29 @@ impl Runtime {
             .insert(id.clone(), (conversation.clone(), Instant::now()));
         Some(serde_json::json!({"kind":"commands_request","id":id,"conversation_id":conversation}))
     }
+    #[cfg(test)]
     pub(crate) fn control(
         &mut self,
         app: &App,
         context: &Context,
         control: Control,
     ) -> Result<Option<String>, Error> {
+        let engine = app.engine_read().map_err(Error::storage)?;
+        self.control_state(app, &engine, context, control)
+    }
+    fn control_state(
+        &mut self,
+        app: &App,
+        engine: &crate::engine::Engine,
+        context: &Context,
+        control: Control,
+    ) -> Result<Option<String>, Error> {
         match control {
             Control::Ready => {
-                context.permits(&*app.engine_read().map_err(Error::storage)?, "read", None)?;
+                context.permits(engine, "read", None)?;
                 if self.lease.is_none() {
                     self.lease = Some(app.bot_runtimes.commands.register(context, &app.changes)?);
-                    self.refresh(app, context)?;
+                    self.refresh_state(app, engine, context)?;
                 }
                 Ok(None)
             }
@@ -395,7 +419,7 @@ impl Runtime {
                 self.pending.clear();
                 self.queue.clear();
                 self.attempts.clear();
-                self.refresh(app, context)?;
+                self.refresh_state(app, engine, context)?;
                 Ok(None)
             }
             Control::Response { id, commands } => {
@@ -407,10 +431,9 @@ impl Runtime {
                     return Err(Error::new(Code::NotFound, "Command request expired."));
                 }
                 validate(&commands)?;
-                let engine = app.engine_read().map_err(Error::storage)?;
-                let user = context.user(&engine)?;
-                context.permits(&engine, "read", Some(&conversation))?;
-                context.permits(&engine, "send", Some(&conversation))?;
+                let user = context.user(engine)?;
+                context.permits(engine, "read", Some(&conversation))?;
+                context.permits(engine, "send", Some(&conversation))?;
                 engine.bot_target(&user, &conversation, Action::Read)?;
                 engine.bot_target(&user, &conversation, Action::Send)?;
                 let lease = self.lease.as_ref().ok_or_else(|| {

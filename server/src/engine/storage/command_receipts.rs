@@ -25,20 +25,29 @@ impl CommandOutcome {
         )
     }
 }
-impl Engine {
-    pub(crate) fn bot_command_receipt(
+pub(crate) struct CommandReceipts {
+    database: database::Handle,
+}
+impl CommandReceipts {
+    pub(crate) async fn health(&self) -> Result<(), Error> {
+        self.database
+            .ensure_available_async()
+            .await
+            .map_err(Error::storage)
+    }
+    pub(crate) async fn lookup(
         &self,
         account: &str,
         key: &str,
     ) -> Result<Option<(String, CommandOutcome)>, Error> {
         let row = self
-            .store
-            .db
-            .command_receipt_blocking(&database::ReceiptRead {
+            .database
+            .command_receipt(&database::ReceiptRead {
                 account,
                 key,
                 after: now().saturating_sub(TTL),
             })
+            .await
             .map_err(Error::storage)?;
         row.map(|(digest, raw)| {
             serde_json::from_str(&raw)
@@ -49,6 +58,21 @@ impl Engine {
                 .map_err(Error::storage)
         })
         .transpose()
+    }
+}
+impl Engine {
+    pub(crate) fn command_receipts(&self) -> CommandReceipts {
+        CommandReceipts {
+            database: self.store.db.clone(),
+        }
+    }
+    pub(crate) fn bot_command_receipt(
+        &self,
+        account: &str,
+        key: &str,
+    ) -> Result<Option<(String, CommandOutcome)>, Error> {
+        database::block_on_storage(self.command_receipts().lookup(account, key))
+            .map_err(Error::storage)?
     }
     pub(crate) fn bot_command_once(
         &mut self,

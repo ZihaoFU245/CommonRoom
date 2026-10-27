@@ -63,6 +63,7 @@ pub(crate) fn token<'a>(config: &Config, headers: &'a HeaderMap) -> Option<&'a s
     }
     token
 }
+#[cfg(test)]
 pub(crate) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, ApiError> {
     if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(error(
@@ -73,6 +74,52 @@ pub(crate) fn authenticate(app: &App, headers: &HeaderMap) -> Result<String, Api
     let engine = app.engine_read_api()?;
     identity(&engine, &app.config, headers)
         .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+}
+pub(crate) async fn authenticated_identity(
+    app: &App,
+    headers: &HeaderMap,
+) -> Result<Identity, ApiError> {
+    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server is shutting down.",
+        ));
+    }
+    let (identity, store) = app
+        .inspect_engine({
+            let headers = headers.clone();
+            let config = app.config.clone();
+            move |engine, _| -> Result<_, ApiError> {
+                let user = identity(engine, &config, &headers).ok_or_else(|| {
+                    error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                })?;
+                let account = engine
+                    .active_account_id(&user)
+                    .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
+                    .to_owned();
+                Ok((
+                    Identity {
+                        headers,
+                        user,
+                        account,
+                        config,
+                    },
+                    engine.auth_store(),
+                ))
+            }
+        })
+        .await?;
+    store.health().await?;
+    app.inspect_engine({
+        let identity = identity.clone();
+        move |engine, _| {
+            identity
+                .verify(engine)
+                .map_err(|_| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+        }
+    })
+    .await?;
+    Ok(identity)
 }
 pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
@@ -123,9 +170,9 @@ pub(crate) async fn login(
         .map_err(|_| login_state_unavailable())?
         .admit(ip, &input.username, std::time::Instant::now())
         .map_err(|message| error(StatusCode::TOO_MANY_REQUESTS, message))?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        let result = login_inner(&app, &headers, &input, ip);
+        let result = login_inner(&app, &headers, &input, ip).await;
         // Pending attempts count until completion, so concurrent requests cannot
         // overshoot a limit. Cancelled HTTP futures still finish this bookkeeping.
         let failed = matches!(&result, Err(ApiError(StatusCode::UNAUTHORIZED, _)));
@@ -147,26 +194,42 @@ fn login_state_unavailable() -> ApiError {
         "Login state unavailable; restart the service.",
     )
 }
-fn login_inner(
+async fn login_inner(
     app: &App,
     headers: &HeaderMap,
     input: &Login,
     client: std::net::IpAddr,
 ) -> Result<Response, ApiError> {
-    let expected = app
-        .engine_read_api()?
-        .password_hash(&input.username)
-        .map(str::to_owned);
-    let valid = verify_login_password(&input.password, expected.as_deref());
+    let (expected, store) = app
+        .inspect_engine({
+            let user = input.username.clone();
+            move |engine, _| -> Result<_, ApiError> {
+                Ok((
+                    engine.password_hash(&user).map(str::to_owned),
+                    engine.auth_store(),
+                ))
+            }
+        })
+        .await?;
+    let valid = tokio::task::spawn_blocking({
+        let password = input.password.clone();
+        let expected = expected.clone();
+        move || verify_login_password(&password, expected.as_deref())
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Password worker unavailable.",
+        )
+    })?;
     if !valid {
         let event = crate::engine::AuthEvent::new(
             Some(&input.username),
             Some(client),
             crate::engine::AuthOutcome::Failure,
         );
-        app.engine_read_api()?
-            .record_auth_event(&event)
-            .map_err(ApiError::from)?;
+        store.record(event).await?;
         return Err(error(
             StatusCode::UNAUTHORIZED,
             "Invalid username or password.",
@@ -177,21 +240,36 @@ fn login_inner(
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    app.engine_api()?
-        .login_recorded(
-            value.clone(),
-            &input.username,
-            expected
-                .as_deref()
-                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid username or password."))?,
-            token(&app.config, headers),
-            Some(&crate::engine::AuthEvent::new(
-                Some(&input.username),
-                Some(client),
-                crate::engine::AuthOutcome::Success,
-            )),
-        )
-        .map_err(ApiError::from)?;
+    let ordering = app.mutations.metadata().await;
+    let pending = app
+        .with_metadata(&ordering, {
+            let value = value.clone();
+            let user = input.username.clone();
+            let old = token(&app.config, headers).map(str::to_owned);
+            move |engine| -> Result<_, ApiError> {
+                engine
+                    .prepare_login(
+                        value,
+                        &user,
+                        expected.as_deref().ok_or_else(|| {
+                            error(StatusCode::UNAUTHORIZED, "Invalid username or password.")
+                        })?,
+                        old.as_deref(),
+                        crate::engine::AuthEvent::new(
+                            Some(&user),
+                            Some(client),
+                            crate::engine::AuthOutcome::Success,
+                        ),
+                    )
+                    .map_err(ApiError::from)
+            }
+        })
+        .await?;
+    let pending = pending.save().await?;
+    app.with_metadata(&ordering, move |engine| {
+        engine.publish_sessions(pending).map_err(ApiError::from)
+    })
+    .await?;
     tracing::info!(user = %input.username, "Login succeeded");
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
@@ -230,21 +308,32 @@ pub(crate) async fn logout(
     let permit = app
         .io_permit()
         .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        if let Some(token) = token(&app.config, &headers) {
-            let mut engine = app.engine_api()?;
-            let user = engine.session(token);
-            let event = crate::engine::AuthEvent::new(
-                user.as_deref(),
-                client,
-                crate::engine::AuthOutcome::Logout,
-            );
-            if let Some(user) = engine
-                .logout_recorded(token, Some(&event))
-                .map_err(ApiError::from)?
-            {
-                let _ = app.changes.send(Change::Account(user));
+        if let Some(token) = token(&app.config, &headers).map(str::to_owned) {
+            let ordering = app.mutations.metadata().await;
+            let (user, pending) = app
+                .with_metadata(&ordering, move |engine| -> Result<_, ApiError> {
+                    let user = engine.session(&token);
+                    let event = crate::engine::AuthEvent::new(
+                        user.as_deref(),
+                        client,
+                        crate::engine::AuthOutcome::Logout,
+                    );
+                    Ok(engine.prepare_logout(&token, event))
+                })
+                .await?;
+            if let Some(pending) = pending {
+                let pending = pending.save().await?;
+                let changes = app.changes.clone();
+                app.with_metadata(&ordering, move |engine| -> Result<_, ApiError> {
+                    engine.publish_sessions(pending)?;
+                    if let Some(user) = user {
+                        let _ = changes.send(Change::Account(user));
+                    }
+                    Ok(())
+                })
+                .await?;
             }
         }
         let mut response = Json(json!({"ok":true})).into_response();
@@ -305,9 +394,9 @@ pub(crate) async fn session_status(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        authenticate(&app, &headers)?;
+        let _identity = authenticated_identity(&app, &headers).await?;
         Ok(Json(json!({"ok":true})))
     })
     .await
@@ -318,6 +407,11 @@ pub(crate) async fn session_status(
         )
     })?
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "auth_transaction_tests.rs"]
+mod transaction_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Test assertions intentionally fail on invalid fixtures.

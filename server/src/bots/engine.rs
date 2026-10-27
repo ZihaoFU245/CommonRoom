@@ -223,11 +223,38 @@ impl Engine {
         self.read_model.remember_bot(account.id.clone(), &plan);
         Ok(plan)
     }
+    #[cfg(test)]
     pub(crate) fn issue_bot_credential(
         &mut self,
         context: &crate::bots::auth::Context,
         input: models::CredentialInput,
     ) -> Result<serde_json::Value, Error> {
+        let (result, before) = self.apply_bot_credential(context, input)?;
+        if let Err(error) = self.save_bot_metadata(&before) {
+            before.restore(&mut self.data);
+            return Err(Error::storage(error));
+        }
+        Ok(result)
+    }
+    pub(crate) fn prepare_bot_credential(
+        &mut self,
+        context: &crate::bots::auth::Context,
+        input: models::CredentialInput,
+    ) -> Result<(serde_json::Value, metadata_write::PendingMetadata), Error> {
+        let dirty = self.metadata_dirty;
+        let (result, before) = self.apply_bot_credential(context, input)?;
+        let pending = self.capture_metadata(&before, vec![]);
+        before.restore(&mut self.data);
+        self.metadata_dirty = dirty;
+        pending
+            .map(|pending| (result, pending))
+            .map_err(Error::storage)
+    }
+    fn apply_bot_credential(
+        &mut self,
+        context: &crate::bots::auth::Context,
+        input: models::CredentialInput,
+    ) -> Result<(serde_json::Value, MetadataChange), Error> {
         context.permits(self, "credentials", None)?;
         if context.metadata(self)?.conversations.is_some() {
             return Err(Error::new(
@@ -291,38 +318,34 @@ impl Engine {
                 operations: Some(input.operations),
             },
         );
-        if let Err(error) = self.save_bot_metadata(&before) {
-            if let Some(r) = self.data.bots.get_mut(&context.account) {
-                r.tokens.remove(&id);
-            }
-            return Err(Error::storage(error));
-        }
-        Ok(serde_json::json!({"id":id,"token":secret,"expires":input.expires}))
+        Ok((
+            serde_json::json!({"id":id,"token":secret,"expires":input.expires}),
+            before,
+        ))
     }
-    pub(crate) fn create_bot_conversation(
+    pub(crate) fn prepare_bot_conversation(
         &mut self,
         user: &str,
         input: models::ConversationInput,
-    ) -> Result<String, Error> {
+    ) -> Result<(String, Option<metadata_write::PendingMetadata>), Error> {
         match input {
             models::ConversationInput::Room { name } => {
                 if !valid_name(&name) {
                     return Err(Error::new(Code::InvalidRequest, "Invalid room name."));
                 }
-                self.require(Some(user), &Scope::Server, Action::CreateRoom)
-                    .map_err(Error::from)?;
-                self.require_target_command(Some(user), &Scope::Server, "/new")
-                    .map_err(Error::from)?;
+                self.require(Some(user), &Scope::Server, Action::CreateRoom)?;
+                self.require_target_command(Some(user), &Scope::Server, "/new")?;
                 if self.data.rooms.contains_key(&name) {
                     return Err(Error::new(Code::Conflict, "Room already exists."));
                 }
-                self.execute(Some(user), None, &format!("/new room {name}"))
-                    .map_err(Error::storage)?;
-                self.data
-                    .rooms
-                    .get(&name)
-                    .map(|r| r.id.clone())
-                    .ok_or_else(|| Error::storage("Missing room"))
+                let (_, pending) =
+                    self.prepare_metadata_command(Some(user), None, &format!("/new room {name}"))?;
+                let pending = pending.ok_or_else(|| Error::storage("Missing room creation"))?;
+                let id = pending
+                    .room_id(&name)
+                    .ok_or_else(|| Error::storage("Missing room"))?
+                    .to_owned();
+                Ok((id, Some(pending)))
             }
             models::ConversationInput::Direct { username } => {
                 if !valid_name(&username) {
@@ -333,30 +356,34 @@ impl Engine {
                 }
                 let key = private_key(user, &username);
                 let scope = self.private_scope(&key);
-                self.require_target_command(Some(user), &scope, "/tell")
-                    .map_err(Error::from)?;
-                self.require(Some(user), &scope, Action::Send)
-                    .map_err(Error::from)?;
-                if let Some(c) = self.data.private.get(&key) {
-                    return Ok(c.id.clone());
+                self.require_target_command(Some(user), &scope, "/tell")?;
+                self.require(Some(user), &scope, Action::Send)?;
+                if let Some(chat) = self.data.private.get(&key) {
+                    return Ok((chat.id.clone(), None));
                 }
-                self.require(Some(user), &Scope::Server, Action::Direct)
-                    .map_err(Error::from)?;
+                self.require(Some(user), &Scope::Server, Action::Direct)?;
                 let Scope::Private(id) = scope else {
                     return Err(Error::storage("Missing private scope"));
                 };
+                let before = MetadataChange::keyed(
+                    &self.data,
+                    changes::DirtyKeys {
+                        private: [key.clone()].into(),
+                        ..Default::default()
+                    },
+                );
                 self.data.private.insert(
-                    key.clone(),
+                    key,
                     PrivateChat {
                         id: id.clone(),
                         ..Default::default()
                     },
                 );
-                if let Err(error) = self.save_empty_private(&key) {
-                    self.data.private.remove(&key);
-                    return Err(Error::storage(error));
-                }
-                Ok(id)
+                let pending = self.capture_metadata(&before, vec![]);
+                before.restore(&mut self.data);
+                pending
+                    .map(|pending| (id, Some(pending)))
+                    .map_err(Error::storage)
             }
         }
     }

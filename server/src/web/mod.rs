@@ -3,7 +3,9 @@ pub(crate) mod auth;
 mod avatars;
 mod colors;
 mod error;
+mod metadata_commands;
 mod profiles;
+mod query_commands;
 pub(crate) use error::ApiError;
 mod bot_commands;
 mod cleanup_commands;
@@ -124,7 +126,7 @@ impl App {
                 "Server state unavailable; restart the service.".into(),
             )
         })?;
-        engine.ensure_recovered()?;
+        engine.ensure_memory()?;
         let disconnected = old.is_some_and(|name| engine.disconnect(name));
         let connected = current.is_some_and(|name| engine.connect(name));
         if disconnected || connected {
@@ -150,9 +152,11 @@ impl App {
         engine.ensure_recovered()?;
         Ok(engine)
     }
+    #[cfg(test)]
     fn engine_read_api(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, ApiError> {
         self.engine_read().map_err(ApiError::from)
     }
+    #[cfg(test)]
     fn engine_api(&self) -> Result<mutations::EngineGuard<'_>, ApiError> {
         self.engine().map_err(ApiError::from)
     }

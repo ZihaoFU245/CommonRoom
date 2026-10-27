@@ -107,7 +107,7 @@ impl Engine {
         }
     }
 
-    fn registered_id(&self, name: &str) -> Result<String, EngineError> {
+    pub(super) fn registered_id(&self, name: &str) -> Result<String, EngineError> {
         let id = self
             .data
             .users
@@ -127,21 +127,39 @@ impl Engine {
         view: Option<&str>,
         parts: &[&str],
     ) -> Result<String, EngineError> {
-        self.require_command(actor, view, "/bot")?;
-        if !(self.is_su(actor) || self.has_group(actor, Group::Admin)) {
-            return Err("Only global administrators may manage bot connections.".into());
-        }
+        self.require_bot_management(actor, view)?;
         // Deletion already owns the transaction for account/history/cursor cleanup.
         if let [_, "rm", name, "@global"] = parts {
             self.registered_id(name)?;
             self.require_target_command(actor, &Scope::Server, "/bot")?;
             return self.delete_user(actor, name);
         }
-        if matches!(parts.get(1).copied(), Some("ls" | "info")) {
-            return self.apply_bot_command(actor, view, parts);
+        let (reply, before) = self.apply_bot_metadata(actor, view, parts)?;
+        if let Some(before) = before {
+            self.commit_account_metadata(before)?;
         }
-        if parts.get(1) == Some(&"token") && parts.get(2) == Some(&"ls") {
-            return self.apply_bot_command(actor, view, parts);
+        Ok(reply)
+    }
+    pub(super) fn require_bot_management(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+    ) -> Result<(), EngineError> {
+        self.require_command(actor, view, "/bot")?;
+        if !(self.is_su(actor) || self.has_group(actor, Group::Admin)) {
+            return Err("Only global administrators may manage bot connections.".into());
+        }
+        Ok(())
+    }
+    fn apply_bot_metadata(
+        &mut self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        parts: &[&str],
+    ) -> Result<(String, Option<MetadataChange>), EngineError> {
+        self.require_bot_management(actor, view)?;
+        if let Some(result) = self.query_bot_command(actor, view, parts) {
+            return result.map(|reply| (reply, None));
         }
         let name = if parts.get(1) == Some(&"token") {
             parts.get(3).copied()
@@ -171,20 +189,144 @@ impl Engine {
         match result {
             Ok(reply) => {
                 if before.unchanged(&self.data) {
-                    return Ok(reply);
+                    return Ok((reply, None));
                 }
                 self.data.policy.revision = before.policy.revision.wrapping_add(1);
-                if let Err(error) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
-                    before.restore(&mut self.data);
-                    return Err(error);
-                }
-                Ok(reply)
+                Ok((reply, Some(before)))
             }
             Err(error) => {
                 before.restore(&mut self.data);
                 Err(error)
             }
         }
+    }
+
+    pub(super) fn query_bot_command(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        parts: &[&str],
+    ) -> Option<Result<String, EngineError>> {
+        if !matches!(parts.get(1).copied(), Some("ls" | "info"))
+            && !(parts.get(1) == Some(&"token") && parts.get(2) == Some(&"ls"))
+        {
+            return None;
+        }
+        Some((|| {
+            self.require_bot_management(actor, view)?;
+            match parts {
+                [_, "ls"] | [_, "ls", _] => {
+                    let scope = self.bot_scope(view, parts.get(2).copied())?;
+                    self.require_target_command(actor, &scope, "/bot")?;
+                    if matches!(scope, Scope::Room(_)) {
+                        self.require(actor, &scope, Action::Members)?;
+                    }
+                    let names: Vec<_> = self
+                        .data
+                        .users
+                        .iter()
+                        .filter(|(name, account)| {
+                            self.data.bots.contains_key(&account.id)
+                                && match &scope {
+                                    Scope::Server => true,
+                                    Scope::Room(id) => self
+                                        .data
+                                        .rooms
+                                        .values()
+                                        .any(|r| r.id == *id && r.members.contains(*name)),
+                                    _ => false,
+                                }
+                        })
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    Ok(format!(
+                        "Bot connections at {}: {}",
+                        self.scope_label(&scope),
+                        names.join(", ")
+                    ))
+                }
+                [_, "info", name] | [_, "info", name, _] => {
+                    let scope = self.bot_scope(view, parts.get(3).copied())?;
+                    self.require_target_command(actor, &scope, "/bot")?;
+                    let id = self.registered_id(name)?;
+                    if let Scope::Room(room_id) = &scope {
+                        self.require(actor, &scope, Action::Members)?;
+                        if !self
+                            .data
+                            .rooms
+                            .values()
+                            .any(|r| r.id == *room_id && r.members.contains(*name))
+                        {
+                            return Err("Account is not a member of this room.".into());
+                        }
+                    }
+                    let commands = self
+                        .commands_for(
+                            Some(name),
+                            match &scope {
+                                Scope::Room(id) => self
+                                    .data
+                                    .rooms
+                                    .iter()
+                                    .find(|(_, r)| r.id == *id)
+                                    .map(|(n, _)| n.as_str()),
+                                _ => None,
+                            },
+                        )
+                        .iter()
+                        .map(|c| c.name)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Ok(format!(
+                        "{name} ({id}) at {}\nOwner: {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}",
+                        self.scope_label(&scope),
+                        self.bot_owner(&id)
+                            .unwrap_or_else(|| "administrators".into()),
+                        !self.active(name),
+                        self.presence.count(name),
+                        self.effective(Some(name), &scope).names().join(", ")
+                    ))
+                }
+                [_, "token", "ls", name] => {
+                    let id = self.registered_id(name)?;
+                    self.account_target(actor, name, Action::BotCredentials)?;
+                    self.require_target_command(actor, &Scope::Server, "/bot")?;
+                    let lines = self.data.bots[&id]
+                        .tokens
+                        .iter()
+                        .map(|(id, t)| format!("{id} {} created={}", t.label, t.created))
+                        .collect::<Vec<_>>();
+                    Ok(format!(
+                        "Account-wide credentials for {name}:\n{}",
+                        lines.join("\n")
+                    ))
+                }
+                _ => Err(
+                    "Usage: /bot ls [room|@global] | info name [room|@global] | token ls name"
+                        .into(),
+                ),
+            }
+        })())
+    }
+    pub(super) fn prepare_bot_command(
+        &mut self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        parts: &[&str],
+    ) -> Result<(String, Option<metadata_write::PendingMetadata>), EngineError> {
+        let dirty = self.metadata_dirty;
+        let result = self.apply_bot_metadata(actor, view, parts);
+        let result = match result {
+            Ok((reply, Some(before))) => {
+                let pending = self.capture_metadata(&before, vec![]);
+                before.restore(&mut self.data);
+                pending.map(|pending| (reply, Some(pending)))
+            }
+            Ok((reply, None)) => Ok((reply, None)),
+            Err(error) => Err(error),
+        };
+        self.metadata_dirty = dirty;
+        result
     }
 
     fn apply_bot_command(
@@ -230,35 +372,6 @@ impl Engine {
                 self.audit(actor, "/bot owner", name);
                 Ok(format!("Bot {name} is now owned by {owner}."))
             }
-            [_, "ls"] | [_, "ls", _] => {
-                let scope = self.bot_scope(view, parts.get(2).copied())?;
-                self.require_target_command(actor, &scope, "/bot")?;
-                if matches!(scope, Scope::Room(_)) { self.require(actor, &scope, Action::Members)?; }
-                let names: Vec<_> = self.data.users.iter().filter(|(name, account)| {
-                    self.data.bots.contains_key(&account.id) && match &scope {
-                        Scope::Server => true,
-                        Scope::Room(id) => self.data.rooms.values().any(|r| r.id == *id && r.members.contains(*name)),
-                        _ => false,
-                    }
-                }).map(|(name, _)| name.as_str()).collect();
-                Ok(format!("Bot connections at {}: {}", self.scope_label(&scope), names.join(", ")))
-            }
-            [_, "info", name] | [_, "info", name, _] => {
-                let scope = self.bot_scope(view, parts.get(3).copied())?;
-                self.require_target_command(actor, &scope, "/bot")?;
-                let id = self.registered_id(name)?;
-                if let Scope::Room(room_id) = &scope {
-                    self.require(actor, &scope, Action::Members)?;
-                    if !self.data.rooms.values().any(|r| r.id == *room_id && r.members.contains(*name)) {
-                        return Err("Account is not a member of this room.".into());
-                    }
-                }
-                let commands = self.commands_for(Some(name), match &scope {
-                    Scope::Room(id) => self.data.rooms.iter().find(|(_, r)| r.id == *id).map(|(n, _)| n.as_str()),
-                    _ => None,
-                }).iter().map(|c| c.name).collect::<Vec<_>>().join(", ");
-                Ok(format!("{name} ({id}) at {}\nOwner: {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}", self.scope_label(&scope), self.bot_owner(&id).unwrap_or_else(|| "administrators".into()), !self.active(name), self.presence.count(name), self.effective(Some(name), &scope).names().join(", ")))
-            }
             [_, "token", "new", name, label] => {
                 let id = self.registered_id(name)?;
                 self.account_target(actor, name, Action::BotCredentials)?;
@@ -272,13 +385,6 @@ impl Engine {
                 registration.tokens.insert(token_id.clone(), Credential { label: (*label).into(), digest: crate::bots::digest(&secret), created: now(), expires: None, conversations: None, operations: None });
                 self.audit(actor, "/bot token new", name);
                 Ok(format!("Account-wide credential {token_id} for {name}; save now, shown once:\n{secret}"))
-            }
-            [_, "token", "ls", name] => {
-                let id = self.registered_id(name)?;
-                self.account_target(actor, name, Action::BotCredentials)?;
-                self.require_target_command(actor, &Scope::Server, "/bot")?;
-                let lines = self.data.bots[&id].tokens.iter().map(|(id, t)| format!("{id} {} created={}", t.label, t.created)).collect::<Vec<_>>();
-                Ok(format!("Account-wide credentials for {name}:\n{}", lines.join("\n")))
             }
             [_, "token", "rm", name, token_id] => {
                 let id = self.registered_id(name)?;

@@ -479,6 +479,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
             room: None,
             text: text.into(),
         };
+        let mut notices = app.changes.subscribe();
         let (reply, mutation) = super::commands::execute_input(&app, &headers, "actor", &input)
             .await
             .unwrap();
@@ -488,7 +489,15 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
             let config: serde_json::Value = serde_json::from_str(&reply).unwrap();
             assert_eq!(config["bind"], "127.0.0.1:3000");
         }
-        assert_eq!(mutation.is_some(), changed, "{text}");
+        // Native accepted work publishes before returning; compatibility paths
+        // still hand their committed notification to the socket adapter.
+        let published = notices.try_recv().ok();
+        assert_eq!(
+            usize::from(mutation.is_some()) + usize::from(published.is_some()),
+            usize::from(changed),
+            "{text}"
+        );
+        assert!(notices.try_recv().is_err());
         assert!(!app.engine().unwrap().is_su(Some("actor")));
     }
     let join = super::commands::Input {
@@ -497,6 +506,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         room: None,
         text: "/sudo /room join #team".into(),
     };
+    let mut notices = app.changes.subscribe();
     let (reply, mutation) = super::commands::execute_input(&app, &headers, "actor", &join)
         .await
         .unwrap();
@@ -507,7 +517,14 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         .account_id("actor")
         .unwrap()
         .to_owned();
-    assert!(matches!(mutation, Some(Change::Metadata(notice)) if notice.targets(&actor_id)));
+    let published = notices.try_recv().ok();
+    assert_eq!(
+        usize::from(mutation.is_some()) + usize::from(published.is_some()),
+        1
+    );
+    assert!(
+        matches!(mutation.or(published), Some(Change::Metadata(notice)) if notice.targets(&actor_id))
+    );
     let snapshot = app.engine().unwrap().snapshot("actor").unwrap();
     let room = snapshot.rooms.iter().find(|r| r.name == "team").unwrap();
     assert!(room.members.contains("actor"));

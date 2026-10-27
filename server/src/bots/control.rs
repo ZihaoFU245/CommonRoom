@@ -1,6 +1,6 @@
 //! Native server commands and verified source facts; workers own their command ACLs.
 use super::{
-    api::{admit, inspect, work},
+    api::{admit, work},
     auth::Context,
     error::{Code, Error},
 };
@@ -149,28 +149,30 @@ pub(super) async fn message_context(
     headers: HeaderMap,
     Query(input): Query<MessageContextQuery>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, context| {
-        let (revision, message) = inspect(app, context, &input.conversation_id, |store| {
-            store.locate(&input.message_id)
-        })?;
-        let message = message
-            .filter(|(id, _)| id == &input.conversation_id)
-            .map(|(_, message)| message)
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let context = Context::authenticate_async(&app, &headers).await?;
+        let (revision, store) = app.inspect_engine({
+            let context = context.clone(); let id = input.conversation_id.clone();
+            move |engine, _| -> Result<_, Error> {
+                let user = context.user(engine)?;
+                context.permits(engine, "config", Some(&id))?;
+                context.permits(engine, "read", Some(&id))?;
+                Ok((engine.bot_target(&user, &id, Action::Read)?.revision, engine.history_store().clone()))
+            }
+        }).await?;
+        let message = store.locate_async(&input.message_id).await?
+            .filter(|(id, _)| id == &input.conversation_id).map(|(_, message)| message)
             .ok_or_else(|| Error::new(Code::NotFound, "Source message not found."))?;
-        let engine = app.engine_read().map_err(Error::storage)?;
-        let user = context.user(&engine)?;
-        context.permits(&engine, "config", Some(&input.conversation_id))?;
-        context.permits(&engine, "read", Some(&input.conversation_id))?;
-        if engine
-            .bot_target(&user, &input.conversation_id, Action::Read)?
-            .revision
-            != revision
-        {
-            return Err(Error::new(
-                Code::Conflict,
-                "Source message changed; retry authorization.",
-            ));
-        }
+        store.ensure_available_async().await?;
+        app.inspect_engine(move |engine, _| -> Result<_, Error> {
+            let user = context.user(engine)?;
+            context.permits(engine, "config", Some(&input.conversation_id))?;
+            context.permits(engine, "read", Some(&input.conversation_id))?;
+            if engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision != revision {
+                return Err(Error::new(Code::Conflict, "Source message changed; retry authorization."));
+            }
         let author = engine.active_account_name(&message.author_id)
             .ok_or_else(||Error::new(Code::Forbidden,"Source account unavailable."))?;
         let target = engine.bot_target(&user,&input.conversation_id,Action::Read)?;
@@ -178,24 +180,32 @@ pub(super) async fn message_context(
             .then(||engine.effective(Some(author),&target.scope).names());
         let owner_id = engine.bot_owner_id(&context.account);
         Ok(json!({"author":{"id":message.author_id,"username":author,"groups":engine.groups(Some(author)),"permissions":permissions},"bot":{"id":context.account,"groups":engine.groups(Some(&user)),"owner_id":owner_id,"owner":engine.bot_owner(&context.account)}}))
-    })
-    .await
+        }).await.map(Json)
+    }).await.map_err(Error::storage)?
 }
 pub(super) async fn commands(
     State(app): State<App>,
     headers: HeaderMap,
     Query(input): Query<CommandsQuery>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, context| {
-        let engine = app.engine_read().map_err(Error::storage)?;
-        let (user, view) = command_view(&engine, context, &input.conversation_id)?;
-        let commands: Vec<_> = model_commands(&engine, &user, &view)
-            .iter()
-            .map(server_command_json)
-            .collect();
-        Ok(json!({"conversation_id":input.conversation_id,"commands":commands}))
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let context = Context::authenticate_async(&app, &headers).await?;
+        app.inspect_engine(move |engine, _| -> Result<_, Error> {
+            let (user, view) = command_view(engine, &context, &input.conversation_id)?;
+            let commands = model_commands(engine, &user, &view)
+                .iter()
+                .map(server_command_json)
+                .collect::<Vec<_>>();
+            Ok(Json(
+                json!({"conversation_id":input.conversation_id,"commands":commands}),
+            ))
+        })
+        .await
     })
     .await
+    .map_err(Error::storage)?
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -255,16 +265,29 @@ pub(super) async fn command_receipt(
     if !super::models::valid_id(&key) {
         return Err(Error::new(Code::InvalidRequest, "Invalid receipt key."));
     }
-    work(app,headers,move|app,context|{
-        let engine=app.engine_read().map_err(Error::storage)?;
-        command_account(&engine,context)?;
-        let receipt=engine.bot_command_receipt(&context.account,&key)?;
-        Ok(match receipt {
-            None=>json!({"state":"not_found"}),
-            Some((_,outcome))=>json!({"state":if outcome.error.is_some(){"failed"}else{"succeeded"},"result":outcome.result,"error":outcome.error,"created":outcome.created,"expires":outcome.expires}),
-        })
-    }).await
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let context = Context::authenticate_async(&app, &headers).await?;
+        let store = app.inspect_engine({
+            let context = context.clone();
+            move |engine, _| -> Result<_, Error> {
+                command_account(engine, &context)?;
+                Ok(engine.command_receipts())
+            }
+        }).await?;
+        let receipt = store.lookup(&context.account, &key).await?;
+        store.health().await?;
+        app.inspect_engine(move |engine, _| -> Result<_, Error> {
+            command_account(engine, &context)?;
+            Ok(Json(match receipt {
+                None => json!({"state":"not_found"}),
+                Some((_, outcome)) => json!({"state":if outcome.error.is_some(){"failed"}else{"succeeded"},"result":outcome.result,"error":outcome.error,"created":outcome.created,"expires":outcome.expires}),
+            }))
+        }).await
+    }).await.map_err(Error::storage)?
 }
+
 fn execute_command(
     engine: &mut crate::engine::Engine,
     app: &App,

@@ -1,6 +1,6 @@
 use super::commands::{Input, execute_input};
+use super::security::check_origin_or_bot;
 use super::*;
-use super::{auth::authenticate, security::check_origin_or_bot};
 use axum::{
     extract::{
         Query, State,
@@ -34,21 +34,9 @@ pub(crate) async fn upgrade(
             axum::http::HeaderValue::from_static("1"),
         );
     }
-    let auth_app = app.clone();
-    let auth_headers = headers.clone();
-    let username = tokio::task::spawn_blocking(move || authenticate(&auth_app, &auth_headers))
-        .await
-        .map_err(|_| {
-            error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Session worker unavailable.",
-            )
-        })??;
-    let account = app
-        .engine_read_api()?
-        .active_account_id(&username)
-        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
-        .to_owned();
+    let identity = super::auth::authenticated_identity(&app, &headers).await?;
+    let username = identity.user;
+    let account = identity.account;
     let profile = if super::auth::bearer(&headers).is_some() {
         super::admission::Profile::Bot
     } else {
@@ -113,24 +101,23 @@ struct Presence {
 }
 impl Presence {
     async fn authenticate(&mut self, headers: &HeaderMap) -> Result<String, ApiError> {
-        let app = self.app.clone();
-        let headers = headers.clone();
-        let old = self.user.clone();
-        let current = tokio::task::spawn_blocking(move || {
-            let current = authenticate(&app, &headers)?;
-            if current != old {
-                app.update_presence(Some(&old), Some(&current))
-                    .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-            }
-            Ok::<_, ApiError>(current)
-        })
-        .await
-        .map_err(|_| {
-            error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Session worker unavailable.",
-            )
-        })??;
+        let current = super::auth::authenticated_identity(&self.app, headers)
+            .await?
+            .user;
+        if current != self.user {
+            let app = self.app.clone();
+            let old = self.user.clone();
+            let current = current.clone();
+            tokio::task::spawn_blocking(move || app.update_presence(Some(&old), Some(&current)))
+                .await
+                .map_err(|_| {
+                    error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Presence worker unavailable.",
+                    )
+                })?
+                .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+        }
         self.user.clone_from(&current);
         Ok(current)
     }

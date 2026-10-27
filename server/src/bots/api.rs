@@ -46,6 +46,7 @@ pub(super) fn routes() -> Router<App> {
         .layer(axum::extract::DefaultBodyLimit::max(32768))
 }
 
+#[cfg(test)]
 fn authenticate(app: &App, headers: &HeaderMap) -> Result<Context, Error> {
     Context::authenticate(app, headers)
 }
@@ -55,10 +56,12 @@ pub(super) async fn work<T: Serialize + Send + 'static>(
     job: impl FnOnce(&App, &Context) -> Result<T, Error> + Send + 'static,
 ) -> Result<Json<T>, Error> {
     let permit = app.io_permit().map_err(Error::storage)?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        let context = authenticate(&app, &headers)?;
-        job(&app, &context).map(Json)
+        let context = Context::authenticate_async(&app, &headers).await?;
+        tokio::task::spawn_blocking(move || job(&app, &context).map(Json))
+            .await
+            .map_err(Error::storage)?
     })
     .await
     .map_err(Error::storage)?
@@ -200,26 +203,6 @@ async fn history_value(
             Ok(Json(json!({"conversation_id":input.conversation_id,"messages":page.messages.iter().map(models::message_json).collect::<Vec<_>>(),"content_revision":page.revision,"has_before":page.has_before,"has_after":page.has_after})))
         }).await
 }
-// Capture authorization and revision, release the engine lock for SQLite reads.
-pub(super) fn inspect<T>(
-    app: &App,
-    context: &Context,
-    id: &str,
-    read: impl FnOnce(&crate::engine::HistoryStore) -> Result<T, crate::engine::EngineError>,
-) -> Result<(u64, T), Error> {
-    let (revision, store) = {
-        let engine = app.engine_read().map_err(Error::storage)?;
-        let user = context.user(&engine)?;
-        context.permits(&engine, "read", Some(id))?;
-        (
-            engine.bot_target(&user, id, Action::Read)?.revision,
-            engine.history_store().clone(),
-        )
-    };
-    read(&store)
-        .map(|value| (revision, value))
-        .map_err(Error::storage)
-}
 pub(super) fn admit(
     engine: &mut crate::engine::Engine,
     context: &Context,
@@ -301,36 +284,85 @@ async fn credential(
     headers: HeaderMap,
     Json(input): Json<models::CredentialInput>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, context| {
-        let mut engine = app.engine().map_err(Error::storage)?;
-        admit(&mut engine, context)?;
-        let result = engine.issue_bot_credential(context, input)?;
-        let _ = app.changes.send(Change::Metadata(engine.metadata_change()));
-        Ok(result)
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let context = Context::authenticate_async(&app, &headers).await?;
+        let ordering = app.mutations.metadata().await;
+        let (result, pending) = app
+            .with_metadata(&ordering, {
+                let context = context.clone();
+                move |engine| {
+                    admit(engine, &context)?;
+                    engine.prepare_bot_credential(&context, input)
+                }
+            })
+            .await?;
+        let pending = pending.save().await?;
+        let changes = app.changes.clone();
+        app.with_metadata(&ordering, move |engine| -> Result<_, Error> {
+            let delivery = context.user(engine);
+            engine.publish_metadata(pending)?;
+            let _ = changes.send(Change::Metadata(engine.metadata_change()));
+            delivery?;
+            Ok(Json(result))
+        })
+        .await
     })
     .await
+    .map_err(Error::storage)?
 }
 async fn conversation(
     State(app): State<App>,
     headers: HeaderMap,
     Json(input): Json<models::ConversationInput>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, context| {
-        let mut engine = app.engine().map_err(Error::storage)?;
-        let user = admit(&mut engine, context)?;
-        context.permits(&engine, "create", None)?;
-        if context.metadata(&engine)?.conversations.is_some() {
-            return Err(Error::new(
-                Code::Forbidden,
-                "Creation requires an account-wide credential.",
-            ));
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let context = Context::authenticate_async(&app, &headers).await?;
+        let ordering = app.mutations.metadata().await;
+        let (id, pending, store) = app
+            .with_metadata(&ordering, {
+                let context = context.clone();
+                move |engine| -> Result<_, Error> {
+                    let user = admit(engine, &context)?;
+                    context.permits(engine, "create", None)?;
+                    if context.metadata(engine)?.conversations.is_some() {
+                        return Err(Error::new(
+                            Code::Forbidden,
+                            "Creation requires an account-wide credential.",
+                        ));
+                    }
+                    let (id, pending) = engine.prepare_bot_conversation(&user, input)?;
+                    Ok((id, pending, engine.auth_store()))
+                }
+            })
+            .await?;
+        if let Some(pending) = pending {
+            let pending = pending.save().await?;
+            let changes = app.changes.clone();
+            app.with_metadata(&ordering, move |engine| -> Result<_, Error> {
+                let delivery = context.user(engine);
+                engine.publish_metadata(pending)?;
+                let _ = changes.send(Change::Metadata(engine.metadata_change()));
+                delivery?;
+                Ok(Json(json!({"conversation_id":id})))
+            })
+            .await
+        } else {
+            store.health().await?;
+            app.with_metadata(&ordering, move |engine| -> Result<_, Error> {
+                context.user(engine)?;
+                Ok(Json(json!({"conversation_id":id})))
+            })
+            .await
         }
-        let id = engine.create_bot_conversation(&user, input)?;
-        let _ = app.changes.send(Change::Metadata(engine.metadata_change()));
-        Ok(json!({"conversation_id":id}))
     })
     .await
+    .map_err(Error::storage)?
 }
+
 async fn upgrade(
     State(app): State<App>,
     headers: HeaderMap,
@@ -357,11 +389,16 @@ pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, Error> {
     }
 }
 async fn schema(State(app): State<App>, headers: HeaderMap) -> Result<Json<Value>, Error> {
-    work(app, headers, |_, _| {
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let _context = Context::authenticate_async(&app, &headers).await?;
         serde_json::from_str(include_str!("../../../docs/bot-v1.schema.json"))
+            .map(Json)
             .map_err(Error::storage)
     })
     .await
+    .map_err(Error::storage)?
 }
 
 // Catch framework and ingress errors without exposing parser text or depending

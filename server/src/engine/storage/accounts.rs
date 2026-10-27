@@ -15,7 +15,6 @@ impl Engine {
         name: &str,
         new_name: &str,
         conversations: &BTreeMap<String, String>,
-        affected: &BTreeSet<String>,
         before: &MetadataChange,
     ) -> Result<(), EngineError> {
         let mut batch = MetadataWrite {
@@ -36,22 +35,6 @@ impl Engine {
             old: name.into(),
             new: Some(new_name.into()),
         });
-        for (id, revision) in self
-            .data
-            .rooms
-            .values_mut()
-            .map(|r| (&r.id, &mut r.revision))
-            .chain(
-                self.data
-                    .private
-                    .values_mut()
-                    .map(|c| (&c.id, &mut c.revision)),
-            )
-        {
-            if affected.contains(id) {
-                *revision = revision.wrapping_add(1);
-            }
-        }
         write_delta_view(&mut batch, &self.data, before.view())?;
         self.store.db.save_metadata_blocking(&batch)?;
         Ok(())

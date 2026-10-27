@@ -1,5 +1,37 @@
 use super::*;
 
+struct AccountDeletion {
+    before: MetadataChange,
+    deleted_id: String,
+    removed: BTreeSet<String>,
+    reply: String,
+}
+
+struct AccountRename {
+    before: MetadataChange,
+    conversations: BTreeMap<String, String>,
+}
+pub(crate) struct AccountRenameRead {
+    database: database::Handle,
+    name: String,
+    new_name: String,
+    account: String,
+    command: String,
+}
+pub(crate) struct AccountRenameReferences {
+    request: AccountRenameRead,
+    affected: BTreeSet<String>,
+}
+impl AccountRenameRead {
+    pub(crate) async fn read(self) -> Result<AccountRenameReferences, EngineError> {
+        let affected = self.database.account_conversations(&self.name).await?;
+        Ok(AccountRenameReferences {
+            request: self,
+            affected,
+        })
+    }
+}
+
 impl Engine {
     pub(super) fn rename_user(
         &mut self,
@@ -8,6 +40,55 @@ impl Engine {
         new_name: &str,
         command: &str,
     ) -> Result<String, EngineError> {
+        if !self.validate_account_rename(actor, name, new_name, command)? {
+            return Ok("Username unchanged.".into());
+        }
+        let affected = self.account_reference_ids(name).map_err(|error| {
+            tracing::error!(error=%error,"Account rename reference lookup failed");
+            EngineError::Unavailable("Storage unavailable; rename was not applied.".into())
+        })?;
+        let AccountRename {
+            before,
+            conversations,
+        } = self.apply_account_rename(actor, name, new_name, command, &affected)?;
+        if let Err(error) = self.store_account_rename(name, new_name, &conversations, &before) {
+            before.restore(&mut self.data);
+            tracing::error!(error = %error, "Account rename failed");
+            return Err(EngineError::Unavailable(
+                "Storage unavailable; rename was not applied.".into(),
+            ));
+        }
+        self.working = None;
+        self.store.read_positions.remove(new_name);
+        if let Some(positions) = self.store.read_positions.remove(name) {
+            self.store.read_positions.insert(new_name.into(), positions);
+        }
+        for positions in self.store.read_positions.values_mut() {
+            for (old, new) in &conversations {
+                positions.remove(new);
+                if let Some(sequence) = positions.remove(old) {
+                    positions.insert(new.clone(), sequence);
+                }
+            }
+        }
+        self.bot_index = crate::bots::models::Index::build(&self.data);
+        let notice = MetadataNotice::between(
+            &self.data,
+            before.view(),
+            &self.authorization,
+            &self.authorization,
+        );
+        self.advance_colors();
+        self.finish_metadata_commit(notice);
+        Ok(format!("Renamed {name} to {new_name}."))
+    }
+    fn validate_account_rename(
+        &self,
+        actor: Option<&str>,
+        name: &str,
+        new_name: &str,
+        command: &str,
+    ) -> Result<bool, EngineError> {
         let own_scope = self
             .data
             .users
@@ -27,15 +108,26 @@ impl Engine {
             return Err("Names must contain 1–32 Unicode characters without whitespace, controls or ASCII punctuation other than _ and -.".into());
         }
         if name == new_name {
-            return Ok("Username unchanged.".into());
+            return Ok(false);
         }
         if self.data.users.contains_key(new_name) {
             return Err(EngineError::Conflict("Username already exists.".into()));
         }
-        let affected = self.account_reference_ids(name).map_err(|error| {
-            tracing::error!(error=%error,"Account rename reference lookup failed");
-            EngineError::Unavailable("Storage unavailable; rename was not applied.".into())
-        })?;
+        Ok(true)
+    }
+    fn apply_account_rename(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        new_name: &str,
+        command: &str,
+        affected: &BTreeSet<String>,
+    ) -> Result<AccountRename, EngineError> {
+        if !self.validate_account_rename(actor, name, new_name, command)? {
+            return Err(EngineError::Conflict(
+                "Account rename changed; retry.".into(),
+            ));
+        }
         let mut keys = changes::DirtyKeys {
             users: [name.to_owned(), new_name.to_owned()].into(),
             sessions: self
@@ -93,43 +185,95 @@ impl Engine {
                 room.members.insert(new_name.into());
             }
         }
-        if let Err(error) =
-            self.store_account_rename(name, new_name, &conversations, &affected, &before)
+        for (id, revision) in self
+            .data
+            .rooms
+            .values_mut()
+            .map(|room| (&room.id, &mut room.revision))
+            .chain(
+                self.data
+                    .private
+                    .values_mut()
+                    .map(|chat| (&chat.id, &mut chat.revision)),
+            )
         {
-            before.restore(&mut self.data);
-            tracing::error!(error = %error, "Account rename failed");
-            return Err(EngineError::Unavailable(
-                "Storage unavailable; rename was not applied.".into(),
-            ));
-        }
-        self.working = None;
-        self.store.read_positions.remove(new_name);
-        if let Some(positions) = self.store.read_positions.remove(name) {
-            self.store.read_positions.insert(new_name.into(), positions);
-        }
-        for positions in self.store.read_positions.values_mut() {
-            for (old, new) in &conversations {
-                positions.remove(new);
-                if let Some(sequence) = positions.remove(old) {
-                    positions.insert(new.clone(), sequence);
-                }
+            if affected.contains(id) {
+                *revision = revision.wrapping_add(1);
             }
         }
-        self.bot_index = crate::bots::models::Index::build(&self.data);
-        let notice = MetadataNotice::between(
-            &self.data,
-            before.view(),
-            &self.authorization,
-            &self.authorization,
-        );
-        self.advance_colors();
-        self.finish_metadata_commit(notice);
-        Ok(format!("Renamed {name} to {new_name}."))
+        Ok(AccountRename {
+            before,
+            conversations,
+        })
+    }
+    pub(super) fn account_rename_read(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        input: &str,
+    ) -> Result<Option<AccountRenameRead>, EngineError> {
+        crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
+        crate::commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
+        let command = input.split_whitespace().next().unwrap_or("");
+        self.require_command(actor, view, command)?;
+        let routed = crate::commands::route(input);
+        let parts = routed.split_whitespace().collect::<Vec<_>>();
+        let usage = || EngineError::Invalid(format!("Usage: {}", crate::commands::RENAME_USAGE));
+        let (name, new_name) = match parts.as_slice() {
+            [_, "user", name, new_name] | [_, name, new_name] => (*name, *new_name),
+            [_, new_name] => (actor.ok_or_else(usage)?, *new_name),
+            _ => return Err(usage()),
+        };
+        if !self.validate_account_rename(actor, name, new_name, command)? {
+            return Ok(None);
+        }
+        Ok(Some(AccountRenameRead {
+            database: self.store.db.clone(),
+            name: name.into(),
+            new_name: new_name.into(),
+            account: self.account_id(name).ok_or("User not found.")?.into(),
+            command: command.into(),
+        }))
+    }
+    pub(crate) fn prepare_referenced_rename(
+        &mut self,
+        actor: Option<&str>,
+        references: AccountRenameReferences,
+    ) -> Result<(String, metadata_write::PendingMetadata), EngineError> {
+        let request = references.request;
+        if self.account_id(&request.name) != Some(request.account.as_str()) {
+            return Err(EngineError::Conflict(
+                "Account changed; retry rename.".into(),
+            ));
+        }
+        let dirty = self.metadata_dirty;
+        let AccountRename {
+            before,
+            conversations,
+        } = self.apply_account_rename(
+            actor,
+            &request.name,
+            &request.new_name,
+            &request.command,
+            &references.affected,
+        )?;
+        let pending = self
+            .capture_metadata(&before, conversations.into_iter().collect())
+            .map(|pending| pending.account_rename(request.name.clone(), request.new_name.clone()));
+        before.restore(&mut self.data);
+        self.metadata_dirty = dirty;
+        pending.map(|pending| {
+            (
+                format!("Renamed {} to {}.", request.name, request.new_name),
+                pending,
+            )
+        })
     }
     pub fn is_admin(&self, name: &str) -> bool {
         self.has_group(Some(name), authorization::Group::Admin)
             || self.has_group(Some(name), authorization::Group::Su)
     }
+    #[cfg(test)]
     pub fn change_password(
         &mut self,
         user: &str,
@@ -137,6 +281,17 @@ impl Engine {
         hash: String,
         keep: &str,
     ) -> Result<String, EngineError> {
+        let (reply, before) = self.apply_password_change(user, expected_hash, hash, keep)?;
+        self.commit_account_metadata(before)?;
+        Ok(reply)
+    }
+    fn apply_password_change(
+        &mut self,
+        user: &str,
+        expected_hash: &str,
+        hash: String,
+        keep: &str,
+    ) -> Result<(String, MetadataChange), EngineError> {
         self.account_target(Some(user), user, authorization::Action::Password)?;
         if !self
             .data
@@ -163,11 +318,10 @@ impl Engine {
         self.data
             .sessions
             .retain(|token, session| session.username != user || token == &keep);
-        if let Err(error) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
-            before.restore(&mut self.data);
-            return Err(error);
-        }
-        Ok("Password changed. Other sessions signed out.".into())
+        Ok((
+            "Password changed. Other sessions signed out.".into(),
+            before,
+        ))
     }
     /// Stable identity lookup. Disabled accounts cannot acquire new work leases.
     pub(crate) fn active_account_id(&self, name: &str) -> Option<&str> {
@@ -220,6 +374,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.login_recorded(token, username, expected_hash, old, None)
     }
+    #[cfg(test)]
     pub(crate) fn login_recorded(
         &mut self,
         token: String,
@@ -228,6 +383,21 @@ impl Engine {
         old: Option<&str>,
         event: Option<&AuthEvent>,
     ) -> Result<(), EngineError> {
+        let sessions = self.login_sessions(token, username, expected_hash, old)?;
+        let before = std::mem::replace(&mut self.data.sessions, sessions);
+        if let Err(error) = self.save_sessions(&before, event) {
+            self.data.sessions = before;
+            return Err(error);
+        }
+        Ok(())
+    }
+    pub(super) fn login_sessions(
+        &self,
+        token: String,
+        username: &str,
+        expected_hash: &str,
+        old: Option<&str>,
+    ) -> Result<BTreeMap<String, Session>, EngineError> {
         if !self
             .data
             .users
@@ -238,60 +408,46 @@ impl Engine {
                 "Account changed. Please try again.".into(),
             ));
         }
-        let before = self.data.sessions.clone();
-        self.data.sessions.retain(|_, s| s.expires > now());
+        let mut sessions = self.data.sessions.clone();
+        sessions.retain(|_, s| s.expires > now());
         if let Some(old) = old {
-            self.data.sessions.remove(&session_digest(old));
+            sessions.remove(&session_digest(old));
         }
         // One account cannot reserve the instance's login capacity. Expiry
         // orders sessions without changing the persisted session format.
-        while self
-            .data
-            .sessions
-            .values()
-            .filter(|s| s.username == username)
-            .count()
-            >= 8
-        {
-            let oldest = self
-                .data
-                .sessions
+        while sessions.values().filter(|s| s.username == username).count() >= 8 {
+            let oldest = sessions
                 .iter()
                 .filter(|(_, s)| s.username == username)
                 .min_by_key(|(_, s)| s.expires)
                 .map(|(token, _)| token.clone());
             if let Some(oldest) = oldest {
-                self.data.sessions.remove(&oldest);
+                sessions.remove(&oldest);
             }
         }
-        while self.data.sessions.len() >= self.max_users.saturating_mul(8) {
-            let oldest = self
-                .data
-                .sessions
+        while sessions.len() >= self.max_users.saturating_mul(8) {
+            let oldest = sessions
                 .iter()
                 .min_by_key(|(_, s)| s.expires)
                 .map(|(token, _)| token.clone());
             if let Some(oldest) = oldest {
-                self.data.sessions.remove(&oldest);
+                sessions.remove(&oldest);
             }
         }
-        self.data.sessions.insert(
+        sessions.insert(
             session_digest(&token),
             Session {
                 username: username.into(),
                 expires: now() + 43200,
             },
         );
-        if let Err(e) = self.save_sessions(&before, event) {
-            self.data.sessions = before;
-            return Err(e);
-        }
-        Ok(())
+        Ok(sessions)
     }
     #[cfg(test)]
     pub fn logout(&mut self, token: &str) -> Result<(), EngineError> {
         self.logout_recorded(token, None).map(|_| ())
     }
+    #[cfg(test)]
     pub(crate) fn logout_recorded(
         &mut self,
         token: &str,
@@ -327,6 +483,18 @@ impl Engine {
         admin: bool,
         reset: bool,
     ) -> Result<String, EngineError> {
+        let (reply, before) = self.apply_provision(actor, name, hash, admin, reset)?;
+        self.commit_account_metadata(before)?;
+        Ok(reply)
+    }
+    fn apply_provision(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        hash: String,
+        admin: bool,
+        reset: bool,
+    ) -> Result<(String, MetadataChange), EngineError> {
         if reset {
             self.account_target(actor, name, authorization::Action::Reset)?;
         } else {
@@ -395,20 +563,104 @@ impl Engine {
             );
             self.data.policy.revision = self.data.policy.revision.wrapping_add(1);
         }
-        if let Err(e) = self.save_metadata(&[], changes::Baseline::Captured(&before)) {
-            before.restore(&mut self.data);
-            return Err(e);
-        }
-        Ok(format!(
-            "Account {name} {}.",
-            if reset { "password reset" } else { "created" }
+        Ok((
+            format!(
+                "Account {name} {}.",
+                if reset { "password reset" } else { "created" }
+            ),
+            before,
         ))
+    }
+    fn prepare_account_change(
+        &mut self,
+        change: impl FnOnce(&mut Self) -> Result<(String, MetadataChange), EngineError>,
+    ) -> Result<(String, metadata_write::PendingMetadata), EngineError> {
+        let dirty = self.metadata_dirty;
+        let result = change(self);
+        let result = match result {
+            Ok((reply, before)) => {
+                let pending = self.capture_metadata(&before, vec![]);
+                before.restore(&mut self.data);
+                pending.map(|pending| (reply, pending))
+            }
+            Err(error) => Err(error),
+        };
+        self.metadata_dirty = dirty;
+        result
+    }
+    pub(crate) fn prepare_password_change(
+        &mut self,
+        user: &str,
+        expected_hash: &str,
+        hash: String,
+        keep: &str,
+    ) -> Result<(String, metadata_write::PendingMetadata), EngineError> {
+        self.prepare_account_change(|engine| {
+            engine.apply_password_change(user, expected_hash, hash, keep)
+        })
+    }
+    pub(crate) fn prepare_provision(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        hash: String,
+        admin: bool,
+        reset: bool,
+    ) -> Result<(String, metadata_write::PendingMetadata), EngineError> {
+        self.prepare_account_change(|engine| {
+            engine.apply_provision(actor, name, hash, admin, reset)
+        })
     }
     pub(super) fn delete_user(
         &mut self,
         actor: Option<&str>,
         name: &str,
     ) -> Result<String, EngineError> {
+        let AccountDeletion {
+            before: previous,
+            deleted_id,
+            removed,
+            reply,
+        } = self.apply_account_deletion(actor, name)?;
+        // Commit account/session/history cleanup and read positions together.
+        // Only update the in-memory cursor cache after the transaction succeeds.
+        let authorization = match authorization::CompiledPolicy::compile(&self.data) {
+            Ok(policy) => policy,
+            Err(error) => {
+                previous.restore(&mut self.data);
+                return Err(EngineError::unavailable(error));
+            }
+        };
+        let notice = MetadataNotice::between(
+            &self.data,
+            previous.view(),
+            &self.authorization,
+            &authorization,
+        );
+        let result = self.store_account_deletion(name, &removed, &previous);
+        if let Err(error) = result {
+            previous.restore(&mut self.data);
+            tracing::error!(error = %error, "Account deletion failed");
+            return Err(EngineError::Unavailable(
+                "Storage unavailable; account deletion was not applied.".into(),
+            ));
+        }
+        self.authorization = authorization;
+        self.read_revisions.remove(&deleted_id);
+        self.store.read_positions.remove(name);
+        for positions in self.store.read_positions.values_mut() {
+            positions.retain(|view, _| !removed.contains(view));
+        }
+        self.bot_index = crate::bots::models::Index::build(&self.data);
+        self.advance_colors();
+        self.finish_metadata_commit(notice);
+        Ok(reply)
+    }
+    fn apply_account_deletion(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+    ) -> Result<AccountDeletion, EngineError> {
         self.account_target(actor, name, authorization::Action::DeleteAccount)?;
         if actor.is_some() && !self.is_su(actor) && actor == Some(name) {
             return Err(EngineError::Forbidden(
@@ -488,7 +740,6 @@ impl Engine {
         self.data
             .sessions
             .retain(|_, session| session.username != name);
-        let deleted_author = format!("{name} (deleted)");
         for room in self.data.rooms.values_mut() {
             room.revision = room.revision.wrapping_add(1);
             room.members.remove(name);
@@ -520,41 +771,33 @@ impl Engine {
                 true
             }
         });
-        // Commit account/session/history cleanup and read positions together.
-        // Only update the in-memory cursor cache after the transaction succeeds.
-        let authorization = match authorization::CompiledPolicy::compile(&self.data) {
-            Ok(policy) => policy,
-            Err(error) => {
-                previous.restore(&mut self.data);
-                return Err(EngineError::unavailable(error));
-            }
-        };
-        let notice = MetadataNotice::between(
-            &self.data,
-            previous.view(),
-            &self.authorization,
-            &authorization,
-        );
-        let result = self.store_account_deletion(name, &removed, &previous);
-        if let Err(error) = result {
-            previous.restore(&mut self.data);
-            tracing::error!(error = %error, "Account deletion failed");
-            return Err(EngineError::Unavailable(
-                "Storage unavailable; account deletion was not applied.".into(),
-            ));
-        }
-        self.authorization = authorization;
-        self.read_revisions.remove(&deleted_id);
-        self.store.read_positions.remove(name);
-        for positions in self.store.read_positions.values_mut() {
-            positions.retain(|view, _| !removed.contains(view));
-        }
-        self.bot_index = crate::bots::models::Index::build(&self.data);
-        self.advance_colors();
-        self.finish_metadata_commit(notice);
-        Ok(format!(
-            "Deleted account {name} and its private conversations. Room messages retained as {deleted_author}."
-        ))
+        Ok(AccountDeletion {
+            before: previous,
+            deleted_id,
+            removed,
+            reply: format!(
+                "Deleted account {name} and its private conversations. Room messages retained as {name} (deleted)."
+            ),
+        })
+    }
+    pub(crate) fn prepare_account_deletion(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+    ) -> Result<(String, metadata_write::PendingMetadata), EngineError> {
+        let dirty = self.metadata_dirty;
+        let AccountDeletion {
+            before,
+            deleted_id,
+            removed,
+            reply,
+        } = self.apply_account_deletion(actor, name)?;
+        let pending = self
+            .capture_metadata(&before, vec![])
+            .map(|pending| pending.account_deletion(name.to_owned(), deleted_id, removed));
+        before.restore(&mut self.data);
+        self.metadata_dirty = dirty;
+        pending.map(|pending| (reply, pending))
     }
     pub(super) fn apply_accounts(
         &mut self,

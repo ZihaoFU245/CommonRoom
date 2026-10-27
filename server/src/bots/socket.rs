@@ -25,12 +25,7 @@ pub(super) async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, Error> {
-    let auth_app = app.clone();
-    let auth_headers = headers.clone();
-    let context =
-        tokio::task::spawn_blocking(move || Context::authenticate(&auth_app, &auth_headers))
-            .await
-            .map_err(Error::storage)??;
+    let context = Context::authenticate_async(&app, &headers).await?;
     let lease = app
         .admission
         .socket(context.account.clone(), crate::web::admission::Profile::Bot)
@@ -255,19 +250,18 @@ impl Drop for Presence {
 }
 async fn connection(app: App, context: Context, mut socket: WebSocket) {
     let mut events = crate::web::transport::Events::new(&app, true);
-    let init_app = app.clone();
-    let init_context = context.clone();
-    let initial = tokio::task::spawn_blocking(move || {
-        let user = init_context.user(&*init_app.engine_read().map_err(Error::storage)?)?;
-        init_app
-            .update_presence(None, Some(&user))
-            .map_err(Error::storage)?;
-        Ok::<_, Error>(user)
-    })
-    .await;
-    let Ok(Ok(user)) = initial else {
+    let Ok(user) = context.verify_async(&app).await else {
         return;
     };
+    let initial = tokio::task::spawn_blocking({
+        let app = app.clone();
+        let user = user.clone();
+        move || app.update_presence(None, Some(&user))
+    })
+    .await;
+    if !matches!(initial, Ok(Ok(()))) {
+        return;
+    }
     let mut interests = crate::web::transport::Interests::default();
     let mut presence = Presence {
         app: app.clone(),
@@ -304,23 +298,23 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                 if !alive {
                     break;
                 }
-                let check_app = app.clone();
-                let check_context = context.clone();
-                let old_user = presence.user.clone();
-                let checked = tokio::task::spawn_blocking(move || {
-                    let user =
-                        check_context.user(&*check_app.engine_read().map_err(Error::storage)?)?;
-                    if user != old_user {
-                        check_app
-                            .update_presence(Some(&old_user), Some(&user))
-                            .map_err(Error::storage)?;
-                    }
-                    Ok::<_, Error>(user)
-                })
-                .await;
-                let Ok(Ok(user)) = checked else {
+                let Ok(user) = context.verify_async(&app).await else {
                     break;
                 };
+                if user != presence.user {
+                    let state = app.clone();
+                    let old = presence.user.clone();
+                    let current = user.clone();
+                    if !matches!(
+                        tokio::task::spawn_blocking(
+                            move || state.update_presence(Some(&old), Some(&current))
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        break;
+                    }
+                }
                 presence.user = user;
                 if !send(&mut socket, Message::Ping(Vec::new().into())).await {
                     break;
@@ -370,16 +364,20 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                 if interests.excludes(&Change::Conversation(id.clone())) {
                     continue;
                 }
-                let check_app = app.clone();
-                let check_context = context.clone();
-                let allowed = tokio::task::spawn_blocking(move || {
-                    let engine = check_app.engine_read().map_err(Error::storage)?;
-                    let user = check_context.user(&engine)?;
-                    check_context.permits(&engine, "read", Some(&id))?;
-                    engine.bot_target(&user, &id, Action::Read).map(|_| ())
-                })
+                let allowed = async {
+                    context.verify_async(&app).await?;
+                    app.inspect_engine({
+                        let context = context.clone();
+                        move |engine, _| -> Result<_, Error> {
+                            let user = context.user(engine)?;
+                            context.permits(engine, "read", Some(&id))?;
+                            engine.bot_target(&user, &id, Action::Read).map(|_| ())
+                        }
+                    })
+                    .await
+                }
                 .await;
-                if matches!(allowed, Ok(Ok(())))
+                if allowed.is_ok()
                     && !send(&mut socket, Message::Text(activity.to_string().into())).await
                 {
                     break;
@@ -401,18 +399,21 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                         } else if !budget.admit(Instant::now()) {
                             Err(Error::new(Code::RateLimited, "Control budget exhausted."))
                         } else {
-                            let charge_app = app.clone();
-                            let charge_context = context.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let mut engine = charge_app.engine().map_err(Error::storage)?;
-                                charge_context.user(&engine)?;
-                                engine
-                                    .admit_bot_account(&charge_context.account)
-                                    .map_err(|message| Error::new(Code::RateLimited, message))
-                            })
+                            async {
+                                context.verify_async(&app).await?;
+                                let ordering = app.mutations.metadata().await;
+                                app.with_metadata(&ordering, {
+                                    let context = context.clone();
+                                    move |engine| -> Result<_, Error> {
+                                        context.user(engine)?;
+                                        engine.admit_bot_account(&context.account).map_err(
+                                            |message| Error::new(Code::RateLimited, message),
+                                        )
+                                    }
+                                })
+                                .await
+                            }
                             .await
-                            .map_err(Error::storage)
-                            .and_then(|result| result)
                         };
                         let result = if let Some(control) = discovery {
                             let id = match &control {
@@ -431,19 +432,21 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                         } else if let Ok(activity) = serde_json::from_str::<Activity>(&raw) {
                             let activity_app = app.clone();
                             let activity_context = context.clone();
-                            let result = tokio::task::spawn_blocking(move || {
+                            let result = async {
                                 admission?;
-                                if activity.kind != "activity" || !["working", "idle"].contains(&activity.state.as_str()) { return Err(Error::new(Code::InvalidRequest, "Invalid activity.")); }
-                                if activity.draft.as_ref().is_some_and(|text| text.len() > 16000 || text.chars().count() > crate::limits::MAX_MESSAGE_CHARS) { return Err(Error::new(Code::InvalidRequest, "Draft exceeds its limit.")); }
-                                let engine = activity_app.engine_read().map_err(Error::storage)?;
-                                let user = activity_context.user(&engine)?;
-                                activity_context.permits(&engine, "activity", Some(&activity.conversation_id))?;
-                                engine.bot_target(&user, &activity.conversation_id, Action::Send)?;
-                                let mut frame = json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30});
-                                if let Some(draft) = activity.draft { frame["draft"] = json!(draft); }
-                                let _ = activity_app.bot_runtimes.activities.send(frame);
-                                Ok(())
-                            }).await.map_err(Error::storage).and_then(|r| r);
+                                context.verify_async(&app).await?;
+                                app.inspect_engine(move |engine, _| -> Result<_, Error> {
+                                    if activity.kind != "activity" || !["working", "idle"].contains(&activity.state.as_str()) { return Err(Error::new(Code::InvalidRequest, "Invalid activity.")); }
+                                    if activity.draft.as_ref().is_some_and(|text| text.len() > 16000 || text.chars().count() > crate::limits::MAX_MESSAGE_CHARS) { return Err(Error::new(Code::InvalidRequest, "Draft exceeds its limit.")); }
+                                    let user = activity_context.user(engine)?;
+                                    activity_context.permits(engine, "activity", Some(&activity.conversation_id))?;
+                                    engine.bot_target(&user, &activity.conversation_id, Action::Send)?;
+                                    let mut frame = json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30});
+                                    if let Some(draft) = activity.draft { frame["draft"] = json!(draft); }
+                                    let _ = activity_app.bot_runtimes.activities.send(frame);
+                                    Ok(())
+                                }).await
+                            }.await;
                             (None, result)
                         } else {
                             (

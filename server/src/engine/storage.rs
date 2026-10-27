@@ -16,6 +16,7 @@ use entities::*;
 #[cfg(test)]
 pub(super) use maintenance::CLEANUP_COUNTS_SQL;
 mod auth;
+pub(super) use auth::session_write;
 mod command_receipts;
 mod media;
 mod retention;
@@ -41,6 +42,14 @@ impl Store {
 }
 
 impl Engine {
+    pub(super) fn metadata_operations(
+        &self,
+        before: &MetadataChange,
+    ) -> Result<Vec<MetadataOp<'static>>, EngineError> {
+        let mut batch = MetadataWrite::default();
+        write_delta_entities(&mut batch, &self.data, before.view())?;
+        Ok(batch.operations)
+    }
     #[cfg(test)]
     pub(super) fn save_delta(&mut self, before: &Data) -> Result<(), EngineError> {
         self.save_metadata(&[], changes::Baseline::Data(before))
@@ -116,6 +125,7 @@ impl Engine {
 }
 
 impl Engine {
+    #[cfg(test)]
     pub(super) fn save_bot_metadata(&mut self, before: &MetadataChange) -> Result<(), EngineError> {
         let notice = MetadataNotice::between(
             &self.data,
@@ -128,31 +138,6 @@ impl Engine {
         self.store.db.save_metadata_blocking(&batch)?;
         self.bot_index = crate::bots::models::Index::build(&self.data);
         self.finish_metadata_commit(notice);
-        Ok(())
-    }
-
-    pub(super) fn save_empty_private(&mut self, key: &str) -> Result<(), EngineError> {
-        let chat = self
-            .data
-            .private
-            .get(key)
-            .ok_or_else(|| EngineError::NotFound("Private conversation not found.".into()))?;
-        let mut batch = MetadataWrite::default();
-        batch.entity("private", key, &private_metadata(chat))?;
-        self.store.db.save_metadata_blocking(&batch)?;
-        self.bot_index
-            .conversations
-            .insert(chat.id.clone(), format!("@private:{key}"));
-        self.read_model.advance();
-        self.revision = self.revision.wrapping_add(1);
-        self.record_metadata(
-            self.scope_notice(
-                [authorization::Scope::Private(
-                    self.data.private[key].id.clone(),
-                )]
-                .into(),
-            ),
-        );
         Ok(())
     }
 }

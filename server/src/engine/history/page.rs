@@ -100,6 +100,7 @@ impl serde::Serialize for MessagePage {
 }
 
 impl HistoryStore {
+    #[cfg(test)]
     pub fn page(
         &self,
         id: &str,
@@ -110,6 +111,7 @@ impl HistoryStore {
         self.page_checked(id, revision, range, view)
             .map_err(EngineError::from)
     }
+    #[cfg(test)]
     pub fn page_checked(
         &self,
         id: &str,

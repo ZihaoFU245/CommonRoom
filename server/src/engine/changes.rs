@@ -1,7 +1,7 @@
 //! Resolved-key administrative rollback. Message bodies never enter snapshots.
 use super::*;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct DirtyKeys {
     pub(super) users: BTreeSet<String>,
     pub(super) sessions: BTreeSet<String>,
@@ -9,6 +9,7 @@ pub(super) struct DirtyKeys {
     pub(super) private: BTreeSet<String>,
     pub(super) bots: BTreeSet<String>,
 }
+#[derive(Clone)]
 pub(super) struct MetadataChange {
     keys: Option<DirtyKeys>,
     users: Option<BTreeMap<String, Account>>,
@@ -43,6 +44,13 @@ impl<'a> From<&'a Data> for DataView<'a> {
     }
 }
 impl MetadataChange {
+    pub(super) fn capture_current(&self, data: &Data) -> Result<Self, EngineError> {
+        let keys = self
+            .keys
+            .clone()
+            .ok_or("Metadata targets are unavailable.")?;
+        Ok(Self::keyed(data, keys))
+    }
     // The caller has already resolved and authorized the complete target set.
     // Missing selected names are retained as keys so inserts roll back as well.
     pub(super) fn accounts(

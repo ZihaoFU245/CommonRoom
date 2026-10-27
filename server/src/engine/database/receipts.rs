@@ -54,7 +54,10 @@ impl super::Handle {
         &self,
         request: &ReceiptRead<'_>,
     ) -> Result<Option<Receipt>> {
-        self.acquire().await?.message_receipt_async(request).await
+        self.acquire_read()
+            .await?
+            .message_receipt_async(request)
+            .await
     }
     #[cfg(test)]
     pub(crate) fn message_receipt_count_blocking(
@@ -71,17 +74,14 @@ impl super::Handle {
             .message_receipt_count_async(account, after)
             .await
     }
-    pub(crate) fn command_receipt_blocking(
-        &self,
-        request: &ReceiptRead<'_>,
-    ) -> Result<Option<(String, String)>> {
-        super::runtime::run(self.command_receipt(request))
-    }
     pub(crate) async fn command_receipt(
         &self,
         request: &ReceiptRead<'_>,
     ) -> Result<Option<(String, String)>> {
-        self.acquire().await?.command_receipt_async(request).await
+        self.acquire_read()
+            .await?
+            .command_receipt_async(request)
+            .await
     }
     pub(crate) fn command_receipt_usage_blocking(
         &self,
@@ -95,7 +95,7 @@ impl super::Handle {
         account: &str,
         after: u64,
     ) -> Result<(usize, usize)> {
-        self.acquire()
+        self.acquire_read()
             .await?
             .command_receipt_usage_async(account, after)
             .await

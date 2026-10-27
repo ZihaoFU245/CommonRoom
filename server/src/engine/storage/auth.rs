@@ -2,6 +2,7 @@
 use super::*;
 
 impl Engine {
+    #[cfg(test)]
     pub(crate) fn record_auth_event(&self, event: &AuthEvent) -> Result<(), EngineError> {
         let batch = MetadataWrite {
             operations: vec![MetadataOp::AuthEvent(event)],
@@ -12,23 +13,34 @@ impl Engine {
 }
 
 impl Engine {
+    #[cfg(test)]
     pub(in crate::engine) fn save_sessions(
         &mut self,
         before: &BTreeMap<String, Session>,
         event: Option<&AuthEvent>,
     ) -> Result<(), EngineError> {
-        let mut batch = MetadataWrite::default();
-        write_map_delta(&mut batch, "session", &self.data.sessions, Some(before))?;
-        batch
-            .operations
-            .push(MetadataOp::ExpireSessions { before: now() });
-        if let Some(event) = event {
-            batch.operations.push(MetadataOp::AuthEvent(event));
-        }
+        let batch = session_write(before, &self.data.sessions, now(), event)?;
         self.store.db.save_metadata_blocking(&batch)?;
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
+}
+
+pub(in crate::engine) fn session_write<'a>(
+    before: &BTreeMap<String, Session>,
+    after: &BTreeMap<String, Session>,
+    at: u64,
+    event: Option<&'a AuthEvent>,
+) -> Result<MetadataWrite<'a>, EngineError> {
+    let mut batch = MetadataWrite::default();
+    write_map_delta(&mut batch, "session", after, Some(before))?;
+    batch
+        .operations
+        .push(MetadataOp::ExpireSessions { before: at });
+    if let Some(event) = event {
+        batch.operations.push(MetadataOp::AuthEvent(event));
+    }
+    Ok(batch)
 }
 
 #[cfg(test)]

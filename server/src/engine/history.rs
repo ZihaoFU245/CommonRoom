@@ -207,6 +207,13 @@ impl HistoryStore {
     }
     pub fn stats(&self) -> Result<serde_json::Value, EngineError> {
         self.ensure_available()?;
+        self.cache_stats()
+    }
+    pub(crate) async fn stats_async(&self) -> Result<serde_json::Value, EngineError> {
+        self.ensure_available_async().await?;
+        self.cache_stats()
+    }
+    fn cache_stats(&self) -> Result<serde_json::Value, EngineError> {
         let (mut messages, mut bytes) = (0, 0);
         for shard in &self.cache {
             let cache = shard.lock().map_err(|_| {

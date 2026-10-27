@@ -32,10 +32,34 @@ and background cleanup also await native operations outside engine guards. Media
 reads use reader leases except inside an explicit command transaction. First
 private upload directories commit atomically with quota-checked reservations and
 publish silently after commit. HTTP admission resolves credentials in memory as a
-capacity hint; handlers retain authorization and storage-health checks. Remaining
-browser slash commands, administrative/profile/avatar mutations and outer bot
-command contexts still use the transitional synchronous bridge. Removing those paths remains in
-progress. Backend switching preserves single-process ownership and wire contracts. See
+capacity hint; handlers retain authorization and storage-health checks. Avatar
+allocation, completion, visibility and self-service avatar/color changes also use
+native operations. Profile commits are ordered per account; PostgreSQL locks the
+target account row and unrelated accounts can progress independently. Completion
+workers retain the object mutex through database commit/publication even when the
+HTTP caller is cancelled. Native read-only commands capture owned query plans;
+history, cleanup previews and configuration cache statistics await readers outside
+engine guards. Elevated query authority exists only during each synchronous
+capture and is rechecked before delivery. Basic
+account enable/disable, grant/revoke and room creation/deletion, membership
+and ownership commands use owned native metadata deltas, including elevated
+variants. They hold the metadata fence exclusively through commit/publication,
+while releasing the engine guard for database work. Preparation restores committed
+memory before returning its plan; failed writes cannot leak pending authority.
+Bulk account metadata, room rename and credential commands also use owned native
+deltas. Login/logout persist session changes and authentication events atomically;
+bounded hash workers run outside engine guards. Browser socket/session checks await
+health outside guards and revalidate stable identity. Presence is memory-only.
+Account rename/deletion and slash-bot administration also use native transactions.
+Rename awaits indexed references outside the guard under its metadata permit;
+history, identity, sessions and cursors change atomically. Versioned bot
+authentication, credential issuance, conversation creation, source facts, receipt
+lookup, socket controls and command discovery use native async health/read/write
+operations. Elevated browser message/history writes share native conversation
+ordering and phase-local sudo authority. Outer bot command contexts, console
+operations and fallback command errors still use the transitional synchronous bridge. Removing those paths
+remains in progress. Backend switching preserves single-process ownership and wire
+contracts. See
 [PostgreSQL](postgresql.md) for runtime and offline transfer details. SQLite/WAL and
 portable-folder details below apply to the SQLite backend.
 

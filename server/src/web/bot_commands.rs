@@ -21,19 +21,22 @@ pub(crate) async fn get(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        let engine = app.engine_read_api()?;
-        let user = super::auth::identity(&engine, &app.config, &headers)
-            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Please log in."))?;
-        let bots = app
-            .bot_runtimes
-            .commands
-            .visible(&engine, &user, &input.conversation_id)
-            .map_err(ApiError::from)?;
-        Ok(Json(
-            json!({"conversation_id":input.conversation_id,"bots":bots}),
-        ))
+        let identity = super::auth::authenticated_identity(&app, &headers).await?;
+        let state = app.clone();
+        app.inspect_engine(move |engine, _| {
+            identity.verify(engine)?;
+            let bots = state
+                .bot_runtimes
+                .commands
+                .visible(engine, &identity.user, &input.conversation_id)
+                .map_err(ApiError::from)?;
+            Ok(Json(
+                json!({"conversation_id":input.conversation_id,"bots":bots}),
+            ))
+        })
+        .await
     })
     .await
     .map_err(|_| {
