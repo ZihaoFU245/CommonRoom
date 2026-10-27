@@ -78,8 +78,23 @@ Set `CHAT_DATA` to an isolated directory for experiments. Existing `data/` conta
 SQLite is the default. For PostgreSQL, select `database.backend=postgres` in
 `config.json` and set `CHAT_DATABASE_URL` to an isolated database; see
 [PostgreSQL](postgresql.md) for connection settings and the
-built-in SQLite transfer. Database I/O and synchronous-driver construction/destruction
-must remain off the async runtime's worker threads.
+built-in SQLite transfer. History, snapshots and browser/bot notification plans
+await the typed SQLx storage interface. Use `App::inspect_engine` for owned
+metadata capture/revalidation; it performs only memory checks while holding the
+engine guard. Await database health and reads outside that guard, then revalidate
+authority before delivery. Browser sends and `/reply`, `/edit`, `/react`, `/retract`,
+`/clean` actions,
+bot sends/reactions and read acknowledgements use conversation permits plus
+`App::with_conversation` for short owned preparation/publication. They await storage
+outside the engine guard while sharing a metadata fence. Legacy mutating engine
+entry points take that fence exclusively before the engine guard; they still use
+the transitional synchronous bridge and remain on blocking workers. The bridge uses
+an existing multithreaded blocking region instead of spawning a thread per query;
+current-thread compatibility callers retain a fallback. Bulk history cleanup
+acquires sorted conversation locks before the shared metadata fence and rechecks
+the full target set. Audited deletions additionally hold the audit permit through
+commit/publication; sends and cursors do not need that permit. No runtime belongs to a
+connection, and pools drain before ownership locks are released.
 
 ## Browser compatibility
 
@@ -117,7 +132,7 @@ Node/Deno development and bot-worker requirements remain separate.
   writes the matching CSS motion variables before rendering; the stylesheet keeps
   first-paint fallbacks. Message and preview motion retain their separate 180 ms
   timing. Respect reduced motion and clean up animation controllers/listeners.
-- Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep domain SQL in `engine/storage.rs`/`engine/storage/` and `engine/history.rs`/`engine/history/`; connection/session/COPY mechanics belong in `engine/database/`. Avoid holding the engine read/write lock across `.await`.
+- Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep all SQL, schemas, connection/session and COPY mechanics in the independent SQLite/PostgreSQL modules under `engine/database/`. Shared `engine/storage/` coordinates typed operations and committed publication; `engine/history/` owns shared caches. Avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
 - Preserve compatibility with existing HEAD-schema `data/`. Any schema change needs a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). Current startup supports only fresh and HEAD-schema databases; do not restore obsolete migration paths.

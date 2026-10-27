@@ -4,7 +4,6 @@ use sqlx::{Connection as _, Database, pool::PoolConnection};
 
 pub(super) enum Native<D: Database> {
     Owned(D::Connection),
-    #[allow(dead_code)] // Activated by the next dispatcher checkpoint.
     Pooled(PoolConnection<D>),
 }
 impl<D: Database> std::ops::Deref for Native<D> {

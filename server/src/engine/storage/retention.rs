@@ -1,41 +1,5 @@
 //! Per-conversation retained-row counters and pruning.
 use super::*;
-use crate::engine::database::OptionalExtension;
-
-pub(super) const SCHEMA: &str = "
-CREATE TABLE retention(conversation TEXT PRIMARY KEY, count INTEGER NOT NULL CHECK(count>=0), oldest INTEGER) WITHOUT ROWID;
-CREATE TRIGGER retention_insert AFTER INSERT ON messages BEGIN
- INSERT INTO retention VALUES(NEW.conversation,1,NEW.sequence) ON CONFLICT(conversation) DO UPDATE SET count=count+1,oldest=min(coalesce(oldest,NEW.sequence),NEW.sequence);
-END;
-CREATE TRIGGER retention_delete AFTER DELETE ON messages BEGIN
- UPDATE retention SET count=count-1,oldest=(SELECT min(sequence) FROM messages WHERE conversation=OLD.conversation) WHERE conversation=OLD.conversation;
- DELETE FROM retention WHERE conversation=OLD.conversation AND count=0;
-END;
-CREATE TRIGGER retention_move AFTER UPDATE OF conversation,sequence ON messages WHEN OLD.conversation!=NEW.conversation OR OLD.sequence!=NEW.sequence BEGIN
- DELETE FROM retention WHERE conversation IN (OLD.conversation,NEW.conversation);
- INSERT INTO retention SELECT conversation,count(*),min(sequence) FROM messages WHERE conversation IN (OLD.conversation,NEW.conversation) GROUP BY conversation;
-END;
-";
-pub(super) fn prune(db: &Connection, id: &str, limit: usize) -> Result<usize, EngineError> {
-    let count: u64 = db
-        .query_row(
-            sql(
-                "SELECT count FROM retention WHERE conversation=?1",
-                "SELECT count FROM retention WHERE conversation=$1",
-            ),
-            [id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or(0);
-    let excess =
-        count.saturating_sub(u64::try_from(limit).map_err(|_| "Invalid retention limit.")?);
-    if excess == 0 {
-        return Ok(0);
-    }
-    // Walk only rows being deleted, never the retained window.
-    db.execute(sql("DELETE FROM messages WHERE conversation=?1 AND sequence IN (SELECT sequence FROM messages WHERE conversation=?1 ORDER BY sequence LIMIT ?2)", "DELETE FROM messages WHERE conversation=$1 AND sequence IN (SELECT sequence FROM messages WHERE conversation=$1 ORDER BY sequence LIMIT $2)"), params![id,excess]).map_err(EngineError::from)
-}
 
 impl Engine {
     pub fn set_limits(
@@ -46,10 +10,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         crate::config::validate_limits(max_users, max_rooms, max_messages)
             .map_err(EngineError::Invalid)?;
-        let writer = self.store.db.clone();
-        let mut db = writer.lock().map_err(EngineError::unavailable)?;
-        let tx = db.savepoint().map_err(EngineError::from)?;
-        let mut changed = Vec::new();
+        let mut batch = MetadataWrite::default();
         for (kind, key, id, revision) in self
             .data
             .rooms
@@ -62,28 +23,22 @@ impl Engine {
                     .map(|(key, c)| ("private", key, &c.id, c.revision)),
             )
         {
-            let deleted = retention::prune(&tx, id, max_messages)?;
-            if deleted > 0 {
-                let revision = revision.wrapping_add(1);
-                tx.execute(
-                    sql(
-                        "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2",
-                        "UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2",
-                    ),
-                    params![kind, key, revision],
-                )
-                .map_err(EngineError::from)?;
-                changed.push((kind, key.clone(), revision));
-            }
+            batch.operations.push(MetadataOp::Prune {
+                kind,
+                key: key.clone(),
+                conversation: id.clone(),
+                revision,
+                limit: max_messages,
+            });
         }
-        tx.commit().map_err(EngineError::from)?;
-        for (kind, key, revision) in changed {
-            if kind == "room" {
-                if let Some(r) = self.data.rooms.get_mut(&key) {
-                    r.revision = revision;
+        let changed = self.store.db.save_metadata_blocking(&batch)?;
+        for change in changed {
+            if change.kind == "room" {
+                if let Some(room) = self.data.rooms.get_mut(&change.key) {
+                    room.revision = change.revision;
                 }
-            } else if let Some(c) = self.data.private.get_mut(&key) {
-                c.revision = revision;
+            } else if let Some(chat) = self.data.private.get_mut(&change.key) {
+                chat.revision = change.revision;
             }
         }
         self.max_users = max_users;

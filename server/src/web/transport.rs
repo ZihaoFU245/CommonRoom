@@ -29,7 +29,7 @@ async fn shutdown(app: &App) {
 }
 /// A subscription is only a negative routing hint, never authorization. Refresh
 /// after baselines; oversized projections deliberately fall back to live routing.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Interests {
     initialized: bool,
     principal: Option<String>,

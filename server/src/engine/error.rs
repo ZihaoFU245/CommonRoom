@@ -60,7 +60,25 @@ impl From<EngineError> for String {
 }
 impl From<super::database::Error> for EngineError {
     fn from(cause: super::database::Error) -> Self {
-        Self::unavailable(cause)
+        match cause {
+            super::database::Error::InvalidRequest(message) => Self::Invalid(message.into()),
+            super::database::Error::InvalidData(message) => Self::Invalid(message),
+            super::database::Error::Conflict(message) => Self::Conflict(message.into()),
+            super::database::Error::RestartRequired => {
+                Self::Unavailable("Storage unavailable; restart the service.".into())
+            }
+            super::database::Error::ReceiptConflict => {
+                Self::Conflict("Key already belongs to another message request.".into())
+            }
+            super::database::Error::ReceiptCapacity => {
+                Self::Unavailable("Wait for message receipts to expire.".into())
+            }
+            super::database::Error::MissingMedia => Self::NotFound("Upload not found.".into()),
+            super::database::Error::RevisionConflict => {
+                Self::Conflict("Conversation changed; retry the operation.".into())
+            }
+            cause => Self::unavailable(cause),
+        }
     }
 }
 impl From<serde_json::Error> for EngineError {

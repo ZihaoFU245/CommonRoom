@@ -1,8 +1,40 @@
 //! Database connections backed by SQLx. Backend SQL is always explicit.
 //! The synchronous surface is transitional while domain operations move behind
 //! the async storage dispatcher; drivers themselves live in separate modules.
+mod transfer;
+pub(crate) use transfer::{MigrationReport, transfer_sqlite};
+mod bootstrap;
+pub(crate) use bootstrap::{POSTGRES_SCHEMA, SCHEMA_VERSION};
+mod receipts;
+pub(crate) use receipts::ReceiptRead;
+mod media;
+mod profile;
+pub(crate) use media::{MediaAllocation, MediaWrite};
+pub(crate) use profile::ProfileWrite;
+mod metadata;
+pub(crate) use metadata::{EntityRow, MetadataOp, MetadataSnapshot, MetadataWrite};
+mod history;
+mod transaction;
+#[cfg(test)]
+pub(crate) use history::wire_size as history_wire_size;
+pub(crate) use history::{PageRead, UnreadHint, UnreadRead};
+pub(crate) use runtime::block_on as block_on_storage;
+#[cfg(test)]
+pub(crate) use sqlite::history::{CLEANUP_COUNTS_SQL, PAGE_ASC_SQL};
+#[cfg(test)]
+pub(crate) use sqlite::media::{CLAIM_CLEANUP_SQL, STARTUP_CLEANUP_SQL, TOMBSTONES_SQL};
+mod cursor;
+pub(crate) use cursor::CursorAdvance;
+mod context;
+pub(crate) use context::Handle;
+mod dispatcher;
+pub(crate) use dispatcher::Database;
+#[cfg(test)]
+pub(crate) use dispatcher::Lease as ReaderLease;
 mod native;
 use native::Native;
+mod message;
+pub(crate) use message::{MessageCommit, MessageMutation, MessageReceipt, MessageWrite};
 mod postgres;
 mod projection;
 mod runtime;
@@ -13,8 +45,9 @@ pub(crate) mod tests;
 mod value;
 use futures_util::TryStreamExt;
 pub(crate) use projection::{entity_projection, message_projection};
-use sqlx::Executor as _;
+#[cfg(test)]
 use sqlx::Statement as _;
+use sqlx::{Connection as _, Executor as _};
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -23,6 +56,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+#[cfg(test)]
 pub(crate) use value::{Encode, params};
 pub(crate) use value::{Params, Row, Value};
 
@@ -31,7 +65,14 @@ pub(crate) enum Error {
     Driver(sqlx::Error),
     Conversion(&'static str),
     NoRows,
+    MissingMedia,
+    RevisionConflict,
+    ReceiptConflict,
+    ReceiptCapacity,
     RestartRequired,
+    InvalidRequest(&'static str),
+    InvalidData(String),
+    Conflict(&'static str),
 }
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 impl std::fmt::Display for Error {
@@ -45,8 +86,16 @@ impl std::fmt::Display for Error {
             ),
             Self::Driver(_) => f.write_str("Database connection or operation failed"),
             Self::Conversion(message) => f.write_str(message),
+            Self::InvalidData(message) => f.write_str(message),
             Self::NoRows => f.write_str("Database row not found"),
+            Self::MissingMedia => f.write_str("Upload not found."),
+            Self::ReceiptConflict => f.write_str("Key already belongs to another message request."),
+            Self::ReceiptCapacity => f.write_str("Wait for message receipts to expire."),
+            Self::InvalidRequest(message) | Self::Conflict(message) => f.write_str(message),
             Self::RestartRequired => f.write_str("Database unavailable; restart the service"),
+            Self::RevisionConflict => {
+                f.write_str("Conversation or sequence changed; retry the operation.")
+            }
         }
     }
 }
@@ -61,9 +110,11 @@ impl From<sqlx::Error> for Error {
         Self::Driver(error)
     }
 }
+#[cfg(test)]
 pub(crate) trait OptionalExtension<T> {
     fn optional(self) -> Result<Option<T>>;
 }
+#[cfg(test)]
 impl<T> OptionalExtension<T> for Result<T> {
     fn optional(self) -> Result<Option<T>> {
         match self {
@@ -97,6 +148,7 @@ impl TransactionState {
 #[derive(Clone, Default)]
 struct ChangeCount(Arc<AtomicU64>);
 impl ChangeCount {
+    #[cfg(test)]
     fn get(&self) -> u64 {
         self.0.load(Ordering::Acquire)
     }
@@ -105,31 +157,6 @@ impl ChangeCount {
     }
     fn add(&self, value: u64) {
         self.0.fetch_add(value, Ordering::AcqRel);
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct Sql<'a> {
-    sqlite: &'a str,
-    postgres: &'a str,
-}
-pub(crate) const fn sql<'a>(sqlite: &'a str, postgres: &'a str) -> Sql<'a> {
-    Sql { sqlite, postgres }
-}
-#[cfg(test)]
-impl std::fmt::Display for Sql<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.sqlite)
-    }
-}
-impl<'a> From<&'a str> for Sql<'a> {
-    fn from(query: &'a str) -> Self {
-        sql(query, query)
-    }
-}
-impl<'a> From<&'a String> for Sql<'a> {
-    fn from(query: &'a String) -> Self {
-        query.as_str().into()
     }
 }
 
@@ -194,6 +221,44 @@ impl Connection {
             readonly,
         ))
     }
+    async fn ping(&mut self) -> Result<()> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => db.ping().await.map_err(Error::from),
+            Backend::Postgres(db) => db.ping().await.map_err(Error::from),
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+    async fn execute_batch_async(&mut self, query: &str) -> Result<()> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => {
+                async {
+                    (&mut **db).execute(query).await?;
+                    let total: i64 = sqlx::query_scalar("SELECT total_changes()")
+                        .fetch_one(&mut **db)
+                        .await?;
+                    Ok(Some(u64::try_from(total).map_err(|_| {
+                        Error::Conversion("Invalid SQLite change count")
+                    })?))
+                }
+                .await
+            }
+            Backend::Postgres(db) => {
+                async {
+                    (&mut **db).execute(query).await?;
+                    Ok(None)
+                }
+                .await
+            }
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        if let Some(total) = self.checked(result)? {
+            self.changes.set(total);
+        }
+        Ok(())
+    }
     pub(crate) fn is_postgres(&self) -> bool {
         matches!(*self.backend.borrow(), Backend::Postgres(_))
     }
@@ -232,15 +297,10 @@ impl Connection {
             }
         }
     }
-    pub(crate) fn prepare<'c, 'q>(&'c self, query: impl Into<Sql<'q>>) -> Result<Statement<'c>> {
+    pub(crate) fn prepare<'c>(&'c self, query: impl AsRef<str>) -> Result<Statement<'c>> {
         self.ensure_available()?;
-        let query = query.into();
-        let query = if self.is_postgres() {
-            query.postgres
-        } else {
-            query.sqlite
-        }
-        .to_owned();
+        let query = query.as_ref().to_owned();
+        #[cfg(test)]
         let parameters = {
             let mut backend = self.backend.borrow_mut();
             let parameters = match &mut *backend {
@@ -267,25 +327,21 @@ impl Connection {
         Ok(Statement {
             connection: self,
             query,
+            #[cfg(test)]
             parameters,
         })
     }
-    pub(crate) fn prepare_cached<'c, 'q>(
-        &'c self,
-        query: impl Into<Sql<'q>>,
-    ) -> Result<Statement<'c>> {
+    #[cfg(test)]
+    pub(crate) fn prepare_cached<'c>(&'c self, query: impl AsRef<str>) -> Result<Statement<'c>> {
         self.prepare(query)
     }
-    pub(crate) fn execute<'q>(
-        &self,
-        query: impl Into<Sql<'q>>,
-        params: impl Params,
-    ) -> Result<usize> {
+    #[cfg(test)]
+    pub(crate) fn execute(&self, query: impl AsRef<str>, params: impl Params) -> Result<usize> {
         self.prepare(query)?.execute(params)
     }
-    pub(crate) fn query_row<'q, T, P: Params, F: FnOnce(&Row<'_>) -> Result<T>>(
+    pub(crate) fn query_row<T, P: Params, F: FnOnce(&Row<'_>) -> Result<T>>(
         &self,
-        query: impl Into<Sql<'q>>,
+        query: impl AsRef<str>,
         params: P,
         f: F,
     ) -> Result<T> {
@@ -315,6 +371,7 @@ impl Connection {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn total_changes(&self) -> u64 {
         self.changes.get()
     }
@@ -375,12 +432,6 @@ impl Connection {
         self.changes.add(count);
         Ok(count)
     }
-    pub(crate) fn pragma_update(&self, _: Option<&str>, name: &str, value: u32) -> Result<()> {
-        if self.is_postgres() {
-            return Err(Error::Conversion("SQLite pragma requested on PostgreSQL"));
-        }
-        self.execute_batch(&format!("PRAGMA {name}={value}"))
-    }
     pub(crate) fn unchecked_transaction(&self) -> Result<Transaction<'_>> {
         if !self.is_autocommit() {
             return Err(Error::Conversion("Transaction already active"));
@@ -398,28 +449,6 @@ impl Connection {
             finished: false,
         })
     }
-    pub(crate) fn savepoint(&mut self) -> Result<Transaction<'_>> {
-        let root = self.is_autocommit();
-        if root && self.is_postgres() {
-            self.execute_batch("BEGIN")?;
-        }
-        self.transaction.set(true);
-        let serial = self.serial.get().wrapping_add(1);
-        self.serial.set(serial);
-        let name = format!("chat_{serial}");
-        if let Err(error) = self.execute_batch(&format!("SAVEPOINT {name}")) {
-            if root && self.is_postgres() {
-                self.rollback_root();
-            }
-            return Err(error);
-        }
-        Ok(Transaction {
-            connection: self,
-            name: Some(name),
-            root,
-            finished: false,
-        })
-    }
     pub(crate) fn begin_command(&self) -> Result<()> {
         let root = self.is_autocommit();
         self.command_root.set(root);
@@ -432,6 +461,9 @@ impl Connection {
             return Err(error);
         }
         Ok(())
+    }
+    pub(crate) fn rollback_command_effect(&self) -> Result<()> {
+        self.execute_batch("ROLLBACK TO bot_command_receipt")
     }
     pub(crate) fn finish_command(&self) -> Result<()> {
         self.execute_batch("RELEASE bot_command_receipt")?;
@@ -570,6 +602,7 @@ impl Drop for Transaction<'_> {
 pub(crate) struct Statement<'a> {
     connection: &'a Connection,
     query: String,
+    #[cfg(test)]
     parameters: usize,
 }
 impl Statement<'_> {
@@ -583,6 +616,7 @@ impl Statement<'_> {
             .optional()
             .map(|row| row.is_some())
     }
+    #[cfg(test)]
     pub(crate) fn execute(&mut self, params: impl Params) -> Result<usize> {
         self.connection.ensure_available()?;
         let values = params.values()?;
@@ -641,6 +675,7 @@ impl Statement<'_> {
             Backend::Closed => Err(Error::Conversion("Database closed")),
         }
     }
+    #[cfg(test)]
     pub(crate) fn query_map<T, P: Params, F: FnMut(&Row<'_>) -> Result<T>>(
         &mut self,
         params: P,

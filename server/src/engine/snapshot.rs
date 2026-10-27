@@ -19,8 +19,11 @@ pub(crate) struct SnapshotPlan {
     pub(super) colors: super::colors::ColorDirectory,
 }
 impl SnapshotPlan {
-    pub(crate) fn finish(mut self) -> Result<(Snapshot, bool), EngineError> {
-        self.history.ensure_available()?;
+    #[cfg(test)]
+    pub(crate) fn finish(self) -> Result<(Snapshot, bool), EngineError> {
+        database::block_on_storage(self.finish_async())?
+    }
+    pub(crate) async fn finish_async(mut self) -> Result<(Snapshot, bool), EngineError> {
         let mut complete = true;
         let mut tail_budget = 1000usize;
         let mut byte_budget = 4 * 1024 * 1024usize;
@@ -31,23 +34,30 @@ impl SnapshotPlan {
             .enumerate()
             .map(|(index, room)| (room.id.clone(), index))
             .collect();
-        let unreads = self.history.unread_batch(
-            &self.snapshot.username,
-            self.jobs
-                .iter()
-                .map(|c| (c.id.as_str(), c.read, c.revision)),
-        )?;
+        let requests: Vec<_> = self
+            .jobs
+            .iter()
+            .map(|c| (c.id.as_str(), c.read, c.revision))
+            .collect();
+        let unreads = self
+            .history
+            .unread_batch_async(&self.snapshot.username, &requests)
+            .await?;
         for (conversation, unread) in self.jobs.iter().zip(unreads) {
             if tail_budget > 0 {
-                match self.history.page_checked(
-                    &conversation.id,
-                    conversation.revision,
-                    HistoryRange {
-                        limit: Some(VISIBLE_HISTORY),
-                        ..Default::default()
-                    },
-                    "",
-                ) {
+                match self
+                    .history
+                    .page_checked_async(
+                        &conversation.id,
+                        conversation.revision,
+                        HistoryRange {
+                            limit: Some(VISIBLE_HISTORY),
+                            ..Default::default()
+                        },
+                        "",
+                    )
+                    .await
+                {
                     Ok(page) => {
                         let messages = page
                             .messages
@@ -77,7 +87,7 @@ impl SnapshotPlan {
             }
         }
         self.snapshot.direct.sort_by_key(|message| message.sequence);
-        self.history.ensure_available()?;
+        self.history.ensure_available_async().await?;
         let mut visible: BTreeSet<&str> = self
             .snapshot
             .users
@@ -146,30 +156,41 @@ pub(crate) struct BotSnapshotPlan {
     pub(super) history: Arc<HistoryStore>,
 }
 impl BotSnapshotPlan {
-    pub(crate) fn finish(
+    #[cfg(test)]
+    pub(crate) fn finish(self) -> Result<crate::bots::models::Snapshot, crate::bots::error::Error> {
+        database::block_on_storage(self.finish_async())
+            .map_err(crate::bots::error::Error::storage)?
+    }
+    pub(crate) async fn finish_async(
         mut self,
     ) -> Result<crate::bots::models::Snapshot, crate::bots::error::Error> {
         use crate::bots::error::Error;
-        self.history.ensure_available().map_err(Error::storage)?;
+        let requests: Vec<_> = self
+            .snapshot
+            .conversations
+            .iter()
+            .map(|c| {
+                (
+                    c.id.as_str(),
+                    self.cursors.get(&c.id).copied().unwrap_or(0),
+                    c.content_revision,
+                )
+            })
+            .collect();
         let unreads = self
             .history
-            .unread_batch(
-                &self.snapshot.account.username,
-                self.snapshot.conversations.iter().map(|c| {
-                    (
-                        c.id.as_str(),
-                        self.cursors.get(&c.id).copied().unwrap_or(0),
-                        c.content_revision,
-                    )
-                }),
-            )
+            .unread_batch_async(&self.snapshot.account.username, &requests)
+            .await
             .map_err(Error::storage)?;
         for (conversation, unread) in self.snapshot.conversations.iter_mut().zip(unreads) {
             conversation.unread = unread.map_err(|_| {
                 tracing::warn!(conversation_id=%conversation.id,"Bot conversation unread metadata unavailable");
             }).ok();
         }
-        self.history.ensure_available().map_err(Error::storage)?;
+        self.history
+            .ensure_available_async()
+            .await
+            .map_err(Error::storage)?;
         Ok(self.snapshot)
     }
 }
@@ -186,20 +207,31 @@ impl ConversationPlan {
     pub(crate) fn id(&self) -> &str {
         &self.conversation.id
     }
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Result<serde_json::Value, EngineError> {
+        database::block_on_storage(self.finish_async())?
+    }
+    pub(crate) async fn finish_async(self) -> Result<serde_json::Value, EngineError> {
         let job = self.conversation;
-        let page = self.history.page_checked(
-            &job.id,
-            job.revision,
-            HistoryRange {
-                limit: Some(VISIBLE_HISTORY),
-                ..Default::default()
-            },
-            &job.view,
-        )?;
+        let page = self
+            .history
+            .page_checked_async(
+                &job.id,
+                job.revision,
+                HistoryRange {
+                    limit: Some(VISIBLE_HISTORY),
+                    ..Default::default()
+                },
+                &job.view,
+            )
+            .await?;
         let unread = self
             .history
-            .unread(&job.id, &self.user, job.read, job.revision)?;
+            .unread_batch_async(&self.user, &[(&job.id, job.read, job.revision)])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EngineError::Internal("Missing unread result.".into()))??;
         let mut frame = serde_json::json!({"kind":"conversation","view":job.view,"id":job.id,"messages":page.messages,"unread":unread});
         if !self.color_version.is_empty() {
             frame["name_colors"] = serde_json::to_value(self.colors.for_messages(
@@ -220,19 +252,25 @@ impl UnreadPlan {
     pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
         self.conversations.iter().map(|job| job.id.as_str())
     }
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Result<BTreeMap<String, Unread>, EngineError> {
-        self.history.ensure_available()?;
+        database::block_on_storage(self.finish_async())?
+    }
+    pub(crate) async fn finish_async(self) -> Result<BTreeMap<String, Unread>, EngineError> {
         let mut unread = BTreeMap::new();
-        let results = self.history.unread_batch(
-            &self.user,
-            self.conversations
-                .iter()
-                .map(|c| (c.id.as_str(), c.read, c.revision)),
-        )?;
+        let requests: Vec<_> = self
+            .conversations
+            .iter()
+            .map(|c| (c.id.as_str(), c.read, c.revision))
+            .collect();
+        let results = self
+            .history
+            .unread_batch_async(&self.user, &requests)
+            .await?;
         for (job, result) in self.conversations.into_iter().zip(results) {
             unread.insert(job.view, result?);
         }
-        self.history.ensure_available()?;
+        self.history.ensure_available_async().await?;
         Ok(unread)
     }
 }

@@ -26,13 +26,13 @@ The URL is environment-only: it is not saved in `config.json` or shown by
 S3 access keys, secret keys and session tokens also remain environment-only;
 non-secret S3 endpoint/bucket/region settings stay in the existing `s3` section.
 Unknown database fields (including `url` and `password`) are rejected. PostgreSQL 18 is the tested server version. The URL accepts ordinary
-PostgreSQL connection parameters; use `sslmode=require` and a trusted server
+PostgreSQL connection parameters; use `sslmode=verify-full` and a trusted server
 certificate for remote production connections. Local containers without TLS use
 the driver's default SSL preference or an explicit `sslmode=disable`.
 
-The driver uses native TLS. Linux builds need OpenSSL development headers/libraries,
-and deployed Linux binaries need the matching OpenSSL runtime libraries. macOS and
-Windows use their platform TLS implementations.
+Both database drivers use SQLx. PostgreSQL TLS uses rustls with its ring provider,
+so the database driver does not require platform OpenSSL libraries. Private CAs
+can be supplied with the PostgreSQL `sslrootcert` connection parameter.
 
 Use a dedicated database with an empty target schema on first start. The role
 needs permission to create tables, indexes, sequences and trigger functions there.
@@ -129,21 +129,35 @@ transfer and online replication are not implemented.
 
 ## Runtime and backups
 
-Both backends use the synchronous engine and existing blocking-worker admission.
-PostgreSQL has one writer session, four read-only sessions, prepared statements,
-and repeatable-read transactions for coherent multi-statement history/unread
-reads. Normal PostgreSQL statements have a 10-second server deadline and a
-2-second lock deadline. Offline transfer disables the request deadline for its
-own connection while streaming and checking data.
+Both backends use SQLx. The typed async dispatcher handles message transactions
+and cursor advances with one SQLite writer lease or a bounded PostgreSQL pool of
+up to eight write leases. PostgreSQL also has four read-only history sessions and
+a dedicated ownership session. Existing synchronous engine entry points bridge
+to the dispatcher; broader backend SQL extraction and removal of engine-wide
+mutation serialization remain in progress. The pool supports independent writes,
+but this does not yet make all chat requests concurrent.
 
-Only one chat process may own a PostgreSQL database. A session advisory lock
-enforces database ownership, and the local `chat.lock` also protects the configuration
-folder. Ownership is acquired before configuration normalization. Connections are not automatically replaced after a lost
-session or uncertain commit. Restart the service after a connection failure.
-Use a direct PostgreSQL connection or session pooling; transaction pooling cannot
-preserve this session lock. The engine, presence, caches and notifications remain
-single-process; PostgreSQL does not enable multiple application replicas or change
-the configured user/room/retention ceilings.
+Message operations validate the stored conversation identity/revision under a
+PostgreSQL row lock. Appends first lock the global counter row and validate their
+expected sequence, retaining current global ordering through commit. Consequently,
+appends still have a global serialization point; edits/reactions to independent
+conversations and independent cursor rows can use separate write sessions.
+
+Normal PostgreSQL statements have a 10-second server deadline and a 2-second lock
+deadline. Offline transfer disables the request deadline for its own connection
+while streaming and checking data. Read-only history transactions use repeatable
+read for coherent multi-statement history/unread reads.
+
+Only one chat process may own a PostgreSQL database. A dedicated session advisory
+lock enforces database ownership; it is never held on a pool lease. The local
+`chat.lock` also protects the configuration folder. Ownership is acquired before
+configuration normalization and checked independently of writer-pool capacity.
+Losing ownership or an active session/uncertain commit invalidates the dispatcher
+and requires a restart. SQLx may replace an idle pool connection safely while the
+ownership session remains healthy. Use a direct connection or session pooling;
+transaction pooling cannot preserve the ownership lock. Engine state, presence,
+caches and notifications remain single-process; this does not enable replicas or
+change the configured user/room/retention ceilings.
 
 For PostgreSQL backups use PostgreSQL's `pg_dump`/`pg_restore` or managed physical
 backup tooling, alongside local configuration/worker backups and the object store.

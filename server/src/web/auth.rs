@@ -1,12 +1,30 @@
 use super::security::{check_origin, check_read_origin_or_bot, client_ip};
 use super::*;
-use crate::engine::{valid_name, verify_password};
+use crate::engine::{EngineError, valid_name, verify_password};
 use axum::{
     extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+
+#[derive(Clone)]
+pub(crate) struct Identity {
+    pub(crate) headers: HeaderMap,
+    pub(crate) user: String,
+    pub(crate) account: String,
+    pub(crate) config: Arc<crate::config::Config>,
+}
+impl Identity {
+    pub(crate) fn verify(&self, engine: &Engine) -> Result<(), EngineError> {
+        if identity(engine, &self.config, &self.headers).as_deref() != Some(&self.user)
+            || engine.active_account_id(&self.user) != Some(self.account.as_str())
+        {
+            return Err("Please log in.".into());
+        }
+        Ok(())
+    }
+}
 
 // Valid PHC encoding with the default Argon2 work parameters. Its verification
 // result is discarded: missing and disabled accounts must never authenticate.
@@ -254,10 +272,16 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        authenticate(&app, &headers)?;
-        let value = super::snapshots::value(&app, &headers, false).map_err(ApiError::from)?;
+        let value = super::snapshots::value_async(&app, &headers, false)
+            .await
+            .map_err(|cause| match cause {
+                crate::engine::EngineError::Forbidden(_) => {
+                    error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                }
+                cause => ApiError::from(cause),
+            })?;
         Ok((
             [(header::CONTENT_TYPE, "application/json")],
             value.to_string(),

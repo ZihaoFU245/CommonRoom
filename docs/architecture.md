@@ -5,12 +5,37 @@
 never changes the selected backend by itself. Startup reads selection without
 saving, acquires ownership, then normalizes configuration after rechecking that
 the selection has not changed.
-`engine/database/` owns synchronous connections, typed parameters/rows, explicit
-SQL dialect selection, prepared statements, transaction scopes and lossless JSON
-projections. Storage/history modules retain domain persistence coordination and
-explicit backend SQL. PostgreSQL readers use repeatable-read read-only snapshots;
-its writer session holds exclusive database ownership. Backend switching does not
-alter the engine's single-process ownership or wire contracts. See
+`engine/database/` owns SQLx sessions, native pools, typed operations, transaction
+scopes, lossless JSON projections, backend schemas and offline transfer mechanics.
+Each backend has independent SQL for messages, cursors, metadata, media, receipts
+and history. SQLx owns prepared-statement caches. SQLite has one writer lease;
+PostgreSQL has up to eight write leases and a separate ownership session. Four
+pooled readers supply native snapshots, including PostgreSQL repeatable-read
+history. Shared history caches contain no SQL. Shared storage coordinates domain
+metadata and publication through typed requests. Browser/bot history, snapshots
+and socket notification plans await native readers. Metadata capture/revalidation
+uses short engine guards, with database health checks outside those guards.
+Browser plain-text/`/tell` messages and `/reply`, `/edit`, `/react`, `/retract`,
+`/clean` actions, bot sends/reactions and browser/bot read acknowledgements also
+await native writers. Plain browser text requires Send;
+attachments additionally require Read before lookup. A conversation permit orders
+preparation, database commit and memory publication. A new private directory and
+its first message commit together; publication invalidates metadata caches and
+emits a scoped directory notice only after commit. These permits share a metadata
+fence; legacy metadata-changing commands acquire it exclusively before taking the
+engine guard. Bulk cleanup acquires sorted conversation locks before the fence and
+revalidates its complete target set. Audited deletions share a separate audit permit
+through commit/publication; independent message/cursor writes do not acquire it.
+Audit storage appends a single entry and prunes the oldest entries to retain 1,000.
+Attachment media reservation, read, completion, abandonment, download revalidation
+and background cleanup also await native operations outside engine guards. Media
+reads use reader leases except inside an explicit command transaction. First
+private upload directories commit atomically with quota-checked reservations and
+publish silently after commit. HTTP admission resolves credentials in memory as a
+capacity hint; handlers retain authorization and storage-health checks. Remaining
+browser slash commands, administrative/profile/avatar mutations and outer bot
+command contexts still use the transitional synchronous bridge. Removing those paths remains in
+progress. Backend switching preserves single-process ownership and wire contracts. See
 [PostgreSQL](postgresql.md) for runtime and offline transfer details. SQLite/WAL and
 portable-folder details below apply to the SQLite backend.
 
@@ -21,7 +46,7 @@ CommonRoom has one Rust API/WebSocket executable, a separately built static UI s
 `server/src/main.rs` wires process lifecycle, configuration, shared application state, and graceful shutdown. `console.rs` owns the stdin superuser interface. `config.rs` loads and validates saved settings; settings require a restart.
 
 `engine/mod.rs` defines the engine and module boundary. `Engine` coordinates domain changes through separate owners: `Store` holds the selected database
-writer, history readers, process lock, persisted cursors and pending maintenance;
+dispatcher, history readers, process lock, persisted cursors and pending maintenance;
 `Presence` owns transient connections; `CompiledPolicy` owns compiled authorization;
 and media state owns limits and avatar-host policy. Raw `Data` is private in production.
 Transport adapters use stable account identity, password verification material and
@@ -34,7 +59,7 @@ Domain modules extend that coordinator rather than creating separate copies of a
 | --- | --- |
 | `models.rs` | Persisted data and serialized snapshot/history types |
 | `storage.rs` and `storage/` | Database lifetime and metadata commit coordination; focused bootstrap/schema, entity, message, cursor, account, receipt, auth, retention and maintenance modules |
-| `history.rs` and `history/` | Four read-only connections and statistics; focused keyset pagination, immutable pages, bounded caches and batched unread projections |
+| `history.rs` and `history/` | Typed pooled database reads and statistics; focused keyset pagination, immutable pages, bounded caches and batched unread projections |
 | `authorization.rs` and `authorization/` | Policy types, predefined bundles and compiled index; `access.rs` owns access checks/delegation, `commands.rs` owns policy inspection/mutations |
 | `objects.rs` | Object command listing, scoped account metadata, bulk metadata selection and validation |
 | `accounts.rs` | Account/session lifecycle, roles, provisioning, and account deletion |
@@ -77,7 +102,7 @@ checkpoint/outbox, not a server-side agent runtime.
 
 `web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` routes commands and configuration output; `credential_commands.rs` handles password/provisioning in the existing blocking command worker. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.
 
-One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes mutations. Database/lock work runs on blocking workers; HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for SQLite I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
+One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes short memory mutations. Native browser message/history mutations, bot sends/reactions and read acknowledgements release it for SQLx I/O, keeping a per-conversation permit through publication. Different conversations share the metadata fence and can write concurrently. Legacy commands take that fence exclusively before the engine guard, preserving authorization and identity while native operations await. Legacy mutation/lock work runs on blocking workers; migrated reads and writes await SQLx directly. HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until accepted async or blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for native database I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
 
 ## Web ownership
 
@@ -136,7 +161,7 @@ The cache is bounded to 128 entries/32 MiB and keyed by mutation revision,
 visible presence revision, and the account's read revision. Browser HTTP/socket
 baselines share buffers; bot v1 HTTP/socket keys also include the credential ID.
 Read-only commands and unrelated read cursors preserve baselines. Every caller
-rechecks its credential before reuse. Concurrent readers share one baseline build per key; partial baselines are not retained. History responses
+rechecks its credential before reuse. Concurrent readers await one baseline build per key through an async cell. A cancelled builder releases waiters so another caller can fill the entry; partial baselines are not retained. History responses
 share immutable page slices and exact per-message wire sizes, so cache hits and
 snapshot byte budgets do not copy or serialize message bodies again. Unread
 lookup uses a hash index with bounded ordered recency tracking. Command lists
@@ -145,9 +170,9 @@ Browser cache entries retain byte counts and global running totals; ordered page
 merges and directional trimming are linear. Ledger ingestion reuses its ID set
 and skips sorting when no new message IDs arrive.
 
-`engine/storage/command_receipts.rs` owns atomic native command outcomes. An outer
-SQLite savepoint encloses ordinary command storage savepoints and its receipt;
-receipt failure rolls back SQLite and reloads authoritative metadata/cursors
+`engine/storage/command_receipts.rs` owns atomic native command outcomes. An explicit command-scoped handle keeps ordinary command savepoints and its
+receipt on one connection; independent handles use their own write leases.
+Receipt failure rolls back the command and reloads authoritative metadata/cursors
 before broadcasting. The receipt wrapper does not clone metadata/cursors on success; administrative commands inside it retain snapshots of their resolved metadata keys.
 
 Browser API failures retain HTTP status; 401 responses return the user to login.

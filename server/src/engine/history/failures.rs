@@ -69,7 +69,7 @@ fn poisoned_history_locks_fail_explicitly_and_are_never_reused() {
                         panic!("poison unread cache");
                     }
                     _ => {
-                        let _guard = store.readers[0].lock().unwrap();
+                        let _guard = store.database.reader_lease().unwrap();
                         panic!("poison reader");
                     }
                 }

@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Read the explicit backend without writing; acquire ownership before
     // configuration normalization. A secret URL never selects the backend.
-    // Construct either synchronous database driver on a blocking worker.
+    // Construct the transitional synchronous SQLx engine on a blocking worker.
     let database = Config::read_database(Path::new(&data_dir))?;
     let selected_database = database.clone();
     let database_path = Path::new(&data_dir).join("chat.sqlite");
@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
+        mutations: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         shutdown: Default::default(),

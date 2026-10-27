@@ -89,6 +89,7 @@ impl Engine {
         }
         Ok(page)
     }
+    #[cfg(test)]
     pub fn mark_read(&mut self, user: &str, view: &str, through: u64) -> Result<bool, EngineError> {
         let (key, id, _) = self.conversation(user, view)?;
         if !self.history_store().contains_sequence(&id, through)? {
@@ -104,6 +105,7 @@ impl Engine {
             .copied()
             .unwrap_or(0)
     }
+    #[cfg(test)]
     pub(super) fn advance_read_position(
         &mut self,
         user: &str,
@@ -114,6 +116,17 @@ impl Engine {
             return Ok(false);
         }
         self.store_read_position(user, key, through)?;
+        self.publish_read_position(user, key, through)
+    }
+    pub(super) fn publish_read_position(
+        &mut self,
+        user: &str,
+        key: &str,
+        through: u64,
+    ) -> Result<bool, EngineError> {
+        if self.read_position(user, key) >= through {
+            return Ok(false);
+        }
         self.read_clock = self.read_clock.wrapping_add(1);
         let version = self
             .read_revisions

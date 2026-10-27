@@ -1,4 +1,3 @@
-use super::media::authenticated;
 use super::*;
 use axum::{
     extract::{Path, State},
@@ -26,24 +25,8 @@ pub(crate) async fn set(
     Json(input): Json<SetAvatar>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    authenticated(&app, &headers, move |app, user| {
-        let mut engine = app.engine_api()?;
-        let account = engine
-            .active_account_id(user)
-            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
-            .to_owned();
-        if !engine.avatar_matches(user, input.url.as_deref()) {
-            app.admission.profile_change(&account)?;
-        }
-        if engine
-            .set_avatar(user, input.url, false)
-            .map_err(ApiError::from)?
-        {
-            let _ = app.changes.send(Change::Avatar(account));
-        }
-        Ok(Json(json!({"ok":true})))
-    })
-    .await
+    super::profiles::update(&app, headers, super::profiles::Update::Avatar(input.url)).await?;
+    Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,21 +40,47 @@ pub(crate) async fn allocate(
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let (storage, media) = authenticated(&app, &headers, move |app, user| {
-        let storage = storage(app)?;
-        let media = app
-            .engine_api()?
-            .allocate_avatar_id(
-                user,
-                input.size,
-                &input
-                    .upload_id
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            )
-            .map_err(ApiError::from)?;
-        Ok((storage, media))
+    let permit = app
+        .io_permit()
+        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let worker = app.clone();
+    let (storage, media) = tokio::spawn(async move {
+        let _permit = permit;
+        let (identity, _) = super::media::native_context(&worker, headers).await?;
+        let storage = storage(&worker)?;
+        let ordering = worker.mutations.conversations(vec![]).await?;
+        let pending = worker
+            .with_conversation(&ordering, {
+                let identity = identity.clone();
+                move |engine| -> Result<_, ApiError> {
+                    super::media::verify_identity(&identity, engine)?;
+                    Ok(engine.prepare_avatar_allocation(
+                        &identity.user,
+                        input.size,
+                        input
+                            .upload_id
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    )?)
+                }
+            })
+            .await?;
+        let media = pending.save().await?;
+        let media = worker
+            .with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
+                super::media::verify_identity(&identity, engine)?;
+                engine.authorize_avatar_owner(&identity.user, &media)?;
+                Ok(media)
+            })
+            .await?;
+        Ok::<_, ApiError>((storage, media))
     })
-    .await?;
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Avatar worker unavailable.",
+        )
+    })??;
     let url = storage
         .upload_url_with_hints(&media.id, media.size, HeaderMap::new())
         .await
@@ -95,12 +104,7 @@ pub(crate) async fn complete(
     let _lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let mut media = authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .avatar_owner(user, &id)
-            .map_err(ApiError::from)
-    })
-    .await?;
+    let mut media = owner(&app, &headers, id).await?;
     if !media.ready {
         tokio::time::timeout(
             std::time::Duration::from_secs(100),
@@ -115,16 +119,11 @@ pub(crate) async fn complete(
         })?
         .map_err(super::media::storage_failure)?;
     }
-    authenticated(&app, &headers, move |app, user| {
-        let mut engine = app.engine_api()?;
-        let account = engine.active_account_id(user).ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?.to_owned();
-        if !engine.avatar_matches(user, Some(&crate::engine::avatars::avatar_path(&media.id))) { app.admission.profile_change(&account)?; }
-        if engine.finish_avatar(user,&media).map_err(ApiError::from)? {
-            let _=app.changes.send(Change::Avatar(account));
-        }
-        Ok(Json(json!({"ok":true,"media_id":media.id,"path":crate::engine::avatars::avatar_path(&media.id)})))
-    })
-    .await
+    let id = media.id.clone();
+    super::profiles::update(&app, headers, super::profiles::Update::Complete(media)).await?;
+    Ok(Json(
+        json!({"ok":true,"media_id":id,"path":crate::engine::avatars::avatar_path(&id)}),
+    ))
 }
 pub(crate) async fn info(
     State(app): State<App>,
@@ -132,16 +131,10 @@ pub(crate) async fn info(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
-    authenticated(&app, &headers, move |app, user| {
-        let media = app
-            .engine_read_api()?
-            .readable_avatar(user, &id)
-            .map_err(|e| super::error::hidden(e, "Avatar not found."))?;
-        Ok(Json(
-            json!({"size":media.size,"content_type":media.content_type,"filename":media.filename}),
-        ))
-    })
-    .await
+    let media = readable(&app, &headers, id).await?;
+    Ok(Json(
+        json!({"size":media.size,"content_type":media.content_type,"filename":media.filename}),
+    ))
 }
 pub(crate) async fn download(
     State(app): State<App>,
@@ -150,21 +143,118 @@ pub(crate) async fn download(
 ) -> Result<Redirect, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
-    let avatar = authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .readable_avatar(user, &id)
-            .map_err(|e| super::error::hidden(e, "Avatar not found."))
-    })
-    .await?;
+    let avatar = readable(&app, &headers, id).await?;
     let url = storage
         .download_url(&avatar, false)
         .await
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign avatar URL."))?;
-    authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .readable_avatar(user, &avatar.id)
-            .map_err(|e| super::error::hidden(e, "Avatar not found."))
-    })
-    .await?;
+    readable(&app, &headers, avatar.id).await?;
     Ok(Redirect::temporary(&url))
 }
+
+async fn owner(
+    app: &App,
+    headers: &HeaderMap,
+    id: String,
+) -> Result<crate::engine::media::Media, ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let app = app.clone();
+    let headers = headers.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        let (identity, store) = super::media::native_context(&app, headers).await?;
+        let media = store.load(&id).await?.0;
+        app.inspect_engine(move |engine, _| -> Result<_, ApiError> {
+            super::media::verify_identity(&identity, engine)?;
+            engine.authorize_avatar_owner(&identity.user, &media)?;
+            Ok(media)
+        })
+        .await
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Avatar worker unavailable.",
+        )
+    })?
+}
+async fn readable(
+    app: &App,
+    headers: &HeaderMap,
+    id: String,
+) -> Result<crate::engine::media::Media, ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let app = app.clone();
+    let headers = headers.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        for _ in 0..2 {
+            let (identity, store) = super::media::native_context(&app, headers.clone()).await?;
+            let media = store
+                .load(&id)
+                .await
+                .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?
+                .0;
+            let (media, visibility, ids, stamp) = app
+                .inspect_engine({
+                    let identity = identity.clone();
+                    move |engine, _| -> Result<_, ApiError> {
+                        super::media::verify_identity(&identity, engine)?;
+                        let visibility = engine
+                            .avatar_read_plan(&identity.user, &media)
+                            .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?;
+                        let ids = visibility.history_ids().map(str::to_owned).collect();
+                        let stamp = engine.delivery_stamp(&identity.user, &ids, false)?;
+                        Ok((media, visibility, ids, stamp))
+                    }
+                })
+                .await?;
+            let visible = visibility.finish_async().await?.is_some();
+            store.health().await?;
+            let result = app
+                .inspect_engine(move |engine, _| -> Result<_, ApiError> {
+                    super::media::verify_identity(&identity, engine)?;
+                    if engine
+                        .delivery_stamp(&identity.user, &ids, false)
+                        .ok()
+                        .as_ref()
+                        != Some(&stamp)
+                    {
+                        return Ok(None);
+                    }
+                    engine
+                        .avatar_read_plan(&identity.user, &media)
+                        .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?;
+                    if !visible {
+                        return Err(error(StatusCode::NOT_FOUND, "Avatar not found."));
+                    }
+                    Ok(Some(media))
+                })
+                .await?;
+            if let Some(media) = result {
+                return Ok(media);
+            }
+        }
+        Err(error(
+            StatusCode::CONFLICT,
+            "Avatar visibility changed; retry shortly.",
+        ))
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Avatar worker unavailable.",
+        )
+    })?
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "avatar_tests.rs"]
+mod tests;

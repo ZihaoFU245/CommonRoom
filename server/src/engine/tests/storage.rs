@@ -199,13 +199,11 @@ fn crash_writer_child() {
     let folder = std::path::PathBuf::from(folder);
     let mut e = Engine::open(&folder.join("chat.sqlite")).unwrap();
     let account = e.data.users["alice"].id.clone();
-    e.store
-        .db
-        .lock()
-        .unwrap()
-        .execute_batch("SAVEPOINT crash_outer;")
-        .unwrap();
-    e.bot_command_once(&account, "crash-key", "digest", |e| {
+    // Keep an explicit command scope and outer transaction open until this
+    // subprocess is killed. Independent dispatcher handles never join it.
+    e.store.db = e.store.db.command_scope_blocking().unwrap();
+    std::mem::forget(e.store.db.lock().unwrap().unchecked_transaction().unwrap());
+    e.bot_command_in_context(&account, "crash-key", "digest", |e| {
         e.execute(Some("alice"), Some("room"), "durable effect")
             .map_err(crate::bots::error::Error::storage)?;
         e.advance_read_position("alice", "room:room", 2)
@@ -216,12 +214,7 @@ fn crash_writer_child() {
     })
     .unwrap();
     if std::env::var_os("CHATROOM_CRASH_TEST_COMMIT").is_some() {
-        e.store
-            .db
-            .lock()
-            .unwrap()
-            .execute_batch("RELEASE crash_outer;")
-            .unwrap();
+        e.store.db.lock().unwrap().execute_batch("COMMIT;").unwrap();
     }
     std::fs::write(folder.join("ready"), b"ready").unwrap();
     loop {

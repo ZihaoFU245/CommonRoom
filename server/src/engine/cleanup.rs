@@ -4,15 +4,16 @@ use authorization::Scope;
 
 pub(super) const USAGE: &str = "/clean age scope [--dry-run]";
 
-struct CleanupPlan {
+pub(crate) struct CleanupPlan {
     scope: String,
     age: String,
     cutoff: u64,
-    preview: bool,
+    pub(crate) preview: bool,
+    history: std::sync::Arc<HistoryStore>,
     targets: Vec<(Scope, usize, usize)>,
 }
 impl CleanupPlan {
-    fn report(&self) -> String {
+    pub(crate) fn report(&self) -> String {
         let messages: usize = self.targets.iter().map(|(_, count, _)| count).sum();
         let references: usize = self.targets.iter().map(|(_, _, count)| count).sum();
         format!(
@@ -42,8 +43,43 @@ impl CleanupPlan {
         )
     }
 }
+impl CleanupPlan {
+    pub(crate) fn ids(&self) -> Vec<String> {
+        let mut ids = self
+            .targets
+            .iter()
+            .filter_map(|(scope, _, _)| match scope {
+                Scope::Room(id) | Scope::Private(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    pub(crate) fn has_matches(&self) -> bool {
+        self.targets.iter().any(|(_, count, _)| *count > 0)
+    }
+    fn set_counts(&mut self, totals: BTreeMap<String, (usize, usize)>) {
+        for (scope, count, references) in &mut self.targets {
+            if let Scope::Room(id) | Scope::Private(id) = scope {
+                (*count, *references) = totals.get(id).copied().unwrap_or_default();
+            }
+        }
+    }
+    pub(crate) async fn count(&mut self) -> Result<(), EngineError> {
+        let totals = self
+            .history
+            .cleanup_counts_async(&self.ids(), self.cutoff)
+            .await?;
+        self.set_counts(totals);
+        Ok(())
+    }
+}
 impl Engine {
-    fn cleanup_plan(&self, context: &CommandContext<'_>) -> Result<CleanupPlan, EngineError> {
+    fn resolve_cleanup_plan(
+        &self,
+        context: &CommandContext<'_>,
+    ) -> Result<CleanupPlan, EngineError> {
         let parts = context.parts;
         let preview = match parts {
             ["/clean", _, _] => false,
@@ -113,22 +149,6 @@ impl Engine {
             self.require_target_command(context.actor, &Scope::Server, "/clean")?;
             self.require_clean(context.actor, &Scope::Server, age)?;
         }
-        let ids = targets
-            .iter()
-            .map(|target| match target {
-                Scope::Room(id) | Scope::Private(id) => Ok(id.clone()),
-                _ => Err(EngineError::Invalid("Invalid cleanup scope.".into())),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let totals = self.cleanup_counts(&ids, cutoff)?;
-        let counts = targets
-            .into_iter()
-            .zip(ids)
-            .map(|(target, id)| {
-                let (messages, references) = totals.get(&id).copied().unwrap_or_default();
-                (target, messages, references)
-            })
-            .collect();
         Ok(CleanupPlan {
             scope: scope.into(),
             age: if age == 0 {
@@ -138,8 +158,66 @@ impl Engine {
             },
             cutoff,
             preview,
-            targets: counts,
+            history: self.history_store().clone(),
+            targets: targets.into_iter().map(|scope| (scope, 0, 0)).collect(),
         })
+    }
+    fn cleanup_plan(&self, context: &CommandContext<'_>) -> Result<CleanupPlan, EngineError> {
+        let mut plan = self.resolve_cleanup_plan(context)?;
+        let totals = self.cleanup_counts(&plan.ids(), plan.cutoff)?;
+        plan.set_counts(totals);
+        Ok(plan)
+    }
+    pub(crate) fn prepare_browser_cleanup(
+        &self,
+        user: &str,
+        view: Option<&str>,
+        input: &str,
+    ) -> Result<CleanupPlan, EngineError> {
+        crate::commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
+        self.require_command(Some(user), view, "/clean")?;
+        let parts = input.split_whitespace().collect::<Vec<_>>();
+        let context = CommandContext {
+            actor: Some(user),
+            command: "/clean",
+            room: view.filter(|v| !v.starts_with('@')),
+            input,
+            parts: &parts,
+            view,
+            scope: self.command_scope(Some(user), view)?,
+            markdown: false,
+            author: user,
+        };
+        self.resolve_cleanup_plan(&context)
+    }
+    pub(crate) fn prepare_history_cleanup(
+        &self,
+        user: &str,
+        plan: &CleanupPlan,
+    ) -> Result<Option<PendingHistory>, EngineError> {
+        if plan.preview || !plan.has_matches() {
+            return Ok(None);
+        }
+        let cleanups = plan
+            .targets
+            .iter()
+            .filter(|(_, count, _)| *count > 0)
+            .map(|(scope, _, _)| {
+                let id = match scope {
+                    Scope::Room(id) | Scope::Private(id) => id,
+                    _ => return Err("Invalid cleanup scope."),
+                };
+                Ok((id.clone(), plan.cutoff))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.prepare_history_write(
+            user,
+            "/clean",
+            &format!("{} {}", plan.age, plan.scope),
+            vec![],
+            cleanups,
+        )
+        .map(Some)
     }
     pub(super) fn preview_cleanup(
         &self,

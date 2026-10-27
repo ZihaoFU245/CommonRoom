@@ -48,6 +48,15 @@ fn default_media_age() -> i64 {
     7 * 86400
 }
 impl Media {
+    pub(super) fn completed_record(&self, at: u64) -> Result<Self, EngineError> {
+        let mut media = self.clone();
+        media.expires = if media.max_age == -1 {
+            None
+        } else {
+            Some(at.saturating_add(u64::try_from(media.max_age).map_err(|_| "Invalid media age.")?))
+        };
+        Ok(media)
+    }
     pub(crate) fn final_key(&self) -> String {
         if self.conversation == "@avatar" {
             return format!("avatars/{}/{}", self.uploader, self.id);
@@ -60,14 +69,13 @@ impl Media {
         format!("media/{class}/{}", self.id)
     }
 }
-enum MediaAccess {
+pub(super) enum MediaAccess {
     Read,
     Upload,
 }
 pub(crate) struct DownloadTicket {
     pub(crate) media: Media,
     principal: String,
-    version: (u64, u64),
 }
 
 impl Engine {
@@ -75,6 +83,7 @@ impl Engine {
         self.media.config = config;
     }
 
+    #[cfg(test)]
     pub(crate) fn resolve_media_conversation(
         &mut self,
         user: &str,
@@ -110,6 +119,7 @@ impl Engine {
     }
     // The tentative private directory is visible only under the engine writer.
     // Storage commits it together with the reservation, after every quota check.
+    #[cfg(test)]
     pub(crate) fn allocate_media_target(
         &mut self,
         user: &str,
@@ -197,25 +207,43 @@ impl Engine {
             self.require(Some(user), scope, Action::Read)?;
             self.require(Some(user), scope, Action::Send)?;
             let (media, referenced) = self.stored_media_with_reference(id)?;
-            let conversation = match scope {
-                Scope::Room(id) | Scope::Private(id) => id,
-                _ => return Err(EngineError::NotFound("Upload not found.".into())),
-            };
-            if media.conversation != *conversation
-                || !media.ready
-                || media.deleting
-                || media.deleted
-                || media.expires.is_some_and(|expiry| expiry <= now())
-                || (self.principal_id(actor) != Some(media.uploader.as_str()) && !referenced)
-            {
-                return Err(EngineError::NotFound("Upload not found.".into()));
-            }
-            self.media_allowance(user, scope, media.size, Some(media.max_age))?;
+            self.authorize_media_record(user, scope, &media, referenced)?;
         }
         Ok(())
     }
 
-    fn media_scope(&self, user: &str, id: &str, access: MediaAccess) -> Result<Scope, EngineError> {
+    pub(in crate::engine) fn authorize_media_record(
+        &self,
+        user: &str,
+        scope: &Scope,
+        media: &Media,
+        referenced: bool,
+    ) -> Result<(), EngineError> {
+        self.require(Some(user), scope, Action::Read)?;
+        self.require(Some(user), scope, Action::Send)?;
+        let conversation = match scope {
+            Scope::Room(id) | Scope::Private(id) => id,
+            _ => return Err(EngineError::NotFound("Upload not found.".into())),
+        };
+        if media.conversation != *conversation
+            || !media.ready
+            || media.deleting
+            || media.deleted
+            || media.expires.is_some_and(|expiry| expiry <= now())
+            || (self.principal_id(Some(user)) != Some(media.uploader.as_str()) && !referenced)
+        {
+            return Err(EngineError::NotFound("Upload not found.".into()));
+        }
+        self.media_allowance(user, scope, media.size, Some(media.max_age))?;
+        Ok(())
+    }
+
+    pub(super) fn media_scope(
+        &self,
+        user: &str,
+        id: &str,
+        access: MediaAccess,
+    ) -> Result<Scope, EngineError> {
         if !self.active(user) {
             return Err(EngineError::Forbidden("Account unavailable.".into()));
         }
@@ -228,6 +256,7 @@ impl Engine {
         Ok(scope)
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_media_allocation(
         &self,
         user: &str,
@@ -255,6 +284,7 @@ impl Engine {
     ) -> Result<Media, EngineError> {
         self.allocate_media_with_hints(user, conversation, filename, size, BTreeMap::new())
     }
+    #[cfg(test)]
     pub(crate) fn allocate_media_with_hints(
         &self,
         user: &str,
@@ -291,8 +321,18 @@ impl Engine {
         Ok(media)
     }
 
+    #[cfg(test)]
     pub(crate) fn media_owner(&self, user: &str, id: &str) -> Result<Media, EngineError> {
         let (media, attached) = self.stored_media_with_reference(id)?;
+        self.authorize_media_owner(user, &media, attached)?;
+        Ok(media)
+    }
+    pub(crate) fn authorize_media_owner(
+        &self,
+        user: &str,
+        media: &Media,
+        attached: bool,
+    ) -> Result<(), EngineError> {
         if self
             .data
             .users
@@ -310,9 +350,10 @@ impl Engine {
         {
             return Err(EngineError::NotFound("Upload expired.".into()));
         }
-        Ok(media)
+        Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_media(&self, user: &str, media: &Media) -> Result<(), EngineError> {
         let current = self.media_owner(user, &media.id)?;
         if current.ready {
@@ -321,78 +362,95 @@ impl Engine {
         self.store_media_ready(media)
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_media_download(
         &self,
         user: &str,
         id: &str,
     ) -> Result<DownloadTicket, EngineError> {
-        let principal = self
-            .data
-            .users
-            .get(user)
-            .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
-            .id
-            .clone();
-        // Media metadata can change through shared engine reads. Recheck the
-        // writer sequence so a deletion between SQL lookup and stamp is retried.
-        for _ in 0..3 {
-            let version = self.media_read_version()?;
-            let media = self.readable_media(user, id)?;
-            if version == self.media_read_version()? {
-                return Ok(DownloadTicket {
-                    media,
-                    principal,
-                    version,
-                });
-            }
-        }
-        Err(EngineError::Conflict(
-            "Attachment changed; retry download.".into(),
-        ))
+        let (media, attached) = self.stored_media_with_reference(id)?;
+        self.prepare_media_download_record(user, media, attached)
     }
+    pub(crate) fn prepare_media_download_record(
+        &self,
+        user: &str,
+        media: Media,
+        attached: bool,
+    ) -> Result<DownloadTicket, EngineError> {
+        self.authorize_media_read(user, &media, attached, false)?;
+        let principal = self
+            .principal_id(Some(user))
+            .ok_or("Account unavailable.")?
+            .into();
+        Ok(DownloadTicket { media, principal })
+    }
+    #[cfg(test)]
     pub(crate) fn validate_media_download(
         &self,
         user: &str,
         ticket: &DownloadTicket,
+    ) -> Result<(), EngineError> {
+        let (current, attached) = self.stored_media_with_reference(&ticket.media.id)?;
+        self.validate_media_download_record(user, ticket, &current, attached)
+    }
+    pub(crate) fn validate_media_download_record(
+        &self,
+        user: &str,
+        ticket: &DownloadTicket,
+        current: &Media,
+        attached: bool,
     ) -> Result<(), EngineError> {
         if self.data.users.get(user).map(|account| &account.id) != Some(&ticket.principal)
             || ticket.media.expires.is_some_and(|expiry| expiry <= now())
         {
             return Err(EngineError::NotFound("Attachment not found.".into()));
         }
-        self.media_scope(user, &ticket.media.conversation, MediaAccess::Read)?;
-        if self.media_read_version()? != ticket.version
-            && self.readable_media(user, &ticket.media.id)? != ticket.media
-        {
+        self.authorize_media_read(user, current, attached, false)?;
+        if current != &ticket.media {
             return Err(EngineError::Conflict(
                 "Attachment changed; retry download.".into(),
             ));
         }
         Ok(())
     }
-    // Retained, authorized messages may display metadata for expired attachments.
-    // This never grants access to the bytes or exposes unreferenced uploads.
+    #[cfg(test)]
     pub(crate) fn media_info(&self, user: &str, id: &str) -> Result<Media, EngineError> {
         let (media, attached) = self.stored_media_with_reference(id)?;
-        self.media_scope(user, &media.conversation, MediaAccess::Read)?;
-        let expired = media.expires.is_some_and(|t| t <= now());
-        if !attached || (!expired && (!media.ready || media.deleting || media.deleted)) {
-            return Err(EngineError::NotFound("Attachment not found.".into()));
-        }
+        self.authorize_media_read(user, &media, attached, true)?;
         Ok(media)
     }
+    #[cfg(test)]
     pub(crate) fn readable_media(&self, user: &str, id: &str) -> Result<Media, EngineError> {
         let (media, attached) = self.stored_media_with_reference(id)?;
+        self.authorize_media_read(user, &media, attached, false)?;
+        Ok(media)
+    }
+    pub(crate) fn authorize_media_read(
+        &self,
+        user: &str,
+        media: &Media,
+        attached: bool,
+        include_expired: bool,
+    ) -> Result<(), EngineError> {
         self.media_scope(user, &media.conversation, MediaAccess::Read)?;
-        if !media.ready
-            || media.deleting
-            || media.deleted
-            || media.expires.is_some_and(|t| t <= now())
-            || !attached
+        let expired = media.expires.is_some_and(|time| time <= now());
+        if !attached
+            || !(include_expired && expired)
+                && (!media.ready || media.deleting || media.deleted || expired)
         {
             return Err(EngineError::NotFound("Attachment not found.".into()));
         }
-        Ok(media)
+        Ok(())
+    }
+    pub(crate) fn authorize_media_abandon(
+        &self,
+        user: &str,
+        media: &Media,
+    ) -> Result<(), EngineError> {
+        if self.principal_id(Some(user)) != Some(media.uploader.as_str()) {
+            return Err(EngineError::NotFound("Upload not found.".into()));
+        }
+        Ok(())
     }
 }
 

@@ -313,13 +313,8 @@ fn postgres_schema_rejection_and_connection_loss_fail_closed() {
     let mut e = Engine::open_postgres(&fixture.url).unwrap();
     populate(&mut e);
     let before = e.data.clone();
-    let pid: i32 = e
-        .store
-        .db
-        .lock()
-        .unwrap()
-        .query_row("SELECT pg_backend_pid()", [], |r| r.get(0))
-        .unwrap();
+    // Ownership is held on a dedicated session, independent of write leases.
+    let pid = e.store.db.ownership_pid().unwrap();
     assert!(
         db.query_row::<bool, _, _>("SELECT pg_terminate_backend($1)", [pid], |r| r.get(0))
             .unwrap()

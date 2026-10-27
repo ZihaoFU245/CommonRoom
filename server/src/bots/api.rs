@@ -64,15 +64,21 @@ pub(super) async fn work<T: Serialize + Send + 'static>(
     .map_err(Error::storage)?
 }
 async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
-    let Json(value) = work(app, headers, |app, context| {
-        crate::web::snapshots::bot_value(app, context).map(|v| v.to_string())
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let context = app
+            .inspect_engine(move |engine, _| Context::from_headers(engine, &headers))
+            .await?;
+        let value = crate::web::snapshots::bot_value_async(&app, &context).await?;
+        Ok((
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            value.to_string(),
+        )
+            .into_response())
     })
-    .await?;
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        value,
-    )
-        .into_response())
+    .await
+    .map_err(Error::storage)?
 }
 
 #[derive(Deserialize)]
@@ -93,39 +99,106 @@ async fn history(
     headers: HeaderMap,
     Query(input): Query<HistoryQuery>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, context| {
-        if input.limit.is_some_and(|limit| limit > 100) { return Err(Error::new(Code::InvalidRequest,"History limit is at most 100.")); }
-        let mut range = HistoryRange { start: input.start, end: input.end, before: input.before, after: input.after, around: input.around, limit: input.limit };
-        range.validate().map_err(|e| Error::new(Code::InvalidRequest, e))?;
-        let (revision, store) = {
-            let engine = app.engine_read().map_err(Error::storage)?;
-            let user = context.user(&engine)?;
-            context.permits(&engine, "read", Some(&input.conversation_id))?;
-            (engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision, engine.history_store().clone())
-        };
-        if input.content_revision.is_some_and(|expected| expected != revision) { return Err(Error::new(Code::Conflict, "Content revision changed; rescan history.")); }
-        if let Some(message_id) = input.message_id {
-            if !models::valid_id(&message_id) { return Err(Error::new(Code::InvalidRequest,"Invalid message ID.")); }
-            if input.start.is_some() || input.end.is_some() || input.before.is_some() || input.after.is_some() || input.around.is_some() { return Err(Error::new(Code::InvalidRequest, "message_id cannot combine with sequence bounds.")); }
-            let message = store.locate(&message_id).map_err(Error::storage)?
-                .filter(|(id,_)| id == &input.conversation_id).map(|(_,message)|message)
-                .ok_or_else(||Error::new(Code::NotFound,"Message is not retained in this conversation."))?;
-            range.around = Some(message.sequence);
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        history_value(&app, headers, input).await
+    })
+    .await
+    .map_err(Error::storage)?
+}
+async fn history_value(
+    app: &App,
+    headers: HeaderMap,
+    input: HistoryQuery,
+) -> Result<Json<Value>, Error> {
+    if input.limit.is_some_and(|limit| limit > 100) {
+        return Err(Error::new(
+            Code::InvalidRequest,
+            "History limit is at most 100.",
+        ));
+    }
+    let mut range = HistoryRange {
+        start: input.start,
+        end: input.end,
+        before: input.before,
+        after: input.after,
+        around: input.around,
+        limit: input.limit,
+    };
+    range
+        .validate()
+        .map_err(|e| Error::new(Code::InvalidRequest, e))?;
+    let (context, revision, store) = app
+        .inspect_engine({
+            let id = input.conversation_id.clone();
+            move |engine, _| -> Result<_, Error> {
+                let context = Context::from_headers(engine, &headers)?;
+                let user = context.user(engine)?;
+                context.permits(engine, "read", Some(&id))?;
+                let target = engine.bot_target(&user, &id, Action::Read)?;
+                Ok((context, target.revision, engine.history_store().clone()))
+            }
+        })
+        .await?;
+    if input
+        .content_revision
+        .is_some_and(|expected| expected != revision)
+    {
+        return Err(Error::new(
+            Code::Conflict,
+            "Content revision changed; rescan history.",
+        ));
+    }
+    if let Some(message_id) = input.message_id {
+        if !models::valid_id(&message_id) {
+            return Err(Error::new(Code::InvalidRequest, "Invalid message ID."));
         }
-        let page = store.page_checked(&input.conversation_id, revision, range, "");
-        let engine = app.engine_read().map_err(Error::storage)?;
-        let user = context.user(&engine)?;
-        context.permits(&engine, "read", Some(&input.conversation_id))?;
-        if engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision != revision {
-            return Err(Error::new(Code::Conflict, "History changed; retry the page."));
+        if input.start.is_some()
+            || input.end.is_some()
+            || input.before.is_some()
+            || input.after.is_some()
+            || input.around.is_some()
+        {
+            return Err(Error::new(
+                Code::InvalidRequest,
+                "message_id cannot combine with sequence bounds.",
+            ));
         }
-        let page = page.map_err(|error| match error {
-            crate::engine::HistoryError::Changed => Error::new(Code::Conflict, "History changed; retry the page."),
-            crate::engine::HistoryError::InvalidRange(error) => Error::new(Code::InvalidRequest, error),
-            crate::engine::HistoryError::Unavailable(error) => Error::storage(error),
-        })?;
-        Ok(json!({"conversation_id":input.conversation_id,"messages":page.messages.iter().map(models::message_json).collect::<Vec<_>>(),"content_revision":page.revision,"has_before":page.has_before,"has_after":page.has_after}))
-    }).await
+        let message = store
+            .locate_async(&message_id)
+            .await
+            .map_err(Error::storage)?
+            .filter(|(id, _)| id == &input.conversation_id)
+            .map(|(_, message)| message)
+            .ok_or_else(|| {
+                Error::new(
+                    Code::NotFound,
+                    "Message is not retained in this conversation.",
+                )
+            })?;
+        range.around = Some(message.sequence);
+    }
+    let page = store
+        .page_checked_async(&input.conversation_id, revision, range, "")
+        .await;
+    store
+        .ensure_available_async()
+        .await
+        .map_err(Error::storage)?;
+    app.inspect_engine(move |engine, _| -> Result<_, Error> {
+            let user = context.user(engine)?;
+            context.permits(engine,"read",Some(&input.conversation_id))?;
+            if engine.bot_target(&user,&input.conversation_id,Action::Read)?.revision != revision {
+                return Err(Error::new(Code::Conflict,"History changed; retry the page."));
+            }
+            let page = page.map_err(|error|match error {
+                crate::engine::HistoryError::Changed => Error::new(Code::Conflict,"History changed; retry the page."),
+                crate::engine::HistoryError::InvalidRange(error) => Error::new(Code::InvalidRequest,error),
+                crate::engine::HistoryError::Unavailable(error) => Error::storage(error),
+            })?;
+            Ok(Json(json!({"conversation_id":input.conversation_id,"messages":page.messages.iter().map(models::message_json).collect::<Vec<_>>(),"content_revision":page.revision,"has_before":page.has_before,"has_after":page.has_after})))
+        }).await
 }
 // Capture authorization and revision, release the engine lock for SQLite reads.
 pub(super) fn inspect<T>(
@@ -163,25 +236,9 @@ async fn message(
     Json(input): Json<models::MessageInput>,
 ) -> Result<Json<Value>, Error> {
     let key = idempotency_key(&headers)?;
-    work(app, headers, move |app, context| {
-        let prepared = {
-            let engine = app.engine_read().map_err(Error::storage)?;
-            let user = context.user(&engine)?;
-            context.permits(&engine, "send", Some(&input.conversation_id))?;
-            engine.prepare_bot_send(&user, &input, Some(&key))?
-        };
-        let mut engine = app.engine().map_err(Error::storage)?;
-        let user = admit(&mut engine, context)?;
-        context.permits(&engine, "send", Some(&input.conversation_id))?;
-        let sent = engine.commit_bot_send(&user, &input, Some(&key), prepared)?;
-        if !sent.replayed {
-            let _ = app
-                .changes
-                .send(Change::Conversation(input.conversation_id));
-        }
-        Ok(json!({"message":models::message_json(&sent.message),"replayed":sent.replayed}))
-    })
-    .await
+    super::mutations::message(app, headers, input, key)
+        .await
+        .map(Json)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -195,38 +252,15 @@ async fn read(
     headers: HeaderMap,
     Json(input): Json<Read>,
 ) -> Result<Json<Value>, Error> {
-    work(app, headers, move |app, context| {
-        let (revision, retained) = inspect(app, context, &input.conversation_id, |store| {
-            store.contains_sequence(&input.conversation_id, input.through)
-        })?;
-        let mut engine = app.engine().map_err(Error::storage)?;
-        if input.through > 9_007_199_254_740_991 {
-            return Err(Error::new(Code::InvalidRequest, "Invalid sequence."));
-        }
-        let user = admit(&mut engine, context)?;
-        if !input.acknowledge_shared_unread {
-            return Err(Error::new(
-                Code::InvalidRequest,
-                "Explicit shared unread acknowledgement required.",
-            ));
-        }
-        context.permits(&engine, "read_ack", Some(&input.conversation_id))?;
-        if engine
-            .bot_target(&user, &input.conversation_id, Action::Read)?
-            .revision
-            != revision
-        {
-            return Err(Error::new(
-                Code::Conflict,
-                "Conversation changed; retry acknowledgement.",
-            ));
-        }
-        if engine.bot_read_checked(&user, &input.conversation_id, input.through, retained)? {
-            let _ = app.changes.send(Change::Read(user));
-        }
-        Ok(json!({"ok":true}))
-    })
+    super::mutations::read(
+        app,
+        headers,
+        input.conversation_id,
+        input.through,
+        input.acknowledge_shared_unread,
+    )
     .await
+    .map(Json)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -251,41 +285,16 @@ async fn react(
             "Reactions support 1–128 characters without controls.",
         ));
     }
-    work(app, headers, move |app, context| {
-        let (revision, original) = inspect(app, context, &input.conversation_id, |store| {
-            store.locate(&input.message_id)
-        })?;
-        let original = original
-            .filter(|(id, _)| id == &input.conversation_id)
-            .map(|(_, m)| m)
-            .ok_or_else(|| Error::new(Code::NotFound, "Message not found in this conversation."))?;
-        let mut engine = app.engine().map_err(Error::storage)?;
-        let user = admit(&mut engine, context)?;
-        context.permits(&engine, "react", Some(&input.conversation_id))?;
-        if engine
-            .bot_target(&user, &input.conversation_id, Action::Read)?
-            .revision
-            != revision
-        {
-            return Err(Error::new(
-                Code::Conflict,
-                "Conversation changed; retry reaction.",
-            ));
-        }
-        if engine.bot_react_loaded(
-            &user,
-            &input.conversation_id,
-            original,
-            &input.reaction,
-            input.active,
-        )? {
-            let _ = app
-                .changes
-                .send(Change::Conversation(input.conversation_id));
-        }
-        Ok(json!({"ok":true}))
-    })
+    super::mutations::reaction(
+        app,
+        headers,
+        input.conversation_id,
+        input.message_id,
+        input.reaction,
+        input.active,
+    )
     .await
+    .map(Json)
 }
 async fn credential(
     State(app): State<App>,

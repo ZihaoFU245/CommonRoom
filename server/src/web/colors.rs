@@ -1,4 +1,3 @@
-use super::media::authenticated;
 use super::*;
 use axum::{extract::State, http::HeaderMap};
 use serde::Deserialize;
@@ -24,26 +23,14 @@ pub(crate) async fn set(
     Json(input): Json<SetColor>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    authenticated(&app, &headers, move |app, user| {
-        let mut engine = app.engine_api()?;
-        let account = engine
-            .active_account_id(user)
-            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
-            .to_owned();
-        let (room, color) = (input.room.as_deref(), input.color.as_deref());
-        if engine
-            .validate_color(user, room, color)
-            .map_err(ApiError::from)?
-        {
-            app.admission.profile_change(&account)?;
-        }
-        if engine
-            .set_color(user, room, color)
-            .map_err(ApiError::from)?
-        {
-            let _ = app.changes.send(Change::Metadata(engine.metadata_change()));
-        }
-        Ok(Json(json!({"ok":true})))
-    })
-    .await
+    super::profiles::update(
+        &app,
+        headers,
+        super::profiles::Update::Color {
+            room: input.room,
+            value: input.color,
+        },
+    )
+    .await?;
+    Ok(Json(json!({"ok":true})))
 }

@@ -20,11 +20,14 @@ impl Context {
         if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(Error::new(Code::Unavailable, "Server stopping."));
         }
+        let engine = app.engine_read().map_err(Error::storage)?;
+        Self::from_headers(&engine, headers)
+    }
+    pub(crate) fn from_headers(engine: &Engine, headers: &HeaderMap) -> Result<Self, Error> {
         let secret = auth::bearer(headers)
             .filter(|s| s.len() == 68 && s.starts_with("bot_"))
             .ok_or_else(|| Error::new(Code::Unauthorized, "Bot credential required."))?;
         let digest = super::digest(secret);
-        let engine = app.engine_read().map_err(Error::storage)?;
         let (account, credential) = engine
             .bot_index
             .credentials
@@ -35,7 +38,7 @@ impl Context {
             credential: credential.clone(),
             digest,
         };
-        context.user(&engine)?;
+        context.user(engine)?;
         Ok(context)
     }
     pub fn user(&self, engine: &Engine) -> Result<String, Error> {

@@ -1,8 +1,5 @@
+use super::security::{check_origin_or_bot, check_read_origin_or_bot};
 use super::*;
-use super::{
-    auth::authenticate,
-    security::{check_origin_or_bot, check_read_origin_or_bot},
-};
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
@@ -27,10 +24,10 @@ pub(crate) async fn history(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
+    // Detach accepted work from request cancellation so admission remains held
+    // until both metadata checks and the native async read have finished.
+    tokio::spawn(async move {
         let _permit = permit;
-        // Flat typed fields let serde_urlencoded parse numeric query values.
-        // Flattening HistoryRange buffers values as strings before deserialization.
         let range = crate::engine::HistoryRange {
             start: input.start,
             end: input.end,
@@ -40,34 +37,48 @@ pub(crate) async fn history(
             limit: input.limit,
         };
         range.validate().map_err(ApiError::from)?;
-        let user = authenticate(&app, &headers)?;
-        let (id, revision, store) = {
-            let engine = app.engine_read_api()?;
-            let (_, id, revision) = engine
-                .conversation(&user, &input.view)
-                .map_err(ApiError::from)?;
-            (id, revision, engine.history_store().clone())
-        };
-        // WAL readers overlap the writer without holding the engine lock across disk I/O.
+        let (user, id, revision, store) = app
+            .inspect_engine({
+                let headers = headers.clone();
+                let view = input.view.clone();
+                move |engine, config| -> Result<_, ApiError> {
+                    let user =
+                        super::auth::identity(engine, config, &headers).ok_or_else(|| {
+                            error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                        })?;
+                    let (_, id, revision) =
+                        engine.conversation(&user, &view).map_err(ApiError::from)?;
+                    Ok((user, id, revision, engine.history_store().clone()))
+                }
+            })
+            .await?;
         let mut page = store
-            .page_checked(&id, revision, range, &input.view)
+            .page_checked_async(&id, revision, range, &input.view)
+            .await
             .map_err(crate::engine::EngineError::from)
             .map_err(ApiError::from)?;
-        let current = authenticate(&app, &headers)?;
-        let engine = app.engine_read_api()?;
-        let (_, current_id, _) = engine
-            .conversation(&current, &input.view)
+        store
+            .ensure_available_async()
+            .await
             .map_err(ApiError::from)?;
-        if current != user || current_id != id {
-            return Err(error(
-                StatusCode::CONFLICT,
-                "History changed; retry the current page.",
-            ));
-        }
-        if super::colors::enabled(&headers) {
-            page.name_colors = Some(engine.message_colors(&id, &page.messages));
-        }
-        Ok(Json(page))
+        app.inspect_engine(move |engine, config| -> Result<_, ApiError> {
+            let current = super::auth::identity(engine, config, &headers)
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))?;
+            let (_, current_id, _) = engine
+                .conversation(&current, &input.view)
+                .map_err(ApiError::from)?;
+            if current != user || current_id != id {
+                return Err(error(
+                    StatusCode::CONFLICT,
+                    "History changed; retry the current page.",
+                ));
+            }
+            if super::colors::enabled(&headers) {
+                page.name_colors = Some(engine.message_colors(&id, &page.messages));
+            }
+            Ok(Json(page))
+        })
+        .await
     })
     .await
     .map_err(|_| {
@@ -77,6 +88,7 @@ pub(crate) async fn history(
         )
     })?
 }
+
 #[derive(Deserialize)]
 pub(crate) struct Read {
     view: String,
@@ -91,17 +103,62 @@ pub(crate) async fn read(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        let user = authenticate(&app, &headers)?;
-        let changed = app
-            .engine_api()?
-            .mark_read(&user, &input.view, input.through)
+        let id = app
+            .inspect_engine({
+                let headers = headers.clone();
+                let view = input.view.clone();
+                move |engine, config| -> Result<_, ApiError> {
+                    let user =
+                        super::auth::identity(engine, config, &headers).ok_or_else(|| {
+                            error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                        })?;
+                    engine
+                        .conversation(&user, &view)
+                        .map(|(_, id, _)| id)
+                        .map_err(ApiError::from)
+                }
+            })
+            .await?;
+        let ordering = app
+            .mutations
+            .conversation(id.clone())
+            .await
             .map_err(ApiError::from)?;
-        if changed {
-            let _ = app.changes.send(Change::Read(user));
+        let config = app.config.clone();
+        let cursor = app
+            .with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
+                let user = super::auth::identity(engine, &config, &headers).ok_or_else(|| {
+                    error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                })?;
+                if engine.conversation(&user, &input.view)?.1 != id {
+                    return Err(error(
+                        StatusCode::CONFLICT,
+                        "Conversation changed; retry acknowledgement.",
+                    ));
+                }
+                engine
+                    .prepare_read(&user, &input.view, input.through)
+                    .map_err(ApiError::from)
+            })
+            .await?;
+        if !cursor.retained().await.map_err(ApiError::from)? {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "Message is no longer in this conversation.",
+            ));
         }
-        Ok(Json(json!({"ok":true})))
+        cursor.save().await.map_err(ApiError::from)?;
+        let changes = app.changes.clone();
+        app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
+            let user = cursor.user.clone();
+            if engine.publish_read(cursor)? {
+                let _ = changes.send(Change::Read(user));
+            }
+            Ok(Json(json!({"ok":true})))
+        })
+        .await
     })
     .await
     .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Read worker unavailable."))?

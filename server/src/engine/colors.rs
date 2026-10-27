@@ -133,6 +133,7 @@ impl Engine {
         }
         directory
     }
+    #[cfg(test)]
     pub(crate) fn color_matches(
         &self,
         user: &str,
@@ -147,17 +148,7 @@ impl Engine {
             .map(String::as_str)
             == value
     }
-    /// Validate before reserving a profile-change budget, under the same engine guard.
-    pub(crate) fn validate_color(
-        &self,
-        user: &str,
-        room: Option<&str>,
-        value: Option<&str>,
-    ) -> Result<bool, EngineError> {
-        self.color_scope(user, room, value)
-            .map(|_| !self.color_matches(user, room, value))
-    }
-    fn color_scope(
+    pub(super) fn color_scope(
         &self,
         user: &str,
         room: Option<&str>,
@@ -202,6 +193,7 @@ impl Engine {
     }
 
     /// Sets or removes the caller's own color after validating scope and permission.
+    #[cfg(test)]
     pub(crate) fn set_color(
         &mut self,
         user: &str,

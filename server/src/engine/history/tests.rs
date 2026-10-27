@@ -316,11 +316,7 @@ fn avatar_visibility_reads_release_engine_and_discard_revoked_frames() {
         let owner = engine.active_account_id("alice").unwrap().to_owned();
         let store = engine.history_store().clone();
         let app = test_app(engine, 256);
-        let guards: Vec<_> = store
-            .readers
-            .iter()
-            .map(|reader| reader.lock().unwrap())
-            .collect();
+        let guards = store.hold_readers();
         let before = store.next.load(Ordering::Relaxed);
         let worker = std::thread::spawn({
             let app = app.clone();
@@ -389,11 +385,7 @@ fn notification_batches_release_engine_and_discard_revoked_content_and_cursors()
         let conversation = engine.data.rooms["lobby"].id.clone();
         let store = engine.history_store().clone();
         let app = test_app(engine, 256);
-        let guards: Vec<_> = store
-            .readers
-            .iter()
-            .map(|reader| reader.lock().unwrap())
-            .collect();
+        let guards = store.hold_readers();
         let before = store.next.load(Ordering::Relaxed);
         let worker = std::thread::spawn({
             let app = app.clone();
@@ -498,11 +490,7 @@ fn blocked_snapshot_reads_release_engine_and_never_deliver_revoked_authority() {
             crate::bots::auth::Context::authenticate(&app, &headers).unwrap()
         });
         let worker_context = context.clone();
-        let guards: Vec<_> = store
-            .readers
-            .iter()
-            .map(|reader| reader.lock().unwrap())
-            .collect();
+        let guards = store.hold_readers();
         let before = store.next.load(Ordering::Relaxed);
         let worker = std::thread::spawn({
             let app = app.clone();
@@ -914,7 +902,7 @@ fn deep_range_query_uses_a_bounded_primary_key_seek() {
         .history_store()
         .read(|db| {
             let mut query = db
-                .prepare(&format!("EXPLAIN QUERY PLAN {PAGE_ASC_SQL}"))
+                .prepare(format!("EXPLAIN QUERY PLAN {PAGE_ASC_SQL}"))
                 .unwrap();
             let plans = query
                 .query_map(
@@ -1067,6 +1055,7 @@ fn test_app(engine: Engine, capacity: usize) -> crate::web::App {
         io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
         snapshots: Default::default(),
+        mutations: Default::default(),
         bot_runtimes: Default::default(),
         stopping: Default::default(),
         shutdown: Default::default(),
@@ -1127,4 +1116,84 @@ fn wire_size_matches_serialized_unicode_quotes_controls_and_reactions() {
         wire_size(message).unwrap(),
         serde_json::to_vec(message).unwrap().len()
     );
+}
+
+#[test]
+fn delayed_cache_fills_cannot_replace_newer_revision_or_cursor_results() {
+    let mut engine = super::super::tests::engine();
+    engine
+        .execute(Some("alice"), Some("lobby"), "first")
+        .unwrap();
+    let first = engine.history("bob", "lobby").unwrap();
+    engine
+        .execute(Some("alice"), Some("lobby"), "second")
+        .unwrap();
+    let latest = engine.history("bob", "lobby").unwrap();
+    let id = &engine.data.rooms["lobby"].id;
+    let cached = |page: &History| CachedPage {
+        conversation: id.clone(),
+        revision: page.revision,
+        range: HistoryRange::default(),
+        messages: page.messages.clone(),
+        bytes: page.messages.accounted_bytes(),
+        before: page.has_before,
+        after: page.has_after,
+    };
+    let mut pages = Cache::default();
+    pages.insert(cached(&latest));
+    pages.insert(cached(&first));
+    assert_eq!(pages.pages.len(), 1);
+    assert_eq!(pages.messages, 2);
+    assert_eq!(pages.pages[0].messages[1].text, "second");
+    let read = latest.messages.last().unwrap().sequence;
+    let current = Unread {
+        count: 0,
+        first: None,
+        through: read,
+        oldest: 1,
+        revision: latest.revision,
+    };
+    let mut unreads = UnreadCache::default();
+    unreads.insert(id, "bob", read, latest.revision, current.clone());
+    unreads.insert(
+        id,
+        "bob",
+        0,
+        first.revision,
+        Unread {
+            count: 1,
+            first: Some(1),
+            through: 1,
+            oldest: 1,
+            revision: first.revision,
+        },
+    );
+    // A newer content query can still carry an older captured read cursor.
+    unreads.insert(
+        id,
+        "bob",
+        0,
+        latest.revision + 1,
+        Unread {
+            revision: latest.revision + 1,
+            ..current
+        },
+    );
+    assert_eq!(
+        unreads.get(id, "bob", read, latest.revision).unwrap().count,
+        0
+    );
+    assert_eq!(unreads.recency.len(), 1);
+}
+
+#[test]
+fn history_owners_keep_pool_and_folder_ownership_until_the_last_handle_drops() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("chat.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let history = engine.history_store().clone();
+    drop(engine);
+    assert!(Engine::open(&path).is_err());
+    drop(history);
+    assert!(Engine::open(&path).is_ok());
 }

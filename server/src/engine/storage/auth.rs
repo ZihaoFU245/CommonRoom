@@ -1,32 +1,12 @@
 //! Authentication audit persistence, atomic with session changes.
 use super::*;
 
-pub(super) const SCHEMA: &str = "CREATE TABLE auth_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,client TEXT,username TEXT,outcome TEXT NOT NULL CHECK(outcome IN ('success','failure','logout')));";
-pub(super) fn write_auth_event(db: &Connection, event: &AuthEvent) -> Result<(), EngineError> {
-    let sequence: i64 = db.query_row(
-        sql("INSERT INTO auth_events(at,client,username,outcome) VALUES(?1,?2,?3,?4) RETURNING sequence", "INSERT INTO auth_events(at,client,username,outcome) VALUES($1,$2,$3,$4) RETURNING sequence"),
-        params![
-            event.at,
-            event.client,
-            event.username,
-            event.outcome.label()
-        ], |row| row.get(0),
-    )?;
-    db.execute(
-        sql(
-            "DELETE FROM auth_events WHERE sequence<=?1",
-            "DELETE FROM auth_events WHERE sequence<=$1",
-        ),
-        [sequence.saturating_sub(2048)],
-    )?;
-    Ok(())
-}
 impl Engine {
     pub(crate) fn record_auth_event(&self, event: &AuthEvent) -> Result<(), EngineError> {
-        let mut db = self.store.db.lock().map_err(EngineError::unavailable)?;
-        let tx = db.savepoint()?;
-        write_auth_event(&tx, event)?;
-        tx.commit()?;
+        let batch = MetadataWrite {
+            operations: vec![MetadataOp::AuthEvent(event)],
+        };
+        self.store.db.save_metadata_blocking(&batch)?;
         Ok(())
     }
 }
@@ -37,19 +17,15 @@ impl Engine {
         before: &BTreeMap<String, Session>,
         event: Option<&AuthEvent>,
     ) -> Result<(), EngineError> {
-        let writer = self.store.db.clone();
-        let mut db = writer.lock().map_err(EngineError::unavailable)?;
-        let tx = db.savepoint().map_err(EngineError::from)?;
-        write_map_delta(&tx, "session", &self.data.sessions, Some(before))?;
-        tx.execute(
-            sql("DELETE FROM entities WHERE kind='session' AND json_extract(json,'$.expires')<=?1", "DELETE FROM entities WHERE kind='session' AND ((projection #>> '{expires}'))::bigint<=$1"),
-            [now()],
-        )
-        .map_err(EngineError::from)?;
+        let mut batch = MetadataWrite::default();
+        write_map_delta(&mut batch, "session", &self.data.sessions, Some(before))?;
+        batch
+            .operations
+            .push(MetadataOp::ExpireSessions { before: now() });
         if let Some(event) = event {
-            auth::write_auth_event(&tx, event)?;
+            batch.operations.push(MetadataOp::AuthEvent(event));
         }
-        tx.commit().map_err(EngineError::from)?;
+        self.store.db.save_metadata_blocking(&batch)?;
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }

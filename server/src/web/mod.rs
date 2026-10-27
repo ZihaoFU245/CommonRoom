@@ -3,12 +3,15 @@ pub(crate) mod auth;
 mod avatars;
 mod colors;
 mod error;
+mod profiles;
 pub(crate) use error::ApiError;
 mod bot_commands;
+mod cleanup_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
 pub(crate) mod login_limits;
 pub(crate) mod media;
+pub(crate) mod mutations;
 pub(crate) mod security;
 pub(crate) mod snapshots;
 pub(crate) mod socket;
@@ -66,6 +69,7 @@ pub struct App {
     pub io_jobs: Arc<tokio::sync::Semaphore>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
     pub snapshots: Arc<Mutex<snapshots::SnapshotCache>>,
+    pub(crate) mutations: Arc<mutations::Coordinator>,
     pub bot_runtimes: crate::bots::runtime::Hub,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
     pub shutdown: Arc<tokio::sync::Notify>,
@@ -75,17 +79,38 @@ impl App {
         admission::io_permit(&self.io_jobs)
     }
 
-    // Fail closed after a panic; a poisoned engine may contain a partial mutation.
-    pub fn engine(
+    /// Capture or validate owned metadata on a worker; database futures run
+    /// outside this guard through the typed async storage interface.
+    pub(crate) async fn inspect_engine<T, E>(
         &self,
-    ) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, crate::engine::EngineError> {
+        inspect: impl FnOnce(&Engine, &Config) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<crate::engine::EngineError> + Send + 'static,
+    {
+        let app = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let engine = app.engine_read_state().map_err(E::from)?;
+            inspect(&engine, &app.config)
+        })
+        .await
+        .map_err(|error| E::from(crate::engine::EngineError::unavailable(error)))?
+    }
+
+    // Fail closed after a panic; a poisoned engine may contain a partial mutation.
+    pub fn engine(&self) -> Result<mutations::EngineGuard<'_>, crate::engine::EngineError> {
+        let metadata = self.mutations.exclusive()?;
         let engine = self.engine.write().map_err(|_| {
             crate::engine::EngineError::Unavailable(
                 "Server state unavailable; restart the service.".into(),
             )
         })?;
         engine.ensure_recovered()?;
-        Ok(engine)
+        Ok(mutations::EngineGuard {
+            engine,
+            _metadata: metadata,
+        })
     }
     // Extra tabs only change a counter; preserve shared baselines unless the
     // visible online directory changes.
@@ -107,7 +132,7 @@ impl App {
         }
         Ok(())
     }
-    pub fn engine_read(
+    fn engine_read_state(
         &self,
     ) -> Result<std::sync::RwLockReadGuard<'_, Engine>, crate::engine::EngineError> {
         let engine = self.engine.read().map_err(|_| {
@@ -115,13 +140,20 @@ impl App {
                 "Server state unavailable; restart the service.".into(),
             )
         })?;
+        engine.ensure_memory()?;
+        Ok(engine)
+    }
+    pub fn engine_read(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, Engine>, crate::engine::EngineError> {
+        let engine = self.engine_read_state()?;
         engine.ensure_recovered()?;
         Ok(engine)
     }
     fn engine_read_api(&self) -> Result<std::sync::RwLockReadGuard<'_, Engine>, ApiError> {
         self.engine_read().map_err(ApiError::from)
     }
-    fn engine_api(&self) -> Result<std::sync::RwLockWriteGuard<'_, Engine>, ApiError> {
+    fn engine_api(&self) -> Result<mutations::EngineGuard<'_>, ApiError> {
         self.engine().map_err(ApiError::from)
     }
 }

@@ -420,7 +420,10 @@ pub(super) struct MessageChange {
 }
 pub(super) enum MessageMutation {
     Append,
-    Edit { attachments: BTreeSet<String> },
+    Edit {
+        attachments: BTreeSet<String>,
+        actor: String,
+    },
     Reaction,
 }
 impl MessageChange {
@@ -481,6 +484,7 @@ impl Engine {
             key
         };
         self.capture_message_change(
+            actor,
             &view,
             if reaction || command == "/edit" {
                 parts.get(1).copied()
@@ -492,6 +496,7 @@ impl Engine {
     }
     pub(super) fn capture_message_change(
         &self,
+        actor: Option<&str>,
         view: &str,
         message_id: Option<&str>,
         reaction: bool,
@@ -512,6 +517,7 @@ impl Engine {
             } else {
                 MessageMutation::Edit {
                     attachments: media::media_references(&message.text),
+                    actor: self.principal_id(actor)?.into(),
                 }
             }
         } else {
@@ -529,7 +535,7 @@ impl Engine {
         &mut self,
         change: MessageChange,
         result: Result<T, E>,
-        receipt: Option<&crate::bots::models::Receipt>,
+        receipt: Option<database::MessageReceipt<'_>>,
         storage_error: impl FnOnce(EngineError) -> E,
     ) -> Result<T, E> {
         let result = result.and_then(|value| {

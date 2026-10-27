@@ -1,4 +1,12 @@
 //! PostgreSQL-specific SQLx execution, native types and streaming COPY.
+pub(super) mod bootstrap;
+pub(super) mod cursors;
+pub(super) mod history;
+pub(super) mod media;
+pub(super) mod messages;
+pub(super) mod metadata;
+pub(super) mod profile;
+pub(super) mod receipts;
 use super::{Error, Result, Value, runtime};
 use sqlx::{
     Connection as _, Executor as _, PgConnection, Postgres, Statement as _, TypeInfo as _,
@@ -61,6 +69,7 @@ async fn query<'a>(
     }
     Ok(query)
 }
+#[cfg(test)]
 pub(super) async fn execute(
     db: &mut PgConnection,
     sql: &str,
@@ -77,6 +86,7 @@ pub(super) async fn fetch_optional(
     let query = query(db, sql, values).await?;
     Ok(query.fetch_optional(db).await?)
 }
+#[cfg(test)]
 pub(super) async fn fetch_all(
     db: &mut PgConnection,
     sql: &str,

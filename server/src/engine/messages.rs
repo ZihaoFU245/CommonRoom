@@ -252,18 +252,13 @@ impl Engine {
         if !has_message_content(text) {
             return Err("Messages cannot be blank.".into());
         }
-        self.data.next_sequence = self
-            .data
-            .next_sequence
-            .checked_add(1)
-            .filter(|n| *n <= 9_007_199_254_740_991)
-            .ok_or("Message sequence exhausted.")?;
         let mut message = new_message(actor.unwrap_or("console"), to, text);
         message.markdown = markdown;
         message.author_id = actor
             .and_then(|name| self.data.users.get(name))
             .map_or_else(|| "console".into(), |u| u.id.clone());
-        message.sequence = self.data.next_sequence;
+        // The database assigns the sequence in the append transaction.
+        message.sequence = 0;
         Ok(message)
     }
     pub(super) fn push_private(&mut self, message: Message) -> Result<(), EngineError> {

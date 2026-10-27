@@ -26,6 +26,14 @@ impl Cache {
     pub(super) fn insert(&mut self, page: CachedPage) {
         let id = page.conversation.clone();
         let revision = page.revision;
+        // An older reader can finish after a newer revision has filled the cache.
+        if self
+            .pages
+            .iter()
+            .any(|cached| cached.conversation == id && cached.revision > revision)
+        {
+            return;
+        }
         let mut index = 0;
         while index < self.pages.len() {
             if self.pages[index].conversation == id && self.pages[index].revision != revision {
@@ -94,6 +102,12 @@ impl UnreadCache {
         unread: Unread,
     ) {
         let users = self.entries.entry(id.into()).or_default();
+        if users
+            .get(user)
+            .is_some_and(|entry| entry.revision > revision || entry.read > read)
+        {
+            return;
+        }
         if let Some(previous) = users.remove(user) {
             self.recency.remove(&previous.used);
         }

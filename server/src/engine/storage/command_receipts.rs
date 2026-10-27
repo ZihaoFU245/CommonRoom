@@ -1,9 +1,8 @@
-//! Generic command effects and their outcomes share one outer SQLite transaction.
+//! Command effects and typed outcome persistence share one outer transaction.
 use super::*;
 use crate::bots::error::{Code, Error};
 use serde::{Deserialize, Serialize};
 
-pub(super) const SCHEMA: &str = "CREATE TABLE bot_command_receipts(account_id TEXT NOT NULL,key TEXT NOT NULL,digest TEXT NOT NULL,created INTEGER NOT NULL,outcome TEXT NOT NULL,PRIMARY KEY(account_id,key)) WITHOUT ROWID; CREATE INDEX bot_command_receipts_created ON bot_command_receipts(created);";
 const TTL: u64 = crate::bots::models::RECEIPT_TTL;
 const MAX_RESULT: usize = 65536;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -32,9 +31,15 @@ impl Engine {
         account: &str,
         key: &str,
     ) -> Result<Option<(String, CommandOutcome)>, Error> {
-        use crate::engine::database::OptionalExtension;
-        let db = self.store.db.lock().map_err(Error::storage)?;
-        let row: Option<(String,String)> = db.query_row(sql("SELECT digest,outcome FROM bot_command_receipts WHERE account_id=?1 AND key=?2 AND created>?3", "SELECT digest,outcome FROM bot_command_receipts WHERE account_id=$1 AND key=$2 AND created>$3"),params![account,key,now().saturating_sub(TTL)],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(Error::storage)?;
+        let row = self
+            .store
+            .db
+            .command_receipt_blocking(&database::ReceiptRead {
+                account,
+                key,
+                after: now().saturating_sub(TTL),
+            })
+            .map_err(Error::storage)?;
         row.map(|(digest, raw)| {
             serde_json::from_str(&raw)
                 .map(|mut outcome: CommandOutcome| {
@@ -46,6 +51,19 @@ impl Engine {
         .transpose()
     }
     pub(crate) fn bot_command_once(
+        &mut self,
+        account: &str,
+        key: &str,
+        digest: &str,
+        execute: impl FnOnce(&mut Self) -> Result<String, Error>,
+    ) -> Result<CommandOutcome, Error> {
+        let original = self.store.db.clone();
+        self.store.db = original.command_scope_blocking().map_err(Error::storage)?;
+        let result = self.bot_command_in_context(account, key, digest, execute);
+        self.store.db = original;
+        result
+    }
+    pub(in crate::engine) fn bot_command_in_context(
         &mut self,
         account: &str,
         key: &str,
@@ -64,15 +82,23 @@ impl Engine {
         }
         let created = now();
         {
-            let db = self.store.db.lock().map_err(Error::storage)?;
-            let (count,bytes):(usize,usize)=db.query_row(sql("SELECT count(*),coalesce(sum(length(CAST(outcome AS BLOB))),0) FROM bot_command_receipts WHERE account_id=?1 AND created>?2", "SELECT count(*),coalesce(sum(octet_length(outcome)),0) FROM bot_command_receipts WHERE account_id=$1 AND created>$2"),params![account,created.saturating_sub(TTL)],|r|Ok((r.get(0)?,r.get(1)?))).map_err(Error::storage)?;
+            let (count, bytes) = self
+                .store
+                .db
+                .command_receipt_usage_blocking(account, created.saturating_sub(TTL))
+                .map_err(Error::storage)?;
             if count >= crate::bots::models::RECEIPT_LIMIT || bytes + MAX_RESULT > MAX_BYTES {
                 return Err(Error::new(
                     Code::IdempotencyCapacity,
                     "Wait for command receipts to expire.",
                 ));
             }
-            db.begin_command().map_err(Error::storage)?;
+            self.store
+                .db
+                .lock()
+                .map_err(Error::storage)?
+                .begin_command()
+                .map_err(Error::storage)?;
         }
         let revision = self.revision;
         let changed = self.changed_conversation.clone();
@@ -104,7 +130,7 @@ impl Engine {
                 .db
                 .lock()
                 .map_err(Error::storage)?
-                .execute_batch("ROLLBACK TO bot_command_receipt;")
+                .rollback_command_effect()
                 .map_err(Error::storage)?;
             self.restore_command_state(revision, changed.clone())?;
         }
@@ -135,21 +161,26 @@ impl Engine {
                     "Command receipt is too large.",
                 ));
             }
-            let db = self.store.db.lock().map_err(Error::storage)?;
-            db.execute(
-                sql(
-                    "DELETE FROM bot_command_receipts WHERE created<=?1",
-                    "DELETE FROM bot_command_receipts WHERE created<=$1",
-                ),
-                [created.saturating_sub(TTL)],
-            )
-            .map_err(Error::storage)?;
-            db.execute(
-                sql("INSERT INTO bot_command_receipts SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM entities WHERE kind='account' AND json_extract(json,'$.id')=?1)", "INSERT INTO bot_command_receipts SELECT $1,$2,$3,$4,$5 WHERE EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (projection #>> '{id}')=$1)"),
-                params![account, key, digest, created, raw],
-            )
-            .map_err(Error::storage)?;
-            db.finish_command().map_err(Error::storage)
+            let batch = MetadataWrite {
+                operations: vec![MetadataOp::CommandReceipt {
+                    account,
+                    key,
+                    digest,
+                    created,
+                    expired_before: created.saturating_sub(TTL),
+                    outcome: &raw,
+                }],
+            };
+            self.store
+                .db
+                .save_metadata_blocking(&batch)
+                .map_err(Error::storage)?;
+            self.store
+                .db
+                .lock()
+                .map_err(Error::storage)?
+                .finish_command()
+                .map_err(Error::storage)
         })();
         if let Err(error) = persist {
             let rollback = {

@@ -1,5 +1,6 @@
 //! Database ownership and transactional engine coordination.
 use super::*;
+use database::{MetadataOp, MetadataWrite};
 mod accounts;
 mod bootstrap;
 mod cursors;
@@ -7,40 +8,35 @@ mod entities;
 mod maintenance;
 mod messages;
 mod migration;
+#[cfg(test)]
 mod receipts;
-mod schema;
 #[cfg(test)]
 pub(super) use entities::load_entities;
 use entities::*;
 #[cfg(test)]
 pub(super) use maintenance::CLEANUP_COUNTS_SQL;
-use maintenance::*;
-use messages::*;
-use schema::*;
 mod auth;
 mod command_receipts;
 mod media;
 mod retention;
 
-/// Owns the database lifetime, including readers and the exclusive folder lock.
-/// The lock is dropped last, after every connection owned by the engine.
+pub(in crate::engine) fn private_json(chat: &PrivateChat) -> Result<String, EngineError> {
+    Ok(serde_json::to_string(&private_metadata(chat))?)
+}
+
+/// Shares the database dispatcher and cache lifetime. The dispatcher owns every
+/// pool and keeps the exclusive folder lock until the final history owner drops.
 pub(super) struct Store {
     history: std::sync::Arc<super::history::HistoryStore>,
-    pub(super) db: std::sync::Arc<std::sync::Mutex<Connection>>,
+    pub(super) db: database::Handle,
     pub(super) read_positions: BTreeMap<String, BTreeMap<String, u64>>,
     pub(super) pending_deletes: Vec<(String, u64)>,
     pub(super) pending_cleanups: Vec<(String, u64)>,
-    _lock: Option<std::fs::File>,
 }
 
 impl Store {
     fn checkpoint(&self) -> Result<(), EngineError> {
-        let db = self.db.lock().map_err(EngineError::unavailable)?;
-        if db.is_postgres() {
-            return db.ensure_available().map_err(EngineError::from);
-        }
-        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .map_err(EngineError::from)
+        database::block_on_storage(self.db.checkpoint())?.map_err(EngineError::from)
     }
 }
 
@@ -70,26 +66,21 @@ impl Engine {
         );
         let account_keys = baseline.view().keys;
         let previous_users = baseline.view().users;
-        let writer = self.store.db.clone();
-        let mut db = writer.lock().map_err(EngineError::unavailable)?;
-        let tx = db.savepoint().map_err(EngineError::from)?;
-        write_delta_view(&tx, &self.data, baseline.view())?;
+        let mut batch = MetadataWrite::default();
+        write_delta_view(&mut batch, &self.data, baseline.view())?;
         for room in rooms {
-            tx.execute(
-                sql(
-                    "DELETE FROM read_positions WHERE conversation=?1",
-                    "DELETE FROM read_positions WHERE conversation=$1",
-                ),
-                params![format!("room:{room}")],
-            )
-            .map_err(EngineError::from)?;
+            batch
+                .operations
+                .push(MetadataOp::RemoveConversationCursors {
+                    conversation: format!("room:{room}"),
+                });
         }
-        write_history_deletions(
-            &tx,
-            &self.store.pending_deletes,
-            &self.store.pending_cleanups,
-        )?;
-        tx.commit().map_err(EngineError::from)?;
+        batch.operations.push(MetadataOp::HistoryChanges {
+            deletes: &self.store.pending_deletes,
+            cleanups: &self.store.pending_cleanups,
+        });
+        self.store.db.save_metadata_blocking(&batch)?;
+        drop(batch);
         for room in rooms {
             let key = format!("room:{room}");
             for positions in self.store.read_positions.values_mut() {
@@ -132,11 +123,9 @@ impl Engine {
             &self.authorization,
             &self.authorization,
         );
-        let writer = self.store.db.clone();
-        let mut db = writer.lock().map_err(EngineError::unavailable)?;
-        let tx = db.savepoint().map_err(EngineError::from)?;
-        write_state(&tx, &self.data)?;
-        tx.commit().map_err(EngineError::from)?;
+        let mut batch = MetadataWrite::default();
+        push_state(&mut batch, &self.data)?;
+        self.store.db.save_metadata_blocking(&batch)?;
         self.bot_index = crate::bots::models::Index::build(&self.data);
         self.finish_metadata_commit(notice);
         Ok(())
@@ -148,11 +137,9 @@ impl Engine {
             .private
             .get(key)
             .ok_or_else(|| EngineError::NotFound("Private conversation not found.".into()))?;
-        let writer = self.store.db.clone();
-        let mut db = writer.lock().map_err(EngineError::unavailable)?;
-        let tx = db.savepoint().map_err(EngineError::from)?;
-        put_entity(&tx, "private", key, &private_metadata(chat))?;
-        tx.commit().map_err(EngineError::from)?;
+        let mut batch = MetadataWrite::default();
+        batch.entity("private", key, &private_metadata(chat))?;
+        self.store.db.save_metadata_blocking(&batch)?;
         self.bot_index
             .conversations
             .insert(chat.id.clone(), format!("@private:{key}"));

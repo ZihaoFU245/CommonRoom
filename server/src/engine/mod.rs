@@ -2,6 +2,7 @@ mod accounts;
 mod auth_events;
 pub(crate) use auth_events::{AuthEvent, AuthOutcome};
 pub mod authorization;
+mod avatar_store;
 pub(crate) mod avatars;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -18,17 +19,29 @@ mod dispatch;
 mod error;
 mod helpers;
 pub use error::EngineError;
+mod read_position;
+pub(crate) use read_position::CursorWrite;
 mod history;
+mod history_write;
 pub(crate) mod media;
+mod media_allocation;
+mod media_store;
+pub(crate) use media_store::MediaStore;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "tests/media.rs"]
 mod media_tests;
+pub(crate) use history_write::PendingHistory;
+mod message_action;
+pub(crate) use message_action::BrowserActionPlan;
+mod message_write;
+pub(crate) use message_write::PendingMessage;
 mod messages;
 mod models;
 mod notices;
 pub(crate) use notices::MetadataNotice;
 mod presence;
+mod profile;
 mod queries;
 mod read_model;
 mod rooms;
@@ -43,7 +56,9 @@ mod tests;
 mod trust_tests;
 
 use changes::MetadataChange;
-use database::{Connection, params, sql};
+use database::Connection;
+#[cfg(test)]
+use database::params;
 pub(crate) use dispatch::CommandChange;
 use dispatch::CommandContext;
 pub use dispatch::sudo_command;
@@ -53,7 +68,7 @@ pub use helpers::{hash_password, valid_name, verify_password};
 pub(crate) use history::HistoryStore;
 pub use history::{HistoryError, HistoryRange};
 pub use models::*;
-pub(crate) use read_model::{MetadataClock, SnapshotStamp};
+pub(crate) use read_model::{DeliveryStamp, MetadataClock, SnapshotStamp};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::Path,
@@ -89,17 +104,18 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub(crate) fn ensure_recovered(&self) -> Result<(), EngineError> {
+    pub(crate) fn ensure_memory(&self) -> Result<(), EngineError> {
         if self.recovery_failed {
             return Err(EngineError::Unavailable(
                 "Server state recovery failed; restart the service.".into(),
             ));
         }
-        self.store
-            .db
-            .lock()
-            .map_err(EngineError::unavailable)?
-            .ensure_available()?;
+        self.store.db.ensure_state()?;
+        Ok(())
+    }
+    pub(crate) fn ensure_recovered(&self) -> Result<(), EngineError> {
+        self.ensure_memory()?;
+        self.store.db.ensure_available()?;
         Ok(())
     }
 }

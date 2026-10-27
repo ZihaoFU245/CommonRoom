@@ -33,11 +33,16 @@ impl AvatarPlan {
             .map(String::as_str)
     }
 
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Result<Option<serde_json::Value>, EngineError> {
+        database::block_on_storage(self.finish_async())?
+    }
+    pub(crate) async fn finish_async(self) -> Result<Option<serde_json::Value>, EngineError> {
         if !self.known
             && !self
                 .history
-                .has_author_in(&self.conversations, &self.owner)?
+                .has_author_in_async(&self.conversations, &self.owner)
+                .await?
         {
             return Ok(None);
         }
@@ -48,16 +53,6 @@ impl AvatarPlan {
 }
 
 impl Engine {
-    pub(crate) fn avatar_matches(&self, user: &str, value: Option<&str>) -> bool {
-        self.data
-            .users
-            .get(user)
-            .and_then(|account| account.metadata.get("@global"))
-            .and_then(|metadata| metadata.get("avatar"))
-            .map(String::as_str)
-            == value
-    }
-
     pub(crate) fn avatar_plan(&self, viewer: &str, owner_id: &str) -> Option<AvatarPlan> {
         use authorization::{Action, Scope};
         if !self.active(viewer) {
@@ -134,6 +129,7 @@ impl Engine {
             })
             .collect()
     }
+    #[cfg(test)]
     pub(crate) fn set_avatar(
         &mut self,
         user: &str,
@@ -187,6 +183,7 @@ impl Engine {
     pub(crate) fn allocate_avatar(&self, user: &str, size: u64) -> Result<Media, EngineError> {
         self.allocate_avatar_id(user, size, &uuid::Uuid::new_v4().to_string())
     }
+    #[cfg(test)]
     pub(crate) fn allocate_avatar_id(
         &self,
         user: &str,
@@ -233,8 +230,17 @@ impl Engine {
         self.store_media_allocation(&media)?;
         Ok(media)
     }
+    #[cfg(test)]
     pub(crate) fn avatar_owner(&self, user: &str, id: &str) -> Result<Media, EngineError> {
         let media = self.stored_media(id)?;
+        self.authorize_avatar_owner(user, &media)?;
+        Ok(media)
+    }
+    pub(crate) fn authorize_avatar_owner(
+        &self,
+        user: &str,
+        media: &Media,
+    ) -> Result<(), EngineError> {
         if !self.active(user)
             || self
                 .data
@@ -248,8 +254,9 @@ impl Engine {
         {
             return Err("Avatar upload unavailable.".into());
         }
-        Ok(media)
+        Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn finish_avatar(&mut self, user: &str, media: &Media) -> Result<bool, EngineError> {
         let current = self.avatar_owner(user, &media.id)?;
         if !media.ready
@@ -265,8 +272,25 @@ impl Engine {
         }
         self.set_avatar(user, Some(avatar_path(&media.id)), true)
     }
+    #[cfg(test)]
     pub(crate) fn readable_avatar(&self, viewer: &str, id: &str) -> Result<Media, EngineError> {
         let media = self.stored_media(id)?;
+        let owner = self
+            .bot_index
+            .accounts
+            .get(&media.uploader)
+            .ok_or("Avatar not found.")?;
+        self.avatar_read_plan(viewer, &media)?;
+        if !self.avatar_visible(viewer, owner)? {
+            return Err(EngineError::NotFound("Avatar not found.".into()));
+        }
+        Ok(media)
+    }
+    pub(crate) fn avatar_read_plan(
+        &self,
+        viewer: &str,
+        media: &Media,
+    ) -> Result<AvatarPlan, EngineError> {
         let owner = self
             .bot_index
             .accounts
@@ -284,13 +308,14 @@ impl Engine {
                 .get(owner)
                 .and_then(|account| account.metadata.get("@global"))
                 .and_then(|metadata| metadata.get("avatar"))
-                != Some(&avatar_path(id))
-            || !self.avatar_visible(viewer, owner)?
+                != Some(&avatar_path(&media.id))
         {
             return Err(EngineError::NotFound("Avatar not found.".into()));
         }
-        Ok(media)
+        self.avatar_plan(viewer, &media.uploader)
+            .ok_or_else(|| EngineError::NotFound("Avatar not found.".into()))
     }
+    #[cfg(test)]
     fn avatar_visible(&self, viewer: &str, owner: &str) -> Result<bool, EngineError> {
         use authorization::{Action, Scope};
         if viewer == owner || self.allows(Some(viewer), &Scope::Server, Action::Directory) {

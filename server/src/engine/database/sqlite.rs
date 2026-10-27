@@ -1,4 +1,13 @@
 //! SQLite-specific SQLx execution. No PostgreSQL SQL is translated here.
+pub(super) mod bootstrap;
+pub(super) mod cursors;
+pub(super) mod history;
+pub(super) mod media;
+pub(super) mod messages;
+pub(super) mod metadata;
+pub(super) mod profile;
+pub(super) mod receipts;
+#[cfg(test)]
 use super::Error;
 use super::{Result, Value};
 use sqlx::{
@@ -40,6 +49,7 @@ fn query<'a>(
     }
     query
 }
+#[cfg(test)]
 pub(super) async fn execute(
     db: &mut SqliteConnection,
     sql: &str,
@@ -61,6 +71,7 @@ pub(super) async fn fetch_optional(
 ) -> Result<Option<SqliteRow>> {
     Ok(query(sql, values).fetch_optional(db).await?)
 }
+#[cfg(test)]
 pub(super) async fn fetch_all(
     db: &mut SqliteConnection,
     sql: &str,

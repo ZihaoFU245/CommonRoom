@@ -28,7 +28,6 @@ pub(super) struct DataView<'a> {
     pub(super) sessions: Option<&'a BTreeMap<String, Session>>,
     pub(super) bots: Option<&'a BTreeMap<String, crate::bots::models::Registration>>,
     pub(super) policy: &'a authorization::Policy,
-    pub(super) next_sequence: u64,
 }
 impl<'a> From<&'a Data> for DataView<'a> {
     fn from(data: &'a Data) -> Self {
@@ -40,7 +39,6 @@ impl<'a> From<&'a Data> for DataView<'a> {
             sessions: Some(&data.sessions),
             bots: Some(&data.bots),
             policy: &data.policy,
-            next_sequence: data.next_sequence,
         }
     }
 }
@@ -175,7 +173,6 @@ impl MetadataChange {
             sessions: self.sessions.as_ref(),
             bots: self.bots.as_ref(),
             policy: &self.policy,
-            next_sequence: self.next_sequence,
         }
     }
     pub(super) fn removed_rooms(&self, current: &Data) -> Vec<String> {

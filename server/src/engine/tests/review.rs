@@ -270,7 +270,7 @@ fn cleanup_counts_use_existing_timestamp_index_and_count_multiple_references_onc
     assert_eq!(counts["missing"], (0, 0));
     let db = e.store.db.lock().unwrap();
     let mut query = db
-        .prepare(&format!(
+        .prepare(format!(
             "EXPLAIN QUERY PLAN {}",
             storage::CLEANUP_COUNTS_SQL
         ))

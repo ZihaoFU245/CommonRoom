@@ -3,6 +3,7 @@ pub(crate) mod auth;
 mod control;
 pub(crate) mod discovery;
 pub(crate) mod error;
+mod mutations;
 pub(crate) mod socket;
 pub(crate) use api::contract;
 pub mod models;

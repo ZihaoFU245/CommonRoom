@@ -215,29 +215,29 @@ pub(crate) async fn http(
     {
         return next.run(request).await;
     }
-    let auth_app = app.clone();
     let headers = request.headers().clone();
-    let account = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
-        if headers.contains_key(axum::http::header::AUTHORIZATION) {
-            return match crate::bots::auth::Context::authenticate(&auth_app, &headers) {
-                Ok(context) => Ok(Some(context.account)),
-                Err(_) => Ok(None),
-            };
-        }
-        let engine = auth_app.engine_read()?;
-        Ok(super::auth::identity(&engine, &auth_app.config, &headers)
-            .and_then(|name| engine.active_account_id(&name).map(str::to_owned)))
-    })
-    .await;
+    let account = app
+        .inspect_engine(
+            move |engine, config| -> Result<Option<String>, crate::engine::EngineError> {
+                if headers.contains_key(axum::http::header::AUTHORIZATION) {
+                    return Ok(crate::bots::auth::Context::from_headers(engine, &headers)
+                        .ok()
+                        .map(|context| context.account));
+                }
+                Ok(super::auth::identity(engine, config, &headers)
+                    .and_then(|name| engine.active_account_id(&name).map(str::to_owned)))
+            },
+        )
+        .await;
     let _lease = match account {
-        Ok(Ok(Some(account))) => match app.admission.http(account) {
+        Ok(Some(account)) => match app.admission.http(account) {
             Ok(lease) => Some(lease),
             Err(message) => {
                 return super::error(axum::http::StatusCode::TOO_MANY_REQUESTS, &message)
                     .into_response();
             }
         },
-        Ok(Ok(None)) => None,
+        Ok(None) => None,
         _ => {
             return super::error(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,

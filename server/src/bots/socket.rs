@@ -58,41 +58,43 @@ pub(crate) fn render_changes(
     context: &Context,
     changes: &[Change],
 ) -> Result<(String, Vec<Utf8Bytes>), Error> {
-    render_with_interests(
+    crate::engine::database::block_on_storage(render_with_interests_async(
         app,
         context,
         changes,
         &mut crate::web::transport::Interests::default(),
-    )
+    ))
+    .map_err(Error::storage)?
 }
-fn render_with_interests(
-    app: &App,
+struct Batch {
+    user: String,
+    frames: Vec<Utf8Bytes>,
+    baseline: bool,
+    stamp: crate::engine::DeliveryStamp,
+    ids: std::collections::BTreeSet<String>,
+    presence: bool,
+    refreshed: Option<std::collections::BTreeSet<String>>,
+    history: std::sync::Arc<crate::engine::HistoryStore>,
+}
+fn capture(
+    engine: &crate::engine::Engine,
     context: &Context,
     changes: &[Change],
-    interests: &mut crate::web::transport::Interests,
-) -> Result<(String, Vec<Utf8Bytes>), Error> {
-    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(Error::new(Code::Unavailable, "Server stopping."));
-    }
-    for _ in 0..3 {
-        let engine = app.engine_read().map_err(Error::from)?;
-        let user = context.user(&engine)?;
-        let credential = context.metadata(&engine)?;
-        let baseline = changes.iter().any(|change| {
-            matches!(change, Change::All)
-                || matches!(change, Change::Metadata(notice) if notice.targets(&context.account))
-                || matches!(change, Change::Read(name) | Change::Account(name) if name == &user)
-        });
-        let stamp = baseline
-            .then(|| engine.snapshot_stamp(&user, true))
-            .transpose()?;
-        let presence = changes
-            .contains(&Change::Presence)
-            .then(|| engine.presence_revision());
-        let refreshed = if interests.refresh_needed(baseline) {
+    interests: &crate::web::transport::Interests,
+) -> Result<Batch, Error> {
+    let user = context.user(engine)?;
+    let credential = context.metadata(engine)?;
+    let baseline = changes.iter().any(|change| {
+        matches!(change, Change::All)
+            || matches!(change, Change::Metadata(notice) if notice.targets(&context.account))
+            || matches!(change, Change::Read(name) | Change::Account(name) if name == &user)
+    });
+    let presence = changes.contains(&Change::Presence) && credential.conversations.is_none();
+    let refreshed: Option<std::collections::BTreeSet<String>> =
+        if interests.refresh_needed(baseline) {
             Some(
                 context
-                    .snapshot_plan(&engine)?
+                    .snapshot_plan(engine)?
                     .snapshot
                     .conversations
                     .into_iter()
@@ -102,48 +104,102 @@ fn render_with_interests(
         } else {
             None
         };
-        let mut frames = Vec::new();
-        for change in changes {
-            match change {
-                Change::Conversation(id) if !baseline => {
-                    if credential
-                        .operations
+    let mut ids = std::collections::BTreeSet::new();
+    if baseline {
+        ids.extend(refreshed.iter().flatten().cloned());
+    }
+    let mut frames = Vec::new();
+    for change in changes {
+        match change {
+            Change::Conversation(id) if !baseline => {
+                if credential
+                    .operations
+                    .as_ref()
+                    .is_none_or(|ops| ops.contains("read"))
+                    && credential
+                        .conversations
                         .as_ref()
-                        .is_none_or(|ops| ops.contains("read"))
-                        && credential
-                            .conversations
+                        .is_none_or(|ids| ids.contains(id))
+                    && let Ok(target) = engine.bot_target(&user, id, Action::Read)
+                {
+                    ids.insert(id.clone());
+                    frames.push(json!({"kind":"conversation","conversation_id":id,"content_revision":target.revision}).to_string().into());
+                }
+            }
+            Change::Presence if credential.conversations.is_none() => {
+                frames.push(engine.presence_frame(&user).to_string().into())
+            }
+            _ => {}
+        }
+    }
+    let stamp = engine.delivery_stamp(&user, &ids, presence)?;
+    Ok(Batch {
+        user,
+        frames,
+        baseline,
+        stamp,
+        ids,
+        presence,
+        refreshed,
+        history: engine.history_store().clone(),
+    })
+}
+async fn render_with_interests_async(
+    app: &App,
+    context: &Context,
+    changes: &[Change],
+    interests: &mut crate::web::transport::Interests,
+) -> Result<(String, Vec<Utf8Bytes>), Error> {
+    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(Error::new(Code::Unavailable, "Server stopping."));
+    }
+    for _ in 0..3 {
+        let Batch {
+            user,
+            mut frames,
+            baseline,
+            stamp,
+            ids,
+            presence,
+            refreshed,
+            history,
+        } = app
+            .inspect_engine({
+                let context = context.clone();
+                let changes = changes.to_vec();
+                let interests = interests.clone();
+                move |engine, _| capture(engine, &context, &changes, &interests)
+            })
+            .await?;
+        let snapshot = if baseline {
+            Some(crate::web::snapshots::bot_value_async(app, context).await)
+        } else {
+            None
+        };
+        history.ensure_available_async().await?;
+        let validated = app
+            .inspect_engine({
+                let context = context.clone();
+                let user = user.clone();
+                move |engine, _| -> Result<_, Error> {
+                    let current = context.user(engine)?;
+                    Ok((current == user
+                        && engine
+                            .delivery_stamp(&current, &ids, presence)
+                            .ok()
                             .as_ref()
-                            .is_none_or(|ids| ids.contains(id))
-                        && let Ok(target) = engine.bot_target(&user, id, Action::Read)
-                    {
-                        frames.push(json!({"kind":"conversation","conversation_id":id,"content_revision":target.revision}).to_string().into());
-                    }
+                            == Some(&stamp))
+                    .then(|| engine.metadata_clock()))
                 }
-                Change::Presence if credential.conversations.is_none() => {
-                    frames.push(engine.presence_frame(&user).to_string().into())
-                }
-                _ => {}
+            })
+            .await?;
+        if let Some(clock) = validated {
+            if let Some(snapshot) = snapshot {
+                frames.insert(0, snapshot?);
             }
-        }
-        if !baseline {
             interests.bind(&context.account);
             if let Some(ids) = refreshed {
-                interests.refresh(ids, engine.metadata_clock());
-            }
-            return Ok((user, frames));
-        }
-        drop(engine);
-        let snapshot = crate::web::snapshots::bot_value(app, context);
-        let engine = app.engine_read().map_err(Error::from)?;
-        let current = context.user(&engine)?;
-        if current == user
-            && engine.snapshot_stamp(&current, true).ok().as_ref() == stamp.as_ref()
-            && presence.is_none_or(|revision| revision == engine.presence_revision())
-        {
-            frames.insert(0, snapshot?);
-            interests.bind(&context.account);
-            if let Some(ids) = refreshed {
-                interests.refresh(ids, engine.metadata_clock());
+                interests.refresh(ids, clock);
             }
             return Ok((user, frames));
         }
@@ -166,12 +222,18 @@ async fn value(
     let old_user = old_user.to_owned();
     let permit = app.io_permit().map_err(Error::storage)?;
     let mut routed = std::mem::take(interests);
-    let (user, frames, routed) = tokio::task::spawn_blocking(move || {
+    let (user, frames, routed) = tokio::spawn(async move {
         let _permit = permit;
-        let (user, frames) = render_with_interests(&app, &context, &changes, &mut routed)?;
+        let (user, frames) =
+            render_with_interests_async(&app, &context, &changes, &mut routed).await?;
         if user != old_user {
-            app.update_presence(Some(&old_user), Some(&user))
-                .map_err(Error::storage)?;
+            tokio::task::spawn_blocking({
+                let user = user.clone();
+                move || app.update_presence(Some(&old_user), Some(&user))
+            })
+            .await
+            .map_err(Error::storage)?
+            .map_err(Error::storage)?;
         }
         Ok::<_, Error>((user, frames, routed))
     })

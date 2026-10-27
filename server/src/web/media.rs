@@ -31,21 +31,204 @@ fn unavailable() -> ApiError {
     error(StatusCode::SERVICE_UNAVAILABLE, "Media worker unavailable.")
 }
 
-// Each blocking job owns its API permit. No permit survives into S3 I/O or locks.
-pub(super) async fn authenticated<T: Send + 'static>(
+pub(super) async fn native_context(
+    app: &App,
+    headers: HeaderMap,
+) -> Result<(auth::Identity, crate::engine::MediaStore), ApiError> {
+    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server is shutting down.",
+        ));
+    }
+    let config = app.config.clone();
+    app.inspect_engine(move |engine, _| {
+        let user = auth::identity(engine, &config, &headers)
+            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))?;
+        let account = engine
+            .active_account_id(&user)
+            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
+            .to_owned();
+        Ok((
+            auth::Identity {
+                headers,
+                user,
+                account,
+                config,
+            },
+            engine.media_store(),
+        ))
+    })
+    .await
+}
+pub(super) fn verify_identity(identity: &auth::Identity, engine: &Engine) -> Result<(), ApiError> {
+    identity
+        .verify(engine)
+        .map_err(|_| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+}
+async fn native_media<T: Send + 'static>(
     app: &App,
     headers: &HeaderMap,
-    work: impl FnOnce(&App, &str) -> Result<T, ApiError> + Send + 'static,
+    id: String,
+    missing: &'static str,
+    inspect: impl FnOnce(
+        &Engine,
+        &auth::Identity,
+        crate::engine::media::Media,
+        bool,
+    ) -> Result<T, ApiError>
+    + Send
+    + 'static,
 ) -> Result<T, ApiError> {
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let worker = app.clone();
-    let credentials = headers.clone();
-    tokio::task::spawn_blocking(move || {
+    let app = app.clone();
+    let headers = headers.clone();
+    tokio::spawn(async move {
         let _permit = permit;
-        let user = auth::authenticate(&worker, &credentials)?;
-        work(&worker, &user)
+        let (identity, store) = native_context(&app, headers).await?;
+        let (media, attached) = store
+            .load(&id)
+            .await
+            .map_err(|cause| super::error::hidden(cause, missing))?;
+        app.inspect_engine(move |engine, _| {
+            verify_identity(&identity, engine)?;
+            inspect(engine, &identity, media, attached)
+        })
+        .await
+    })
+    .await
+    .map_err(|_| unavailable())?
+}
+async fn owner(
+    app: &App,
+    headers: &HeaderMap,
+    id: String,
+) -> Result<crate::engine::media::Media, ApiError> {
+    native_media(
+        app,
+        headers,
+        id,
+        "Upload not found.",
+        |engine, identity, media, attached| {
+            engine.authorize_media_owner(&identity.user, &media, attached)?;
+            Ok(media)
+        },
+    )
+    .await
+}
+enum MediaMutation {
+    Ready(crate::engine::media::Media),
+    Abandon(String),
+}
+async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Result<(), ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let app = app.clone();
+    let headers = headers.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        let (identity, store) = native_context(&app, headers).await?;
+        let ordering = app.mutations.conversations(vec![]).await?;
+        let id = match &mutation {
+            MediaMutation::Ready(media) => &media.id,
+            MediaMutation::Abandon(id) => id,
+        };
+        let (current, attached) = store.load(id).await?;
+        let mutation = app
+            .with_conversation(&ordering, {
+                let identity = identity.clone();
+                move |engine| -> Result<_, ApiError> {
+                    verify_identity(&identity, engine)?;
+                    match &mutation {
+                        MediaMutation::Ready(_) => {
+                            engine.authorize_media_owner(&identity.user, &current, attached)?;
+                            if current.ready {
+                                return Err(crate::engine::EngineError::Conflict(
+                                    "Upload already completed.".into(),
+                                )
+                                .into());
+                            }
+                        }
+                        MediaMutation::Abandon(_) => {
+                            engine.authorize_media_abandon(&identity.user, &current)?
+                        }
+                    }
+                    Ok(mutation)
+                }
+            })
+            .await?;
+        match mutation {
+            MediaMutation::Ready(media) => store.ready(&media).await?,
+            MediaMutation::Abandon(id) => store.abandon(&id).await?,
+        }
+        app.with_conversation(&ordering, move |engine| verify_identity(&identity, engine))
+            .await
+    })
+    .await
+    .map_err(|_| unavailable())?
+}
+async fn reserve(
+    app: &App,
+    identity: auth::Identity,
+    input: Upload,
+) -> Result<crate::engine::media::Media, ApiError> {
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let app = app.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        let id = app
+            .inspect_engine({
+                let identity = identity.clone();
+                let target = input.conversation_id.clone();
+                let filename = input.filename.clone();
+                let hints = input.hints.clone();
+                move |engine, _| -> Result<_, ApiError> {
+                    verify_identity(&identity, engine)?;
+                    Ok(engine.validate_media_target(
+                        &identity.user,
+                        &target,
+                        &filename,
+                        input.size,
+                        &hints,
+                    )?)
+                }
+            })
+            .await?;
+        let ordering = app.mutations.conversation(id.clone()).await?;
+        let pending = app
+            .with_conversation(&ordering, {
+                let identity = identity.clone();
+                move |engine| -> Result<_, ApiError> {
+                    verify_identity(&identity, engine)?;
+                    let pending = engine.prepare_media_allocation(
+                        &identity.user,
+                        &input.conversation_id,
+                        &input.filename,
+                        input.size,
+                        input.hints,
+                    )?;
+                    if pending.media.conversation != id {
+                        return Err(crate::engine::EngineError::Conflict(
+                            "Upload target changed; retry reservation.".into(),
+                        )
+                        .into());
+                    }
+                    Ok(pending)
+                }
+            })
+            .await?;
+        pending.save().await?;
+        app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
+            let media = engine.publish_media_allocation(pending)?;
+            verify_identity(&identity, engine)?;
+            Ok(media)
+        })
+        .await
     })
     .await
     .map_err(|_| unavailable())?
@@ -68,12 +251,24 @@ pub(crate) async fn config(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
-    authenticated(&app, &headers, |app, _| {
-        Ok(Json(
-            json!({"enabled":app.media.is_some(),"max_size":app.config.media.max_size}),
-        ))
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let (identity, store) = native_context(&app, headers).await?;
+        store.health().await?;
+        let enabled = app.media.is_some();
+        app.inspect_engine(move |engine, config| {
+            verify_identity(&identity, engine)?;
+            Ok(Json(
+                json!({"enabled":enabled,"max_size":config.media.max_size}),
+            ))
+        })
+        .await
     })
     .await
+    .map_err(|_| unavailable())?
 }
 
 pub(crate) async fn allocate(
@@ -82,49 +277,41 @@ pub(crate) async fn allocate(
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let (storage, uploader, input) = authenticated(&app, &headers, move |app, user| {
-        let storage = storage(app)?;
-        let mut engine = app.engine_api()?;
-        engine
-            .allocate_media_target(
-                user,
-                &input.conversation_id,
-                &input.filename,
-                input.size,
-                input.hints.clone(),
-                true,
-            )
-            .map_err(ApiError::from)?;
-        let uploader = engine
-            .active_account_id(user)
-            .ok_or_else(|| invalid("Account unavailable."))?
-            .to_owned();
-        Ok((storage, uploader, input))
+    let permit = app
+        .io_permit()
+        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let worker = app.clone();
+    let (storage, identity, input) = tokio::spawn(async move {
+        let _permit = permit;
+        let (identity, store) = native_context(&worker, headers).await?;
+        let storage = storage(&worker)?;
+        let input = worker
+            .inspect_engine({
+                let identity = identity.clone();
+                move |engine, _| -> Result<_, ApiError> {
+                    verify_identity(&identity, engine)?;
+                    engine.validate_media_target(
+                        &identity.user,
+                        &input.conversation_id,
+                        &input.filename,
+                        input.size,
+                        &input.hints,
+                    )?;
+                    Ok(input)
+                }
+            })
+            .await?;
+        store.health().await?;
+        Ok::<_, ApiError>((storage, identity, input))
     })
-    .await?;
+    .await
+    .map_err(|_| unavailable())??;
     // Live probe deliberately preserves rejection before reserving offline uploads.
     storage
         .check_reachable()
         .await
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let media = authenticated(&app, &headers, move |app, user| {
-        let mut engine = app.engine_api()?;
-        if engine.active_account_id(user) != Some(uploader.as_str()) {
-            return Err(invalid("Account changed; retry upload."));
-        }
-        engine
-            .allocate_media_target(
-                user,
-                &input.conversation_id,
-                &input.filename,
-                input.size,
-                input.hints,
-                false,
-            )
-            .map_err(ApiError::from)?
-            .ok_or_else(|| invalid("Upload not found."))
-    })
-    .await?;
+    let media = reserve(&app, identity, input).await?;
     let hint_headers = crate::media::hint_headers(&media.hints).map_err(|e| invalid(&e))?;
     let mut upload_headers = hint_headers
         .iter()
@@ -156,22 +343,11 @@ pub(crate) async fn complete(
     security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
     // Authenticate before taking an object lock; recheck after it is acquired.
-    let media_id = id.clone();
-    authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .media_owner(user, &media_id)
-            .map_err(ApiError::from)
-    })
-    .await?;
+    owner(&app, &headers, id.clone()).await?;
     let _lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let mut media = authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .media_owner(user, &id)
-            .map_err(ApiError::from)
-    })
-    .await?;
+    let mut media = owner(&app, &headers, id).await?;
     if !media.ready {
         tokio::time::timeout(
             std::time::Duration::from_secs(100),
@@ -185,13 +361,7 @@ pub(crate) async fn complete(
             )
         })?
         .map_err(storage_failure)?;
-        let verified = media.clone();
-        authenticated(&app, &headers, move |app, user| {
-            app.engine_read_api()?
-                .finish_media(user, &verified)
-                .map_err(ApiError::from)
-        })
-        .await?;
+        mutate(&app, &headers, MediaMutation::Ready(media.clone())).await?;
     }
     Ok(media_json(&app, &media))
 }
@@ -208,24 +378,27 @@ pub(crate) async fn info(
     Query(options): Query<MediaInfoQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
-    authenticated(&app, &headers, move |app, user| {
-        let engine = app.engine_read_api()?;
-        let media = if options.include_expired {
-            engine.media_info(user, &id)
-        } else {
-            engine.readable_media(user, &id)
-        }
-        .map_err(|e| super::error::hidden(e, "Attachment not found."))?;
-        let Json(mut value) = media_json(app, &media);
-        value["expires"] = json!(media.expires);
-        value["expired"] = json!(
-            media
-                .expires
-                .is_some_and(|t| t <= crate::engine::media::timestamp())
-        );
-        Ok(Json(value))
-    })
-    .await
+    let media = native_media(
+        &app,
+        &headers,
+        id,
+        "Attachment not found.",
+        move |engine, identity, media, attached| {
+            engine
+                .authorize_media_read(&identity.user, &media, attached, options.include_expired)
+                .map_err(|cause| super::error::hidden(cause, "Attachment not found."))?;
+            Ok(media)
+        },
+    )
+    .await?;
+    let Json(mut value) = media_json(&app, &media);
+    value["expires"] = json!(media.expires);
+    value["expired"] = json!(
+        media
+            .expires
+            .is_some_and(|time| time <= crate::engine::media::timestamp())
+    );
+    Ok(Json(value))
 }
 #[derive(Default, Deserialize)]
 pub(crate) struct Download {
@@ -240,11 +413,17 @@ pub(crate) async fn download(
 ) -> Result<Redirect, ApiError> {
     security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
-    let ticket = authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .prepare_media_download(user, &id)
-            .map_err(|e| super::error::hidden(e, "Attachment not found."))
-    })
+    let ticket = native_media(
+        &app,
+        &headers,
+        id,
+        "Attachment not found.",
+        |engine, identity, media, attached| {
+            engine
+                .prepare_media_download_record(&identity.user, media, attached)
+                .map_err(|cause| super::error::hidden(cause, "Attachment not found."))
+        },
+    )
     .await?;
     let url = storage
         .download_url(&ticket.media, options.download)
@@ -253,11 +432,17 @@ pub(crate) async fn download(
             tracing::warn!(media_id = %ticket.media.id, error = %cause, "Download signing failed");
             error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign download URL.")
         })?;
-    authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .validate_media_download(user, &ticket)
-            .map_err(|e| super::error::hidden(e, "Attachment not found."))
-    })
+    native_media(
+        &app,
+        &headers,
+        ticket.media.id.clone(),
+        "Attachment not found.",
+        move |engine, identity, current, attached| {
+            engine
+                .validate_media_download_record(&identity.user, &ticket, &current, attached)
+                .map_err(|cause| super::error::hidden(cause, "Attachment not found."))
+        },
+    )
     .await?;
     Ok(Redirect::temporary(&url))
 }
@@ -301,15 +486,23 @@ pub(crate) fn start_cleanup(app: App) {
     });
 }
 
-async fn cleanup_db<T: Send + 'static>(
+async fn cleanup_db<T, F>(
     app: &App,
-    work: impl FnOnce(&App) -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
+    work: impl FnOnce(crate::engine::MediaStore) -> F + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T, crate::engine::EngineError>> + Send + 'static,
+{
     let permit = app.io_permit()?;
-    let worker = app.clone();
-    tokio::task::spawn_blocking(move || {
+    let app = app.clone();
+    tokio::spawn(async move {
         let _permit = permit;
-        work(&worker)
+        let store = app
+            .inspect_engine(|engine, _| Ok::<_, crate::engine::EngineError>(engine.media_store()))
+            .await
+            .map_err(String::from)?;
+        work(store).await.map_err(String::from)
     })
     .await
     .map_err(|_| "Cleanup worker unavailable.")?
@@ -320,20 +513,13 @@ async fn delete_media(app: App, media: crate::engine::media::Media) -> Result<()
     let keys =
         std::collections::BTreeSet::from([format!("uploads/{}", media.id), media.final_key()]);
     storage.delete_keys(&keys).await?;
-    cleanup_db(&app, move |app| {
-        let engine = app.engine_read()?;
-        // A PUT admitted before URL expiry can finish after an early cleanup.
-        // Keep staging recovery due until the pending grace period has elapsed.
-        if media.created.saturating_add(app.config.media.pending_ttl)
-            <= crate::engine::media::timestamp()
-        {
-            engine.media_staging_cleaned(&media.id)?;
-        }
-        engine.remove_media_record(&media.id).map_err(String::from)
+    // One transaction records object deletion and staging recovery completion.
+    cleanup_db(&app, move |store| async move {
+        store.cleanup_done(&media).await
     })
     .await
 }
-async fn cleanup(app: &App) -> Result<bool, String> {
+pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
     if app.media.is_none() {
         return Ok(true);
     }
@@ -342,10 +528,8 @@ async fn cleanup(app: &App) -> Result<bool, String> {
     let mut deleted = 0;
     let mut failed = 0;
     loop {
-        let rows = cleanup_db(app, move |app| {
-            app.engine_read()?
-                .expired_media_before(attempted_before)
-                .map_err(String::from)
+        let rows = cleanup_db(app, move |store| async move {
+            store.expired(attempted_before).await
         })
         .await?;
         let count = rows.len();
@@ -372,10 +556,8 @@ async fn cleanup(app: &App) -> Result<bool, String> {
         }
     }
     loop {
-        let ids = cleanup_db(app, move |app| {
-            app.engine_read()?
-                .media_staging_cleanup(attempted_before)
-                .map_err(String::from)
+        let ids = cleanup_db(app, move |store| async move {
+            store.staging(attempted_before).await
         })
         .await?;
         let count = ids.len();
@@ -389,11 +571,10 @@ async fn cleanup(app: &App) -> Result<bool, String> {
                 failed += 1;
                 continue;
             }
-            cleanup_db(app, move |app| {
-                app.engine_read()?
-                    .media_staging_cleaned(&id)
-                    .map_err(String::from)
-            })
+            cleanup_db(
+                app,
+                move |store| async move { store.staging_cleaned(&id).await },
+            )
             .await?;
         }
         if count < app.config.media.cleanup_batch {
@@ -415,11 +596,11 @@ pub(crate) async fn abandon(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    authenticated(&app, &headers, move |app, user| {
-        app.engine_read_api()?
-            .abandon_media(user, &id)
-            .map_err(ApiError::from)?;
-        Ok(Json(json!({"ok":true})))
-    })
-    .await
+    mutate(&app, &headers, MediaMutation::Abandon(id)).await?;
+    Ok(Json(json!({"ok":true})))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "media_tests.rs"]
+pub(super) mod tests;

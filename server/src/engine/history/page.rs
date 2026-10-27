@@ -117,108 +117,114 @@ impl HistoryStore {
         range: HistoryRange,
         view: &str,
     ) -> Result<History, HistoryError> {
-        self.ensure_available()?;
-        let limit = range.validate().map_err(HistoryError::from)?;
-        {
-            let mut cache = self.cache[cache_shard(id)]
-                .lock()
-                .map_err(|_| "History cache unavailable.")?;
-            if let Some(index) = cache.pages.iter().position(|p| {
-                p.conversation == id
-                    && p.revision == revision
-                    && (p.range == range
-                        || range.start.is_none()
-                            && range.end.is_none()
-                            && range.before.is_none()
-                            && range.after.is_none()
-                            && range.around.is_none()
-                            && p.range.start.is_none()
-                            && p.range.end.is_none()
-                            && p.range.before.is_none()
-                            && p.range.after.is_none()
-                            && p.range.around.is_none()
-                            && !p.after
-                            && p.messages.len() >= limit)
-            }) {
-                let page = cache.pages.remove(index).ok_or("History cache changed.")?;
-                let result = History {
-                    name_colors: None,
-                    view: view.into(),
-                    revision,
-                    messages: page.messages.latest(limit),
-                    has_before: page.before || page.messages.len() > limit,
-                    has_after: page.after,
-                };
-                cache.pages.push_back(page);
-                self.hits.fetch_add(1, Ordering::Relaxed);
+        database::block_on_storage(self.page_checked_async(id, revision, range, view))
+            .map_err(EngineError::from)?
+    }
+    pub(crate) async fn page_checked_async(
+        &self,
+        id: &str,
+        revision: u64,
+        mut range: HistoryRange,
+        view: &str,
+    ) -> Result<History, HistoryError> {
+        self.ensure_caches()?;
+        loop {
+            let limit = range.validate().map_err(HistoryError::from)?;
+            let cached = {
+                let mut cache = self.cache[cache_shard(id)]
+                    .lock()
+                    .map_err(|_| "History cache unavailable.")?;
+                if let Some(index) = cache.pages.iter().position(|p| {
+                    p.conversation == id
+                        && p.revision == revision
+                        && (p.range == range
+                            || range.start.is_none()
+                                && range.end.is_none()
+                                && range.before.is_none()
+                                && range.after.is_none()
+                                && range.around.is_none()
+                                && p.range.start.is_none()
+                                && p.range.end.is_none()
+                                && p.range.before.is_none()
+                                && p.range.after.is_none()
+                                && p.range.around.is_none()
+                                && !p.after
+                                && p.messages.len() >= limit)
+                }) {
+                    let page = cache.pages.remove(index).ok_or("History cache changed.")?;
+                    let result = History {
+                        name_colors: None,
+                        view: view.into(),
+                        revision,
+                        messages: page.messages.latest(limit),
+                        has_before: page.before || page.messages.len() > limit,
+                        has_after: page.after,
+                    };
+                    cache.pages.push_back(page);
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    Some(result)
+                } else {
+                    None
+                }
+            };
+            if let Some(result) = cached {
+                // Hits do not acquire a reader, so they validate ownership here.
+                // Misses validate once when acquiring the native reader lease.
+                self.database
+                    .ensure_available_async()
+                    .await
+                    .map_err(EngineError::from)?;
                 return Ok(result);
             }
-        }
-        self.misses.fetch_add(1, Ordering::Relaxed);
-        let result = self.read(|db| {
-            let tx = db.unchecked_transaction().map_err(EngineError::unavailable)?;
-            let stored: u64 = tx.query_row(sql("SELECT revision FROM entities WHERE kind IN ('room','private') AND json_extract(json,'$.id')=?1", "SELECT revision FROM entities WHERE kind IN ('room','private') AND (projection #>> '{id}')=$1"), [id], |r| r.get(0)).map_err(EngineError::unavailable)?;
-            if stored != revision { return Ok(None); }
-            let ascending=range.after.is_some() || range.start.is_some() || range.around.is_some();
-            let start=if let Some(around)=range.around {
-                use crate::engine::database::OptionalExtension;
-                tx.query_row(sql("SELECT sequence FROM messages WHERE conversation=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT 1 OFFSET ?3", "SELECT sequence FROM messages WHERE conversation=$1 AND sequence<=$2 ORDER BY sequence DESC LIMIT 1 OFFSET $3"),params![id,around,limit/2],|r|r.get::<_,u64>(0)).optional().map_err(EngineError::unavailable)?.unwrap_or(0)
-            } else {range.start.unwrap_or(0)};
-            let lower=start.max(range.after.map(|sequence|sequence.saturating_add(1)).unwrap_or(1));
-            let upper=range.end.unwrap_or(9_007_199_254_740_991).min(range.before.map(|sequence|sequence.saturating_sub(1)).unwrap_or(9_007_199_254_740_991));
-            // One normalized interval makes the primary-key seek independent of depth.
-            let sql = if ascending { PAGE_ASC_SQL } else { PAGE_DESC_SQL };
-            let mut query = tx.prepare_cached(sql).map_err(EngineError::unavailable)?;
-            let rows = query.query_map(params![id,lower,upper,limit], |r| r.get::<_, String>(0)).map_err(EngineError::unavailable)?;
-            let mut messages = rows.map(|row| {
-                let raw = row.map_err(EngineError::unavailable)?;
-                serde_json::from_str::<Message>(&raw).map_err(EngineError::unavailable)
-            }).collect::<Result<Vec<_>, EngineError>>()?;
-            load_page_reactions(&tx, id, &mut messages)?;
-            let mut sizes = Vec::new(); let mut payload_bytes=0usize;
-            for message in &messages {
-                let size=wire_size(message)?;
-                if !sizes.is_empty() && payload_bytes.saturating_add(size)>PAGE_BYTES {break;}
-                payload_bytes=payload_bytes.saturating_add(size); sizes.push(size);
-            }
-            messages.truncate(sizes.len());
-            if !ascending { messages.reverse(); sizes.reverse(); }
-            let before = messages.first().map(|m|m.sequence).unwrap_or(if ascending { lower } else { range.before.or(range.start).unwrap_or(0) });
-            let after = messages.last().map(|m|m.sequence).unwrap_or(if ascending { range.after.or(range.end).unwrap_or(9_007_199_254_740_991) } else { upper });
-            let (has_before, has_after) = tx.prepare_cached(PAGE_EDGES_SQL)?.query_row(params![id, before, after], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            Ok(Some(History { name_colors: None,view:view.into(),messages: MessagePage::new(messages, sizes),revision,has_before,has_after }))
-        })?.ok_or(HistoryError::Changed)?;
-        // Large preceding rows must not prevent an around request from reaching its anchor.
-        if let Some(around) = range.around
-            && result.has_after
-            && result.messages.last().is_some_and(|m| m.sequence < around)
-        {
-            return self.page_checked(
-                id,
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            self.next.fetch_add(1, Ordering::Relaxed);
+            let page = self
+                .database
+                .history_page(&database::PageRead {
+                    conversation: id,
+                    revision,
+                    range,
+                    limit,
+                    max_bytes: PAGE_BYTES,
+                })
+                .await
+                .map_err(EngineError::from)?;
+            let result = History {
+                name_colors: None,
+                view: view.into(),
                 revision,
-                HistoryRange {
+                messages: MessagePage::new(page.messages, page.sizes),
+                has_before: page.has_before,
+                has_after: page.has_after,
+            };
+            // Large preceding rows must not prevent around from reaching its anchor.
+            if let Some(around) = range.around
+                && result.has_after
+                && result.messages.last().is_some_and(|m| m.sequence < around)
+            {
+                range = HistoryRange {
                     start: Some(around),
                     limit: range.limit,
                     ..Default::default()
-                },
-                view,
-            );
+                };
+                continue;
+            }
+            let bytes = result.messages.accounted_bytes();
+            if bytes <= CACHE_BYTES / CACHE_SHARDS {
+                self.cache[cache_shard(id)]
+                    .lock()
+                    .map_err(|_| "History cache unavailable.")?
+                    .insert(CachedPage {
+                        conversation: id.into(),
+                        revision,
+                        range,
+                        messages: result.messages.clone(),
+                        bytes,
+                        before: result.has_before,
+                        after: result.has_after,
+                    });
+            }
+            return Ok(result);
         }
-        let bytes = result.messages.accounted_bytes();
-        if bytes <= CACHE_BYTES / CACHE_SHARDS {
-            self.cache[cache_shard(id)]
-                .lock()
-                .map_err(|_| "History cache unavailable.")?
-                .insert(CachedPage {
-                    conversation: id.into(),
-                    revision,
-                    range,
-                    messages: result.messages.clone(),
-                    bytes,
-                    before: result.has_before,
-                    after: result.has_after,
-                });
-        }
-        Ok(result)
     }
 }

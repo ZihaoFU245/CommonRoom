@@ -76,11 +76,7 @@ pub(crate) async fn snapshot(
     bot: bool,
     headers: &HeaderMap,
 ) -> bool {
-    let app = app.clone();
-    let headers = headers.clone();
-    let value = tokio::task::spawn_blocking(move || super::snapshots::value(&app, &headers, bot))
-        .await
-        .unwrap_or_else(|_| Err("Snapshot worker unavailable.".into()));
+    let value = super::snapshots::value_async(app, headers, bot).await;
     match value {
         Ok(value) => send(socket, Message::Text(value)).await,
         Err(error) => {
@@ -221,18 +217,23 @@ pub(crate) async fn connection(
                 let read_headers = headers.clone();
                 let old = user.clone();
                 let mut routed = std::mem::take(&mut interests);
-                let result = tokio::task::spawn_blocking(move || {
-                    let (current, frames) = super::updates::browser_with_interests(
+                let result = tokio::spawn(async move {
+                    let (current, frames) = super::updates::browser_with_interests_async(
                         &read_app,
                         &read_headers,
                         bot,
                         &changes,
                         &mut routed,
-                    )?;
+                    )
+                    .await?;
                     if current != old {
-                        read_app
-                            .update_presence(Some(&old), Some(&current))
-                            .map_err(crate::engine::EngineError::Unavailable)?;
+                        tokio::task::spawn_blocking({
+                            let current = current.clone();
+                            move || read_app.update_presence(Some(&old), Some(&current))
+                        })
+                        .await
+                        .map_err(crate::engine::EngineError::unavailable)?
+                        .map_err(crate::engine::EngineError::Unavailable)?;
                     }
                     Ok::<_, crate::engine::EngineError>((current, frames, routed))
                 })

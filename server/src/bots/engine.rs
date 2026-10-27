@@ -1,8 +1,10 @@
 //! Stable-ID chat operations. Authorization and persistence share the engine lock.
 use super::*;
+#[cfg(test)]
+use crate::bots::models::SendResult;
 use crate::bots::{
     error::{Code, Error},
-    models::{self, Receipt, SendResult},
+    models,
 };
 use authorization::{Action, Scope};
 
@@ -11,6 +13,7 @@ pub(crate) struct Target {
     pub scope: Scope,
     pub revision: u64,
 }
+#[cfg(test)]
 pub(crate) struct PreparedSend {
     revision: u64,
     account: String,
@@ -365,6 +368,7 @@ impl Engine {
             .map_err(Error::storage)?;
         self.bot_read_checked(user, id, through, retained)
     }
+    #[cfg(test)]
     pub(crate) fn bot_read_checked(
         &mut self,
         user: &str,
@@ -408,6 +412,7 @@ impl Engine {
             .ok_or_else(|| Error::new(Code::NotFound, "Message not found in this conversation."))?;
         self.bot_react_loaded(user, id, original, reaction, active)
     }
+    #[cfg(test)]
     pub(crate) fn bot_react_loaded(
         &mut self,
         user: &str,
@@ -440,7 +445,7 @@ impl Engine {
             message: original,
         });
         let change = self
-            .capture_message_change(&target.view, Some(&message_id), true)
+            .capture_message_change(Some(user), &target.view, Some(&message_id), true)
             .ok_or_else(|| Error::storage("Missing reaction rollback"))?;
         self.changed_conversation = None;
         let result = self
@@ -455,7 +460,11 @@ impl Engine {
         self.clear_working_messages();
         result
     }
-    fn validate_bot_send(&self, user: &str, input: &models::MessageInput) -> Result<Target, Error> {
+    pub(in crate::engine) fn validate_bot_send(
+        &self,
+        user: &str,
+        input: &models::MessageInput,
+    ) -> Result<Target, Error> {
         let text = input.text.trim();
         if !has_message_content(text)
             || input.text.chars().count() > crate::limits::MAX_MESSAGE_CHARS
@@ -504,6 +513,7 @@ impl Engine {
         let prepared = self.prepare_bot_send(user, input, key)?;
         self.commit_bot_send(user, input, key, prepared)
     }
+    #[cfg(test)]
     pub(crate) fn prepare_bot_send(
         &self,
         user: &str,
@@ -511,7 +521,6 @@ impl Engine {
         key: Option<&str>,
     ) -> Result<PreparedSend, Error> {
         let target = self.validate_bot_send(user, input)?;
-        let text = input.text.trim();
         let account_id = self
             .data
             .users
@@ -519,15 +528,7 @@ impl Engine {
             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?
             .id
             .clone();
-        // Tuple order is fixed even if serde_json map-order features change.
-        let canonical = serde_json::to_string(&(
-            &input.conversation_id,
-            text,
-            &input.reply_to,
-            input.markdown,
-        ))
-        .map_err(Error::storage)?;
-        let digest = crate::bots::digest(&canonical);
+        let digest = models::message_digest(input)?;
         if let Some(key) = key {
             if let Some(receipt) = self.bot_receipt(&account_id, key).map_err(Error::storage)? {
                 if receipt.digest != digest {
@@ -591,6 +592,7 @@ impl Engine {
             replay: None,
         })
     }
+    #[cfg(test)]
     pub(crate) fn commit_bot_send(
         &mut self,
         user: &str,
@@ -661,7 +663,7 @@ impl Engine {
         let reply = prepared.reply;
         let text = input.text.trim();
         let change = self
-            .capture_message_change(&target.view, None, false)
+            .capture_message_change(Some(user), &target.view, None, false)
             .ok_or_else(|| Error::storage("Missing mutation context"))?;
         let result: Result<_, EngineError> = (|| {
             self.append_text(Some(user), &target.view, text, input.markdown, reply)?;
@@ -671,21 +673,25 @@ impl Engine {
                 .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?;
             Ok(message)
         })();
-        let receipt = result.as_ref().ok().and_then(|message| {
-            key.map(|key| Receipt {
-                account_id,
-                key: key.into(),
-                digest,
-                conversation: input.conversation_id.clone(),
-                sequence: message.sequence,
+        let receipt = result.as_ref().ok().and_then(|_| {
+            key.map(|key| database::MessageReceipt {
+                account_id: &account_id,
+                key,
+                digest: &digest,
                 created: now(),
             })
         });
         let result = self
-            .finish_message_change(change, result, receipt.as_ref(), std::convert::identity)
-            .map(|message| SendResult {
-                message,
-                replayed: false,
+            .finish_message_change(change, result, receipt, std::convert::identity)
+            .and_then(|mut message| {
+                message.sequence = self
+                    .working_message(&input.conversation_id)
+                    .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?
+                    .sequence;
+                Ok(SendResult {
+                    message,
+                    replayed: false,
+                })
             })
             .map_err(Error::from);
         self.clear_working_messages();

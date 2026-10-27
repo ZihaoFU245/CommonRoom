@@ -27,6 +27,11 @@ media lifecycle and download revalidation, native command/message failure rollba
 repeatable reader snapshots, restart and connection-loss recovery. Container
 cleanup is required even when a test fails. The existing SQLite suite retains its
 integrity, crash, rollback, query-plan and mutation-cost checks.
+Native-dispatcher tests also hold a PostgreSQL conversation row lock and require
+an independent conversation's message transaction to complete, race cursor
+advances, distinguish idle pool replacement from ownership loss, and check SQLite
+single-writer capacity and cancelled acquisition recovery. Stale message plans
+must fail without overwriting a committed edit.
 
 `auto/test-postgres.py` requires the target's default schema to be empty. It
 provisions a temporary SQLite server through the real stdin console, verifies HTTP
@@ -947,3 +952,67 @@ expired metadata cannot serve cached full or range responses. Browser regression
 cover all attachment kinds, original Unicode filenames, light/dark surfaces,
 live expiry and network failures that must not be labeled as expiry. Visual checks
 include desktop and 320px compact layouts.
+
+Native database contracts additionally verify transaction-assigned append cursors
+and receipt sequences, counter rollback/exhaustion, PostgreSQL append commit
+ordering and cancellation while waiting on the counter. Command scope tests prove
+independent PostgreSQL handles commit outside an open command transaction and
+that dropping a SQLite command scope rolls back and releases its single writer.
+Pool shutdown must drain asynchronous lease returns before releasing database or
+folder ownership; offline-transfer checks preserve source file bytes exactly.
+
+Async snapshot-cache coverage cancels an active builder while another caller is
+waiting, requires the waiter to fill the same entry, and verifies subsequent
+callers reuse its shared buffer. Existing blocked-reader, credential-revocation,
+partial-baseline and batch notification tests run through the native async
+snapshot path; production synchronous plan wrappers have been removed.
+
+Native application mutation tests block a PostgreSQL append at its sequence counter
+and require an unrelated HTTP reaction and read acknowledgement to finish. They
+cancel the original HTTP request, queue a metadata change, and verify committed
+memory/receipt publication precedes that metadata change and replays exactly once.
+Receipt-capacity tests race independent conversations at 4,095 existing receipts;
+only one insert may commit and the rejected transaction must not advance sequence.
+Conversation-coordinator tests cover cancellation cleanup and metadata exclusion.
+
+Native browser text regression coverage preserves Send-only room access while
+requiring Read before loading attachments. It verifies trimmed Markdown, filtered
+mentions, committed notification delivery and rejection after Send revocation.
+The PostgreSQL cancelled-append contract runs through both browser and bot entry
+points and requires publication/broadcast after transport cancellation.
+
+Native browser `/tell` tests inject a failed first-message insert and require no
+private directory, cursor allocation or notification to survive. Opposite-direction
+sends must share one directory and monotonic revisions; restart retains identity
+and history. Existing-chat sends need no Direct permission while new chats do.
+The PostgreSQL cancellation contract also covers uncommitted directory privacy,
+independent-writer progress and metadata notification after a cancelled first DM.
+
+The browser message-action contract runs on SQLite and PostgreSQL. It covers
+edit authority, an editor's unreferenced upload added to another author's message,
+retained attachments, stable author/sequence/Markdown, no-op edits, reaction toggles,
+room/private reply quotes and global-superuser edit context. The blocked-append
+application test requires unrelated browser edits and reactions to complete while
+the append transaction remains locked.
+
+An expired-retained-attachment regression requires native edits and reactions to
+skip unchanged attachment lookups while preserving the message sequence and
+reference. Newly introduced attachment references still undergo live validation.
+
+Native history-deletion contracts run on SQLite and PostgreSQL: failed retraction
+and multi-conversation cleanup must roll back revisions, messages and audit with
+no notifications. Coverage includes author checks, reply scrubbing, attachment
+references, preview/no-op/bulk denial, restart persistence, and exact 1,000-entry
+audit retention. Stale-revision and bulk-lock/queued-metadata tests check atomicity
+and lock ordering. PostgreSQL tests require audited deletions to progress during
+a blocked append and sends to progress during a blocked cleanup; cancellation
+retains cleanup commit, audit, publication and notifications before queued metadata.
+
+Native attachment-media HTTP contracts run on SQLite and PostgreSQL with a
+loopback object-store mock. They cover reservation/completion/read/download,
+private-directory/quota atomicity, credential/permission rechecks, published
+abandon protection and confirmed cleanup/staging grace. A PostgreSQL quota-lock
+contract checks independent accounts, cancellation and queued revocation. A SQLite
+WAL contract proves ordinary media reads use readers while command-scoped reads
+retain uncommitted transaction visibility. Latest WIP verification and outstanding
+real-binary/media checks are recorded in `database-refactor.md`.

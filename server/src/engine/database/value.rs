@@ -123,11 +123,13 @@ impl<T: Encode> Params for Vec<T> {
     }
 }
 
+#[cfg(test)]
 macro_rules! params {
     ($($param:expr),* $(,)?) => {
         &[$(&$param as &dyn $crate::engine::database::Encode),*] as &[&dyn $crate::engine::database::Encode]
     };
 }
+#[cfg(test)]
 pub(crate) use params;
 
 pub(crate) struct Row<'a> {

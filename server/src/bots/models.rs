@@ -65,12 +65,8 @@ pub(crate) fn message_json(m: &crate::engine::Message) -> serde_json::Value {
 }
 
 pub(crate) struct Receipt {
-    pub account_id: String,
-    pub key: String,
     pub digest: String,
-    pub conversation: String,
     pub sequence: u64,
-    pub created: u64,
 }
 
 pub(crate) const RECEIPT_TTL: u64 = 86400;
@@ -188,4 +184,15 @@ pub(crate) enum ConversationInput {
     Room { name: String },
     #[serde(rename = "direct")]
     Direct { username: String },
+}
+
+pub(crate) fn message_digest(input: &MessageInput) -> Result<String, super::error::Error> {
+    let canonical = serde_json::to_string(&(
+        &input.conversation_id,
+        input.text.trim(),
+        &input.reply_to,
+        input.markdown,
+    ))
+    .map_err(super::error::Error::storage)?;
+    Ok(super::digest(&canonical))
 }

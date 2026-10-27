@@ -1,20 +1,7 @@
+//! Domain metadata projection and resolved-key changes. No backend SQL lives here.
 use super::*;
+use database::{MetadataOp, MetadataSnapshot, MetadataWrite};
 
-pub(super) fn put_entity(
-    db: &Connection,
-    kind: &str,
-    key: &str,
-    value: &impl serde::Serialize,
-) -> Result<(), EngineError> {
-    let json = serde_json::to_string(value).map_err(EngineError::from)?;
-    if db.is_postgres() {
-        let projection = database::entity_projection(&json)?;
-        db.execute("INSERT INTO entities(kind,key,json,projection) VALUES($1,$2,$3,$4::text::jsonb) ON CONFLICT(kind,key) DO UPDATE SET json=excluded.json,projection=excluded.projection WHERE entities.json!=excluded.json",params![kind,key,json,projection])?;
-    } else {
-        db.execute("INSERT INTO entities(kind,key,json) VALUES(?1,?2,?3) ON CONFLICT(kind,key) DO UPDATE SET json=excluded.json WHERE json!=excluded.json",params![kind,key,json])?;
-    }
-    Ok(())
-}
 // Keep the existing JSON representation while borrowing metadata directly.
 #[derive(serde::Serialize)]
 pub(super) struct RoomMetadata<'a> {
@@ -64,7 +51,7 @@ struct StateMetadata<'a> {
     sessions: BTreeMap<String, ()>,
     policy: PolicyMetadata<'a>,
 }
-pub(super) fn write_state(db: &Connection, data: &Data) -> Result<(), EngineError> {
+pub(super) fn state_json(data: &Data) -> Result<String, EngineError> {
     let metadata = StateMetadata {
         bots: &data.bots,
         users: BTreeMap::new(),
@@ -80,129 +67,72 @@ pub(super) fn write_state(db: &Connection, data: &Data) -> Result<(), EngineErro
             audit: &[],
         },
     };
-    let json = serde_json::to_string(&metadata)?;
-    db.execute(sql("INSERT INTO state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE json!=excluded.json", "INSERT INTO state VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE state.json!=excluded.json"), params![json])?;
+    Ok(serde_json::to_string(&metadata)?)
+}
+pub(super) fn push_state(batch: &mut MetadataWrite<'_>, data: &Data) -> Result<(), EngineError> {
+    batch.operations.push(MetadataOp::State {
+        json: state_json(data)?,
+    });
     Ok(())
 }
+fn apply_entities(snapshot: MetadataSnapshot, data: &mut Data) -> Result<(), EngineError> {
+    data.next_sequence = snapshot.sequence;
+    for row in snapshot.entities {
+        let database::EntityRow {
+            kind,
+            key,
+            json,
+            revision,
+        } = row;
+        match kind.as_str() {
+            "account" => {
+                data.users.insert(key.clone(), serde_json::from_str(&json)?);
+            }
+            "session" => {
+                data.sessions
+                    .insert(key.clone(), serde_json::from_str(&json)?);
+            }
+            "room" => {
+                let mut room: Room = serde_json::from_str(&json)?;
+                room.revision = revision;
+                data.rooms.insert(key.clone(), room);
+            }
+            "private" => {
+                let mut chat: PrivateChat = serde_json::from_str(&json)?;
+                chat.revision = revision;
+                data.private.insert(key.clone(), chat);
+            }
+            _ => return Err(EngineError::unavailable("Unknown stored entity kind.")),
+        }
+    }
+    data.policy.audit = snapshot
+        .audit
+        .iter()
+        .map(|raw| serde_json::from_str(raw).map_err(EngineError::from))
+        .collect::<Result<_, _>>()?;
+    Ok(())
+}
+#[cfg(test)]
 pub(in crate::engine) fn load_entities(
     db: &Connection,
     data: &mut Data,
 ) -> Result<(), EngineError> {
-    data.next_sequence = db
-        .query_row("SELECT sequence FROM counters WHERE id=1", [], |r| r.get(0))
-        .map_err(EngineError::from)?;
-    let mut query = db
-        .prepare("SELECT kind,key,json,revision FROM entities")
-        .map_err(EngineError::from)?;
-    let rows = query
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, u64>(3)?,
-            ))
-        })
-        .map_err(EngineError::from)?;
-    for row in rows {
-        let (kind, key, json, revision) = row.map_err(EngineError::from)?;
-        match kind.as_str() {
-            "account" => {
-                data.users.insert(
-                    key.clone(),
-                    serde_json::from_str(&json).map_err(EngineError::from)?,
-                );
-            }
-            "session" => {
-                data.sessions.insert(
-                    key.clone(),
-                    serde_json::from_str(&json).map_err(EngineError::from)?,
-                );
-            }
-            "room" => {
-                data.rooms.insert(
-                    key.clone(),
-                    serde_json::from_str(&json).map_err(EngineError::from)?,
-                );
-            }
-            "private" => {
-                data.private.insert(
-                    key.clone(),
-                    serde_json::from_str(&json).map_err(EngineError::from)?,
-                );
-            }
-            _ => return Err(EngineError::unavailable("Unknown stored entity kind.")),
-        }
-        if kind == "room"
-            && let Some(room) = data.rooms.get_mut(&key)
-        {
-            room.revision = revision;
-        }
-        if kind == "private"
-            && let Some(chat) = data.private.get_mut(&key)
-        {
-            chat.revision = revision;
-        }
-    }
-
-    let mut query = db
-        .prepare("SELECT json FROM audit_entries ORDER BY sequence")
-        .map_err(EngineError::from)?;
-    let rows = query
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(EngineError::from)?;
-    data.policy.audit = rows
-        .map(|row| {
-            serde_json::from_str(&row.map_err(EngineError::from)?).map_err(EngineError::from)
-        })
-        .collect::<Result<_, EngineError>>()?;
-    Ok(())
+    apply_entities(db.metadata_snapshot()?, data)
 }
-
-pub(super) fn write_audit(db: &Connection, data: &Data) -> Result<(), EngineError> {
-    use crate::engine::database::OptionalExtension;
-    let last: Option<String> = db
-        .query_row(
-            "SELECT entry_id FROM audit_entries ORDER BY sequence DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(EngineError::from)?;
-    let start = last
-        .and_then(|id| data.policy.audit.iter().rposition(|entry| entry.id == id))
-        .map_or(0, |index| index + 1);
-    let mut inserted = 0;
-    for entry in data.policy.audit.iter().skip(start) {
-        let raw = serde_json::to_string(entry).map_err(EngineError::from)?;
-        inserted += db
-            .execute(
-                sql("INSERT OR IGNORE INTO audit_entries(entry_id,json) VALUES(?1,?2)", "INSERT INTO audit_entries(entry_id,json) VALUES($1,$2) ON CONFLICT(entry_id) DO NOTHING"),
-                params![entry.id, raw],
-            )
-            .map_err(EngineError::from)?;
-    }
-    // The first retained ID already defines the exact boundary. Seek its unique
-    // index only after append; ordinary commits perform no pruning statement.
-    if inserted > 0
-        && let Some(first) = data.policy.audit.front()
-    {
-        db.execute(sql("DELETE FROM audit_entries WHERE sequence < (SELECT sequence FROM audit_entries WHERE entry_id=?1)", "DELETE FROM audit_entries WHERE sequence < (SELECT sequence FROM audit_entries WHERE entry_id=$1)"), [&first.id]).map_err(EngineError::from)?;
-    }
-    Ok(())
+pub(super) fn write_audit<'a>(batch: &mut MetadataWrite<'a>, data: &'a Data) {
+    batch.operations.push(MetadataOp::Audit(&data.policy.audit));
 }
-
 pub(super) fn write_map_delta<T: serde::Serialize + PartialEq>(
-    db: &Connection,
-    kind: &str,
+    batch: &mut MetadataWrite<'_>,
+    kind: &'static str,
     values: &BTreeMap<String, T>,
     before: Option<&BTreeMap<String, T>>,
 ) -> Result<(), EngineError> {
-    write_map_keys(db, kind, values, before, None)
+    write_map_keys(batch, kind, values, before, None)
 }
-pub(super) fn write_map_keys<T: serde::Serialize + PartialEq>(
-    db: &Connection,
-    kind: &str,
+fn write_map_keys<T: serde::Serialize + PartialEq>(
+    batch: &mut MetadataWrite<'_>,
+    kind: &'static str,
     values: &BTreeMap<String, T>,
     before: Option<&BTreeMap<String, T>>,
     keys: Option<&BTreeSet<String>>,
@@ -213,17 +143,11 @@ pub(super) fn write_map_keys<T: serde::Serialize + PartialEq>(
     if let Some(keys) = keys {
         for key in keys {
             match (values.get(key), before.get(key)) {
-                (Some(value), old) if Some(value) != old => put_entity(db, kind, key, value)?,
-                (None, Some(_)) => {
-                    db.execute(
-                        sql(
-                            "DELETE FROM entities WHERE kind=?1 AND key=?2",
-                            "DELETE FROM entities WHERE kind=$1 AND key=$2",
-                        ),
-                        params![kind, key],
-                    )
-                    .map_err(EngineError::from)?;
-                }
+                (Some(value), old) if Some(value) != old => batch.entity(kind, key, value)?,
+                (None, Some(_)) => batch.operations.push(MetadataOp::RemoveEntity {
+                    kind,
+                    key: key.clone(),
+                }),
                 _ => {}
             }
         }
@@ -231,35 +155,31 @@ pub(super) fn write_map_keys<T: serde::Serialize + PartialEq>(
     }
     for (key, value) in values {
         if before.get(key) != Some(value) {
-            put_entity(db, kind, key, value)?;
+            batch.entity(kind, key, value)?;
         }
     }
     for key in before.keys().filter(|key| !values.contains_key(*key)) {
-        db.execute(
-            sql(
-                "DELETE FROM entities WHERE kind=?1 AND key=?2",
-                "DELETE FROM entities WHERE kind=$1 AND key=$2",
-            ),
-            params![kind, key],
-        )
-        .map_err(EngineError::from)?;
+        batch.operations.push(MetadataOp::RemoveEntity {
+            kind,
+            key: key.clone(),
+        });
     }
     Ok(())
 }
-pub(super) fn write_delta_view(
-    db: &Connection,
-    data: &Data,
+pub(super) fn write_delta_view<'a>(
+    batch: &mut MetadataWrite<'a>,
+    data: &'a Data,
     before: changes::DataView<'_>,
 ) -> Result<(), EngineError> {
     write_map_keys(
-        db,
+        batch,
         "account",
         &data.users,
         before.users,
         before.keys.map(|keys| &keys.users),
     )?;
     write_map_keys(
-        db,
+        batch,
         "session",
         &data.sessions,
         before.sessions,
@@ -331,38 +251,26 @@ pub(super) fn write_delta_view(
             if let Some((_, revision)) = current {
                 if kind == "room" {
                     if let Some(room) = data.rooms.get(key) {
-                        put_entity(db, kind, key, &room_metadata(room))?;
+                        batch.entity(kind, key, &room_metadata(room))?;
                     }
                 } else if let Some(chat) = data.private.get(key) {
-                    put_entity(db, kind, key, &private_metadata(chat))?;
+                    batch.entity(kind, key, &private_metadata(chat))?;
                 }
-                db.execute(
-                    sql(
-                        "UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2 AND revision!=?3",
-                        "UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2 AND revision!=$3",
-                    ),
-                    params![kind, key, revision],
-                )
-                .map_err(EngineError::from)?;
+                batch.operations.push(MetadataOp::Revision {
+                    kind,
+                    key: key.clone(),
+                    revision,
+                });
             } else if let Some((id, _)) = previous {
                 if !current_ids.contains(id) {
-                    db.execute(
-                        sql(
-                            "DELETE FROM messages WHERE conversation=?1",
-                            "DELETE FROM messages WHERE conversation=$1",
-                        ),
-                        [id],
-                    )
-                    .map_err(EngineError::from)?;
+                    batch.operations.push(MetadataOp::RemoveMessages {
+                        conversation: id.into(),
+                    });
                 }
-                db.execute(
-                    sql(
-                        "DELETE FROM entities WHERE kind=?1 AND key=?2",
-                        "DELETE FROM entities WHERE kind=$1 AND key=$2",
-                    ),
-                    params![kind, key],
-                )
-                .map_err(EngineError::from)?;
+                batch.operations.push(MetadataOp::RemoveEntity {
+                    kind,
+                    key: key.clone(),
+                });
             }
         }
     }
@@ -373,35 +281,12 @@ pub(super) fn write_delta_view(
                 .is_none_or(|current| current.id != old.id)
                 && !data.users.values().any(|current| current.id == old.id)
         }) {
-            db.execute(
-                sql(
-                    "DELETE FROM bot_receipts WHERE account_id=?1",
-                    "DELETE FROM bot_receipts WHERE account_id=$1",
-                ),
-                [&account.id],
-            )
-            .map_err(EngineError::from)?;
-            db.execute(
-                sql(
-                    "DELETE FROM bot_command_receipts WHERE account_id=?1",
-                    "DELETE FROM bot_command_receipts WHERE account_id=$1",
-                ),
-                [&account.id],
-            )
-            .map_err(EngineError::from)?;
+            batch.operations.push(MetadataOp::RemoveAccountReceipts {
+                account: account.id.clone(),
+            });
         }
     }
-    if data.next_sequence != before.next_sequence {
-        db.execute(
-            sql(
-                "UPDATE counters SET sequence=?1 WHERE id=1",
-                "UPDATE counters SET sequence=$1 WHERE id=1",
-            ),
-            [data.next_sequence],
-        )
-        .map_err(EngineError::from)?;
-    }
-    write_audit(db, data)?;
+    write_audit(batch, data);
     if data.policy.revision != before.policy.revision
         || data.policy.assignments != before.policy.assignments
         || data.policy.grants != before.policy.grants
@@ -417,32 +302,20 @@ pub(super) fn write_delta_view(
             )
         })
     {
-        write_state(db, data)?;
+        push_state(batch, data)?;
     }
     Ok(())
 }
-
 pub(super) type ReadPositions = BTreeMap<String, BTreeMap<String, u64>>;
-
 pub(super) fn load_data(db: &Connection) -> Result<Data, EngineError> {
-    let raw: String = db.query_row("SELECT json FROM state WHERE id=1", [], |r| r.get(0))?;
-    let mut data: Data = serde_json::from_str(&raw)?;
-    load_entities(db, &mut data)?;
+    let snapshot = db.metadata_snapshot()?;
+    let mut data: Data = serde_json::from_str(&snapshot.state)?;
+    apply_entities(snapshot, &mut data)?;
     Ok(data)
 }
-
 pub(super) fn load_read_positions(db: &Connection) -> Result<ReadPositions, EngineError> {
-    let mut positions = BTreeMap::<String, BTreeMap<String, u64>>::new();
-    let mut query = db.prepare("SELECT username,conversation,sequence FROM read_positions")?;
-    let rows = query.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, u64>(2)?,
-        ))
-    })?;
-    for row in rows {
-        let (user, view, through) = row?;
+    let mut positions = ReadPositions::new();
+    for (user, view, through) in db.cursor_rows()? {
         positions.entry(user).or_default().insert(view, through);
     }
     Ok(positions)
