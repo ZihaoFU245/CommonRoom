@@ -2112,7 +2112,7 @@ async fn media_and_avatar_storage_failures_are_retryable_instead_of_invalid_requ
     let mut app = login_test_app();
     app.engine = Arc::new(RwLock::new(engine));
     app.media = Some(crate::media::tests::test_storage("http://127.0.0.1:1"));
-    let db = rusqlite::Connection::open(&path).unwrap();
+    let db = crate::engine::database::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER reject_upload BEFORE INSERT ON media BEGIN SELECT RAISE(FAIL,'injected database failure'); END;").unwrap();
     for (method, path, body, status, code) in [
         (
@@ -2219,7 +2219,7 @@ async fn real_login_logout_and_failure_write_only_bounded_auth_event_fields() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    let db = rusqlite::Connection::open(&path).unwrap();
+    let db = crate::engine::database::Connection::open(&path).unwrap();
     let rows = db
         .prepare("SELECT username,client,outcome FROM auth_events ORDER BY sequence")
         .unwrap()
@@ -2352,7 +2352,7 @@ async fn expired_attachment_metadata_is_opt_in_and_never_grants_file_access() {
     let file = format!("/api/media/{}/file", media.id);
     let link = format!("[report]({file})");
     engine.execute(Some("alice"), Some("files"), &link).unwrap();
-    let db = rusqlite::Connection::open(&path).unwrap();
+    let db = crate::engine::database::Connection::open(&path).unwrap();
     db.execute("UPDATE media SET expires=1 WHERE id=?1", [&media.id])
         .unwrap();
     let mut app = login_test_app();

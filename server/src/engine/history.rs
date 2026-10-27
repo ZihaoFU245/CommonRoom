@@ -4,8 +4,8 @@ mod cache;
 mod page;
 mod unread;
 use cache::*;
+use database::SqliteAccess;
 pub use page::{HistoryRange, MessagePage};
-use rusqlite::OpenFlags;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -117,14 +117,14 @@ impl HistoryStore {
         let mut readers = Vec::new();
         for _ in 0..4 {
             let flags = if memory {
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI
+                SqliteAccess::ReadWrite
             } else {
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI
+                SqliteAccess::ReadOnly
             };
             let db = if postgres {
                 Connection::postgres(location, true)?
             } else {
-                let db = Connection::open_with_flags(location, flags)?;
+                let db = Connection::open_with_access(location, flags)?;
                 db.busy_timeout(std::time::Duration::from_secs(2))?;
                 db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-2048;")?;
                 db

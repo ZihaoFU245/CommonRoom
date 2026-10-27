@@ -13,7 +13,7 @@ mod bot_api;
 mod bots;
 mod cleanup;
 pub(crate) mod colors;
-mod database;
+pub(crate) mod database;
 mod dispatch;
 mod error;
 mod helpers;

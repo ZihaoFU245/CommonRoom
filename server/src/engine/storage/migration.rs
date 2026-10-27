@@ -130,8 +130,7 @@ impl Engine {
         lock.try_lock().map_err(|_| {
             EngineError::Conflict("Stop the SQLite server before migrating its data.".into())
         })?;
-        let source =
-            Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let source = Connection::open_with_access(source, database::SqliteAccess::ReadOnly)?;
         source.busy_timeout(std::time::Duration::from_secs(2))?;
         let snapshot = source.unchecked_transaction()?;
         let version: u32 = snapshot.query_row("PRAGMA user_version", [], |row| row.get(0))?;

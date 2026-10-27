@@ -58,11 +58,6 @@ impl From<EngineError> for String {
         error.message().to_owned()
     }
 }
-impl From<rusqlite::Error> for EngineError {
-    fn from(cause: rusqlite::Error) -> Self {
-        Self::unavailable(cause)
-    }
-}
 impl From<super::database::Error> for EngineError {
     fn from(cause: super::database::Error) -> Self {
         Self::unavailable(cause)

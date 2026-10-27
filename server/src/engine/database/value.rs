@@ -134,8 +134,8 @@ pub(crate) struct Row<'a> {
     pub(super) inner: RowData<'a>,
 }
 pub(super) enum RowData<'a> {
-    Sqlite(&'a rusqlite::Row<'a>),
-    Postgres(&'a postgres::Row),
+    Sqlite(&'a sqlx::sqlite::SqliteRow),
+    Postgres(&'a sqlx::postgres::PgRow),
 }
 pub(crate) trait ColumnIndex {
     fn index(self) -> usize;
@@ -147,100 +147,42 @@ impl ColumnIndex for usize {
 }
 impl Row<'_> {
     pub(crate) fn get<I: ColumnIndex, T: Decode>(&self, index: I) -> Result<T> {
+        use sqlx::{Row as _, TypeInfo as _, ValueRef as _};
         let index = index.index();
         let value = match self.inner {
-            RowData::Sqlite(row) => match row.get_ref(index)? {
-                rusqlite::types::ValueRef::Null => Value::Null,
-                rusqlite::types::ValueRef::Integer(n) => Value::Integer(n),
-                rusqlite::types::ValueRef::Real(n) => Value::Real(n),
-                rusqlite::types::ValueRef::Text(s) => Value::Text(
-                    std::str::from_utf8(s)
-                        .map_err(|_| Error::Conversion("Invalid UTF-8"))?
-                        .into(),
-                ),
-                rusqlite::types::ValueRef::Blob(b) => Value::Blob(b.into()),
-            },
-            RowData::Postgres(row) => {
-                use postgres::types::Type;
-                let ty = row
-                    .columns()
-                    .get(index)
-                    .ok_or(Error::Conversion("Missing column"))?
-                    .type_();
-                match *ty {
-                    Type::INT8 => row.try_get::<_, Option<i64>>(index)?.map(Value::Integer),
-                    Type::INT4 => row
-                        .try_get::<_, Option<i32>>(index)?
-                        .map(|n| Value::Integer(i64::from(n))),
-                    Type::INT2 => row
-                        .try_get::<_, Option<i16>>(index)?
-                        .map(|n| Value::Integer(i64::from(n))),
-                    Type::BOOL => row
-                        .try_get::<_, Option<bool>>(index)?
-                        .map(|n| Value::Integer(i64::from(n))),
-                    Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
-                        row.try_get::<_, Option<String>>(index)?.map(Value::Text)
+            RowData::Sqlite(row) => {
+                let raw = row.try_get_raw(index)?;
+                if raw.is_null() {
+                    Value::Null
+                } else {
+                    match raw.type_info().name() {
+                        "INTEGER" => Value::Integer(row.try_get(index)?),
+                        "REAL" => Value::Real(row.try_get(index)?),
+                        "TEXT" => Value::Text(row.try_get(index)?),
+                        "BLOB" => Value::Blob(row.try_get(index)?),
+                        "BOOLEAN" => Value::Integer(i64::from(row.try_get::<bool, _>(index)?)),
+                        _ => return Err(Error::Conversion("Unsupported SQLite column type")),
                     }
-                    Type::BYTEA => row.try_get::<_, Option<Vec<u8>>>(index)?.map(Value::Blob),
-                    Type::FLOAT8 => row.try_get::<_, Option<f64>>(index)?.map(Value::Real),
-                    _ => return Err(Error::Conversion("Unsupported PostgreSQL column type")),
                 }
-                .unwrap_or(Value::Null)
+            }
+            RowData::Postgres(row) => {
+                let raw = row.try_get_raw(index)?;
+                if raw.is_null() {
+                    Value::Null
+                } else {
+                    match raw.type_info().name() {
+                        "INT8" => Value::Integer(row.try_get(index)?),
+                        "INT4" => Value::Integer(i64::from(row.try_get::<i32, _>(index)?)),
+                        "INT2" => Value::Integer(i64::from(row.try_get::<i16, _>(index)?)),
+                        "BOOL" => Value::Integer(i64::from(row.try_get::<bool, _>(index)?)),
+                        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" => Value::Text(row.try_get(index)?),
+                        "BYTEA" => Value::Blob(row.try_get(index)?),
+                        "FLOAT8" => Value::Real(row.try_get(index)?),
+                        _ => return Err(Error::Conversion("Unsupported PostgreSQL column type")),
+                    }
+                }
             }
         };
         T::decode(value)
     }
-}
-
-pub(super) fn sqlite_values(values: Vec<Value>) -> Vec<rusqlite::types::Value> {
-    values
-        .into_iter()
-        .map(|value| match value {
-            Value::Null => rusqlite::types::Value::Null,
-            Value::Integer(n) => rusqlite::types::Value::Integer(n),
-            Value::Real(n) => rusqlite::types::Value::Real(n),
-            Value::Text(s) => rusqlite::types::Value::Text(s),
-            Value::Blob(b) => rusqlite::types::Value::Blob(b),
-        })
-        .collect()
-}
-
-pub(super) fn postgres_values(
-    values: Vec<Value>,
-    types: &[postgres::types::Type],
-) -> Result<Vec<Box<dyn postgres::types::ToSql + Sync>>> {
-    use postgres::types::Type;
-    if values.len() != types.len() {
-        return Err(Error::Conversion("Incorrect parameter count"));
-    }
-    values
-        .into_iter()
-        .zip(types)
-        .map(|(value, ty)| {
-            let result: Box<dyn postgres::types::ToSql + Sync> = match (value, ty) {
-                (Value::Null, &Type::INT8) => Box::new(None::<i64>),
-                (Value::Null, &Type::INT4) => Box::new(None::<i32>),
-                (Value::Null, &Type::INT2) => Box::new(None::<i16>),
-                (Value::Null, &Type::BOOL) => Box::new(None::<bool>),
-                (Value::Null, &Type::BYTEA) => Box::new(None::<Vec<u8>>),
-                (Value::Null, _) => Box::new(None::<String>),
-                (Value::Integer(n), &Type::INT4) => Box::new(
-                    i32::try_from(n).map_err(|_| Error::Conversion("Integer out of range"))?,
-                ),
-                (Value::Integer(n), &Type::INT2) => Box::new(
-                    i16::try_from(n).map_err(|_| Error::Conversion("Integer out of range"))?,
-                ),
-                (Value::Integer(n), &Type::BOOL) if n == 0 || n == 1 => Box::new(n == 1),
-                (Value::Integer(n), _) => Box::new(n),
-                (Value::Text(s), &Type::JSONB) => Box::new(
-                    serde_json::from_str::<serde_json::Value>(&s)
-                        .map_err(|_| Error::Conversion("Invalid JSONB projection"))?,
-                ),
-                (Value::Text(s), _) => Box::new(s),
-                (Value::Real(n), _) => Box::new(n),
-                (Value::Blob(b), _) => Box::new(b),
-            };
-            Ok(result)
-        })
-        .collect()
 }

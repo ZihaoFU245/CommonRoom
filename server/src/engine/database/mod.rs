@@ -1,50 +1,64 @@
-//! Synchronous database boundary. SQL dialects are explicit at the call site;
-//! neither backend uses a shadow database or runtime SQL translation.
+//! Database connections backed by SQLx. Backend SQL is always explicit.
+//! The synchronous surface is transitional while domain operations move behind
+//! the async storage dispatcher; drivers themselves live in separate modules.
+mod native;
+use native::Native;
+mod postgres;
 mod projection;
+mod runtime;
+mod sqlite;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(crate) mod tests;
 mod value;
+use futures_util::TryStreamExt;
 pub(crate) use projection::{entity_projection, message_projection};
+use sqlx::Executor as _;
+use sqlx::Statement as _;
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
-pub(crate) use value::{Encode, Params, Row, Value, params};
+pub(crate) use value::{Encode, params};
+pub(crate) use value::{Params, Row, Value};
 
 #[derive(Debug)]
 pub(crate) enum Error {
-    Sqlite(rusqlite::Error),
-    Postgres(postgres::Error),
+    Driver(sqlx::Error),
     Conversion(&'static str),
     NoRows,
+    RestartRequired,
 }
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Sqlite(error) => write!(f, "SQLite operation failed: {error}"),
-            // PostgreSQL detail/context can contain private row values.
-            Self::Postgres(error) => write!(
+            // Neither SQL text nor driver details may expose private row values.
+            Self::Driver(sqlx::Error::Database(error)) => write!(
                 f,
-                "PostgreSQL operation failed ({})",
-                error.code().map_or("connection", |code| code.code())
+                "Database operation failed ({})",
+                error.code().as_deref().unwrap_or("database")
             ),
+            Self::Driver(_) => f.write_str("Database connection or operation failed"),
             Self::Conversion(message) => f.write_str(message),
             Self::NoRows => f.write_str("Database row not found"),
+            Self::RestartRequired => f.write_str("Database unavailable; restart the service"),
         }
     }
 }
 impl std::error::Error for Error {}
-impl From<rusqlite::Error> for Error {
-    fn from(error: rusqlite::Error) -> Self {
-        Self::Sqlite(error)
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Driver(sqlx::Error::Io(error))
     }
 }
-impl From<postgres::Error> for Error {
-    fn from(error: postgres::Error) -> Self {
-        Self::Postgres(error)
+impl From<sqlx::Error> for Error {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Driver(error)
     }
 }
 pub(crate) trait OptionalExtension<T> {
@@ -53,11 +67,44 @@ pub(crate) trait OptionalExtension<T> {
 impl<T> OptionalExtension<T> for Result<T> {
     fn optional(self) -> Result<Option<T>> {
         match self {
-            Err(Error::NoRows) | Err(Error::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => {
-                Ok(None)
-            }
+            Err(Error::NoRows) | Err(Error::Driver(sqlx::Error::RowNotFound)) => Ok(None),
             result => result.map(Some),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum SqliteAccess {
+    ReadWrite,
+    ReadOnly,
+}
+#[cfg(test)]
+pub(crate) enum TransactionBehavior {
+    Immediate,
+}
+
+#[derive(Clone, Default)]
+struct TransactionState(Arc<AtomicBool>);
+impl TransactionState {
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+    fn set(&self, value: bool) {
+        self.0.store(value, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Default)]
+struct ChangeCount(Arc<AtomicU64>);
+impl ChangeCount {
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+    fn set(&self, value: u64) {
+        self.0.store(value, Ordering::Release);
+    }
+    fn add(&self, value: u64) {
+        self.0.fetch_add(value, Ordering::AcqRel);
     }
 }
 
@@ -87,214 +134,140 @@ impl<'a> From<&'a String> for Sql<'a> {
 }
 
 pub(crate) struct Connection {
-    backend: Backend,
+    backend: RefCell<Backend>,
     readonly: bool,
-    changes: Cell<u64>,
-    transaction: Cell<bool>,
+    changes: ChangeCount,
+    transaction: TransactionState,
     command_root: Cell<bool>,
     serial: Cell<u64>,
     failed: Cell<bool>,
 }
 enum Backend {
     Closed,
-    Sqlite(rusqlite::Connection),
-    Postgres {
-        client: RefCell<Box<postgres::Client>>,
-        statements: RefCell<HashMap<String, postgres::Statement>>,
-    },
+    Sqlite(Native<sqlx::Sqlite>),
+    Postgres(Native<sqlx::Postgres>),
 }
 impl Connection {
-    /// Stream an offline transfer without retaining the source table in memory.
-    /// Identifiers are supplied only by the migration's static table manifest.
-    pub(crate) fn copy_from(
-        &self,
-        table: &str,
-        columns: &[&str],
-        produce: impl FnOnce(&mut dyn FnMut(Vec<Value>) -> Result<()>) -> Result<()>,
-    ) -> Result<u64> {
-        self.ensure_available()?;
-        let Backend::Postgres { client, .. } = &self.backend else {
-            return Err(Error::Conversion("COPY requires PostgreSQL"));
-        };
-        let names = columns.join(",");
-        let placeholders = (1..=columns.len())
-            .map(|i| format!("${i}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut client = client.borrow_mut();
-        let insert = client
-            .prepare(&format!(
-                "INSERT INTO {table}({names}) VALUES({placeholders})"
-            ))
-            .map_err(|error| self.postgres_error(error))?;
-        let types = insert.params();
-        let sink = client
-            .copy_in(&format!("COPY {table}({names}) FROM STDIN BINARY"))
-            .map_err(|error| self.postgres_error(error))?;
-        let mut writer = postgres::binary_copy::BinaryCopyInWriter::new(sink, types);
-        produce(&mut |values| {
-            let values = value::postgres_values(values, types)?;
-            let refs: Vec<_> = values.iter().map(|v| v.as_ref()).collect();
-            writer
-                .write(&refs)
-                .map_err(|error| self.postgres_error(error))?;
-            Ok(())
-        })?;
-        let count = writer
-            .finish()
-            .map_err(|error| self.postgres_error(error))?;
-        self.changes.set(self.changes.get().wrapping_add(count));
-        Ok(count)
-    }
-
-    pub(crate) fn visit_rows(
-        &self,
-        query: &str,
-        mut visit: impl FnMut(&Row<'_>) -> Result<()>,
-    ) -> Result<()> {
-        self.ensure_available()?;
-        match &self.backend {
-            Backend::Closed => return Err(Error::Conversion("Database closed")),
-            Backend::Sqlite(db) => {
-                let mut statement = db.prepare(query)?;
-                let mut rows = statement.query([])?;
-                while let Some(row) = rows.next()? {
-                    visit(&Row {
-                        inner: value::RowData::Sqlite(row),
-                    })?;
-                }
-            }
-            Backend::Postgres { client, .. } => {
-                use postgres::fallible_iterator::FallibleIterator;
-                let mut client = client.borrow_mut();
-                let mut rows = client
-                    .query_raw(
-                        query,
-                        std::iter::empty::<&(dyn postgres::types::ToSql + Sync)>(),
-                    )
-                    .map_err(|error| self.postgres_error(error))?;
-                while let Some(row) = rows.next().map_err(|error| self.postgres_error(error))? {
-                    visit(&Row {
-                        inner: value::RowData::Postgres(&row),
-                    })?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self::sqlite(rusqlite::Connection::open(path)?))
-    }
-    pub(crate) fn open_with_flags(
-        path: impl AsRef<Path>,
-        flags: rusqlite::OpenFlags,
-    ) -> Result<Self> {
-        Ok(Self::sqlite(rusqlite::Connection::open_with_flags(
-            path, flags,
-        )?))
-    }
-    fn sqlite(connection: rusqlite::Connection) -> Self {
+    fn new(backend: Backend, readonly: bool) -> Self {
         Self {
-            backend: Backend::Sqlite(connection),
-            readonly: false,
-            changes: Cell::new(0),
-            transaction: Cell::new(false),
+            backend: RefCell::new(backend),
+            readonly,
+            changes: ChangeCount::default(),
+            transaction: TransactionState::default(),
             command_root: Cell::new(false),
             serial: Cell::new(0),
             failed: Cell::new(false),
         }
+    }
+    pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_access(path, SqliteAccess::ReadWrite)
+    }
+    pub(crate) fn open_with_access(path: impl AsRef<Path>, access: SqliteAccess) -> Result<Self> {
+        let readonly = matches!(access, SqliteAccess::ReadOnly);
+        let db = Native::Owned(runtime::run(sqlite::open(path.as_ref(), readonly))?);
+        runtime::run(Self::sqlite_session(db, readonly, ChangeCount::default()))
+    }
+    async fn sqlite_session(
+        mut db: Native<sqlx::Sqlite>,
+        readonly: bool,
+        changes: ChangeCount,
+    ) -> Result<Self> {
+        let transaction = TransactionState::default();
+        let committed = transaction.clone();
+        let rolled_back = transaction.clone();
+        {
+            let mut handle = db.lock_handle().await?;
+            handle.set_commit_hook(move || {
+                committed.set(false);
+                true
+            });
+            handle.set_rollback_hook(move || rolled_back.set(false));
+        }
+        let mut connection = Self::new(Backend::Sqlite(db), readonly);
+        connection.transaction = transaction;
+        connection.changes = changes;
+        Ok(connection)
     }
     pub(crate) fn postgres(url: &str, readonly: bool) -> Result<Self> {
-        let tls = native_tls::TlsConnector::builder()
-            .build()
-            .map_err(|_| Error::Conversion("Cannot initialize database TLS"))?;
-        let mut config: postgres::Config = url.parse()?;
-        config.connect_timeout(std::time::Duration::from_secs(5));
-        let mut client = config.connect(postgres_native_tls::MakeTlsConnector::new(tls))?;
-        client.batch_execute("SET statement_timeout='10s'; SET lock_timeout='2s'; SET idle_in_transaction_session_timeout='30s';")?;
-        if readonly {
-            client.batch_execute("SET default_transaction_read_only=on;")?;
-        }
-        Ok(Self {
-            backend: Backend::Postgres {
-                client: RefCell::new(Box::new(client)),
-                statements: RefCell::new(HashMap::new()),
-            },
+        Ok(Self::new(
+            Backend::Postgres(Native::Owned(runtime::run(postgres::open(url, readonly))?)),
             readonly,
-            changes: Cell::new(0),
-            transaction: Cell::new(false),
-            command_root: Cell::new(false),
-            serial: Cell::new(0),
-            failed: Cell::new(false),
-        })
+        ))
     }
     pub(crate) fn is_postgres(&self) -> bool {
-        matches!(self.backend, Backend::Postgres { .. })
+        matches!(*self.backend.borrow(), Backend::Postgres(_))
     }
     pub(crate) fn ensure_available(&self) -> Result<()> {
-        let closed = match &self.backend {
-            Backend::Closed => true,
-            Backend::Postgres { client, .. } => client.borrow().is_closed(),
-            Backend::Sqlite(_) => false,
-        };
-        if self.failed.get() || closed {
-            Err(Error::Conversion(
-                "Database connection or transaction lost; restart the service",
-            ))
+        if self.failed.get() || matches!(*self.backend.borrow(), Backend::Closed) {
+            Err(Error::RestartRequired)
         } else {
             Ok(())
         }
     }
-    fn postgres_error(&self, error: postgres::Error) -> Error {
-        // A synchronous driver's channel may not report `is_closed` until its
-        // runtime is polled again. A FATAL response or transport failure already
-        // proves that this engine's owning session cannot be reused.
-        if error.code().is_none()
-            || error
-                .as_db_error()
-                .is_some_and(|db| matches!(db.severity(), "FATAL" | "PANIC"))
-        {
-            self.failed.set(true);
+    fn checked<T>(&self, result: Result<T>) -> Result<T> {
+        if let Err(error) = &result {
+            self.observe_error(error);
         }
-        Error::Postgres(error)
+        result
     }
-    fn selected<'a>(&self, query: Sql<'a>) -> &'a str {
-        if self.is_postgres() {
-            query.postgres
-        } else {
-            query.sqlite
+    fn observe_error(&self, error: &Error) {
+        if let Error::Driver(error) = error {
+            let fatal = match error {
+                sqlx::Error::Database(db) => db
+                    .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                    .is_some_and(|pg| {
+                        matches!(
+                            pg.severity(),
+                            sqlx::postgres::PgSeverity::Fatal | sqlx::postgres::PgSeverity::Panic
+                        )
+                    }),
+                sqlx::Error::Io(_)
+                | sqlx::Error::Tls(_)
+                | sqlx::Error::Protocol(_)
+                | sqlx::Error::WorkerCrashed => true,
+                _ => false,
+            };
+            if fatal {
+                self.failed.set(true);
+            }
         }
     }
     pub(crate) fn prepare<'c, 'q>(&'c self, query: impl Into<Sql<'q>>) -> Result<Statement<'c>> {
         self.ensure_available()?;
-        let query = self.selected(query.into());
-        let inner = match &self.backend {
-            Backend::Closed => return Err(Error::Conversion("Database closed")),
-            Backend::Sqlite(db) => StatementData::Sqlite(db.prepare_cached(query)?),
-            Backend::Postgres { client, statements } => {
-                let cached = statements.borrow().get(query).cloned();
-                let statement = if let Some(statement) = cached {
-                    statement
-                } else {
-                    let statement = client
-                        .borrow_mut()
-                        .prepare(query)
-                        .map_err(|error| self.postgres_error(error))?;
-                    // Bound the cache; ad-hoc maintenance queries cannot grow it indefinitely.
-                    let mut statements = statements.borrow_mut();
-                    if statements.len() >= 256 {
-                        statements.clear();
-                    }
-                    statements.insert(query.into(), statement.clone());
-                    statement
-                };
-                StatementData::Postgres(statement)
-            }
+        let query = query.into();
+        let query = if self.is_postgres() {
+            query.postgres
+        } else {
+            query.sqlite
+        }
+        .to_owned();
+        let parameters = {
+            let mut backend = self.backend.borrow_mut();
+            let parameters = match &mut *backend {
+                Backend::Sqlite(db) => runtime::run(async {
+                    Ok(db
+                        .prepare(&query)
+                        .await?
+                        .parameters()
+                        .map(|p| p.map_left(|p| p.len()).into_inner())
+                        .unwrap_or(0))
+                }),
+                Backend::Postgres(db) => runtime::run(async {
+                    Ok(db
+                        .prepare(&query)
+                        .await?
+                        .parameters()
+                        .map(|p| p.map_left(|p| p.len()).into_inner())
+                        .unwrap_or(0))
+                }),
+                Backend::Closed => Err(Error::Conversion("Database closed")),
+            };
+            self.checked(parameters)?
         };
         Ok(Statement {
             connection: self,
-            inner,
+            query,
+            parameters,
         })
     }
     pub(crate) fn prepare_cached<'c, 'q>(
@@ -320,46 +293,93 @@ impl Connection {
     }
     pub(crate) fn execute_batch(&self, query: &str) -> Result<()> {
         self.ensure_available()?;
-        match &self.backend {
+        let mut backend = self.backend.borrow_mut();
+        let result = match &mut *backend {
+            Backend::Sqlite(db) => runtime::run(async {
+                (&mut **db).execute(query).await?;
+                let count: i64 = sqlx::query_scalar("SELECT total_changes()")
+                    .fetch_one(&mut **db)
+                    .await?;
+                Ok(Some(u64::try_from(count).map_err(|_| {
+                    Error::Conversion("Invalid SQLite change count")
+                })?))
+            }),
+            Backend::Postgres(db) => runtime::run(async {
+                (&mut **db).execute(query).await?;
+                Ok(None)
+            }),
             Backend::Closed => Err(Error::Conversion("Database closed")),
-            Backend::Sqlite(db) => db.execute_batch(query).map_err(Error::from),
-            Backend::Postgres { client, .. } => client
-                .borrow_mut()
-                .batch_execute(query)
-                .map_err(|error| self.postgres_error(error)),
+        };
+        if let Some(count) = self.checked(result)? {
+            self.changes.set(count);
         }
+        Ok(())
     }
     pub(crate) fn total_changes(&self) -> u64 {
-        match &self.backend {
-            Backend::Closed => 0,
-            Backend::Sqlite(db) => db.total_changes(),
-            Backend::Postgres { .. } => self.changes.get(),
-        }
+        self.changes.get()
     }
     pub(crate) fn is_autocommit(&self) -> bool {
-        match &self.backend {
-            Backend::Closed => true,
-            Backend::Sqlite(db) => db.is_autocommit(),
-            Backend::Postgres { .. } => !self.transaction.get(),
-        }
+        !self.transaction.get()
     }
     pub(crate) fn busy_timeout(&self, timeout: std::time::Duration) -> Result<()> {
-        match &self.backend {
-            Backend::Closed => Err(Error::Conversion("Database closed")),
-            Backend::Sqlite(db) => db.busy_timeout(timeout).map_err(Error::from),
-            Backend::Postgres { .. } => {
-                Err(Error::Conversion("busy_timeout applies only to SQLite"))
-            }
+        if self.is_postgres() {
+            return Err(Error::Conversion("busy_timeout applies only to SQLite"));
         }
+        self.execute_batch(&format!("PRAGMA busy_timeout={}", timeout.as_millis()))
+    }
+    pub(crate) fn visit_rows(
+        &self,
+        query: &str,
+        mut visit: impl FnMut(&Row<'_>) -> Result<()>,
+    ) -> Result<()> {
+        self.ensure_available()?;
+        let mut backend = self.backend.borrow_mut();
+        match &mut *backend {
+            Backend::Sqlite(db) => {
+                let mut rows = sqlx::query(query).fetch(&mut **db);
+                while let Some(row) =
+                    self.checked(runtime::run(async { Ok(rows.try_next().await?) }))?
+                {
+                    visit(&Row {
+                        inner: value::RowData::Sqlite(&row),
+                    })?;
+                }
+            }
+            Backend::Postgres(db) => {
+                let mut rows = sqlx::query(query).fetch(&mut **db);
+                while let Some(row) =
+                    self.checked(runtime::run(async { Ok(rows.try_next().await?) }))?
+                {
+                    visit(&Row {
+                        inner: value::RowData::Postgres(&row),
+                    })?;
+                }
+            }
+            Backend::Closed => return Err(Error::Conversion("Database closed")),
+        }
+        Ok(())
+    }
+    pub(crate) fn copy_from(
+        &self,
+        table: &str,
+        columns: &[&str],
+        produce: impl FnOnce(&mut dyn FnMut(Vec<Value>) -> Result<()>) -> Result<()>,
+    ) -> Result<u64> {
+        self.ensure_available()?;
+        let mut backend = self.backend.borrow_mut();
+        let Backend::Postgres(db) = &mut *backend else {
+            return Err(Error::Conversion("COPY requires PostgreSQL"));
+        };
+        let result = postgres::copy_from(db, table, columns, produce);
+        let count = self.checked(result)?;
+        self.changes.add(count);
+        Ok(count)
     }
     pub(crate) fn pragma_update(&self, _: Option<&str>, name: &str, value: u32) -> Result<()> {
-        match &self.backend {
-            Backend::Closed => Err(Error::Conversion("Database closed")),
-            Backend::Sqlite(db) => db.pragma_update(None, name, value).map_err(Error::from),
-            Backend::Postgres { .. } => {
-                Err(Error::Conversion("SQLite pragma requested on PostgreSQL"))
-            }
+        if self.is_postgres() {
+            return Err(Error::Conversion("SQLite pragma requested on PostgreSQL"));
         }
+        self.execute_batch(&format!("PRAGMA {name}={value}"))
     }
     pub(crate) fn unchecked_transaction(&self) -> Result<Transaction<'_>> {
         if !self.is_autocommit() {
@@ -457,12 +477,10 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn transaction_with_behavior(
         &mut self,
-        behavior: rusqlite::TransactionBehavior,
+        behavior: TransactionBehavior,
     ) -> Result<Transaction<'_>> {
         let begin = match behavior {
-            rusqlite::TransactionBehavior::Immediate => "BEGIN IMMEDIATE",
-            rusqlite::TransactionBehavior::Exclusive => "BEGIN EXCLUSIVE",
-            _ => "BEGIN",
+            TransactionBehavior::Immediate => "BEGIN IMMEDIATE",
         };
         self.execute_batch(begin)?;
         self.transaction.set(true);
@@ -477,14 +495,17 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        let backend = std::mem::replace(&mut self.backend, Backend::Closed);
-        // The last App/HistoryStore owner can be released by an async socket or
-        // shutdown task. The synchronous driver's runtime must close off Tokio.
-        if matches!(backend, Backend::Postgres { .. })
-            && tokio::runtime::Handle::try_current().is_ok()
-            && std::thread::spawn(move || drop(backend)).join().is_err()
-        {
-            tracing::error!("Database shutdown worker failed");
+        if self.transaction.get() && !self.failed.get() {
+            self.rollback_root();
+        }
+        let backend = std::mem::replace(self.backend.get_mut(), Backend::Closed);
+        let result = match backend {
+            Backend::Sqlite(db) => db.release(self.failed.get()),
+            Backend::Postgres(db) => db.release(self.failed.get()),
+            Backend::Closed => Ok(()),
+        };
+        if result.is_err() {
+            tracing::error!("Database shutdown failed");
         }
     }
 }
@@ -515,6 +536,8 @@ impl Transaction<'_> {
         }
         if self.name.is_none() || self.root && self.connection.is_postgres() {
             self.connection.commit_root()?;
+        } else if self.root {
+            self.connection.transaction.set(false);
         }
         self.finished = true;
         Ok(())
@@ -535,6 +558,8 @@ impl Drop for Transaction<'_> {
             }
             if self.root && self.connection.is_postgres() {
                 self.connection.rollback_root();
+            } else if self.root {
+                self.connection.transaction.set(false);
             }
         } else {
             self.connection.rollback_root();
@@ -544,19 +569,13 @@ impl Drop for Transaction<'_> {
 
 pub(crate) struct Statement<'a> {
     connection: &'a Connection,
-    inner: StatementData<'a>,
-}
-enum StatementData<'a> {
-    Sqlite(rusqlite::CachedStatement<'a>),
-    Postgres(postgres::Statement),
+    query: String,
+    parameters: usize,
 }
 impl Statement<'_> {
     #[cfg(test)]
     pub(crate) fn parameter_count(&self) -> usize {
-        match &self.inner {
-            StatementData::Sqlite(statement) => statement.parameter_count(),
-            StatementData::Postgres(statement) => statement.params().len(),
-        }
+        self.parameters
     }
     #[cfg(test)]
     pub(crate) fn exists(&mut self, params: impl Params) -> Result<bool> {
@@ -565,28 +584,25 @@ impl Statement<'_> {
             .map(|row| row.is_some())
     }
     pub(crate) fn execute(&mut self, params: impl Params) -> Result<usize> {
+        self.connection.ensure_available()?;
         let values = params.values()?;
-        match &mut self.inner {
-            StatementData::Sqlite(statement) => {
-                Ok(statement.execute(rusqlite::params_from_iter(value::sqlite_values(values)))?)
-            }
-            StatementData::Postgres(statement) => {
-                let values = value::postgres_values(values, statement.params())?;
-                let refs: Vec<_> = values.iter().map(|v| v.as_ref()).collect();
-                let Backend::Postgres { client, .. } = &self.connection.backend else {
-                    return Err(Error::Conversion("Statement backend mismatch"));
-                };
-                let count = client
-                    .borrow_mut()
-                    .execute(statement, &refs)
-                    .map_err(|error| self.connection.postgres_error(error))?;
-                self.connection
-                    .changes
-                    .set(self.connection.changes.get().wrapping_add(count));
-                usize::try_from(count)
-                    .map_err(|_| Error::Conversion("Affected row count exceeds platform range"))
-            }
+        if values.len() != self.parameters {
+            return Err(Error::Conversion("Incorrect parameter count"));
         }
+        let mut backend = self.connection.backend.borrow_mut();
+        let result = match &mut *backend {
+            Backend::Sqlite(db) => runtime::run(sqlite::execute(db, &self.query, values)),
+            Backend::Postgres(db) => runtime::run(postgres::execute(db, &self.query, values)),
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        let (affected, total) = self.connection.checked(result)?;
+        if let Some(total) = total {
+            self.connection.changes.set(total);
+        } else {
+            self.connection.changes.add(affected);
+        }
+        usize::try_from(affected)
+            .map_err(|_| Error::Conversion("Affected row count exceeds platform range"))
     }
     pub(crate) fn query_row<T, P: Params, F: FnOnce(&Row<'_>) -> Result<T>>(
         &mut self,
@@ -594,30 +610,35 @@ impl Statement<'_> {
         f: F,
     ) -> Result<T> {
         let values = params.values()?;
-        match &mut self.inner {
-            StatementData::Sqlite(statement) => {
-                let mut rows =
-                    statement.query(rusqlite::params_from_iter(value::sqlite_values(values)))?;
-                let row = rows.next()?.ok_or(Error::NoRows)?;
+        let mut backend = self.connection.backend.borrow_mut();
+        match &mut *backend {
+            Backend::Sqlite(db) => {
+                let row = self
+                    .connection
+                    .checked(runtime::run(sqlite::fetch_optional(
+                        db,
+                        &self.query,
+                        values,
+                    )))?
+                    .ok_or(Error::NoRows)?;
                 f(&Row {
-                    inner: value::RowData::Sqlite(row),
+                    inner: value::RowData::Sqlite(&row),
                 })
             }
-            StatementData::Postgres(statement) => {
-                let values = value::postgres_values(values, statement.params())?;
-                let refs: Vec<_> = values.iter().map(|v| v.as_ref()).collect();
-                let Backend::Postgres { client, .. } = &self.connection.backend else {
-                    return Err(Error::Conversion("Statement backend mismatch"));
-                };
-                let row = client
-                    .borrow_mut()
-                    .query_opt(statement, &refs)
-                    .map_err(|error| self.connection.postgres_error(error))?
+            Backend::Postgres(db) => {
+                let row = self
+                    .connection
+                    .checked(runtime::run(postgres::fetch_optional(
+                        db,
+                        &self.query,
+                        values,
+                    )))?
                     .ok_or(Error::NoRows)?;
                 f(&Row {
                     inner: value::RowData::Postgres(&row),
                 })
             }
+            Backend::Closed => Err(Error::Conversion("Database closed")),
         }
     }
     pub(crate) fn query_map<T, P: Params, F: FnMut(&Row<'_>) -> Result<T>>(
@@ -626,34 +647,30 @@ impl Statement<'_> {
         mut f: F,
     ) -> Result<std::vec::IntoIter<Result<T>>> {
         let values = params.values()?;
-        let mut result = Vec::new();
-        match &mut self.inner {
-            StatementData::Sqlite(statement) => {
-                let mut rows =
-                    statement.query(rusqlite::params_from_iter(value::sqlite_values(values)))?;
-                while let Some(row) = rows.next()? {
-                    result.push(f(&Row {
+        let mut backend = self.connection.backend.borrow_mut();
+        let result = match &mut *backend {
+            Backend::Sqlite(db) => self
+                .connection
+                .checked(runtime::run(sqlite::fetch_all(db, &self.query, values)))?
+                .iter()
+                .map(|row| {
+                    f(&Row {
                         inner: value::RowData::Sqlite(row),
-                    }));
-                }
-            }
-            StatementData::Postgres(statement) => {
-                let values = value::postgres_values(values, statement.params())?;
-                let refs: Vec<_> = values.iter().map(|v| v.as_ref()).collect();
-                let Backend::Postgres { client, .. } = &self.connection.backend else {
-                    return Err(Error::Conversion("Statement backend mismatch"));
-                };
-                for row in client
-                    .borrow_mut()
-                    .query(statement, &refs)
-                    .map_err(|error| self.connection.postgres_error(error))?
-                {
-                    result.push(f(&Row {
-                        inner: value::RowData::Postgres(&row),
-                    }));
-                }
-            }
-        }
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Backend::Postgres(db) => self
+                .connection
+                .checked(runtime::run(postgres::fetch_all(db, &self.query, values)))?
+                .iter()
+                .map(|row| {
+                    f(&Row {
+                        inner: value::RowData::Postgres(row),
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Backend::Closed => return Err(Error::Conversion("Database closed")),
+        };
         Ok(result.into_iter())
     }
 }

@@ -173,7 +173,7 @@ fn competing_writer_failure_rolls_back_and_next_mutation_recovers() {
         .unwrap();
     let mut competitor = Connection::open(&path).unwrap();
     let transaction = competitor
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .transaction_with_behavior(database::TransactionBehavior::Immediate)
         .unwrap();
     let before = e.data.clone();
     let revision = e.revision;
