@@ -21,18 +21,29 @@ impl Engine {
         };
         let db = Connection::open(&location).map_err(EngineError::from)?;
         initialize(&db)?;
-        Self::from_database(db, lock, &location, memory)
+        Self::from_database(db, lock, &location, memory, Default::default())
     }
 
+    #[cfg(test)]
     pub(crate) fn open_postgres(url: &str) -> Result<Self, EngineError> {
+        Self::open_postgres_with_pool(url, Default::default())
+    }
+    fn open_postgres_with_pool(
+        url: &str,
+        limits: crate::config::PostgresPoolConfig,
+    ) -> Result<Self, EngineError> {
         let db = Connection::postgres(url, false)?;
         initialize(&db)?;
-        Self::from_database(db, None, url, false)
+        Self::from_database(db, None, url, false, limits)
     }
 
-    pub(crate) fn open_postgres_in_folder(url: &str, path: &Path) -> Result<Self, EngineError> {
+    pub(crate) fn open_postgres_in_folder_with_pool(
+        url: &str,
+        path: &Path,
+        limits: crate::config::PostgresPoolConfig,
+    ) -> Result<Self, EngineError> {
         let lock = folder_lock(path)?;
-        let engine = Self::open_postgres(url)?;
+        let engine = Self::open_postgres_with_pool(url, limits)?;
         engine.store.db.attach_folder_lock(lock)?;
         Ok(engine)
     }
@@ -42,6 +53,7 @@ impl Engine {
         lock: Option<std::fs::File>,
         location: &str,
         _memory: bool,
+        limits: crate::config::PostgresPoolConfig,
     ) -> Result<Self, EngineError> {
         let mut data = load_data(&db)?;
         crate::bots::models::validate(&data).map_err(EngineError::unavailable)?;
@@ -49,7 +61,9 @@ impl Engine {
             .map_err(EngineError::unavailable)?;
         let read_positions = load_read_positions(&db)?;
         data.sessions.retain(|_, session| session.expires > now());
-        let db = std::sync::Arc::new(database::Database::from_connection(db, location, lock)?);
+        let db = std::sync::Arc::new(database::Database::from_connection(
+            db, location, lock, limits,
+        )?);
         let mut engine = Self {
             #[cfg(test)]
             working: None,
@@ -62,6 +76,7 @@ impl Engine {
             data,
             revision: 0,
             recovery_failed: false,
+            recovery_attempted: false,
             metadata_dirty: false,
             read_model: Default::default(),
             read_clock: 0,

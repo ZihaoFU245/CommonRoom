@@ -95,6 +95,7 @@ pub struct Engine {
     color_revision: u64,
     committed_colors: colors::ColorDirectory,
     recovery_failed: bool,
+    recovery_attempted: bool,
     metadata_dirty: bool,
     read_model: read_model::ReadModel,
     presence: presence::Presence,
@@ -113,6 +114,60 @@ pub struct Engine {
 }
 
 impl Engine {
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    pub(crate) fn test_corrupt_recovery_metadata(&self) {
+        self.store
+            .db
+            .lock()
+            .unwrap()
+            .execute_batch("UPDATE state SET json='invalid' WHERE id=1")
+            .unwrap();
+    }
+    pub(crate) fn needs_memory_recovery(&self) -> bool {
+        self.recovery_failed && !self.recovery_attempted
+    }
+    pub(crate) fn begin_memory_recovery(&mut self) -> Option<database::Handle> {
+        if !self.needs_memory_recovery() {
+            return None;
+        }
+        self.recovery_attempted = true;
+        Some(self.store.db.clone())
+    }
+    pub(crate) fn restore_committed_metadata(
+        &mut self,
+        snapshot: database::MetadataSnapshot,
+        cursors: database::CursorRows,
+    ) -> Result<(), EngineError> {
+        let mut data = storage::data_from_snapshot(snapshot)?;
+        crate::bots::models::validate(&data).map_err(EngineError::unavailable)?;
+        let authorization =
+            authorization::CompiledPolicy::compile(&data).map_err(EngineError::unavailable)?;
+        data.sessions.retain(|_, session| session.expires > now());
+        let mut positions = BTreeMap::<String, BTreeMap<String, u64>>::new();
+        for (user, view, through) in cursors {
+            positions.entry(user).or_default().insert(view, through);
+        }
+        self.history_store().reset_after_recovery()?;
+        self.bot_index = crate::bots::models::Index::build(&data);
+        self.data = data;
+        self.authorization = authorization;
+        self.store.read_positions = positions;
+        self.metadata_dirty = false;
+        self.changed_conversation = None;
+        #[cfg(test)]
+        {
+            self.working = None;
+        }
+        self.read_clock = self.read_clock.wrapping_add(1);
+        self.read_revisions.clear();
+        self.revision = self.revision.wrapping_add(1);
+        self.read_model.advance();
+        self.advance_colors();
+        self.recovery_failed = false;
+        self.recovery_attempted = false;
+        Ok(())
+    }
     pub(crate) fn ensure_memory(&self) -> Result<(), EngineError> {
         if self.recovery_failed {
             return Err(EngineError::Unavailable(

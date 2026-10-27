@@ -56,6 +56,16 @@ impl CleanupPlan {
         ids.sort();
         ids
     }
+    pub(crate) fn matched_ids(&self) -> Vec<String> {
+        self.targets
+            .iter()
+            .filter(|(_, count, _)| *count > 0)
+            .filter_map(|(scope, _, _)| match scope {
+                Scope::Room(id) | Scope::Private(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
     pub(crate) fn has_matches(&self) -> bool {
         self.targets.iter().any(|(_, count, _)| *count > 0)
     }
@@ -76,6 +86,28 @@ impl CleanupPlan {
     }
 }
 impl Engine {
+    pub(crate) fn cleanup_stamp(
+        &self,
+        plan: &CleanupPlan,
+    ) -> Result<Vec<(String, u64)>, EngineError> {
+        plan.ids()
+            .into_iter()
+            .map(|id| {
+                let view = self
+                    .bot_index
+                    .conversations
+                    .get(&id)
+                    .ok_or("Cleanup target unavailable.")?;
+                let revision = if let Some(key) = view.strip_prefix("@private:") {
+                    self.data.private.get(key).map(|chat| chat.revision)
+                } else {
+                    self.data.rooms.get(view).map(|room| room.revision)
+                }
+                .ok_or("Cleanup target unavailable.")?;
+                Ok((id, revision))
+            })
+            .collect()
+    }
     pub(super) fn resolve_cleanup_plan(
         &self,
         context: &CommandContext<'_>,

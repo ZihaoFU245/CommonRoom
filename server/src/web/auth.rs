@@ -175,12 +175,18 @@ pub(crate) async fn login(
         let result = login_inner(&app, &headers, &input, ip).await;
         // Pending attempts count until completion, so concurrent requests cannot
         // overshoot a limit. Cancelled HTTP futures still finish this bookkeeping.
-        let failed = matches!(&result, Err(ApiError(StatusCode::UNAUTHORIZED, _)));
+        let outcome = match &result {
+            Ok(_) => Some(true),
+            Err(ApiError(StatusCode::UNAUTHORIZED, _)) => Some(false),
+            // Infrastructure/conflict errors release this reservation without
+            // clearing failures accumulated by other login attempts.
+            Err(_) => None,
+        };
         app.attempts
             .lock()
             .map_err(|_| login_state_unavailable())?
-            .finish(reservation, failed, std::time::Instant::now());
-        if failed {
+            .finish(reservation, outcome, std::time::Instant::now());
+        if outcome == Some(false) {
             tracing::warn!(client = %ip, "Login rejected");
         }
         result

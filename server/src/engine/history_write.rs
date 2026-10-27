@@ -103,7 +103,7 @@ impl Engine {
             else {
                 self.recovery_failed = true;
                 return Err(EngineError::Unavailable(
-                    "Committed history metadata changed; restart the service.".into(),
+                    "Committed history metadata changed; recovery required, retry shortly.".into(),
                 ));
             };
             *revision = target.revision + 1;

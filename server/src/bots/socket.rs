@@ -370,7 +370,11 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                         let context = context.clone();
                         move |engine, _| -> Result<_, Error> {
                             let user = context.user(engine)?;
-                            context.permits(engine, "read", Some(&id))?;
+                            context.permits(
+                                engine,
+                                "read",
+                                crate::bots::auth::Scope::Conversation(&id),
+                            )?;
                             engine.bot_target(&user, &id, Action::Read).map(|_| ())
                         }
                     })
@@ -439,7 +443,7 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                                     if activity.kind != "activity" || !["working", "idle"].contains(&activity.state.as_str()) { return Err(Error::new(Code::InvalidRequest, "Invalid activity.")); }
                                     if activity.draft.as_ref().is_some_and(|text| text.len() > 16000 || text.chars().count() > crate::limits::MAX_MESSAGE_CHARS) { return Err(Error::new(Code::InvalidRequest, "Draft exceeds its limit.")); }
                                     let user = activity_context.user(engine)?;
-                                    activity_context.permits(engine, "activity", Some(&activity.conversation_id))?;
+                                    activity_context.permits(engine, "activity", crate::bots::auth::Scope::Conversation(&activity.conversation_id))?;
                                     engine.bot_target(&user, &activity.conversation_id, Action::Send)?;
                                     let mut frame = json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30});
                                     if let Some(draft) = activity.draft { frame["draft"] = json!(draft); }

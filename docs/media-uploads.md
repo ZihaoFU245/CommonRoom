@@ -214,14 +214,15 @@ Do not configure storage retention shorter than the corresponding chat allowance
 For versioned buckets, also remove noncurrent versions; delete markers alone do
 not reclaim bytes. Use a dedicated bucket/prefix for this application.
 
-On each server start, before accepting uploads, SQLite marks every tracked object
-without any retained message or active avatar profile reference for deletion, including unfinished uploads
-from the previous process. Shared attachments survive while any message still
-references them. This uses authoritative `message_media` rows rather than scanning
-S3, and needs no bucket-list permission. Unknown objects created outside the tracked
-upload protocol remain the operator's responsibility. The browser clears unsent
-attachments when it receives a new server instance and asks the user to attach
-again; completed but unsent objects from the previous process are unavailable.
+On each server start, before accepting uploads, tracked objects without retained
+message or selected avatar references become eligible for deletion only after the
+pending grace period. Fresh unfinished and completed-but-unsent uploads keep the
+same grace period across restarts. Already claimed deletions resume immediately.
+Shared attachments survive while any message still references them. Cleanup uses
+authoritative `message_media` rows rather than scanning S3, and needs no bucket-list
+permission. Unknown objects created outside the tracked upload protocol remain the
+operator's responsibility. The browser still clears unsent attachments when it
+receives a new server instance and asks the user to attach again.
 
 Cleanup starts immediately and repeats every 24 hours by default. An explicit saved
 `cleanup_interval` is preserved. Published attachments become eligible as soon as
@@ -313,8 +314,8 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite accepts only the current HEAD schema, v19. Empty databases initialize
-transactionally; every other existing version is rejected unchanged.
+SQLite stays at HEAD schema v19 without an upgrade. Other SQLite versions
+are rejected unchanged; PostgreSQL has an independent current schema.
 
 ```sh
 rtk cargo build --locked

@@ -1,5 +1,5 @@
 //! SQLite schema validation happens before persistent journal settings change.
-use super::super::{Error, Result, SCHEMA_VERSION, message::number};
+use super::super::{Error, Result, SQLITE_SCHEMA_VERSION, message::number};
 use sqlx::{Connection as _, Executor as _, SqliteConnection};
 
 pub(in crate::engine::database) async fn initialize(
@@ -10,7 +10,7 @@ pub(in crate::engine::database) async fn initialize(
     let version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut *db)
         .await?;
-    if version != 0 && version != i64::from(SCHEMA_VERSION) {
+    if version != 0 && version != i64::from(SQLITE_SCHEMA_VERSION) {
         return Err(Error::InvalidRequest(
             "Unsupported database schema; only current v19 is supported.",
         ));
@@ -39,6 +39,14 @@ pub(in crate::engine::database) async fn initialize(
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+    } else {
+        let empty: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM retention)")
+            .fetch_one(&mut *db)
+            .await?;
+        if empty {
+            sqlx::query("INSERT INTO retention SELECT conversation,count(*),min(sequence) FROM messages GROUP BY conversation")
+                .execute(&mut *db).await?;
+        }
     }
     Ok(())
 }

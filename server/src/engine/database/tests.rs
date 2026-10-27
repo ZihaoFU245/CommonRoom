@@ -209,11 +209,29 @@ fn postgres_sqlite_migration_preserves_every_table_and_retries() {
     let expected_history = serde_json::to_value(e.history("bob", "lobby").unwrap()).unwrap();
     drop(e);
     let original = std::fs::read(&path).unwrap();
+    {
+        let source = Connection::open_with_access(&path, SqliteAccess::ReadOnly).unwrap();
+        assert_eq!(
+            source
+                .query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap(),
+            SQLITE_SCHEMA_VERSION
+        );
+    }
     let report = Engine::migrate_sqlite(&path, &fixture.url).unwrap();
     assert_eq!(report.rows.len(), 14);
     assert!(report.rows.values().all(|rows| *rows > 0));
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let mut pg = Engine::open_postgres(&fixture.url).unwrap();
+    assert_eq!(
+        pg.store
+            .db
+            .lock()
+            .unwrap()
+            .query_row::<u32, _, _>("SELECT version FROM chat_schema", [], |r| r.get(0),)
+            .unwrap(),
+        POSTGRES_SCHEMA_VERSION
+    );
     assert!(pg.data == expected_data);
     assert_eq!(pg.store.read_positions, expected_cursors);
     assert_eq!(
@@ -275,16 +293,21 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
     let path = source.path().join("chat.sqlite");
     assert!(Engine::migrate_sqlite(&path, "invalid-target").is_err());
     assert!(!path.exists());
-    let db = Connection::open(&path).unwrap();
-    db.execute_batch("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('preserved'); PRAGMA user_version=18;").unwrap();
-    drop(db);
-    let before = std::fs::read(&path).unwrap();
-    assert!(
-        Engine::migrate_sqlite(&path, "invalid-target")
-            .unwrap_err()
-            .contains("v19")
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    for version in [18, 20] {
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE IF NOT EXISTS marker(value TEXT);")
+            .unwrap();
+        db.execute_batch(&format!("PRAGMA user_version={version}"))
+            .unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            Engine::migrate_sqlite(&path, "invalid-target")
+                .unwrap_err()
+                .contains("v19")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
 }
 
 #[test]

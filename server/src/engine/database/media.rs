@@ -20,9 +20,12 @@ pub(crate) enum MediaWrite<'a> {
         media: &'a Media,
         at: u64,
     },
-    PrepareCleanup,
+    PrepareCleanup {
+        pending_before: u64,
+    },
     Abandon {
         id: &'a str,
+        uploader: &'a str,
     },
     ClaimCleanup {
         at: u64,
@@ -36,9 +39,12 @@ pub(crate) enum MediaWrite<'a> {
         attempted_before: u64,
         limit: usize,
     },
-    StagingCleaned {
-        id: &'a str,
+    CleanupDone {
+        records: &'a [(String, bool)],
+        staging: &'a [String],
+        tombstones_before: u64,
     },
+    #[cfg(test)]
     RemoveRecord {
         id: &'a str,
         tombstones_before: u64,

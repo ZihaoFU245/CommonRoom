@@ -13,7 +13,9 @@ impl Engine {
     pub(crate) async fn prepare_media_cleanup_async(&self) -> Result<(), EngineError> {
         self.store
             .db
-            .media_write(&database::MediaWrite::PrepareCleanup)
+            .media_write(&database::MediaWrite::PrepareCleanup {
+                pending_before: now().saturating_sub(self.media.config.pending_ttl),
+            })
             .await?;
         Ok(())
     }
@@ -91,7 +93,10 @@ impl Engine {
         let result = self
             .store
             .db
-            .media_write_blocking(&database::MediaWrite::Abandon { id })?;
+            .media_write_blocking(&database::MediaWrite::Abandon {
+                id,
+                uploader: &media.uploader,
+            })?;
         if result.affected == 0 {
             tracing::debug!(
                 media_id = id,

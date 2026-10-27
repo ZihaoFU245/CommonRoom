@@ -101,6 +101,7 @@ pub(crate) async fn complete(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
+    owner(&app, &headers, id.clone()).await?;
     let object_lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;

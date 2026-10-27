@@ -1,5 +1,6 @@
 //! Owned authorized query plan: no engine borrow survives disk I/O or serialization.
 use super::*;
+use futures_util::{StreamExt as _, stream};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -43,20 +44,35 @@ impl SnapshotPlan {
             .history
             .unread_batch_async(&self.snapshot.username, &requests)
             .await?;
+        let page_jobs: Vec<_> = self
+            .jobs
+            .clone()
+            .into_iter()
+            .map(|conversation| {
+                let history = self.history.clone();
+                async move {
+                    history
+                        .page_checked_async(
+                            &conversation.id,
+                            conversation.revision,
+                            HistoryRange {
+                                limit: Some(VISIBLE_HISTORY),
+                                ..Default::default()
+                            },
+                            "",
+                        )
+                        .await
+                }
+            })
+            .collect();
+        let pages = stream::iter(page_jobs).buffered(4);
+        futures_util::pin_mut!(pages);
         for (conversation, unread) in self.jobs.iter().zip(unreads) {
             if tail_budget > 0 {
-                match self
-                    .history
-                    .page_checked_async(
-                        &conversation.id,
-                        conversation.revision,
-                        HistoryRange {
-                            limit: Some(VISIBLE_HISTORY),
-                            ..Default::default()
-                        },
-                        "",
-                    )
+                match pages
+                    .next()
                     .await
+                    .ok_or_else(|| EngineError::Internal("Missing snapshot page.".into()))?
                 {
                     Ok(page) => {
                         let messages = page

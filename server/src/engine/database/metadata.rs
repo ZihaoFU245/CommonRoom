@@ -23,6 +23,7 @@ pub(crate) enum MetadataOp<'a> {
     Revision {
         kind: &'static str,
         key: String,
+        expected: u64,
         revision: u64,
     },
     CheckedRevision {
@@ -201,6 +202,25 @@ impl super::Connection {
     }
 }
 impl super::Handle {
+    /// The caller holds the exclusive application metadata fence while loading
+    /// and publishing this authoritative snapshot. No engine guard crosses I/O.
+    pub(crate) async fn recovery_snapshot(&self) -> Result<(MetadataSnapshot, CursorRows)> {
+        self.check_owner().await?;
+        let mut reader = self.acquire_read().await?;
+        let result = match reader.backend.get_mut() {
+            super::Backend::Sqlite(db) => {
+                let metadata = super::sqlite::metadata::load(db).await?;
+                Ok((metadata, super::sqlite::metadata::cursors(db).await?))
+            }
+            super::Backend::Postgres(db) => {
+                let metadata = super::postgres::metadata::load(db).await?;
+                Ok((metadata, super::postgres::metadata::cursors(db).await?))
+            }
+            super::Backend::Closed => Err(Error::RestartRequired),
+        };
+        self.check_owner().await?;
+        result
+    }
     pub(crate) async fn account_conversations(&self, name: &str) -> Result<BTreeSet<String>> {
         self.acquire_read()
             .await?

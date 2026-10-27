@@ -23,7 +23,13 @@ pub(in crate::engine::database) async fn apply(
         result.changed += match operation {
             MetadataOp::Entity { kind, key, json } => super::messages::put_entity(db, kind, key, json).await?,
             MetadataOp::RemoveEntity { kind, key } => sqlx::query("DELETE FROM entities WHERE kind=$1 AND key=$2").bind(*kind).bind(key).execute(&mut *db).await?.rows_affected(),
-            MetadataOp::Revision { kind, key, revision } => sqlx::query("UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2 AND revision!=$3").bind(*kind).bind(key).bind(number(*revision)?).execute(&mut *db).await?.rows_affected(),
+            MetadataOp::Revision { kind, key, expected, revision } => {
+                let changed = sqlx::query("UPDATE entities SET revision=$3 WHERE kind=$1 AND key=$2 AND revision=$4")
+                    .bind(*kind).bind(key).bind(number(*revision)?).bind(number(*expected)?)
+                    .execute(&mut *db).await?.rows_affected();
+                if changed != 1 { return Err(Error::RevisionConflict); }
+                changed
+            }
             MetadataOp::CheckedRevision { kind, key, conversation, expected, revision } => {
                 let changed = sqlx::query("UPDATE entities SET revision=$5 WHERE kind=$1 AND key=$2 AND (projection #>> '{id}')=$3 AND revision=$4").bind(*kind).bind(key).bind(conversation).bind(number(*expected)?).bind(number(*revision)?)
                     .execute(&mut *db).await?.rows_affected();

@@ -209,7 +209,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-The current HEAD schema is v19. New empty databases initialize transactionally; existing databases must already be v19. Legacy migration paths are removed. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+SQLite HEAD remains v19 and opens without an upgrade. Unpublished PostgreSQL has its own current v1 schema with no historical WIP upgrades. Empty databases initialize transactionally. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -309,3 +309,15 @@ deployments use `__Host-chat_session` with Secure, HttpOnly and Path=/; scoped
 deployments retain `chat_session`. Duplicate selected cookie names are rejected
 across all Cookie headers. The bounded durable authentication audit records verified
 login outcomes and valid logouts without credentials or request bodies. See [Data](data.md).
+
+Avatar uploads retain their separate 64 KiB profile limit and account quota.
+Conversation `w:media.upload` permissions govern attachments, not self-service
+profiles. Completion retries of an already-ready avatar do not select it again
+or overwrite a later profile choice. Bot authorization call sites explicitly
+select global or conversation scope; operation restrictions apply in both.
+
+Unexpected panics through an engine write guard deliberately poison that guard.
+Subsequent engine reads and mutations return unavailable until restart. Sudo
+restoration removes temporary authority before unwinding, but cannot prove that
+all other state stayed consistent. Never recover the poisoned guard with
+`PoisonError::into_inner`; restart reloads authoritative persisted state.

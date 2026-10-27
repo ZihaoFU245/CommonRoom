@@ -283,7 +283,7 @@ impl Engine {
         if !pending.before.unchanged(&self.data) {
             self.recovery_failed = true;
             return Err(EngineError::Unavailable(
-                "Committed metadata state changed; restart the service.".into(),
+                "Committed metadata state changed; recovery required, retry shortly.".into(),
             ));
         }
         // Metadata publication never allocates or overwrites the append counter.

@@ -260,11 +260,19 @@ impl Hub {
             };
             if publisher
                 .context
-                .permits(engine, "read", Some(conversation))
+                .permits(
+                    engine,
+                    "read",
+                    crate::bots::auth::Scope::Conversation(conversation),
+                )
                 .is_err()
                 || publisher
                     .context
-                    .permits(engine, "send", Some(conversation))
+                    .permits(
+                        engine,
+                        "send",
+                        crate::bots::auth::Scope::Conversation(conversation),
+                    )
                     .is_err()
             {
                 continue;
@@ -338,8 +346,12 @@ impl Runtime {
             .conversations
             .keys()
             .filter(|id| {
-                context.permits(engine, "read", Some(id)).is_ok()
-                    && context.permits(engine, "send", Some(id)).is_ok()
+                context
+                    .permits(engine, "read", crate::bots::auth::Scope::Conversation(id))
+                    .is_ok()
+                    && context
+                        .permits(engine, "send", crate::bots::auth::Scope::Conversation(id))
+                        .is_ok()
                     && engine.bot_target(&user, id, Action::Read).is_ok()
                     && engine.bot_target(&user, id, Action::Send).is_ok()
             })
@@ -399,7 +411,7 @@ impl Runtime {
     ) -> Result<Option<String>, Error> {
         match control {
             Control::Ready => {
-                context.permits(engine, "read", None)?;
+                context.permits(engine, "read", crate::bots::auth::Scope::Global)?;
                 if self.lease.is_none() {
                     self.lease = Some(app.bot_runtimes.commands.register(context, &app.changes)?);
                     self.refresh_state(app, engine, context)?;
@@ -432,8 +444,16 @@ impl Runtime {
                 }
                 validate(&commands)?;
                 let user = context.user(engine)?;
-                context.permits(engine, "read", Some(&conversation))?;
-                context.permits(engine, "send", Some(&conversation))?;
+                context.permits(
+                    engine,
+                    "read",
+                    crate::bots::auth::Scope::Conversation(&conversation),
+                )?;
+                context.permits(
+                    engine,
+                    "send",
+                    crate::bots::auth::Scope::Conversation(&conversation),
+                )?;
                 engine.bot_target(&user, &conversation, Action::Read)?;
                 engine.bot_target(&user, &conversation, Action::Send)?;
                 let lease = self.lease.as_ref().ok_or_else(|| {

@@ -1,7 +1,7 @@
 //! Validated history ranges and revision-keyed immutable pages.
 use super::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Deserialize)]
 pub struct HistoryRange {
     pub start: Option<u64>,
     pub around: Option<u64>,
@@ -32,11 +32,16 @@ impl HistoryRange {
         Ok(limit)
     }
 }
+type EncodedPage = Arc<std::sync::OnceLock<Result<Box<serde_json::value::RawValue>, String>>>;
+
 // Responses and cache entries share immutable messages and exact wire-size accounting.
 #[derive(Default)]
 pub(super) struct PageData {
     messages: Vec<Message>,
     sizes: Vec<usize>,
+    // Shared content is encoded once across authorized viewers. Two ranges
+    // bound retained wire bytes within the page cache's existing accounting.
+    encoded: Mutex<BTreeMap<(usize, usize), EncodedPage>>,
 }
 #[derive(Clone, Default)]
 pub struct MessagePage {
@@ -48,7 +53,11 @@ impl MessagePage {
     pub(super) fn new(messages: Vec<Message>, sizes: Vec<usize>) -> Self {
         let end = messages.len();
         Self {
-            data: Arc::new(PageData { messages, sizes }),
+            data: Arc::new(PageData {
+                messages,
+                sizes,
+                encoded: Mutex::default(),
+            }),
             start: 0,
             end,
         }
@@ -77,6 +86,18 @@ impl MessagePage {
             end: self.end,
         }
     }
+    #[cfg(test)]
+    pub(in crate::engine) fn shares_storage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+    #[cfg(test)]
+    pub(in crate::engine) fn encoded_range_count(&self) -> usize {
+        self.data
+            .encoded
+            .lock()
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
     pub(super) fn accounted_bytes(&self) -> usize {
         self.data.sizes[self.start..self.end]
             .iter()
@@ -95,6 +116,34 @@ impl std::ops::Deref for MessagePage {
 }
 impl serde::Serialize for MessagePage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::Error as _;
+        let cell = {
+            let mut encoded = self
+                .data
+                .encoded
+                .lock()
+                .map_err(|_| S::Error::custom("Page encoding cache unavailable"))?;
+            let key = (self.start, self.end);
+            if let Some(value) = encoded.get(&key) {
+                Some(value.clone())
+            } else if encoded.len() < 2 {
+                let value = Arc::new(std::sync::OnceLock::new());
+                encoded.insert(key, value.clone());
+                Some(value)
+            } else {
+                None
+            }
+        };
+        if let Some(cell) = cell {
+            let raw = cell.get_or_init(|| {
+                serde_json::value::to_raw_value(&**self)
+                    .map_err(|_| "Cannot encode message page".into())
+            });
+            return raw
+                .as_ref()
+                .map_err(S::Error::custom)?
+                .serialize(serializer);
+        }
         serde::Serialize::serialize(&**self, serializer)
     }
 }
@@ -130,6 +179,7 @@ impl HistoryStore {
         view: &str,
     ) -> Result<History, HistoryError> {
         self.ensure_caches()?;
+        let mut fill = None;
         loop {
             let limit = range.validate().map_err(HistoryError::from)?;
             let cached = {
@@ -177,6 +227,17 @@ impl HistoryStore {
                     .await
                     .map_err(EngineError::from)?;
                 return Ok(result);
+            }
+            if fill.is_none() {
+                use std::hash::{Hash, Hasher};
+                let mut hash = std::hash::DefaultHasher::new();
+                id.hash(&mut hash);
+                revision.hash(&mut hash);
+                range.hash(&mut hash);
+                let shard = usize::from(hash.finish().to_le_bytes()[0]) % self.page_fills.len();
+                fill = Some(self.page_fills[shard].lock().await);
+                // A concurrent viewer may have filled this immutable revision.
+                continue;
             }
             self.misses.fetch_add(1, Ordering::Relaxed);
             self.next.fetch_add(1, Ordering::Relaxed);

@@ -122,7 +122,7 @@ async fn history_value(
             move |engine, _| -> Result<_, Error> {
                 let context = Context::from_headers(engine, &headers)?;
                 let user = context.user(engine)?;
-                context.permits(engine, "read", Some(&id))?;
+                context.permits(engine, "read", crate::bots::auth::Scope::Conversation(&id))?;
                 let target = engine.bot_target(&user, &id, Action::Read)?;
                 Ok((context, target.revision, engine.history_store().clone()))
             }
@@ -175,7 +175,7 @@ async fn history_value(
         .map_err(Error::storage)?;
     app.inspect_engine(move |engine, _| -> Result<_, Error> {
             let user = context.user(engine)?;
-            context.permits(engine,"read",Some(&input.conversation_id))?;
+            context.permits(engine,"read",crate::bots::auth::Scope::Conversation(&input.conversation_id))?;
             if engine.bot_target(&user,&input.conversation_id,Action::Read)?.revision != revision {
                 return Err(Error::new(Code::Conflict,"History changed; retry the page."));
             }
@@ -311,7 +311,7 @@ async fn conversation(
                 let context = context.clone();
                 move |engine| -> Result<_, Error> {
                     let user = admit(engine, &context)?;
-                    context.permits(engine, "create", None)?;
+                    context.permits(engine, "create", crate::bots::auth::Scope::Global)?;
                     if context.metadata(engine)?.conversations.is_some() {
                         return Err(Error::new(
                             Code::Forbidden,

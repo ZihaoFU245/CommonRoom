@@ -7,6 +7,320 @@ use crate::engine::{
 use std::time::{Duration, Instant};
 
 #[test]
+fn sqlite_head_v19_opens_without_a_postgres_index_upgrade() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chat.sqlite");
+    let mut engine = Engine::open(&path).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .login("session".into(), "alice", "hash", None)
+        .unwrap();
+    let before = engine.data.clone();
+    drop(engine);
+    let engine = Engine::open(&path).unwrap();
+    assert!(engine.data == before);
+    assert_eq!(engine.session("session").as_deref(), Some("alice"));
+    let db = engine.store.db.lock().unwrap();
+    assert_eq!(
+        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        19
+    );
+    assert_eq!(
+        db.query_row::<u64, _, _>(
+            "SELECT count(*) FROM sqlite_master WHERE name='entities_account_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_current_schema_has_account_index_and_no_legacy_upgrade_path() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .login("session".into(), "alice", "hash", None)
+        .unwrap();
+    let before = engine.data.clone();
+    drop(engine);
+    let db = Connection::postgres(&fixture.url, false).unwrap();
+    for version in [19, 20] {
+        db.execute("UPDATE chat_schema SET version=$1 WHERE id=1", [version])
+            .unwrap();
+        assert!(Engine::open_postgres(&fixture.url).is_err());
+        assert_eq!(
+            db.query_row::<i32, _, _>("SELECT version::integer FROM chat_schema", [], |r| r.get(0))
+                .unwrap(),
+            version
+        );
+    }
+    db.execute(
+        "UPDATE chat_schema SET version=$1 WHERE id=1",
+        [super::super::POSTGRES_SCHEMA_VERSION],
+    )
+    .unwrap();
+    let engine = Engine::open_postgres(&fixture.url).unwrap();
+    assert!(engine.data == before);
+    assert_eq!(engine.session("session").as_deref(), Some("alice"));
+    assert_eq!(
+        db.query_row::<u32, _, _>("SELECT version FROM chat_schema", [], |r| r.get(0))
+            .unwrap(),
+        super::super::POSTGRES_SCHEMA_VERSION
+    );
+    db.execute_batch("SET enable_seqscan=off").unwrap();
+    let plan: String = db
+        .query_row(
+            "EXPLAIN SELECT key FROM entities WHERE kind='account' AND projection #>> '{id}'=$1",
+            [&engine.data.users["alice"].id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(plan.contains("entities_account_id"), "{plan}");
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_cached_read_health_and_explicit_ownership_validation() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    let engine = Engine::open_postgres(&fixture.url).unwrap();
+    let database = &engine.store.db;
+    runtime::run(async {
+        database.check_owner().await?;
+        let mut owner = database.owner.as_ref().unwrap().lock().await;
+        // Cache hits must not queue behind the owner session mutex.
+        tokio::time::timeout(Duration::from_millis(20), database.ensure_available_async())
+            .await
+            .unwrap()?;
+        // Write acquisition also shares health; the mandatory forced check is
+        // made after SQL preparation, immediately before commit.
+        let lease = tokio::time::timeout(Duration::from_millis(20), database.acquire())
+            .await
+            .unwrap()?;
+        drop(lease);
+        let Backend::Postgres(db) = owner.backend.get_mut() else {
+            panic!("expected PostgreSQL")
+        };
+        let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock(1128808788::bigint)")
+            .fetch_one(&mut **db)
+            .await?;
+        assert!(unlocked);
+        drop(owner);
+        assert!(matches!(
+            database.check_owner().await,
+            Err(Error::RestartRequired)
+        ));
+        assert!(matches!(
+            database.ensure_state(),
+            Err(Error::RestartRequired)
+        ));
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn restored_retention_contract(mut engine: Engine) {
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/room new retained")
+        .unwrap();
+    for _ in 0..3 {
+        engine
+            .execute(Some("alice"), Some("retained"), "retained message")
+            .unwrap();
+    }
+    let database = engine.store.db.lock().unwrap();
+    database.execute_batch("DELETE FROM retention").unwrap();
+    // Reinitialization is the same ownership/schema path used on restart.
+    database.initialize("{}", 0).unwrap();
+    assert_eq!(
+        database
+            .query_row::<u64, _, _>("SELECT count FROM retention", [], |row| row.get(0),)
+            .unwrap(),
+        3
+    );
+    let oldest: u64 = database
+        .query_row("SELECT oldest FROM retention", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(oldest, 1);
+}
+
+#[test]
+fn sqlite_restores_missing_retention_after_data_only_restore() {
+    restored_retention_contract(Engine::open(Path::new(":memory:")).unwrap());
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_restores_missing_retention_after_data_only_restore() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    // Reopen the database so repair runs under the startup ownership session.
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/room new retained")
+        .unwrap();
+    for _ in 0..3 {
+        engine
+            .execute(Some("alice"), Some("retained"), "retained message")
+            .unwrap();
+    }
+    engine
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch("DELETE FROM retention")
+        .unwrap();
+    drop(engine);
+    let db = Connection::postgres(&fixture.url, false).unwrap();
+    db.execute_batch("CREATE FUNCTION slow_retention_restore() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.05); RETURN NEW; END $$; CREATE TRIGGER slow_retention_restore BEFORE INSERT ON retention FOR EACH ROW EXECUTE FUNCTION slow_retention_restore(); SET statement_timeout='20ms';").unwrap();
+    // Rebuild exceeds the runtime deadline but runs as offline startup work.
+    db.initialize("{}", 0).unwrap();
+    assert_eq!(
+        db.query_row::<String, _, _>("SHOW statement_timeout", [], |r| r.get(0))
+            .unwrap(),
+        "20ms"
+    );
+    drop(db);
+    let engine = Engine::open_postgres(&fixture.url).unwrap();
+    assert_eq!(
+        engine
+            .store
+            .db
+            .lock()
+            .unwrap()
+            .query_row::<u64, _, _>("SELECT count FROM retention", [], |row| row.get(0),)
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn rejected_sqlite_commit_rolls_back_and_does_not_disable_the_dispatcher() {
+    let mut engine = crate::engine::tests::engine();
+    engine
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE commit_parent(id INTEGER PRIMARY KEY); \
+         CREATE TABLE commit_child(id INTEGER REFERENCES commit_parent(id) \
+         DEFERRABLE INITIALLY DEFERRED); \
+         CREATE TRIGGER reject_commit AFTER INSERT ON entities \
+         WHEN NEW.kind='session' BEGIN INSERT INTO commit_child VALUES(1); END;",
+        )
+        .unwrap();
+    assert!(
+        engine
+            .login("rejected".into(), "alice", "test-hash", None)
+            .is_err()
+    );
+    engine.store.db.ensure_available().unwrap();
+    assert_eq!(
+        engine
+            .store
+            .db
+            .lock()
+            .unwrap()
+            .query_row::<u64, _, _>("SELECT count(*) FROM commit_child", [], |row| row.get(0),)
+            .unwrap(),
+        0
+    );
+    engine
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_commit")
+        .unwrap();
+    engine
+        .login("accepted".into(), "alice", "test-hash", None)
+        .unwrap();
+    assert_eq!(engine.session("accepted").as_deref(), Some("alice"));
+}
+
+#[test]
+fn metadata_revision_compare_and_swap_rejects_stale_writes_atomically() {
+    use super::super::{MetadataOp, MetadataWrite};
+    let engine = crate::engine::tests::engine();
+    let before = engine.data.rooms["lobby"].revision;
+    let write = || MetadataWrite {
+        operations: vec![MetadataOp::Revision {
+            kind: "room",
+            key: "lobby".into(),
+            expected: before,
+            revision: before + 1,
+        }],
+    };
+    engine.store.db.save_metadata_blocking(&write()).unwrap();
+    assert!(matches!(
+        engine.store.db.save_metadata_blocking(&write()),
+        Err(Error::RevisionConflict)
+    ));
+    assert_eq!(
+        engine
+            .store
+            .db
+            .lock()
+            .unwrap()
+            .query_row::<u64, _, _>(
+                "SELECT revision FROM entities WHERE kind='room' AND key='lobby'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        before + 1
+    );
+}
+
+#[test]
+fn media_mutations_bind_the_authorized_uploader() {
+    let engine = crate::engine::tests::engine();
+    let mut media = engine
+        .allocate_media("alice", &engine.data.rooms["lobby"].id, "file", 8)
+        .unwrap();
+    let before = media.uploader.clone();
+    let result = engine
+        .store
+        .db
+        .media_write_blocking(&super::super::MediaWrite::Abandon {
+            id: &media.id,
+            uploader: "another-account",
+        })
+        .unwrap();
+    assert_eq!(result.affected, 0);
+    media.ready = true;
+    media.uploader = "another-account".into();
+    assert!(
+        engine
+            .store
+            .db
+            .media_write_blocking(&super::super::MediaWrite::Ready {
+                media: &media,
+                at: crate::engine::now(),
+            })
+            .is_err()
+    );
+    let stored = engine.stored_media(&media.id).unwrap();
+    assert_eq!(stored.uploader, before);
+    assert!(!stored.ready && !stored.deleting);
+}
+
+#[test]
 fn sqlite_has_one_writer_and_cancelled_acquisition_releases_capacity() {
     let engine = Engine::open(Path::new(":memory:")).unwrap();
     let database = &engine.store.db;
@@ -829,4 +1143,120 @@ fn postgres_receipt_capacity_is_atomic_across_independent_conversations() {
         })
         .unwrap();
     assert_eq!(sequence, before + 1);
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_pool_sizes_follow_validated_configuration() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Engine::open_postgres_in_folder_with_pool(
+        &fixture.url,
+        &directory.path().join("chat.sqlite"),
+        crate::config::PostgresPoolConfig {
+            min_readers: 1,
+            max_readers: 3,
+            max_writers: 2,
+        },
+    )
+    .unwrap();
+    let Pool::Postgres(writers) = &engine.store.db.pool else {
+        panic!("expected PostgreSQL")
+    };
+    let Pool::Postgres(readers) = &engine.store.db.readers else {
+        panic!("expected PostgreSQL")
+    };
+    assert_eq!(writers.options().get_max_connections(), 2);
+    assert_eq!(readers.options().get_min_connections(), 1);
+    assert_eq!(readers.options().get_max_connections(), 3);
+}
+
+fn batched_cleanup_contract(mut engine: Engine, postgres: bool) {
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/room new files")
+        .unwrap();
+    let room = engine.data.rooms["files"].id.clone();
+    let ids: Vec<_> = (0..3)
+        .map(|_| engine.allocate_media("alice", &room, "file", 8).unwrap().id)
+        .collect();
+    let database = &engine.store.db;
+    database
+        .lock()
+        .unwrap()
+        .execute_batch("UPDATE media SET deleting=1")
+        .unwrap();
+    let records = vec![(ids[0].clone(), true), (ids[1].clone(), true)];
+    let reject = if postgres {
+        format!(
+            "CREATE FUNCTION reject_cleanup_batch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='{}' AND NEW.deleted=1 THEN RAISE EXCEPTION 'injected'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_cleanup_batch BEFORE UPDATE ON media FOR EACH ROW EXECUTE FUNCTION reject_cleanup_batch();",
+            ids[1]
+        )
+    } else {
+        format!(
+            "CREATE TRIGGER reject_cleanup_batch BEFORE UPDATE ON media WHEN NEW.id='{}' AND NEW.deleted=1 BEGIN SELECT RAISE(ABORT,'injected'); END;",
+            ids[1]
+        )
+    };
+    database.lock().unwrap().execute_batch(&reject).unwrap();
+    let write = super::super::MediaWrite::CleanupDone {
+        records: &records,
+        staging: &[],
+        tombstones_before: 0,
+    };
+    assert!(database.media_write_blocking(&write).is_err());
+    for id in &ids {
+        assert!(!engine.stored_media(id).unwrap().deleted);
+    }
+    database
+        .lock()
+        .unwrap()
+        .execute_batch(if postgres {
+            "DROP TRIGGER reject_cleanup_batch ON media; DROP FUNCTION reject_cleanup_batch();"
+        } else {
+            "DROP TRIGGER reject_cleanup_batch;"
+        })
+        .unwrap();
+    database.media_write_blocking(&write).unwrap();
+    assert!(engine.stored_media(&ids[0]).unwrap().deleted);
+    assert!(engine.stored_media(&ids[1]).unwrap().deleted);
+    assert!(!engine.stored_media(&ids[2]).unwrap().deleted);
+}
+#[test]
+fn sqlite_cleanup_acknowledgements_commit_only_confirmed_ids_atomically() {
+    batched_cleanup_contract(Engine::open(Path::new(":memory:")).unwrap(), false);
+}
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_cleanup_acknowledgements_commit_only_confirmed_ids_atomically() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    batched_cleanup_contract(Engine::open_postgres(&fixture.url).unwrap(), true);
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_append_uses_one_forced_ownership_probe() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/room new measured")
+        .unwrap();
+    let before = engine.store.db.forced_owner_probes.load(Ordering::Relaxed);
+    let started = Instant::now();
+    for _ in 0..50 {
+        engine
+            .execute(Some("alice"), Some("measured"), "message")
+            .unwrap();
+    }
+    let probes = engine.store.db.forced_owner_probes.load(Ordering::Relaxed) - before;
+    assert_eq!(probes, 50);
+    println!(
+        "50 PostgreSQL appends: {probes} forced ownership probes, {} ms",
+        started.elapsed().as_millis()
+    );
 }

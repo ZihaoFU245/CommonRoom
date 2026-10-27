@@ -555,6 +555,27 @@ fn restart_cleanup_preserves_shared_references_and_releases_quota_only_after_del
     let mut e = Engine::open(&path).unwrap();
     e.media.config.user_quota = 24;
     e.prepare_media_cleanup().unwrap();
+    assert!(e.expired_media().unwrap().is_empty());
+    assert!(!e.stored_media(&pending.id).unwrap().deleting);
+    assert!(!e.stored_media(&orphan.id).unwrap().deleting);
+    let mut completed = pending.clone();
+    completed.ready = true;
+    completed.object_key = completed.final_key();
+    completed.content_type = "image/png".into();
+    e.finish_media("alice", &completed).unwrap();
+    let old = now().saturating_sub(e.media.config.pending_ttl + 1);
+    for id in [&orphan.id, &pending.id] {
+        e.store
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE media SET unreferenced=?2 WHERE id=?1",
+                database::params![id, old],
+            )
+            .unwrap();
+    }
+    e.prepare_media_cleanup().unwrap();
     let claimed = e.expired_media().unwrap();
     assert_eq!(claimed.len(), 2);
     assert!(claimed.iter().any(|m| m.id == orphan.id));

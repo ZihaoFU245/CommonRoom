@@ -8,7 +8,7 @@ use std::{
     path::Path,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -20,6 +20,10 @@ pub(crate) struct Database {
     pool: Pool,
     readers: Pool,
     owner: Option<tokio::sync::Mutex<Connection>>,
+    #[cfg(test)]
+    forced_owner_probes: AtomicU64,
+    owner_checked: AtomicU64,
+    owner_epoch: std::time::Instant,
     changes: ChangeCount,
     failed: AtomicBool,
     folder_lock: Mutex<Option<std::fs::File>>,
@@ -29,18 +33,20 @@ impl Database {
         connection: Connection,
         location: &str,
         lock: Option<std::fs::File>,
+        limits: crate::config::PostgresPoolConfig,
     ) -> Result<Self> {
-        runtime::run(Self::open(connection, location, lock))
+        runtime::run(Self::open(connection, location, lock, limits))
     }
     async fn open(
         connection: Connection,
         location: &str,
         lock: Option<std::fs::File>,
+        limits: crate::config::PostgresPoolConfig,
     ) -> Result<Self> {
         let (pool, owner) = if connection.is_postgres() {
             let options = location.parse::<sqlx::postgres::PgConnectOptions>()?;
             let pool = sqlx::postgres::PgPoolOptions::new()
-                .min_connections(1).max_connections(8)
+                .min_connections(1).max_connections(limits.max_writers)
                 .acquire_timeout(std::time::Duration::from_secs(5))
                 .after_connect(|db, _| Box::pin(async move {
                     db.execute("SET statement_timeout='10s'; SET lock_timeout='2s'; SET idle_in_transaction_session_timeout='30s';").await?;
@@ -69,7 +75,7 @@ impl Database {
             Pool::Postgres(_) => {
                 let options = location.parse::<sqlx::postgres::PgConnectOptions>()?;
                 Pool::Postgres(sqlx::postgres::PgPoolOptions::new()
-                    .min_connections(4).max_connections(4)
+                    .min_connections(limits.min_readers).max_connections(limits.max_readers)
                     .acquire_timeout(std::time::Duration::from_secs(5))
                     .after_connect(|db, _| Box::pin(async move {
                         db.execute("SET statement_timeout='10s'; SET lock_timeout='2s'; SET idle_in_transaction_session_timeout='30s'; SET default_transaction_read_only=on;").await?;
@@ -84,7 +90,7 @@ impl Database {
                     .busy_timeout(std::time::Duration::from_secs(2));
                 Pool::Sqlite(
                     sqlx::sqlite::SqlitePoolOptions::new()
-                        .min_connections(4)
+                        .min_connections(2)
                         .max_connections(4)
                         .idle_timeout(None)
                         .max_lifetime(None)
@@ -98,6 +104,10 @@ impl Database {
             pool,
             readers,
             owner,
+            #[cfg(test)]
+            forced_owner_probes: AtomicU64::new(0),
+            owner_checked: AtomicU64::new(0),
+            owner_epoch: std::time::Instant::now(),
             changes: ChangeCount::default(),
             failed: AtomicBool::new(false),
             folder_lock: Mutex::new(lock),
@@ -115,8 +125,7 @@ impl Database {
         Ok(())
     }
     pub(super) async fn acquire_reader(&self) -> Result<Lease<'_>> {
-        self.ensure_state()?;
-        self.check_owner().await?;
+        self.ensure_available_async().await?;
         let connection = match &self.readers {
             Pool::Sqlite(pool) => {
                 Connection::sqlite_session(
@@ -153,18 +162,55 @@ impl Database {
     }
     pub(crate) async fn ensure_available_async(&self) -> Result<()> {
         self.ensure_state()?;
-        self.check_owner().await
+        self.validate_owner(false).await
     }
     pub(super) async fn check_owner(&self) -> Result<()> {
+        self.validate_owner(true).await
+    }
+    fn recent_owner_check(&self) -> bool {
+        let checked = self.owner_checked.load(Ordering::Acquire);
+        let elapsed = u64::try_from(self.owner_epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+        checked > 0 && elapsed.saturating_sub(checked - 1) < 100
+    }
+    async fn validate_owner(&self, force: bool) -> Result<()> {
         // The session advisory lock is held on this dedicated connection, never
         // on a pooled transaction session. A lost owner invalidates all writes.
         if let Some(owner) = &self.owner {
+            if !force && self.recent_owner_check() {
+                return self.ensure_state();
+            }
             let mut owner = owner.lock().await;
-            let health =
-                tokio::time::timeout(std::time::Duration::from_secs(5), owner.ping()).await;
-            if !matches!(health, Ok(Ok(()))) {
-                self.failed.store(true, Ordering::Release);
-                return Err(Error::RestartRequired);
+            // Share one bounded read-health probe across cache hits and waiters.
+            // Writers validate ownership immediately before committing.
+            if !force && self.recent_owner_check() {
+                return self.ensure_state();
+            }
+            #[cfg(test)]
+            if force {
+                self.forced_owner_probes.fetch_add(1, Ordering::Relaxed);
+            }
+            let health = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                owner.validate_owner_async(),
+            )
+            .await;
+            match health {
+                Ok(Ok(())) => {
+                    let elapsed = u64::try_from(self.owner_epoch.elapsed().as_millis())
+                        .unwrap_or(u64::MAX - 1);
+                    self.owner_checked
+                        .store(elapsed.saturating_add(1), Ordering::Release);
+                }
+                Err(_) => return Err(sqlx::Error::PoolTimedOut.into()),
+                Ok(Err(error)) => {
+                    owner.observe_error(&error);
+                    // Never reconnect an owning session: another process could
+                    // have acquired ownership and invalidated our memory state.
+                    if owner.ensure_available().is_err() {
+                        self.failed.store(true, Ordering::Release);
+                    }
+                    return Err(error);
+                }
             }
         }
         self.ensure_state()
@@ -181,8 +227,7 @@ impl Database {
         })
     }
     pub(super) async fn acquire(&self) -> Result<Lease<'_>> {
-        self.ensure_state()?;
-        self.check_owner().await?;
+        self.ensure_available_async().await?;
         let connection = match &self.pool {
             Pool::Sqlite(pool) => {
                 Connection::sqlite_session(
@@ -207,6 +252,23 @@ impl Database {
         })
     }
 }
+impl Connection {
+    async fn validate_owner_async(&mut self) -> Result<()> {
+        self.ensure_available()?;
+        let owned: bool = match self.backend.get_mut() {
+            Backend::Postgres(db) => sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid=0 AND objid=1128808788 AND objsubid=1 AND granted)"
+            ).fetch_one(&mut **db).await?,
+            _ => return Err(Error::Conversion("No PostgreSQL ownership session")),
+        };
+        if !owned {
+            self.failed.set(true);
+            return Err(Error::RestartRequired);
+        }
+        Ok(())
+    }
+}
+
 impl super::Handle {
     #[cfg(test)]
     pub(crate) fn advance_cursor_blocking(&self, request: &super::CursorAdvance<'_>) -> Result<()> {
@@ -214,6 +276,9 @@ impl super::Handle {
     }
     pub(crate) async fn advance_cursor(&self, request: &super::CursorAdvance<'_>) -> Result<()> {
         let mut session = self.acquire().await?;
+        // Cursor advancement is one autocommit statement rather than a root
+        // transaction, so its forced ownership check belongs directly here.
+        self.check_owner().await?;
         session.advance_cursor_async(request).await
     }
     #[cfg(test)]

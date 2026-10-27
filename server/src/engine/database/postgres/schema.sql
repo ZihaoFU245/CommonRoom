@@ -1,7 +1,7 @@
--- PostgreSQL representation of SQLite HEAD v19. JSON stays text to preserve
+-- PostgreSQL v1 representation of SQLite HEAD v19. JSON stays text to preserve
 -- serialized payloads and no-op comparisons across an offline transfer.
 CREATE TABLE chat_schema(id BIGINT PRIMARY KEY CHECK(id=1), version BIGINT NOT NULL);
-INSERT INTO chat_schema VALUES(1,19);
+INSERT INTO chat_schema VALUES(1,1);
 CREATE TABLE state(id BIGINT PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);
 CREATE TABLE read_positions(username TEXT NOT NULL, conversation TEXT NOT NULL, sequence BIGINT NOT NULL, PRIMARY KEY(username,conversation));
 CREATE INDEX read_positions_conversation ON read_positions(conversation);
@@ -22,6 +22,7 @@ CREATE INDEX messages_time ON messages(conversation,(((projection #>> '{time}'))
 CREATE INDEX messages_sequence ON messages(sequence);
 CREATE INDEX messages_reply ON messages(conversation,(projection #>> '{reply,id}'));
 CREATE INDEX entities_id ON entities((projection #>> '{id}')) WHERE kind IN ('room','private');
+CREATE INDEX entities_account_id ON entities((projection #>> '{id}')) WHERE kind='account';
 CREATE TABLE message_accounts(name TEXT NOT NULL, conversation TEXT NOT NULL, sequence BIGINT NOT NULL,
  PRIMARY KEY(name,sequence,conversation), FOREIGN KEY(conversation,sequence) REFERENCES messages(conversation,sequence) ON DELETE CASCADE ON UPDATE CASCADE);
 CREATE INDEX message_accounts_message ON message_accounts(conversation,sequence);

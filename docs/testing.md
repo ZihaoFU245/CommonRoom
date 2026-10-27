@@ -73,6 +73,29 @@ rtk pnpm --dir web test:integration
 `auto/build.sh` installs dependencies, bundles the UI, and compiles Rust without
 running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
+
+Dependency advisory CI runs `python3 auto/audit.py` with Python 3.11+, Git,
+Cargo and cargo-audit 0.22.2. The script fetches a fresh RustSec database and audits
+the locked workspace graph with all workspace features and target platforms.
+Use `--db PATH` for an already-fetched advisory database. It creates a temporary
+lockfile projection without modifying `Cargo.lock` or ignoring advisory IDs.
+Cargo's lockfile also records inactive optional SQLx MySQL/RSA dependencies:
+the unused RSA entry has RUSTSEC-2023-0071, with no fixed version. These entries
+are excluded only while absent from the resolved graph; enabling them makes the
+audit include them automatically. Do not claim the entire raw lockfile is clean.
+
+Review regressions cover an HTTP future aborted inside COMMIT, one forced owner
+probe per append, configurable PostgreSQL pool limits, batched media acknowledgement
+rollback on both backends, and cleanup recount when an empty target receives a
+message during the count. Publication recovery tests force a committed mismatch,
+verify authoritative reload and a subsequent write, and verify invalid persisted
+metadata remains unavailable. A shutdown test queues recovery behind admission
+and requires it to finish before checkpointing. Real ordered-worker panic tests
+require subsequent reads and writes to fail closed.
+
+The ignored `snapshot_fanout_shares_cold_reads_and_encoded_content` fixture checks
+100 viewers across 30 rooms, shared page identity and one encoding per page.
+See [Storage benchmarks](storage-benchmarks.md#shared-snapshot-fan-out).
 `auto/debug.sh` runs the existing debug binary and previews `web/dist-debug/`
 at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild. It defaults
 to SQLite/no S3, with opt-in `--with-s3` and `--with-postgres` flags. See
@@ -129,7 +152,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover HEAD v19 initialization and restart, lazy history loading, state/cursor preservation, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover HEAD SQLite v19 initialization and restart, lazy history loading, state/cursor preservation, and unchanged v19 reopen, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -256,7 +279,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, HEAD v19 initialization and restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, HEAD SQLite v19 initialization and restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -1016,3 +1039,20 @@ contract checks independent accounts, cancellation and queued revocation. A SQLi
 WAL contract proves ordinary media reads use readers while command-scoped reads
 retain uncommitted transaction visibility. Latest WIP verification and outstanding
 real-binary/media checks are recorded in `database-refactor.md`.
+
+PostgreSQL review regressions also cover cached read-health checks, actual
+advisory-lock loss, single-statement page/unread SQL against the oracle, account
+index query plans, rejection of old WIP schema markers, and rebuilding an empty
+retention table past the runtime statement deadline after restore. SQLite
+covers rejected COMMIT rollback without dispatcher poisoning. Shared tests verify
+uploader-bound media updates, stale metadata CAS rejection, startup upload grace,
+terminal avatar completion, sudo unwind cleanup, recognized expired logouts,
+HTTP reservation reuse in spawned commands, and preserved login failure backoff.
+
+The transfer contract requires exactly `SQLITE_SCHEMA_VERSION` as its read-only
+source and verifies the independent `POSTGRES_SCHEMA_VERSION` on the target.
+Non-HEAD SQLite versions fail before connecting to PostgreSQL or changing source
+bytes. A deferred PostgreSQL profile trigger blocks inside COMMIT while its HTTP
+request is cancelled; publication, subsequent authentication and another write
+must succeed. A panic through `with_conversation` must poison the engine and
+reject subsequent reads/mutations until restart, as documented in Security.

@@ -91,10 +91,20 @@ acquire that fence exclusively and await native writes outside the engine guard.
 The old synchronous command executors and storage write adapters compile only in
 tests. Bootstrap/offline transfer and final pool draining retain the persistent
 storage runtime; live queries and mutations await SQLx directly. Bulk history cleanup
-acquires sorted conversation locks before the shared metadata fence and rechecks
-the full target set. Audited deletions additionally hold the audit permit through
+counts outside conversation permits, then acquires matching conversation locks
+before the shared metadata fence. Recheck every target revision and the full target
+set before committing; changed plans retry at most three times. Keep deletion and
+audit atomic. Audited deletions additionally hold the audit permit through
 commit/publication; sends and cursors do not need that permit. No runtime belongs to a
 connection, and pools drain before ownership locks are released.
+
+Memory capture/publication first tries an uncontended engine guard on the async
+task, falling back to blocking dispatch on contention. Never await with a guard.
+Known durable publication failures schedule one full authoritative metadata/cursor
+reload under the exclusive metadata fence. Validate and compile replacement state
+before installing it, invalidate caches and broadcast resynchronization afterward.
+Failed recovery stays unavailable; unknown commits, ownership loss and poisoned
+locks must not enter this recovery path. Shutdown must drain queued recovery.
 
 Read-only browser commands use owned plans. `/history`, elevated cleanup previews
 and `/configs` await native readers/statistics outside engine guards; memory-only
@@ -191,7 +201,7 @@ Node/Deno development and bot-worker requirements remain separate.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep all SQL, schemas, connection/session and COPY mechanics in the independent SQLite/PostgreSQL modules under `engine/database/`. Shared `engine/storage/` coordinates typed operations and committed publication; `engine/history/` owns shared caches. Avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
-- Preserve compatibility with existing HEAD-schema `data/`. Any schema change needs a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). Current startup supports only fresh and HEAD-schema databases; do not restore obsolete migration paths.
+- Preserve compatibility with existing HEAD-schema `data/`. Any schema change needs a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). SQLite startup supports fresh/HEAD v19 only. PostgreSQL is unpublished and accepts only its independent current v1 schema, with no historical WIP upgrades. Always maintain a read-only HEAD SQLite → current PostgreSQL transfer; PostgreSQL changes must not force a SQLite migration.
 - Use `cargo fmt` and the web Prettier scripts. Update the relevant guides when paths, commands, protocol, configuration, or deployment behavior changes.
 
 ## Adding a feature

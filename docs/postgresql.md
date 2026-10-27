@@ -37,9 +37,11 @@ can be supplied with the PostgreSQL `sslrootcert` connection parameter.
 Use a dedicated database with an empty target schema on first start. The role
 needs permission to create tables, indexes, sequences and trigger functions there.
 Startup initializes an empty schema transactionally; an existing application schema
-must be the current version, v19. Existing unversioned objects and other schema
-versions are rejected without modifying them. SQLite's existing v19 file layout
-is unchanged. The PostgreSQL representation has its own schema marker and indexed
+must match PostgreSQL schema v1. PostgreSQL support is unpublished: historical
+WIP schemas have no upgrade path. Choose a fresh empty target for a changed WIP
+schema. Published SQLite HEAD remains v19, with no SQLite schema migration caused
+by PostgreSQL work. See [Data](data.md#database-compatibility).
+The PostgreSQL representation has its own schema marker and indexed
 JSONB projections alongside the original JSON text; the two database files/formats
 are not interchangeable.
 
@@ -100,7 +102,7 @@ reset, account recreation or message renumbering.
 The command:
 
 1. Acquires the SQLite server's ownership lock and opens the source read-only at
-   HEAD v19. It checks integrity, foreign keys and metadata before importing.
+   HEAD SQLite v19. It checks integrity, foreign keys and metadata before importing.
 2. Acquires PostgreSQL ownership and requires an empty target schema.
 3. Creates the PostgreSQL schema and streams base rows using binary `COPY` inside
    one transaction. It retains accounts/password hashes, sessions, policy, bots,
@@ -131,7 +133,7 @@ transfer and online replication are not implemented.
 
 Both backends use SQLx. The typed async dispatcher handles message transactions
 and cursor advances with one SQLite writer lease or a bounded PostgreSQL pool of
-up to eight write leases. PostgreSQL also has four read-only history sessions and
+up to eight write leases by default. PostgreSQL also has two to eight read-only history sessions and
 a dedicated ownership session. Browser, bot and console operations prepare owned
 typed requests under short memory guards, then await native SQLx transactions.
 Different conversations can write independently. Metadata administration retains
@@ -143,6 +145,22 @@ native async operations. Shutdown drains accepted I/O/password work first.
 Synchronous SQLx utilities remain only for bootstrap/offline transfer, final pool
 draining and test compatibility; legacy live command paths are excluded from
 production builds.
+
+Optional `database.postgres_pool` settings tune the connection budget:
+
+```json
+{
+  "database": {
+    "backend": "postgres",
+    "postgres_pool": { "min_readers": 2, "max_readers": 8, "max_writers": 8 }
+  }
+}
+```
+
+Reader maximum must be 1–64, reader minimum 0 through that maximum, and writer
+maximum 1–32. The dedicated ownership session is additional to these limits.
+Invalid settings fail before ownership/bootstrap or configuration rewriting.
+SQLite ignores PostgreSQL pool tuning and retains its own fixed limits.
 
 Message operations validate the stored conversation identity/revision under a
 PostgreSQL row lock. Appends first lock the global counter row and validate their
@@ -172,3 +190,26 @@ Copying `CHAT_DATA` alone no longer backs up chat accounts/history. Stop chat fo
 consistent application/database/object-store backup, or coordinate equivalent
 snapshots. See [Data](data.md) for the SQLite procedure and [Testing](testing.md)
 for isolated PostgreSQL tests.
+
+Read-only ownership checks share a successful result for at most 100 ms and
+validate the advisory lock itself. Write acquisition shares cached health; each transaction validates ownership
+immediately before commit, and cursor autocommit statements validate immediately
+before execution. A probe deadline or known rejected commit is retryable;
+ownership loss and unknown commit outcomes require restart to reload memory.
+The owning session never reconnects automatically. History pages and unread
+batches use one SQL statement each; snapshot page loading runs at most four
+requests concurrently and retains its message/byte output budgets.
+Concurrent viewers share cold page reads and bounded encoded page fragments;
+their authorization, cursor and unread projections remain individual.
+
+A known successful commit with a publication mismatch triggers one authoritative
+metadata/cursor reload under the exclusive application fence, then invalidates
+caches and broadcasts resynchronization. Failed reloads remain unavailable.
+This recovery does not clear unknown commit outcomes, ownership loss or poisoned
+engine locks; those conditions still require restart.
+
+Keep the offline transfer supported from HEAD SQLite to the current PostgreSQL
+schema as PostgreSQL evolves. Source and target schema versions are independent;
+the transfer checks the SQLite HEAD version and initializes the current target
+schema without changing source bytes. Startup retention reconstruction uses a
+transaction-local unlimited statement timeout, leaving runtime deadlines intact.

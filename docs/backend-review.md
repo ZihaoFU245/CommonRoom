@@ -1,5 +1,10 @@
 # Backend review implementation
 
+> Historical SQLite v19 implementation record. SQLite stays at HEAD v19;
+> unpublished PostgreSQL uses its own current v1 schema with no WIP upgrades.
+> See [review verification](postgres-review.md) and
+> [database compatibility](data.md#database-compatibility).
+
 This is the implementation and verification ledger for the 2026-10-22
 `analysis.md` review. A finding is complete only when its behavior and relevant
 regressions are verified. Existing security/authorization invariants remain required.

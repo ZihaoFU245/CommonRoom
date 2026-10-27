@@ -32,10 +32,10 @@ impl MediaStore {
             .await?;
         Ok(())
     }
-    pub(crate) async fn abandon(&self, id: &str) -> Result<(), EngineError> {
+    pub(crate) async fn abandon(&self, id: &str, uploader: &str) -> Result<(), EngineError> {
         let result = self
             .database
-            .media_write(&MediaWrite::Abandon { id })
+            .media_write(&MediaWrite::Abandon { id, uploader })
             .await?;
         if result.affected == 0 {
             tracing::debug!(
@@ -71,19 +71,29 @@ impl MediaStore {
             .await?
             .staging)
     }
-    pub(crate) async fn staging_cleaned(&self, id: &str) -> Result<(), EngineError> {
-        self.database
-            .media_write(&MediaWrite::StagingCleaned { id })
-            .await?;
-        Ok(())
-    }
-    pub(crate) async fn cleanup_done(&self, media: &Media) -> Result<(), EngineError> {
+    pub(crate) async fn cleanup_done(
+        &self,
+        records: &[Media],
+        staging: &[String],
+    ) -> Result<(), EngineError> {
+        if records.is_empty() && staging.is_empty() {
+            return Ok(());
+        }
         let at = now();
+        let records: Vec<_> = records
+            .iter()
+            .map(|media| {
+                (
+                    media.id.clone(),
+                    media.created.saturating_add(self.config.pending_ttl) <= at,
+                )
+            })
+            .collect();
         self.database
-            .media_write(&MediaWrite::RemoveRecord {
-                id: &media.id,
+            .media_write(&MediaWrite::CleanupDone {
+                records: &records,
+                staging,
                 tombstones_before: at.saturating_sub(self.config.pending_ttl),
-                staging_clean: media.created.saturating_add(self.config.pending_ttl) <= at,
             })
             .await?;
         Ok(())

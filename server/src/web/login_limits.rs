@@ -79,12 +79,12 @@ impl LoginLimits {
         Ok(Reservation(reservation))
     }
 
-    pub(crate) fn finish(&mut self, reservation: Reservation, failed: bool, now: Instant) {
+    pub(crate) fn finish(&mut self, reservation: Reservation, success: Option<bool>, now: Instant) {
         for (key, started) in reservation.0 {
             if let Some(entry) = self.counts.get_mut(&key)
                 && entry.at == started
             {
-                if failed {
+                if success == Some(false) {
                     if matches!(key, Key::Account(_)) {
                         entry.failures = entry.failures.saturating_add(1);
                         let seconds = 1u64 << entry.failures.saturating_sub(1).min(5);
@@ -92,8 +92,10 @@ impl LoginLimits {
                     }
                 } else {
                     entry.count = entry.count.saturating_sub(1);
-                    entry.failures = 0;
-                    entry.next = now;
+                    if success == Some(true) {
+                        entry.failures = 0;
+                        entry.next = now;
+                    }
                 }
             }
         }
@@ -104,6 +106,30 @@ impl LoginLimits {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn unavailable_completion_preserves_a_concurrent_failure_backoff() {
+        let mut limits = LoginLimits::default();
+        let now = Instant::now();
+        let ip = "198.51.100.1".parse().unwrap();
+        let failing = limits.admit(ip, "alice", now).unwrap();
+        let unavailable = limits.admit(ip, "alice", now).unwrap();
+        limits.finish(failing, Some(false), now);
+        limits.finish(unavailable, None, now);
+        assert!(limits.admit(ip, "alice", now).is_err());
+        let later = now + Duration::from_secs(1);
+        let reservation = limits.admit(ip, "alice", later).unwrap();
+        limits.finish(reservation, Some(false), later);
+        assert!(
+            limits
+                .admit(ip, "alice", later + Duration::from_secs(1))
+                .is_err()
+        );
+        assert!(
+            limits
+                .admit(ip, "alice", later + Duration::from_secs(2))
+                .is_ok()
+        );
+    }
     #[test]
     fn failures_are_limited_by_ip_and_account_and_expire() {
         let mut limits = LoginLimits::default();
@@ -138,7 +164,7 @@ mod tests {
         let ip = "198.51.100.1".parse().unwrap();
         for _ in 0..100 {
             let reservation = limits.admit(ip, "alice", now).unwrap();
-            limits.finish(reservation, false, now);
+            limits.finish(reservation, Some(true), now);
         }
         assert_eq!(limits.expires.len(), 2);
         for _ in 0..9 {
@@ -146,7 +172,7 @@ mod tests {
         }
         let bob = limits.admit(ip, "bob", now).unwrap();
         assert!(limits.admit(ip, "alice", now).is_err());
-        limits.finish(bob, false, now);
+        limits.finish(bob, Some(true), now);
         limits.admit(ip, "alice", now).unwrap();
         assert!(limits.admit(ip, "alice", now).is_err());
     }
@@ -159,7 +185,7 @@ mod tests {
         for _ in 0..10 {
             limits.admit(ip, "alice", now + WINDOW).unwrap();
         }
-        limits.finish(old, false, now + WINDOW);
+        limits.finish(old, Some(true), now + WINDOW);
         assert!(limits.admit(ip, "alice", now + WINDOW).is_err());
     }
     #[test]
@@ -175,7 +201,7 @@ mod tests {
                 u8::try_from(n + 1).unwrap(),
             ));
             let reservation = limits.admit(ip, "alice", now).unwrap();
-            limits.finish(reservation, true, now);
+            limits.finish(reservation, Some(false), now);
             assert!(
                 limits
                     .admit(
@@ -192,7 +218,7 @@ mod tests {
         let reservation = limits
             .admit("203.0.113.1".parse().unwrap(), "alice", now)
             .unwrap();
-        limits.finish(reservation, false, now);
+        limits.finish(reservation, Some(true), now);
         assert!(
             limits
                 .admit("203.0.113.1".parse().unwrap(), "alice", now)

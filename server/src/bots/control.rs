@@ -114,8 +114,12 @@ fn command_view(
     id: &str,
 ) -> Result<(String, String), Error> {
     let user = context.user(engine)?;
-    context.permits(engine, "commands", Some(id))?;
-    context.permits(engine, "read", Some(id))?;
+    context.permits(
+        engine,
+        "commands",
+        crate::bots::auth::Scope::Conversation(id),
+    )?;
+    context.permits(engine, "read", crate::bots::auth::Scope::Conversation(id))?;
     // Text commands can name additional targets. A conversation-scoped token
     // cannot be routed through that grammar without escaping its token scope.
     if context.metadata(engine)?.conversations.is_some() {
@@ -153,8 +157,8 @@ pub(super) async fn message_context(
             let context = context.clone(); let id = input.conversation_id.clone();
             move |engine, _| -> Result<_, Error> {
                 let user = context.user(engine)?;
-                context.permits(engine, "config", Some(&id))?;
-                context.permits(engine, "read", Some(&id))?;
+                context.permits(engine, "config", crate::bots::auth::Scope::Conversation(&id))?;
+                context.permits(engine, "read", crate::bots::auth::Scope::Conversation(&id))?;
                 Ok((engine.bot_target(&user, &id, Action::Read)?.revision, engine.history_store().clone()))
             }
         }).await?;
@@ -164,8 +168,8 @@ pub(super) async fn message_context(
         store.ensure_available_async().await?;
         app.inspect_engine(move |engine, _| -> Result<_, Error> {
             let user = context.user(engine)?;
-            context.permits(engine, "config", Some(&input.conversation_id))?;
-            context.permits(engine, "read", Some(&input.conversation_id))?;
+            context.permits(engine, "config", crate::bots::auth::Scope::Conversation(&input.conversation_id))?;
+            context.permits(engine, "read", crate::bots::auth::Scope::Conversation(&input.conversation_id))?;
             if engine.bot_target(&user, &input.conversation_id, Action::Read)?.revision != revision {
                 return Err(Error::new(Code::Conflict, "Source message changed; retry authorization."));
             }
@@ -230,8 +234,8 @@ pub(super) async fn command(
 
 fn command_account(engine: &crate::engine::Engine, context: &Context) -> Result<(), Error> {
     context.user(engine)?;
-    context.permits(engine, "commands", None)?;
-    context.permits(engine, "read", None)?;
+    context.permits(engine, "commands", crate::bots::auth::Scope::Global)?;
+    context.permits(engine, "read", crate::bots::auth::Scope::Global)?;
     if context.metadata(engine)?.conversations.is_some() {
         return Err(Error::new(
             Code::Forbidden,

@@ -121,6 +121,11 @@ impl Engine {
         {
             return Err("Avatar must be a PNG, JPEG or WebP image.".into());
         }
+        // Completion is terminal. Replaying an older completed upload must not
+        // overwrite a newer profile selection.
+        if current.ready {
+            return Ok(None);
+        }
         let path = avatar_path(&media.id);
         let mut pending = self.profile_key(user, "@global", "avatar", Some(&path), false)?;
         if !current.ready {
@@ -140,7 +145,7 @@ impl Engine {
         if self.data.users.get(&pending.user) != Some(&pending.before) {
             self.recovery_failed = true;
             return Err(EngineError::Unavailable(
-                "Committed profile identity changed; restart the service.".into(),
+                "Committed profile identity changed; recovery required, retry shortly.".into(),
             ));
         }
         let Some(after) = pending.after else {

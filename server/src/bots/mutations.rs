@@ -33,7 +33,7 @@ pub(super) async fn message(
                 let input = input.clone();
                 move |engine| {
                     let user = super::api::admit(engine, &context)?;
-                    context.permits(engine, "send", Some(&input.conversation_id))?;
+                    context.permits(engine, "send", crate::bots::auth::Scope::Conversation(&input.conversation_id))?;
                     engine.prepare_append(&user, &input)
                 }
             })
@@ -118,8 +118,12 @@ pub(super) async fn reaction(
                 let id = id.clone();
                 move |engine| -> Result<_, Error> {
                     let user = super::api::admit(engine, &context)?;
-                    context.permits(engine, "read", Some(&id))?;
-                    context.permits(engine, "react", Some(&id))?;
+                    context.permits(engine, "read", crate::bots::auth::Scope::Conversation(&id))?;
+                    context.permits(
+                        engine,
+                        "react",
+                        crate::bots::auth::Scope::Conversation(&id),
+                    )?;
                     engine.bot_target(&user, &id, crate::engine::authorization::Action::Read)?;
                     Ok(engine.history_store().clone())
                 }
@@ -189,8 +193,12 @@ pub(super) async fn read(
                             "Explicit shared unread acknowledgement required.",
                         ));
                     }
-                    context.permits(engine, "read", Some(&id))?;
-                    context.permits(engine, "read_ack", Some(&id))?;
+                    context.permits(engine, "read", crate::bots::auth::Scope::Conversation(&id))?;
+                    context.permits(
+                        engine,
+                        "read_ack",
+                        crate::bots::auth::Scope::Conversation(&id),
+                    )?;
                     let target = engine.bot_target(
                         &user,
                         &id,

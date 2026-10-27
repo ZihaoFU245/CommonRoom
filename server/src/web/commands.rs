@@ -38,7 +38,7 @@ pub(crate) async fn execute_input(
     if inner.split_whitespace().next() == Some("/clean")
         && inner.split_whitespace().last() != Some("--dry-run")
     {
-        return tokio::spawn(async move {
+        return super::admission::spawn(async move {
             let _permit = permit;
             super::cleanup_commands::execute(&app, headers, user, input)
                 .await
@@ -53,7 +53,7 @@ pub(crate) async fn execute_input(
             Some("/tell" | "/reply" | "/edit" | "/react" | "/retract")
         )
     {
-        return tokio::spawn(async move {
+        return super::admission::spawn(async move {
             let _permit = permit;
             execute_message(&app, headers, user, input)
                 .await
@@ -63,7 +63,7 @@ pub(crate) async fn execute_input(
         .map_err(|_| "Command worker unavailable.")?;
     }
     if super::query_commands::supports(&input.text).map_err(String::from)? {
-        return tokio::spawn(async move {
+        return super::admission::spawn(async move {
             let _permit = permit;
             super::query_commands::execute(&app, headers, user, input)
                 .await
@@ -73,7 +73,7 @@ pub(crate) async fn execute_input(
         .map_err(|_| "Command worker unavailable.")?;
     }
     if let Some(request) = credentials::parse(&input).map_err(String::from)? {
-        return tokio::spawn(async move {
+        return super::admission::spawn(async move {
             let _permit = permit;
             credentials::execute(&app, headers, user, request)
                 .await
@@ -87,7 +87,7 @@ pub(crate) async fn execute_input(
             .map_err(String::from)?
             .unwrap_or(&input.text),
     ) {
-        return tokio::spawn(async move {
+        return super::admission::spawn(async move {
             let _permit = permit;
             super::metadata_commands::execute(&app, headers, user, input)
                 .await
@@ -96,7 +96,7 @@ pub(crate) async fn execute_input(
         .await
         .map_err(|_| "Command worker unavailable.")?;
     }
-    tokio::spawn(async move {
+    super::admission::spawn(async move {
         let _permit = permit;
         let (_, reply) = capture(&app, headers, user.clone(), &input, {
             let view = input.room.clone();

@@ -34,12 +34,22 @@ impl Engine {
             .entry(Scope::Server)
             .or_default()
             .add(rights(Action::ALL, COMMANDS));
-        let result = operation(self);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
         self.read_model.resume();
         // Rebuild from the actual persisted assignments, including policy
         // changes performed by the command, on success and on rejection.
-        self.rebuild_authorization()?;
-        result
+        let restored = self.rebuild_authorization();
+        match result {
+            Ok(result) => {
+                restored?;
+                result
+            }
+            Err(payload) => {
+                // Restore authority even when a caller catches the panic later.
+                drop(restored);
+                std::panic::resume_unwind(payload)
+            }
+        }
     }
 
     pub(in crate::engine) fn rebuild_authorization(&mut self) -> Result<(), EngineError> {
@@ -487,5 +497,32 @@ impl Engine {
             )));
         }
         self.room_scope(value.strip_prefix('#').unwrap_or(value))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod unwind_tests {
+    #[test]
+    fn panic_restores_sudo_authority_before_unwinding() {
+        let mut engine = crate::engine::tests::engine();
+        engine
+            .execute(None, None, "/grant alice @global x:command.sudo")
+            .unwrap();
+        engine
+            .execute(None, None, "/grant alice @global /sudo")
+            .unwrap();
+        assert!(!engine.is_su(Some("alice")));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.with_command_authority::<()>(Some("alice"), None, true, |engine| {
+                assert!(engine.is_su(Some("alice")));
+                panic!("injected command failure")
+            })
+        }));
+        assert!(result.is_err());
+        assert!(!engine.is_su(Some("alice")));
+        engine
+            .execute(Some("alice"), Some("lobby"), "after unwind")
+            .unwrap();
     }
 }

@@ -57,6 +57,7 @@ impl Engine {
         {
             if ids.contains(id) {
                 batch.operations.push(MetadataOp::Revision {
+                    expected: revision.saturating_sub(1),
                     kind,
                     key: key.clone(),
                     revision,

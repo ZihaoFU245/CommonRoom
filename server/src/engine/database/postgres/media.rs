@@ -10,7 +10,7 @@ use crate::engine::media::Media;
 use sqlx::PgConnection;
 
 pub(crate) const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<$1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL)";
+pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=$1) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL)";
 pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<$4 ORDER BY cleanup_attempt,created LIMIT $3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=$1 AND cleanup_attempt<$4 ORDER BY expires,created LIMIT $3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=$2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<$4 ORDER BY unreferenced,created LIMIT $3)\n            ) AND deleted=0 AND cleanup_attempt<$4 AND (deleting=1 OR (deleting=0 AND (expires<=$1 OR (unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=$2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT ((projection #> '{metadata}') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND ((projection #> '{metadata}') -> '@global' ->> 'avatar') IS NOT NULL))))) ORDER BY cleanup_attempt,created LIMIT $3 FOR UPDATE SKIP LOCKED";
 
 pub(in crate::engine::database) async fn apply(
@@ -31,21 +31,23 @@ pub(in crate::engine::database) async fn apply(
         MediaWrite::Ready { media, at } => {
             let json = serde_json::to_string(media)
                 .map_err(|_| Error::Conversion("Cannot serialize media record"))?;
-            let changed = sqlx::query("UPDATE media SET ready=1,json=$2,unreferenced=$3,expires=$4,published=CASE WHEN conversation='@avatar' THEN $3 ELSE published END WHERE id=$1 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
-                .bind(media.expires.map(number).transpose()?).execute(db).await?.rows_affected();
+            let changed = sqlx::query("UPDATE media SET ready=1,json=$2,unreferenced=$3,expires=$4,published=CASE WHEN conversation='@avatar' THEN $3 ELSE published END WHERE id=$1 AND uploader=$5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
+                .bind(media.expires.map(number).transpose()?).bind(&media.uploader).execute(db).await?.rows_affected();
             if changed != 1 {
                 return Err(Error::Conflict("Upload changed; retry completion."));
             }
             changed
         }
-        MediaWrite::PrepareCleanup => sqlx::query(STARTUP_CLEANUP_SQL)
+        MediaWrite::PrepareCleanup { pending_before } => sqlx::query(STARTUP_CLEANUP_SQL)
+            .bind(number(*pending_before)?)
             .execute(db)
             .await?
             .rows_affected(),
-        MediaWrite::Abandon { id } => sqlx::query(
-            "UPDATE media SET deleting=1 WHERE id=$1 AND published IS NULL AND deleted=0",
+        MediaWrite::Abandon { id, uploader } => sqlx::query(
+            "UPDATE media SET deleting=1 WHERE id=$1 AND uploader=$2 AND published IS NULL AND deleted=0",
         )
         .bind(*id)
+        .bind(*uploader)
         .execute(db)
         .await?
         .rows_affected(),
@@ -101,13 +103,16 @@ pub(in crate::engine::database) async fn apply(
             result.staging = ids;
             changed
         }
-        MediaWrite::StagingCleaned { id } => {
-            sqlx::query("UPDATE media SET staging_clean=1 WHERE id=$1")
-                .bind(*id)
-                .execute(db)
-                .await?
-                .rows_affected()
+        MediaWrite::CleanupDone { records, staging, tombstones_before } => {
+            let ids: Vec<_> = records.iter().map(|(id, _)| id.clone()).collect();
+            let clean: Vec<_> = records.iter().filter(|(_, clean)| *clean).map(|(id, _)| id.clone()).collect();
+            let mut changed = sqlx::query("UPDATE media SET deleted=1,deleting=0,ready=0,staging_clean=CASE WHEN id=ANY($2) THEN 1 ELSE staging_clean END WHERE id=ANY($1) AND deleting=1")
+                .bind(&ids).bind(&clean).execute(&mut *db).await?.rows_affected();
+            changed += sqlx::query("UPDATE media SET staging_clean=1 WHERE id=ANY($1) AND staging_clean=0")
+                .bind(*staging).execute(&mut *db).await?.rows_affected();
+            changed + tombstones(db, *tombstones_before).await?
         }
+        #[cfg(test)]
         MediaWrite::RemoveRecord {
             id,
             tombstones_before,

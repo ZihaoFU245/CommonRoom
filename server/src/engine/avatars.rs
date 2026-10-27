@@ -350,6 +350,21 @@ impl Engine {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn completing_an_old_avatar_does_not_restore_a_replaced_profile() {
+        let mut engine = super::super::tests::engine();
+        let media = ready(&engine, "alice");
+        engine.finish_avatar("alice", &media).unwrap();
+        engine.set_avatar("alice", None, false).unwrap();
+        let current = engine.stored_media(&media.id).unwrap();
+        assert!(
+            engine
+                .prepare_avatar_completion("alice", media, &current)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!engine.avatar_directory().contains_key("alice"));
+    }
     fn ready(engine: &Engine, user: &str) -> Media {
         let mut media = engine.allocate_avatar(user, 64).unwrap();
         media.ready = true;

@@ -327,7 +327,8 @@ impl Engine {
             {
                 self.recovery_failed = true;
                 return Err(EngineError::Unavailable(
-                    "Committed conversation identity changed; restart the service.".into(),
+                    "Committed conversation identity changed; recovery required, retry shortly."
+                        .into(),
                 ));
             }
             self.data.private.insert(
@@ -359,7 +360,7 @@ impl Engine {
         let Some(revision) = target else {
             self.recovery_failed = true;
             return Err(EngineError::Unavailable(
-                "Committed conversation unavailable; restart the service.".into(),
+                "Committed conversation unavailable; recovery required, retry shortly.".into(),
             ));
         };
         *revision = (*revision).max(commit.revision);

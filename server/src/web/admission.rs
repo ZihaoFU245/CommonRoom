@@ -46,6 +46,7 @@ pub(crate) struct SocketLease {
     closed: watch::Receiver<bool>,
 }
 pub(crate) struct HttpLease {
+    inherited: Option<Arc<HttpLease>>,
     owner: Arc<Admission>,
     account: String,
 }
@@ -151,6 +152,16 @@ impl Admission {
         })
     }
     pub(crate) fn http(self: &Arc<Self>, account: String) -> Result<HttpLease, String> {
+        if let Ok(parent) = HTTP_LEASE.try_with(Arc::clone)
+            && parent.account == account
+            && Arc::ptr_eq(&parent.owner, self)
+        {
+            return Ok(HttpLease {
+                owner: self.clone(),
+                account,
+                inherited: Some(parent),
+            });
+        }
         let mut state = self
             .state
             .lock()
@@ -161,6 +172,7 @@ impl Admission {
         }
         *count += 1;
         Ok(HttpLease {
+            inherited: None,
             owner: self.clone(),
             account,
         })
@@ -188,6 +200,9 @@ impl Drop for SocketLease {
 }
 impl Drop for HttpLease {
     fn drop(&mut self) {
+        if self.inherited.is_some() {
+            return;
+        }
         if let Ok(mut state) = self.owner.state.lock()
             && let Some(count) = state.http.get_mut(&self.account)
         {
@@ -197,6 +212,20 @@ impl Drop for HttpLease {
             }
         }
     }
+}
+
+// Tokio task locals are not inherited by spawned work. Carry the HTTP lease
+// explicitly so a command worker reuses its request's account reservation.
+pub(crate) fn spawn<T: Send + 'static>(
+    future: impl std::future::Future<Output = T> + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    let lease = HTTP_LEASE.try_with(Arc::clone).ok();
+    tokio::spawn(async move {
+        match lease {
+            Some(lease) => HTTP_LEASE.scope(lease, future).await,
+            None => future.await,
+        }
+    })
 }
 
 // Authentication still belongs to each handler. This middleware only acquires
@@ -256,6 +285,32 @@ pub(crate) async fn http(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn spawned_commands_reuse_their_http_reservation() {
+        let admission = Arc::new(Admission::default());
+        let lease = Arc::new(admission.http("alice".into()).unwrap());
+        let others: Vec<_> = (0..7)
+            .map(|_| admission.http("alice".into()).unwrap())
+            .collect();
+        HTTP_LEASE
+            .scope(lease, async {
+                spawn({
+                    let admission = admission.clone();
+                    async move {
+                        let nested = admission.http("alice".into()).unwrap();
+                        assert_eq!(admission.state.lock().unwrap().http["alice"], 8);
+                        drop(nested);
+                        assert_eq!(admission.state.lock().unwrap().http["alice"], 8);
+                    }
+                })
+                .await
+                .unwrap();
+            })
+            .await;
+        assert_eq!(admission.state.lock().unwrap().http["alice"], 7);
+        drop(others);
+        assert!(admission.state.lock().unwrap().http.is_empty());
+    }
     #[test]
     fn avatar_budget_is_bounded_account_scoped_and_recovers_after_its_window() {
         let admission = Admission::default();

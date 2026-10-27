@@ -23,6 +23,39 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub backend: DatabaseBackend,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postgres_pool: Option<PostgresPoolConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PostgresPoolConfig {
+    pub min_readers: u32,
+    pub max_readers: u32,
+    pub max_writers: u32,
+}
+impl Default for PostgresPoolConfig {
+    fn default() -> Self {
+        Self {
+            min_readers: 2,
+            max_readers: 8,
+            max_writers: 8,
+        }
+    }
+}
+impl DatabaseConfig {
+    fn validate(&self) -> Result<(), String> {
+        let pool = self.postgres_pool.clone().unwrap_or_default();
+        if pool.max_readers == 0
+            || pool.max_readers > 64
+            || pool.min_readers > pool.max_readers
+            || pool.max_writers == 0
+            || pool.max_writers > 32
+        {
+            return Err("database.postgres_pool requires 0 <= min_readers <= max_readers <= 64, positive max_readers and 1 <= max_writers <= 32.".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +208,11 @@ impl Config {
     pub fn read_database(data: &std::path::Path) -> Result<DatabaseConfig, String> {
         match std::fs::read(data.join("config.json")) {
             Ok(bytes) => serde_json::from_slice::<Self>(&bytes)
-                .map(|config| config.database)
+                .map_err(|error| error.to_string())
+                .and_then(|config| {
+                    config.database.validate()?;
+                    Ok(config.database)
+                })
                 .map_err(|error| format!("Invalid data/config.json: {error}")),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(DatabaseConfig::default())
@@ -326,6 +363,7 @@ impl Config {
         {
             return Err("avatar_hosts must contain at most 32 exact canonical hostnames without schemes, ports, paths or wildcards.".into());
         }
+        config.database.validate()?;
         validate_limits(config.max_users, config.max_rooms, config.max_messages)?;
         config
             .bind
@@ -422,6 +460,31 @@ pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Re
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests {
     use super::*;
+    #[test]
+    fn postgres_pool_limits_are_bounded_and_rejected_before_config_is_saved() {
+        for pool in [
+            serde_json::json!({"min_readers":9,"max_readers":8}),
+            serde_json::json!({"max_readers":0}),
+            serde_json::json!({"max_writers":33}),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.json");
+            let bytes = serde_json::to_vec(
+                &serde_json::json!({"database":{"backend":"postgres","postgres_pool":pool}}),
+            )
+            .unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(Config::read_database(directory.path()).is_err());
+            assert!(Config::load(directory.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let selected: DatabaseConfig = serde_json::from_value(serde_json::json!({"backend":"postgres","postgres_pool":{"min_readers":0,"max_readers":3,"max_writers":2}})).unwrap();
+        selected.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(selected).unwrap()["postgres_pool"]["max_readers"],
+            3
+        );
+    }
     #[test]
     fn database_selection_defaults_legacy_configs_and_rejects_secrets_without_rewriting() {
         let dir = tempfile::tempdir().unwrap();
@@ -576,6 +639,7 @@ mod tests {
             max_messages: 7,
             database: DatabaseConfig {
                 backend: DatabaseBackend::Postgres,
+                postgres_pool: None,
             },
             media: MediaConfig::default(),
             avatar_hosts: vec!["www.gravatar.com".into()],

@@ -253,7 +253,7 @@ impl Engine {
         context: &crate::bots::auth::Context,
         input: models::CredentialInput,
     ) -> Result<(serde_json::Value, MetadataChange), Error> {
-        context.permits(self, "credentials", None)?;
+        context.permits(self, "credentials", crate::bots::auth::Scope::Global)?;
         if context.metadata(self)?.conversations.is_some() {
             return Err(Error::new(
                 Code::Forbidden,

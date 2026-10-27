@@ -76,8 +76,14 @@ impl super::Connection {
                     // Losing/cancelling a COMMIT acknowledgement has an unknown
                     // outcome on either backend. Do not reuse this dispatcher.
                     failed.set(true);
-                    tx.commit().await?;
-                    failed.set(false);
+                    let committed = tx.commit().await;
+                    // A server-reported rejection has a known outcome. SQLx
+                    // rolls back SQLite's still-open transaction on drop.
+                    // Transport loss and cancellation remain ambiguous.
+                    if committed.is_ok() || committed.as_ref().is_err_and(known_commit_rejection) {
+                        failed.set(false);
+                    }
+                    committed?;
                     Ok((
                         applied,
                         Some(
@@ -91,8 +97,14 @@ impl super::Connection {
                     let applied = apply_postgres(&mut tx, request).await?;
                     database.check_owner().await?;
                     failed.set(true);
-                    tx.commit().await?;
-                    failed.set(false);
+                    let committed = tx.commit().await;
+                    // A server-reported rejection has a known outcome. SQLx
+                    // rolls back SQLite's still-open transaction on drop.
+                    // Transport loss and cancellation remain ambiguous.
+                    if committed.is_ok() || committed.as_ref().is_err_and(known_commit_rejection) {
+                        failed.set(false);
+                    }
+                    committed?;
                     Ok((applied, None))
                 }
                 super::Backend::Closed => Err(Error::RestartRequired),
@@ -193,4 +205,29 @@ async fn apply_postgres(
         WriteRequest::Media(request) => super::postgres::media::apply(db, request).await,
         WriteRequest::Profile(request) => super::postgres::profile::apply(db, request).await,
     }
+}
+
+// A database error is not always a deterministic rejection (for example a disk
+// I/O error or SQLSTATE 40003). Only clear the ambiguity latch for known aborts.
+fn known_commit_rejection(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(error) = error else {
+        return false;
+    };
+    let Some(code) = error.code() else {
+        return false;
+    };
+    if error
+        .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+        .is_some()
+    {
+        return code.starts_with("23")
+            || code.starts_with("40") && code != "40003"
+            || matches!(code.as_ref(), "55P03" | "57014");
+    }
+    error
+        .try_downcast_ref::<sqlx::sqlite::SqliteError>()
+        .is_some()
+        && code
+            .parse::<i32>()
+            .is_ok_and(|code| matches!(code & 255, 5 | 6 | 19))
 }

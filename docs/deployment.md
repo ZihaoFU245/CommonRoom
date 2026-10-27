@@ -733,9 +733,10 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-The server accepts only the current HEAD schema, v19, and initializes empty
-databases transactionally. Older schemas are rejected unchanged; legacy upgrade
-paths have been removed because deployed databases already run HEAD. Back up the
+SQLite remains HEAD schema v19 and opens without an upgrade. Unpublished
+PostgreSQL initializes only its current v1 schema, without historical WIP upgrades.
+The offline transfer always maps HEAD SQLite to current PostgreSQL and leaves
+the SQLite source unchanged. Back up the
 database and object store consistently before replacing a deployment ([Data](data.md)).
 
 Stop the old process before starting the new one; only one process may use a data
@@ -744,6 +745,10 @@ folder. Replace the binary and UI assets, then start the new version and run the
 
 Hard ceilings remain 256 users, 1,024 rooms, and 1,000,000 retained messages; plan
 storage and backups around them.
+
+PostgreSQL defaults to 2–8 reader sessions, up to 8 writer sessions and one
+dedicated ownership session. Tune `database.postgres_pool` to the host's connection
+budget; see [PostgreSQL](postgresql.md#runtime-and-backups) for limits and an example.
 
 ## Post-deploy checks
 

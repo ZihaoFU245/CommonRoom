@@ -1,6 +1,66 @@
 use super::super::media::tests::{app, request, storage_server};
 use super::*;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+async fn postgres_http_abort_during_profile_commit_still_publishes_and_stays_healthy() {
+    let fixture = crate::engine::database::tests::PostgresFixture::new();
+    let app = app(Engine::open_postgres(&fixture.url).unwrap());
+    let blocker = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+    // A deferred trigger runs during COMMIT, after the ambiguity guard is set.
+    blocker.execute_batch("CREATE FUNCTION delay_profile_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(1128808799::bigint); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER delay_profile_commit AFTER UPDATE ON entities DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.kind='account' AND NEW.key='alice') EXECUTE FUNCTION delay_profile_commit(); SELECT pg_advisory_lock(1128808799::bigint);").unwrap();
+    let mut changes = app.changes.subscribe();
+    let request_task = tokio::spawn({
+        let app = app.clone();
+        async move { request(&app, "alice", "POST", "/api/color", json!({"color":"teal"})).await }
+    });
+    let inspect = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let waiting: bool = inspect.query_row("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query='COMMIT')", [], |r| r.get(0)).unwrap();
+        if waiting {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "profile did not reach COMMIT"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    blocker
+        .execute_batch("SELECT pg_advisory_unlock(1128808799::bigint)")
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), changes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        app.engine_read().unwrap().data.users["alice"].metadata["@global"]["color"],
+        "teal"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while app.io_jobs.available_permits() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        request(&app, "alice", "GET", "/api/session", json!(null))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "alice", "POST", "/api/color", json!({"color":"blue"}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+}
+
 async fn contract(mut app: App, db: crate::engine::database::Connection, postgres: bool) {
     app.io_jobs = Arc::new(tokio::sync::Semaphore::new(64));
     let (storage, server) = storage_server().await;

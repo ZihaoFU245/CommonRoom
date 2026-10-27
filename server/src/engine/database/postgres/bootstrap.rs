@@ -1,5 +1,5 @@
 //! PostgreSQL owns advisory ownership and transactional schema initialization.
-use super::super::{Error, POSTGRES_SCHEMA, Result, SCHEMA_VERSION, message::number};
+use super::super::{Error, POSTGRES_SCHEMA, POSTGRES_SCHEMA_VERSION, Result, message::number};
 use sqlx::{Connection as _, Executor as _, PgConnection};
 
 pub(in crate::engine::database) async fn acquire_owner(db: &mut PgConnection) -> Result<()> {
@@ -36,10 +36,26 @@ pub(in crate::engine::database) async fn initialize(
         let version: i64 = sqlx::query_scalar("SELECT version FROM chat_schema WHERE id=1")
             .fetch_one(&mut *db)
             .await?;
-        if version != i64::from(SCHEMA_VERSION) {
+        if version != i64::from(POSTGRES_SCHEMA_VERSION) {
             return Err(Error::InvalidRequest(
-                "Unsupported PostgreSQL schema; only current v19 is supported.",
+                "Unsupported PostgreSQL schema; only current v1 is supported.",
             ));
+        }
+        // A data-only restore with triggers disabled can omit derived rows.
+        // Avoid scanning history on normal startup, where retention is present.
+        let empty: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM retention)")
+            .fetch_one(&mut *db)
+            .await?;
+        if empty {
+            let mut tx = db.begin().await?;
+            // Offline startup maintenance may scan the entire retained history.
+            // Runtime statement deadlines must not make large restores unbootable.
+            sqlx::query("SET LOCAL statement_timeout=0")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO retention SELECT conversation,count(*),min(sequence) FROM messages GROUP BY conversation")
+                .execute(&mut *tx).await?;
+            tx.commit().await?;
         }
     } else {
         require_empty(db).await?;

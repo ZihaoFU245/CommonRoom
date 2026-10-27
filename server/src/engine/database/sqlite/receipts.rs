@@ -69,7 +69,11 @@ pub(in crate::engine::database) async fn save_command(
         .execute(&mut *db)
         .await?
         .rows_affected();
-    Ok(changed + sqlx::query("INSERT INTO bot_command_receipts SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM entities WHERE kind='account' AND json_extract(json,'$.id')=?1)").bind(account).bind(key).bind(digest).bind(number(created)?).bind(outcome).execute(db).await?.rows_affected())
+    let inserted = sqlx::query("INSERT INTO bot_command_receipts SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM entities WHERE kind='account' AND json_extract(json,'$.id')=?1)").bind(account).bind(key).bind(digest).bind(number(created)?).bind(outcome).execute(db).await?.rows_affected();
+    if inserted != 1 {
+        return Err(super::super::Error::RevisionConflict);
+    }
+    Ok(changed + inserted)
 }
 
 pub(in crate::engine::database) async fn apply_command(

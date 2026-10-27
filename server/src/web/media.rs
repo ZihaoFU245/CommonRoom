@@ -171,7 +171,7 @@ async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Resu
                 Some(lock)
             }
             MediaMutation::Abandon(id) => {
-                store.abandon(&id).await?;
+                store.abandon(&id, &identity.account).await?;
                 None
             }
         };
@@ -523,18 +523,24 @@ where
     .await
     .map_err(|_| "Cleanup worker unavailable.")?
 }
-async fn delete_media(app: App, media: crate::engine::media::Media) -> Result<(), String> {
+async fn delete_media(
+    app: App,
+    media: crate::engine::media::Media,
+) -> Result<
+    (
+        crate::engine::media::Media,
+        tokio::sync::OwnedMutexGuard<()>,
+    ),
+    String,
+> {
     let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
-    let _lock = storage.lock_media(&media.id)?;
+    let lock = storage.lock_media(&media.id)?;
     let keys =
         std::collections::BTreeSet::from([format!("uploads/{}", media.id), media.final_key()]);
     storage.delete_keys(&keys).await?;
-    // One transaction records object deletion and staging recovery completion.
-    cleanup_db(&app, move |store| async move {
-        store.cleanup_done(&media).await
-    })
-    .await
+    Ok((media, lock))
 }
+
 pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
     if app.media.is_none() {
         return Ok(true);
@@ -550,22 +556,33 @@ pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
         .await?;
         let count = rows.len();
         let mut jobs = tokio::task::JoinSet::new();
+        let mut completed = Vec::new();
         for media in rows {
             let worker = app.clone();
             jobs.spawn(delete_media(worker, media));
             if jobs.len() == 4 {
                 match jobs.join_next().await {
-                    Some(Ok(Ok(()))) => deleted += 1,
+                    Some(Ok(Ok(record))) => completed.push(record),
                     _ => failed += 1,
                 }
             }
         }
         while let Some(result) = jobs.join_next().await {
-            if matches!(result, Ok(Ok(()))) {
-                deleted += 1;
-            } else {
-                failed += 1;
+            match result {
+                Ok(Ok(record)) => completed.push(record),
+                _ => failed += 1,
             }
+        }
+        if !completed.is_empty() {
+            deleted += completed.len();
+            cleanup_db(app, move |store| async move {
+                // Retain every object lock through the detached acknowledgement.
+                let records: Vec<_> = completed.iter().map(|(media, _)| media.clone()).collect();
+                store.cleanup_done(&records, &[]).await?;
+                drop(completed);
+                Ok(())
+            })
+            .await?;
         }
         if count < app.config.media.cleanup_batch {
             break;
@@ -577,6 +594,7 @@ pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
         })
         .await?;
         let count = ids.len();
+        let mut completed = Vec::new();
         for id in ids {
             let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
             let Ok(_lock) = storage.lock_media(&id) else {
@@ -587,10 +605,15 @@ pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
                 failed += 1;
                 continue;
             }
-            cleanup_db(
-                app,
-                move |store| async move { store.staging_cleaned(&id).await },
-            )
+            completed.push((id, _lock));
+        }
+        if !completed.is_empty() {
+            cleanup_db(app, move |store| async move {
+                let ids: Vec<_> = completed.iter().map(|(id, _)| id.clone()).collect();
+                store.cleanup_done(&[], &ids).await?;
+                drop(completed);
+                Ok(())
+            })
             .await?;
         }
         if count < app.config.media.cleanup_batch {

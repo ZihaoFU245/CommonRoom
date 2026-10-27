@@ -9,18 +9,33 @@ and worker files, but chat accounts/history live in PostgreSQL.
 
 ## Database compatibility
 
-Empty databases initialize transactionally as the current HEAD schema, v19.
-Existing databases must already be v19. All other versions, including v17/v18,
-and unversioned existing databases are rejected before journal, schema or data
-changes. There are no legacy migration paths. This refactor does not change the
-v19 SQLite or JSON layout and does not rewrite existing databases at startup.
+SQLite HEAD remains **v19**, matching the published SQLite format. Empty SQLite
+databases initialize as v19; existing v19 files open without a schema upgrade.
+Other versions and unversioned existing databases are rejected before journal,
+schema or data changes. PostgreSQL work must not force a SQLite version bump.
+
+PostgreSQL is unpublished and uses its own **v1** schema marker. Empty targets
+initialize transactionally with all current indexes. Existing PostgreSQL targets
+must match the current PostgreSQL schema; there is no migration between WIP
+PostgreSQL schemas. Use a fresh empty target when changing the WIP format.
+
+The offline SQLite-to-PostgreSQL transfer is always maintained from **HEAD SQLite
+to current PostgreSQL**. It opens SQLite read-only, checks its HEAD schema marker,
+verifies all copied/derived table data, preserves source bytes, and commits the
+new PostgreSQL schema and data together. It never upgrades or rewrites SQLite.
+See [PostgreSQL](postgresql.md) for the command and backup procedures.
+
+Startup reconstructs retention when the entire derived table is empty after a
+data-only restore. PostgreSQL runs this offline rebuild without the runtime
+statement deadline; the runtime deadline is restored afterward. Partially damaged
+restores still require integrity checks and operator repair.
 
 Session keys are domain-separated Blake2s digests. Root-path production sessions
 use `__Host-chat_session` cookies. Color capabilities are direct room grants;
 revoked grants stay revoked across restart and rename.
 
 Authentication events retain the most recent 2,048 verified login outcomes and
-valid logouts, including time, canonical client IP when available and valid
+recognized logouts (including expired stored sessions), including time, canonical client IP when available and valid
 username. They contain no password, token or request body. Session creation and
 logout commit atomically with their event. Throttled requests and malformed
 credentials do not create authentication events.

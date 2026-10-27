@@ -64,6 +64,7 @@ pub struct HistoryStore {
     database: Arc<database::Database>,
     next: AtomicUsize,
     cache: [Mutex<Cache>; CACHE_SHARDS],
+    page_fills: [tokio::sync::Mutex<()>; 64],
     hits: AtomicU64,
     misses: AtomicU64,
     unread_cache: [Mutex<UnreadCache>; CACHE_SHARDS],
@@ -84,6 +85,21 @@ impl HistoryStore {
         }
         Ok(())
     }
+    pub(super) fn reset_after_recovery(&self) -> Result<(), EngineError> {
+        for cache in &self.cache {
+            *cache
+                .lock()
+                .map_err(|_| EngineError::unavailable("History cache poisoned"))? =
+                Cache::default();
+        }
+        for cache in &self.unread_cache {
+            *cache
+                .lock()
+                .map_err(|_| EngineError::unavailable("Unread cache poisoned"))? =
+                UnreadCache::default();
+        }
+        Ok(())
+    }
     #[cfg(test)]
     pub fn ensure_available(&self) -> Result<(), EngineError> {
         database::block_on_storage(self.ensure_available_async())?
@@ -98,6 +114,7 @@ impl HistoryStore {
             database,
             next: AtomicUsize::new(0),
             cache: std::array::from_fn(|_| Mutex::new(Cache::default())),
+            page_fills: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             unread_cache: std::array::from_fn(|_| Mutex::new(UnreadCache::default())),

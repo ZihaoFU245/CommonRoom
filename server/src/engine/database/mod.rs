@@ -4,7 +4,7 @@
 mod transfer;
 pub(crate) use transfer::{MigrationReport, transfer_sqlite};
 mod bootstrap;
-pub(crate) use bootstrap::{POSTGRES_SCHEMA, SCHEMA_VERSION};
+pub(crate) use bootstrap::{POSTGRES_SCHEMA, POSTGRES_SCHEMA_VERSION, SQLITE_SCHEMA_VERSION};
 mod command;
 pub(crate) use command::{CommandCommit, CommandEffect, CommandWrite};
 mod receipts;
@@ -14,7 +14,7 @@ mod profile;
 pub(crate) use media::{MediaAllocation, MediaWrite};
 pub(crate) use profile::ProfileWrite;
 mod metadata;
-pub(crate) use metadata::{EntityRow, MetadataOp, MetadataSnapshot, MetadataWrite};
+pub(crate) use metadata::{CursorRows, EntityRow, MetadataOp, MetadataSnapshot, MetadataWrite};
 mod history;
 mod transaction;
 #[cfg(test)]
@@ -48,9 +48,9 @@ pub(crate) mod tests;
 mod value;
 use futures_util::TryStreamExt;
 pub(crate) use projection::{entity_projection, message_projection};
+use sqlx::Executor as _;
 #[cfg(test)]
 use sqlx::Statement as _;
-use sqlx::{Connection as _, Executor as _};
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -229,15 +229,6 @@ impl Connection {
             Backend::Postgres(Native::Owned(runtime::run(postgres::open(url, readonly))?)),
             readonly,
         ))
-    }
-    async fn ping(&mut self) -> Result<()> {
-        self.ensure_available()?;
-        let result = match self.backend.get_mut() {
-            Backend::Sqlite(db) => db.ping().await.map_err(Error::from),
-            Backend::Postgres(db) => db.ping().await.map_err(Error::from),
-            Backend::Closed => Err(Error::Conversion("Database closed")),
-        };
-        self.checked(result)
     }
     #[cfg(test)]
     async fn execute_batch_async(&mut self, query: &str) -> Result<()> {

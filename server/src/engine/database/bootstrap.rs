@@ -2,7 +2,8 @@
 use super::{Backend, Connection, Error, Handle, Result, postgres, runtime, sqlite};
 use sqlx::Connection as _;
 
-pub(crate) const SCHEMA_VERSION: u32 = 19;
+pub(crate) const SQLITE_SCHEMA_VERSION: u32 = 19;
+pub(crate) const POSTGRES_SCHEMA_VERSION: u32 = 1;
 pub(crate) const POSTGRES_SCHEMA: &str = include_str!("postgres/schema.sql");
 
 impl Connection {

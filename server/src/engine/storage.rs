@@ -14,6 +14,7 @@ mod messages;
 mod migration;
 #[cfg(test)]
 mod receipts;
+pub(super) use entities::data_from_snapshot;
 #[cfg(test)]
 pub(super) use entities::load_entities;
 use entities::*;

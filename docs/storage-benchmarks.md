@@ -1,5 +1,24 @@
 # Storage benchmarks
 
+## Shared snapshot fan-out
+
+```sh
+rtk cargo test --locked snapshot_fanout_shares_cold_reads_and_encoded_content \
+  -- --ignored --nocapture
+```
+
+This isolated SQLite fixture provisions 100 authorized viewers and 30 rooms,
+with three 512-byte messages in each room. Concurrent snapshot assembly and
+serialization require exactly 30 cold page reads and reuse the same immutable
+pages and encoded ranges. After one append, the next fan-out requires exactly
+one page read. Personalized authority, unread state and cursors remain separate.
+
+The review run measured 563 ms for cold fan-out and 487 ms after changing one
+room, including assembly and serialization. These are local SQLite fixture
+timings, not PostgreSQL throughput or network delivery measurements. Assertions
+on read counts, shared storage and one encoding per page are the regression
+contract; elapsed time is diagnostic only.
+
 ## Current HEAD comparison
 
 ```sh

@@ -9,6 +9,11 @@ use crate::{
 };
 use axum::http::HeaderMap;
 
+pub(crate) enum Scope<'a> {
+    Global,
+    Conversation(&'a str),
+}
+
 #[derive(Clone)]
 pub(crate) struct Context {
     pub account: String,
@@ -104,22 +109,19 @@ impl Context {
             .bot_credential(&self.account, &self.credential)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Credential revoked."))
     }
-    pub fn permits(
-        &self,
-        engine: &Engine,
-        operation: &str,
-        conversation: Option<&str>,
-    ) -> Result<(), Error> {
+    pub fn permits(&self, engine: &Engine, operation: &str, scope: Scope<'_>) -> Result<(), Error> {
         self.user(engine)?;
         let c = self.metadata(engine)?;
         if c.operations
             .as_ref()
             .is_some_and(|ops| !ops.contains(operation))
-            || conversation.is_some_and(|id| {
-                c.conversations
+            || match scope {
+                Scope::Global => false,
+                Scope::Conversation(id) => c
+                    .conversations
                     .as_ref()
-                    .is_some_and(|ids| !ids.contains(id))
-            })
+                    .is_some_and(|ids| !ids.contains(id)),
+            }
         {
             return Err(Error::new(Code::Forbidden, "Credential scope denied."));
         }

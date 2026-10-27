@@ -60,16 +60,23 @@ impl Engine {
     pub(crate) fn prepare_logout(
         &self,
         token: &str,
-        event: AuthEvent,
+        mut event: AuthEvent,
     ) -> (Option<String>, Option<SessionWrite>) {
         let key = session_digest(token);
         if !self.data.sessions.contains_key(&key) {
             return (None, None);
         }
-        let user = self.session(token);
+        // An expired but recognized cookie still identifies the session being
+        // deleted; do not silently omit its logout from the audit trail.
+        let user = self
+            .data
+            .sessions
+            .get(&key)
+            .map(|session| session.username.clone());
+        event.username = user.clone();
         let mut after = self.data.sessions.clone();
         after.remove(&key);
-        let event = user.as_ref().map(|_| event);
+        let event = Some(event);
         (
             user,
             Some(SessionWrite {
@@ -85,11 +92,59 @@ impl Engine {
         if self.data.sessions != pending.before {
             self.recovery_failed = true;
             return Err(EngineError::Unavailable(
-                "Committed session state changed; restart the service.".into(),
+                "Committed session state changed; recovery required, retry shortly.".into(),
             ));
         }
         self.data.sessions = pending.after;
         self.revision = self.revision.wrapping_add(1);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn expired_recognized_logout_is_removed_and_audited_once() {
+        let mut engine = super::super::tests::engine();
+        engine
+            .login("expired".into(), "alice", "test-hash", None)
+            .unwrap();
+        engine
+            .data
+            .sessions
+            .get_mut(&session_digest("expired"))
+            .unwrap()
+            .expires = now() - 1;
+        let (user, pending) =
+            engine.prepare_logout("expired", AuthEvent::new(None, None, AuthOutcome::Logout));
+        assert_eq!(user.as_deref(), Some("alice"));
+        let pending = pending.unwrap().save().await.unwrap();
+        engine.publish_sessions(pending).unwrap();
+        assert!(
+            !engine
+                .data
+                .sessions
+                .contains_key(&session_digest("expired"))
+        );
+        let events: u64 = engine
+            .store
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM auth_events WHERE username='alice' AND outcome='logout'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 1);
+        assert!(
+            engine
+                .prepare_logout("expired", AuthEvent::new(None, None, AuthOutcome::Logout))
+                .1
+                .is_none()
+        );
     }
 }

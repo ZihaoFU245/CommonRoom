@@ -268,6 +268,7 @@ pub(super) fn write_delta_entities(
                     batch.entity(kind, key, &private_metadata(chat))?;
                 }
                 batch.operations.push(MetadataOp::Revision {
+                    expected: previous.map_or(0, |(_, revision)| revision),
                     kind,
                     key: key.clone(),
                     revision,
@@ -318,7 +319,11 @@ pub(super) fn write_delta_entities(
 }
 pub(super) type ReadPositions = BTreeMap<String, BTreeMap<String, u64>>;
 pub(super) fn load_data(db: &Connection) -> Result<Data, EngineError> {
-    let snapshot = db.metadata_snapshot()?;
+    data_from_snapshot(db.metadata_snapshot()?)
+}
+pub(in crate::engine) fn data_from_snapshot(
+    snapshot: MetadataSnapshot,
+) -> Result<Data, EngineError> {
     let mut data: Data = serde_json::from_str(&snapshot.state)?;
     apply_entities(snapshot, &mut data)?;
     Ok(data)

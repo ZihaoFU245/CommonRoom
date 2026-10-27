@@ -83,7 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .ok()
                     .filter(|url| !url.trim().is_empty())
                     .ok_or("database.backend=postgres requires CHAT_DATABASE_URL.")?;
-                Engine::open_postgres_in_folder(&url, &database_path)
+                Engine::open_postgres_in_folder_with_pool(
+                    &url,
+                    &database_path,
+                    selected_database.postgres_pool.unwrap_or_default(),
+                )
             }
         }
     })

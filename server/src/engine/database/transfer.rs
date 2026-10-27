@@ -1,6 +1,6 @@
 //! Explicit offline SQLite HEAD -> empty PostgreSQL transfer. Source is read-only;
 //! target schema, data, derived indexes and version become visible in one commit.
-use super::{Connection, Error, Result, Row, SCHEMA_VERSION, SqliteAccess, Value};
+use super::{Connection, Error, Result, Row, SQLITE_SCHEMA_VERSION, SqliteAccess, Value};
 use blake2::{Blake2s256, Digest};
 use std::{collections::BTreeMap, path::Path};
 
@@ -139,10 +139,10 @@ pub(crate) fn transfer_sqlite(
     source.busy_timeout(std::time::Duration::from_secs(2))?;
     let snapshot = source.unchecked_transaction()?;
     let version: u32 = snapshot.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version != SCHEMA_VERSION {
+    if version != SQLITE_SCHEMA_VERSION {
         return Err(Error::InvalidData(format!(
             "Migration requires SQLite HEAD schema v{}.",
-            SCHEMA_VERSION
+            SQLITE_SCHEMA_VERSION
         )));
     }
     let integrity: String = snapshot.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;

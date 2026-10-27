@@ -83,8 +83,8 @@ impl App {
         admission::io_permit(&self.io_jobs)
     }
 
-    /// Capture or validate owned metadata on a worker; database futures run
-    /// outside this guard through the typed async storage interface.
+    /// Capture or validate owned metadata with a short memory guard, using a
+    /// worker only on contention. Database futures run outside this guard.
     pub(crate) async fn inspect_engine<T, E>(
         &self,
         inspect: impl FnOnce(&Engine, &Config) -> Result<T, E> + Send + 'static,
@@ -93,6 +93,25 @@ impl App {
         T: Send + 'static,
         E: From<crate::engine::EngineError> + Send + 'static,
     {
+        match self.engine.try_read() {
+            Ok(engine) => {
+                return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.ensure_memory().map_err(E::from)?;
+                    inspect(&engine, &self.config)
+                }))
+                .map_err(|_| {
+                    E::from(crate::engine::EngineError::unavailable(
+                        "Engine inspection failed",
+                    ))
+                })?;
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(E::from(crate::engine::EngineError::unavailable(
+                    "Engine state poisoned",
+                )));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
         let app = self.clone();
         tokio::task::spawn_blocking(move || {
             let engine = app.engine_read_state().map_err(E::from)?;
@@ -111,25 +130,33 @@ impl App {
         }
         // Accepted operations retain these permits through commit/publication,
         // including cancelled HTTP/console work and password-only login jobs.
-        let _io = self
-            .io_jobs
-            .clone()
-            .acquire_many_owned(IO_JOBS)
-            .await
-            .map_err(EngineError::unavailable)?;
-        let _password = self
-            .password_jobs
-            .clone()
-            .acquire_many_owned(PASSWORD_JOBS)
-            .await
-            .map_err(EngineError::unavailable)?;
-        let checkpoint = self
-            .inspect_engine(|engine, _| Ok::<_, EngineError>(engine.checkpoint_async()))
-            .await?;
-        checkpoint.await?;
-        self.io_jobs.close();
-        self.password_jobs.close();
-        Ok(())
+        loop {
+            let _io = self
+                .io_jobs
+                .clone()
+                .acquire_many_owned(IO_JOBS)
+                .await
+                .map_err(EngineError::unavailable)?;
+            let _password = self
+                .password_jobs
+                .clone()
+                .acquire_many_owned(PASSWORD_JOBS)
+                .await
+                .map_err(EngineError::unavailable)?;
+            if self.mutations.recovering() {
+                drop(_password);
+                drop(_io);
+                self.mutations.wait_for_recovery().await;
+                continue;
+            }
+            let checkpoint = self
+                .inspect_engine(|engine, _| Ok::<_, EngineError>(engine.checkpoint_async()))
+                .await?;
+            checkpoint.await?;
+            self.io_jobs.close();
+            self.password_jobs.close();
+            return Ok(());
+        }
     }
 
     // Fail closed after a panic; a poisoned engine may contain a partial mutation.

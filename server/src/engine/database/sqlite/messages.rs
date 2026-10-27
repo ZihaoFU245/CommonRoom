@@ -141,13 +141,19 @@ pub(in crate::engine::database) async fn apply_message(
                 .execute(&mut *db).await?.rows_affected();
         }
     }
-    changed += sqlx::query("UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2")
-        .bind(request.kind)
-        .bind(request.key)
-        .bind(number(request.revision)?)
-        .execute(&mut *db)
-        .await?
-        .rows_affected();
+    let revised =
+        sqlx::query("UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2 AND revision=?4")
+            .bind(request.kind)
+            .bind(request.key)
+            .bind(number(request.revision)?)
+            .bind(number(request.expected_revision.unwrap_or(0))?)
+            .execute(&mut *db)
+            .await?
+            .rows_affected();
+    if revised != 1 {
+        return Err(Error::RevisionConflict);
+    }
+    changed += revised;
     if let Some(receipt) = request.receipt {
         changed += sqlx::query("DELETE FROM bot_receipts WHERE created<=?1")
             .bind(number(

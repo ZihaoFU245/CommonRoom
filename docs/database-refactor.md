@@ -1,5 +1,10 @@
 # Database refactor
 
+> Historical SQLite v19 implementation record. SQLite stays at HEAD v19;
+> unpublished PostgreSQL uses its own current v1 schema with no WIP upgrades.
+> See [review verification](postgres-review.md) and
+> [database compatibility](data.md#database-compatibility).
+
 The target is one asynchronous, typed storage interface with two independent
 implementations. SQLite and PostgreSQL each own their SQL, connection management,
 transactions, locking and schema mechanics. SQLx is the driver for both; there is

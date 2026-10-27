@@ -577,7 +577,7 @@ try {
     403,
   );
   // Restart with the daily interval: recent verified-but-unsent bytes must be
-  // claimed on startup, while referenced objects and sessions remain usable.
+  // preserved on startup, while referenced objects and sessions remain usable.
   const orphanTicket = await (
     await request("/api/media/uploads", alice, {
       conversation_id: conversation,
@@ -612,11 +612,11 @@ try {
   );
   assert.equal(chat.exitCode, null, chat.output);
   base = `http://127.0.0.1:${chat.output.match(/address=127\.0\.0\.1:(\d+)/)[1]}/commonroom`;
-  await until(
-    () => /deleted=[1-9]\d*\b/u.test(chat.output),
-    "startup orphan cleanup with daily timer",
+  assert.equal(
+    (await request(orphanComplete, alice, {})).status,
+    200,
+    "Restart preserves completed uploads during their pending grace period",
   );
-  assert.equal((await request(orphanComplete, alice, {})).status, 404);
   assert.equal(
     (await request(`/api/media/${retainedMedia.media_id}/info`, bob)).status,
     200,
