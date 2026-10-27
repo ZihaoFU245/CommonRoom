@@ -1,12 +1,14 @@
 use super::*;
 use authorization::{Action, Scope};
 
+#[cfg(test)]
 pub(super) struct WorkingMessage {
     pub(super) conversation: String,
     pub(super) message: Message,
     pub(super) reaction: Option<ReactionChange>,
 }
 
+#[cfg(test)]
 pub(super) struct ReactionChange {
     pub(super) user: String,
     pub(super) reaction: String,
@@ -14,12 +16,14 @@ pub(super) struct ReactionChange {
 }
 
 pub(super) enum ReactionError {
+    #[cfg(test)]
     NotFound,
     Limit,
 }
 impl std::fmt::Display for ReactionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            #[cfg(test)]
             Self::NotFound => "Message not found in this conversation.",
             Self::Limit => "This message already has 32 different reactions.",
         })
@@ -36,6 +40,7 @@ pub(super) fn reply_quote(original: &Message) -> Reply {
 }
 
 impl Engine {
+    #[cfg(test)]
     pub(super) fn working_message(&self, conversation: &str) -> Option<&Message> {
         self.working
             .as_ref()
@@ -43,6 +48,7 @@ impl Engine {
             .map(|row| &row.message)
     }
 
+    #[cfg(test)]
     fn advance_conversation(&mut self, scope: &Scope) -> Result<(), EngineError> {
         let id = match scope {
             Scope::Room(id) | Scope::Private(id) => id,
@@ -67,6 +73,7 @@ impl Engine {
     }
 
     // Callers resolve and authorize the target before using these mutation helpers.
+    #[cfg(test)]
     pub(super) fn append_text(
         &mut self,
         actor: Option<&str>,
@@ -101,6 +108,7 @@ impl Engine {
             self.push_room_message(view, message)
         }
     }
+    #[cfg(test)]
     fn push_room_message(&mut self, name: &str, mut message: Message) -> Result<(), EngineError> {
         self.authorize_media_text(
             Some(&message.from),
@@ -135,6 +143,7 @@ impl Engine {
         self.require(actor, scope, Action::Read)?;
         self.require(actor, scope, action)
     }
+    #[cfg(test)]
     pub(super) fn update_reaction(
         &mut self,
         scope: &Scope,
@@ -187,6 +196,7 @@ impl Engine {
         Ok(true)
     }
     // Resolve only the selected room, or a retained target for global su actions.
+    #[cfg(test)]
     pub(super) fn message_action_room(
         &self,
         actor: Option<&str>,
@@ -207,6 +217,7 @@ impl Engine {
         })
     }
 
+    #[cfg(test)]
     fn message_action_scope(
         &self,
         actor: Option<&str>,
@@ -242,6 +253,7 @@ impl Engine {
         };
         Ok((room, scope))
     }
+    #[cfg(test)]
     pub(super) fn message(
         &mut self,
         actor: Option<&str>,
@@ -261,6 +273,7 @@ impl Engine {
         message.sequence = 0;
         Ok(message)
     }
+    #[cfg(test)]
     pub(super) fn push_private(&mut self, message: Message) -> Result<(), EngineError> {
         let key = private_key(
             &message.from,
@@ -271,6 +284,7 @@ impl Engine {
         );
         self.push_private_to(&key, message)
     }
+    #[cfg(test)]
     pub(super) fn push_private_to(
         &mut self,
         key: &str,
@@ -302,6 +316,7 @@ impl Engine {
         chat.revision = chat.revision.wrapping_add(1);
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn apply_messages(
         &mut self,
         context: &CommandContext<'_>,

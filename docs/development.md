@@ -86,11 +86,11 @@ authority before delivery. Browser sends and `/reply`, `/edit`, `/react`, `/retr
 `/clean` actions,
 bot sends/reactions and read acknowledgements use conversation permits plus
 `App::with_conversation` for short owned preparation/publication. They await storage
-outside the engine guard while sharing a metadata fence. Legacy mutating engine
-entry points take that fence exclusively before the engine guard; they still use
-the transitional synchronous bridge and remain on blocking workers. The bridge uses
-an existing multithreaded blocking region instead of spawning a thread per query;
-current-thread compatibility callers retain a fallback. Bulk history cleanup
+outside the engine guard while sharing a metadata fence. Administrative plans
+acquire that fence exclusively and await native writes outside the engine guard.
+The old synchronous command executors and storage write adapters compile only in
+tests. Bootstrap/offline transfer and final pool draining retain the persistent
+storage runtime; live queries and mutations await SQLx directly. Bulk history cleanup
 acquires sorted conversation locks before the shared metadata fence and rechecks
 the full target set. Audited deletions additionally hold the audit permit through
 commit/publication; sends and cursors do not need that permit. No runtime belongs to a
@@ -125,9 +125,14 @@ Versioned bot credential/conversation mutations use owned metadata deltas and
 retain accepted work through commit/publication. Bot source facts and receipt
 lookup use reader leases, then recheck live credentials and target authority before
 delivery. Socket authentication, activity and command discovery await health outside
-engine guards; their final metadata/runtime checks are memory-only. The outer bot
-command effect/receipt transaction still uses the compatibility path and must be
-migrated atomically, including rejected outcomes, replay and capacity behavior.
+engine guards; their final metadata/runtime checks are memory-only. Bot commands prepare owned effects and commit effect/outcome receipts in one
+native transaction. Initial preparation uses a shared metadata permit; metadata
+plans upgrade to an exclusive permit and message/history plans reacquire sorted
+conversation permits, then reprepare and verify their targets. Only audited
+history deletions acquire the audit permit. PostgreSQL locks the submitting
+account before receipt replay/capacity checks and before any append counter or
+conversation row. Replays publish no effect, rejected domain outcomes persist
+without effects, and unavailable failures persist no terminal receipt.
 
 Elevated message and cleanup commands use the same native operation paths as
 ordinary browser writes. Each synchronous capture/preparation stage revalidates
@@ -136,6 +141,16 @@ restores compiled authorization before awaiting storage. Conversation permits
 retain ordering through commit/publication; publication of committed work must
 finish even after transport cancellation. Initial message lookup without a known
 conversation holds no metadata permit, so later preparation must recheck sudo.
+
+Console input is read on a blocking thread that holds no application/database
+reference. A bounded channel dispatches accepted commands to native async plans;
+credential secrets return only to stdout. Trusted stdin edits/retractions and
+cleanup use the same message/history operations with the console principal,
+without creating a synthetic account. Console direct sends/replies/reactions still
+require a user account. Startup retention/media cleanup and shutdown checkpointing
+also await native storage. Shutdown stops new admission, drains both general I/O
+and password-only jobs through publication, then checkpoints without an engine
+guard. The synchronous engine lock helpers are test-only.
 
 ## Browser compatibility
 

@@ -1,11 +1,14 @@
 //! Conversation ordering and metadata stability for asynchronous mutations.
-//! Message transactions share the metadata fence. Legacy commands take it
-//! exclusively before acquiring the engine, so they cannot change authority
-//! between a message's preparation and committed publication.
-use crate::engine::{Engine, EngineError, database};
+//! Message transactions share the metadata fence. Administrative plans take it
+//! exclusively before preparation, so authority stays stable through native commit
+//! and publication. Engine guards cover memory operations only.
+#[cfg(test)]
+use crate::engine::database;
+use crate::engine::{Engine, EngineError};
+#[cfg(test)]
+use std::ops::{Deref, DerefMut};
 use std::{
     collections::HashMap,
-    ops::{Deref, DerefMut},
     sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::{
@@ -39,6 +42,7 @@ impl Coordinator {
             _metadata: self.metadata.clone().write_owned().await,
         }))
     }
+    #[cfg(test)]
     pub(crate) fn exclusive(&self) -> Result<OwnedRwLockWriteGuard<()>, EngineError> {
         if let Ok(permit) = self.metadata.clone().try_write_owned() {
             return Ok(permit);
@@ -124,16 +128,19 @@ impl Drop for Reservation {
         }
     }
 }
+#[cfg(test)]
 pub struct EngineGuard<'a> {
     pub(super) engine: std::sync::RwLockWriteGuard<'a, Engine>,
     pub(super) _metadata: OwnedRwLockWriteGuard<()>,
 }
+#[cfg(test)]
 impl Deref for EngineGuard<'_> {
     type Target = Engine;
     fn deref(&self) -> &Engine {
         &self.engine
     }
 }
+#[cfg(test)]
 impl DerefMut for EngineGuard<'_> {
     fn deref_mut(&mut self) -> &mut Engine {
         &mut self.engine

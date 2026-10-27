@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 const TTL: u64 = crate::bots::models::RECEIPT_TTL;
 const MAX_RESULT: usize = 65536;
+#[cfg(test)]
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,7 +29,104 @@ impl CommandOutcome {
 pub(crate) struct CommandReceipts {
     database: database::Handle,
 }
+pub(crate) enum PendingCommand {
+    None,
+    Message(Box<PendingMessage>),
+    Metadata(Box<metadata_write::PendingMetadata>),
+    History(PendingHistory),
+}
+pub(crate) struct CommittedCommand {
+    effect: PendingCommand,
+    commit: database::CommandCommit,
+    outcome: CommandOutcome,
+}
 impl CommandReceipts {
+    pub(crate) async fn commit(
+        &self,
+        account: &str,
+        key: &str,
+        digest: &str,
+        result: Result<String, Error>,
+        mut effect: PendingCommand,
+    ) -> Result<CommittedCommand, Error> {
+        let result = result.and_then(|reply| {
+            if reply.len() > MAX_RESULT / 2 {
+                Err(Error::new(
+                    Code::PayloadTooLarge,
+                    "Command result is too large; use paged history.",
+                ))
+            } else {
+                Ok(reply)
+            }
+        });
+        if let Err(error) = &result {
+            if error.code == Code::Unavailable {
+                return Err(error.clone());
+            }
+            effect = PendingCommand::None;
+        }
+        let created = now();
+        let outcome = CommandOutcome {
+            result: result.as_ref().ok().cloned(),
+            error: result.err(),
+            created,
+            expires: created + TTL,
+            replayed: false,
+        };
+        let raw = serde_json::to_string(&outcome).map_err(Error::storage)?;
+        let commit = {
+            let message;
+            let metadata;
+            let write = match &mut effect {
+                PendingCommand::None => database::CommandEffect::None,
+                PendingCommand::Message(pending) => {
+                    message = pending.write(None).map_err(Error::storage)?;
+                    database::CommandEffect::Message(&message)
+                }
+                PendingCommand::Metadata(pending) => {
+                    metadata = pending.write();
+                    database::CommandEffect::Metadata(&metadata)
+                }
+                PendingCommand::History(pending) => {
+                    metadata = pending.write();
+                    database::CommandEffect::Metadata(&metadata)
+                }
+            };
+            self.database
+                .save_command(&database::CommandWrite {
+                    account,
+                    key,
+                    digest,
+                    created,
+                    expired_before: created.saturating_sub(TTL),
+                    outcome: &raw,
+                    effect: write,
+                })
+                .await
+                .map_err(|error| match error {
+                    database::Error::ReceiptConflict => Error::new(
+                        Code::IdempotencyConflict,
+                        "Key already belongs to a different command request.",
+                    ),
+                    database::Error::ReceiptPayload => {
+                        Error::new(Code::PayloadTooLarge, "Command receipt is too large.")
+                    }
+                    database::Error::ReceiptCapacity => Error::new(
+                        Code::IdempotencyCapacity,
+                        "Wait for command receipts to expire.",
+                    ),
+                    error => Error::from(EngineError::from(error)),
+                })?
+        };
+        let mut outcome: CommandOutcome =
+            serde_json::from_str(&commit.outcome).map_err(Error::storage)?;
+        outcome.replayed = commit.replayed;
+        Ok(CommittedCommand {
+            effect,
+            commit,
+            outcome,
+        })
+    }
     pub(crate) async fn health(&self) -> Result<(), Error> {
         self.database
             .ensure_available_async()
@@ -61,11 +159,43 @@ impl CommandReceipts {
     }
 }
 impl Engine {
+    pub(crate) fn publish_command(
+        &mut self,
+        committed: CommittedCommand,
+    ) -> Result<(CommandOutcome, CommandChange), EngineError> {
+        let change = if committed.commit.replayed {
+            CommandChange::Unchanged
+        } else {
+            match committed.effect {
+                PendingCommand::None => CommandChange::Unchanged,
+                PendingCommand::Metadata(pending) => {
+                    self.publish_metadata(*pending)?;
+                    CommandChange::Metadata(self.metadata_change())
+                }
+                PendingCommand::History(pending) => self.publish_history(pending)?,
+                PendingCommand::Message(pending) => {
+                    let created = pending.creates_conversation();
+                    let id = pending.conversation.clone();
+                    let commit = committed.commit.message.ok_or_else(|| {
+                        EngineError::unavailable("Missing committed command message")
+                    })?;
+                    self.publish_message(*pending, commit)?;
+                    if created {
+                        CommandChange::Metadata(self.metadata_change())
+                    } else {
+                        CommandChange::Conversation(id)
+                    }
+                }
+            }
+        };
+        Ok((committed.outcome, change))
+    }
     pub(crate) fn command_receipts(&self) -> CommandReceipts {
         CommandReceipts {
             database: self.store.db.clone(),
         }
     }
+    #[cfg(test)]
     pub(crate) fn bot_command_receipt(
         &self,
         account: &str,
@@ -74,6 +204,7 @@ impl Engine {
         database::block_on_storage(self.command_receipts().lookup(account, key))
             .map_err(Error::storage)?
     }
+    #[cfg(test)]
     pub(crate) fn bot_command_once(
         &mut self,
         account: &str,
@@ -87,6 +218,7 @@ impl Engine {
         self.store.db = original;
         result
     }
+    #[cfg(test)]
     pub(in crate::engine) fn bot_command_in_context(
         &mut self,
         account: &str,
@@ -221,6 +353,7 @@ impl Engine {
         }
         Ok(outcome)
     }
+    #[cfg(test)]
     pub(in crate::engine) fn restore_command_state(
         &mut self,
         revision: u64,

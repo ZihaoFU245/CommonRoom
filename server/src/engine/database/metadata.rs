@@ -2,7 +2,9 @@
 //! implementations own SQL, native bindings and transaction-local maintenance.
 use super::{Error, Result};
 use crate::engine::{AuthEvent, Message, authorization::Audit};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::collections::VecDeque;
 
 #[derive(Default)]
 pub(crate) struct MetadataWrite<'a> {
@@ -36,6 +38,7 @@ pub(crate) enum MetadataOp<'a> {
     State {
         json: String,
     },
+    #[cfg(test)]
     Audit(&'a VecDeque<Audit>),
     AppendAudit(&'a Audit),
     RemoveAccountReceipts {
@@ -70,6 +73,7 @@ pub(crate) enum MetadataOp<'a> {
         revision: u64,
         limit: usize,
     },
+    #[cfg(test)]
     CommandReceipt {
         account: &'a str,
         key: &'a str,
@@ -109,6 +113,7 @@ pub(crate) struct RevisionChange {
 pub(super) struct WriteResult {
     pub(super) changed: u64,
     pub(super) message: Option<super::MessageCommit>,
+    pub(super) command: Option<(String, bool)>,
     pub(crate) revisions: Vec<RevisionChange>,
     pub(super) media: Vec<crate::engine::media::Media>,
     pub(super) staging: Vec<String>,
@@ -175,6 +180,7 @@ impl super::Connection {
     pub(crate) fn cursor_rows(&self) -> Result<CursorRows> {
         native_metadata!(self, cursors)
     }
+    #[cfg(test)]
     pub(crate) fn account_conversations(&self, name: &str) -> Result<BTreeSet<String>> {
         native_metadata!(self, account_conversations, name)
     }
@@ -202,6 +208,7 @@ impl super::Handle {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) fn save_metadata_blocking(
         &self,
         request: &MetadataWrite<'_>,

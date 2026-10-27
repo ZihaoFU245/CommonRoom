@@ -71,3 +71,56 @@ pub(in crate::engine::database) async fn save_command(
         .rows_affected();
     Ok(changed + sqlx::query("INSERT INTO bot_command_receipts SELECT $1,$2,$3,$4,$5 WHERE EXISTS(SELECT 1 FROM entities WHERE kind='account' AND (projection #>> '{id}')=$1)").bind(account).bind(key).bind(digest).bind(number(created)?).bind(outcome).execute(db).await?.rows_affected())
 }
+
+pub(in crate::engine::database) async fn apply_command(
+    db: &mut PgConnection,
+    request: &super::super::CommandWrite<'_>,
+) -> Result<super::super::metadata::WriteResult> {
+    use super::super::{CommandEffect, Error, metadata::WriteResult};
+    let account: Option<String> = sqlx::query_scalar(
+        "SELECT key FROM entities WHERE kind='account' AND (projection #>> '{id}')=$1 FOR UPDATE",
+    )
+    .bind(request.account)
+    .fetch_optional(&mut *db)
+    .await?;
+    if account.is_none() {
+        return Err(Error::RevisionConflict);
+    }
+    let previous = command(
+        db,
+        &ReceiptRead {
+            account: request.account,
+            key: request.key,
+            after: request.expired_before,
+        },
+    )
+    .await?;
+    let usage = if previous.is_none() {
+        command_usage(db, request.account, request.expired_before).await?
+    } else {
+        (0, 0)
+    };
+    if let Some(outcome) = super::super::command::preflight(request, previous, usage)? {
+        return Ok(WriteResult {
+            command: Some((outcome, true)),
+            ..Default::default()
+        });
+    }
+    let mut result = match &request.effect {
+        CommandEffect::None => WriteResult::default(),
+        CommandEffect::Message(effect) => super::messages::apply_message(db, effect).await?,
+        CommandEffect::Metadata(effect) => super::metadata::apply(db, effect).await?,
+    };
+    result.changed += save_command(
+        db,
+        request.account,
+        request.key,
+        request.digest,
+        request.created,
+        request.expired_before,
+        request.outcome,
+    )
+    .await?;
+    result.command = Some((request.outcome.into(), false));
+    Ok(result)
+}

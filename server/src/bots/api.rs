@@ -16,7 +16,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub(super) fn routes() -> Router<App> {
@@ -49,22 +49,6 @@ pub(super) fn routes() -> Router<App> {
 #[cfg(test)]
 fn authenticate(app: &App, headers: &HeaderMap) -> Result<Context, Error> {
     Context::authenticate(app, headers)
-}
-pub(super) async fn work<T: Serialize + Send + 'static>(
-    app: App,
-    headers: HeaderMap,
-    job: impl FnOnce(&App, &Context) -> Result<T, Error> + Send + 'static,
-) -> Result<Json<T>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
-    tokio::spawn(async move {
-        let _permit = permit;
-        let context = Context::authenticate_async(&app, &headers).await?;
-        tokio::task::spawn_blocking(move || job(&app, &context).map(Json))
-            .await
-            .map_err(Error::storage)?
-    })
-    .await
-    .map_err(Error::storage)?
 }
 async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
     let permit = app.io_permit().map_err(Error::storage)?;

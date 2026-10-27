@@ -6,7 +6,7 @@ use axum::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
-pub(in crate::web) fn app(mut engine: Engine) -> App {
+pub(crate) fn app(mut engine: Engine) -> App {
     for (user, admin) in [("alice", true), ("bob", false), ("carol", false)] {
         engine.provision(user, "hash".into(), admin, false).unwrap();
         engine.login(user.into(), user, "hash", None).unwrap();

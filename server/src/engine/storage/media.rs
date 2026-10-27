@@ -1,14 +1,20 @@
 //! Media authorization/configuration coordination above typed lifecycle storage.
 use super::*;
+#[cfg(test)]
 use crate::engine::media::Media;
 #[cfg(test)]
 use database::{CLAIM_CLEANUP_SQL, STARTUP_CLEANUP_SQL, TOMBSTONES_SQL};
 
 impl Engine {
+    #[cfg(test)]
     pub(crate) fn prepare_media_cleanup(&self) -> Result<(), EngineError> {
+        database::block_on_storage(self.prepare_media_cleanup_async())?
+    }
+    pub(crate) async fn prepare_media_cleanup_async(&self) -> Result<(), EngineError> {
         self.store
             .db
-            .media_write_blocking(&database::MediaWrite::PrepareCleanup)?;
+            .media_write(&database::MediaWrite::PrepareCleanup)
+            .await?;
         Ok(())
     }
     #[cfg(test)]
@@ -43,6 +49,7 @@ impl Engine {
             }))?;
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn stored_media_with_reference(
         &self,
         id: &str,

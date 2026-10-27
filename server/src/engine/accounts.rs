@@ -33,6 +33,7 @@ impl AccountRenameRead {
 }
 
 impl Engine {
+    #[cfg(test)]
     pub(super) fn rename_user(
         &mut self,
         actor: Option<&str>,
@@ -466,6 +467,7 @@ impl Engine {
         }
         Ok(user)
     }
+    #[cfg(test)]
     pub fn provision(
         &mut self,
         name: &str,
@@ -475,6 +477,7 @@ impl Engine {
     ) -> Result<String, EngineError> {
         self.provision_by(None, name, hash, admin, reset)
     }
+    #[cfg(test)]
     pub fn provision_by(
         &mut self,
         actor: Option<&str>,
@@ -611,6 +614,7 @@ impl Engine {
             engine.apply_provision(actor, name, hash, admin, reset)
         })
     }
+    #[cfg(test)]
     pub(super) fn delete_user(
         &mut self,
         actor: Option<&str>,

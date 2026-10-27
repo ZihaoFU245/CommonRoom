@@ -98,6 +98,7 @@ impl super::Connection {
     }
 }
 impl super::Handle {
+    #[cfg(test)]
     pub(crate) fn media_write_blocking(&self, request: &MediaWrite<'_>) -> Result<MediaCommit> {
         super::runtime::run(self.media_write(request))
     }
@@ -117,6 +118,7 @@ impl super::Handle {
             staging,
         })
     }
+    #[cfg(test)]
     pub(crate) fn stored_media_blocking(&self, id: &str) -> Result<(Media, bool)> {
         super::runtime::run(self.stored_media(id))
     }

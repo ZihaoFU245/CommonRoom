@@ -235,3 +235,75 @@ async fn postgres_cancelled_login_commits_before_queued_disable_without_engine_g
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+async fn postgres_cancelled_password_only_login_drains_before_checkpoint() {
+    let fixture_db = crate::engine::database::tests::PostgresFixture::new();
+    let mut app = fixture(Engine::open_postgres(&fixture_db.url).unwrap());
+    app.io_jobs = Arc::new(tokio::sync::Semaphore::new(64));
+    let blocker = crate::engine::database::Connection::postgres(&fixture_db.url, false).unwrap();
+    let hold = blocker.unchecked_transaction().unwrap();
+    hold.execute_batch("LOCK TABLE auth_events IN ACCESS EXCLUSIVE MODE")
+        .unwrap();
+    let signing_in = tokio::spawn({
+        let app = app.clone();
+        async move { attempt(&app, "native-password").await }
+    });
+    let inspect = crate::engine::database::Connection::postgres(&fixture_db.url, false).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    loop {
+        let waiting: bool = inspect.query_row("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'INSERT INTO auth_events%')", [], |row| row.get(0)).unwrap();
+        if waiting {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "login did not reach event lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        app.io_jobs.available_permits(),
+        64,
+        "login must use no general I/O permit"
+    );
+    assert_eq!(app.password_jobs.available_permits(), 1);
+    signing_in.abort();
+    assert!(signing_in.await.unwrap_err().is_cancelled());
+    app.stopping
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    app.shutdown.notify_waiters();
+    let checkpoint = tokio::spawn({
+        let app = app.clone();
+        async move { app.checkpoint_after_jobs().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!checkpoint.is_finished());
+    assert!(app.engine.try_read().is_ok());
+    hold.rollback().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(4), checkpoint)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        app.engine_read()
+            .unwrap()
+            .data
+            .sessions
+            .values()
+            .any(|session| session.username == "alice")
+    );
+    assert_eq!(
+        inspect
+            .query_row(
+                "SELECT count(*) FROM auth_events WHERE outcome='success'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert!(app.password_jobs.is_closed());
+}

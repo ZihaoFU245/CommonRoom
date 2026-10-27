@@ -8,6 +8,7 @@ pub(super) struct RoomRenamePlan {
     room: Room,
 }
 impl Engine {
+    #[cfg(test)]
     pub(super) fn rename_room(
         &mut self,
         actor: Option<&str>,

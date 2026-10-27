@@ -126,9 +126,7 @@ impl Engine {
             }
             return Ok(plan);
         }
-        self.history_store()
-            .ensure_available()
-            .map_err(Error::storage)?;
+        self.ensure_memory().map_err(Error::storage)?;
         let mut conversations = Vec::new();
         let mut cursors = BTreeMap::new();
         for (id, view) in self

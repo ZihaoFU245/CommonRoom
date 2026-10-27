@@ -96,15 +96,15 @@ pub(crate) async fn execute_input(
         .await
         .map_err(|_| "Command worker unavailable.")?;
     }
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let _permit = permit;
-        let account = app
-            .engine_read()?
-            .active_account_id(&user)
-            .ok_or("Account unavailable.")?
-            .to_owned();
-        let _account_permit = app.admission.http(account)?;
-        execute_input_inner(&app, &headers, &user, &input).map_err(String::from)
+        let (_, reply) = capture(&app, headers, user.clone(), &input, {
+            let view = input.room.clone();
+            move |engine, text| engine.reject_command(Some(&user), view.as_deref(), text)
+        })
+        .await
+        .map_err(String::from)?;
+        Ok((reply, None))
     })
     .await
     .map_err(|_| "Command worker unavailable.")?
@@ -383,49 +383,6 @@ async fn execute_message(
     })
     .await
 }
-fn execute_input_inner(
-    app: &App,
-    headers: &HeaderMap,
-    user: &str,
-    input: &Input,
-) -> Result<(String, Option<Change>), EngineError> {
-    {
-        let engine = app.engine_read()?;
-        if identity(&engine, &app.config, headers).as_deref() != Some(user) {
-            return Err("Please log in.".into());
-        }
-    }
-    let elevated = sudo_command(&input.text)?;
-    let text = elevated.unwrap_or(&input.text);
-    let sudo = elevated.is_some();
-    let routed = crate::commands::route(text);
-    let parts: Vec<_> = routed.split_whitespace().collect();
-    if sudo && matches!(parts.first(), Some(&"/clear" | &"/logout")) {
-        return app.engine()?.with_command_authority(
-            Some(user),
-            input.room.as_deref(),
-            true,
-            |_| {
-                if parts.len() != 1 {
-                    return Err(EngineError::Invalid(format!("Usage: {}", parts[0])));
-                }
-                Ok(("Done.".into(), None))
-            },
-        );
-    }
-    let mut engine = app.engine()?;
-    if identity(&engine, &app.config, headers).as_deref() != Some(user) {
-        return Err("Please log in.".into());
-    }
-    let outcome = engine.execute_command(
-        Some(user),
-        input.room.as_deref(),
-        &input.text,
-        input.markdown,
-    )?;
-    Ok((outcome.reply, Change::command(outcome.change)))
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "elevated_write_tests.rs"]

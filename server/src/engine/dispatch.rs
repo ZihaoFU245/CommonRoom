@@ -26,14 +26,17 @@ pub(super) struct CommandContext<'a> {
     pub(super) actor: Option<&'a str>,
     pub(super) command: &'a str,
     pub(super) room: Option<&'a str>,
+    #[cfg(test)]
     pub(super) input: &'a str,
     pub(super) parts: &'a [&'a str],
     pub(super) view: Option<&'a str>,
     pub(super) scope: authorization::Scope,
+    #[cfg(test)]
     pub(super) markdown: bool,
     pub(super) author: &'a str,
 }
 impl Engine {
+    #[cfg(test)]
     pub fn read_command(
         &self,
         actor: Option<&str>,
@@ -104,10 +107,12 @@ impl Engine {
                 command,
                 actor,
                 room: view.filter(|v| !v.starts_with('@')),
+                #[cfg(test)]
                 input,
                 parts: &parts,
                 view,
                 scope: self.command_scope(actor, view)?,
+                #[cfg(test)]
                 markdown: false,
                 author: actor.unwrap_or("console"),
             };
@@ -140,24 +145,7 @@ impl Engine {
     ) -> Result<String, EngineError> {
         self.execute_formatted(actor, room, input, false)
     }
-    pub(crate) fn execute_command(
-        &mut self,
-        actor: Option<&str>,
-        room: Option<&str>,
-        input: &str,
-        markdown: bool,
-    ) -> Result<CommandOutcome, EngineError> {
-        let revision = self.revision;
-        let reply = self.execute_formatted(actor, room, input, markdown)?;
-        let change = if self.revision == revision {
-            CommandChange::Unchanged
-        } else if let Some(id) = &self.changed_conversation {
-            CommandChange::Conversation(id.clone())
-        } else {
-            CommandChange::Metadata(self.metadata_change())
-        };
-        Ok(CommandOutcome { reply, change })
-    }
+    #[cfg(test)]
     pub fn execute_formatted(
         &mut self,
         actor: Option<&str>,
@@ -173,11 +161,13 @@ impl Engine {
         self.clear_working_messages();
         result
     }
+    #[cfg(test)]
     pub(super) fn clear_working_messages(&mut self) {
         self.working = None;
         self.store.pending_deletes.clear();
         self.store.pending_cleanups.clear();
     }
+    #[cfg(test)]
     fn load_command_message(
         &mut self,
         actor: Option<&str>,
@@ -234,6 +224,7 @@ impl Engine {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn execute_inner(
         &mut self,
         actor: Option<&str>,
@@ -339,6 +330,7 @@ impl Engine {
             }
         }
     }
+    #[cfg(test)]
     fn apply_text(
         &mut self,
         actor: Option<&str>,
@@ -359,6 +351,76 @@ impl Engine {
         Ok(String::new())
     }
 
+    pub(super) fn apply_metadata(
+        &mut self,
+        actor: Option<&str>,
+        room: Option<&str>,
+        input: &str,
+    ) -> Result<String, EngineError> {
+        #[cfg(test)]
+        let markdown = false;
+        let input = input.trim();
+        crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
+        if actor.is_some_and(|name| !self.active(name)) {
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
+        }
+        let author = actor.unwrap_or("console");
+        let command = input.split_whitespace().next().unwrap_or("");
+        let routed = commands::route(input);
+        let parts: Vec<&str> = routed.split_whitespace().collect();
+        self.require_command(actor, room, command)?;
+        let view = room;
+        let scope = self.command_scope(actor, room)?;
+        let room = room.filter(|name| !name.starts_with('@'));
+        let subcommand = parts.get(1).copied();
+        let routed_parts;
+        let handler_parts = if matches!(parts[0], "/new" | "/rm") {
+            match (parts[0], subcommand) {
+                ("/new", Some("room")) | ("/rm", Some("room")) => {}
+                ("/rm", Some("group")) if (4..=5).contains(&parts.len()) => {}
+                _ => {
+                    return Err(EngineError::Invalid(format!(
+                        "Usage: {}",
+                        if parts[0] == "/new" {
+                            commands::NEW_USAGE
+                        } else {
+                            commands::RM_USAGE
+                        }
+                    )));
+                }
+            }
+            routed_parts = std::iter::once(parts[0])
+                .chain(parts.iter().skip(2).copied())
+                .collect::<Vec<_>>();
+            &routed_parts
+        } else {
+            &parts
+        };
+        let context = CommandContext {
+            command,
+            actor,
+            room,
+            #[cfg(test)]
+            input,
+            parts: handler_parts,
+            author,
+            #[cfg(test)]
+            markdown,
+            scope,
+            view,
+        };
+        match parts[0] {
+            "/user" | "/room" => self.query_objects(&context),
+            "/enable" | "/disable" => self.apply_accounts(&context),
+            "/grant" | "/revoke" | "/permissions" => self.apply_policy(&context),
+            "/rm" if subcommand == Some("group") => self.apply_policy(&context),
+            "/new" | "/add" | "/kick" | "/join" | "/leave" | "/rm" | "/owner" => {
+                self.apply_rooms(&context)
+            }
+            _ => Err("Unknown command. Try /help.".into()),
+        }
+    }
+    #[cfg(test)]
     pub(super) fn apply(
         &mut self,
         actor: Option<&str>,
@@ -410,9 +472,11 @@ impl Engine {
             command,
             actor,
             room,
+            #[cfg(test)]
             input,
             parts: handler_parts,
             author,
+            #[cfg(test)]
             markdown,
             scope,
             view,
@@ -438,6 +502,7 @@ impl Engine {
 
 // A mutation owns its target coordinates and only the prior attachment IDs for edits.
 // Message bodies live only in Engine::working, outside metadata rollback snapshots.
+#[cfg(test)]
 pub(super) struct MessageChange {
     pub(super) key: String,
     pub(super) private: bool,
@@ -445,6 +510,7 @@ pub(super) struct MessageChange {
     pub(super) sequence: u64,
     pub(super) revision: Option<u64>,
 }
+#[cfg(test)]
 pub(super) enum MessageMutation {
     Append,
     Edit {
@@ -453,11 +519,13 @@ pub(super) enum MessageMutation {
     },
     Reaction,
 }
+#[cfg(test)]
 impl MessageChange {
     pub(super) fn new_conversation(&self) -> bool {
         self.revision.is_none()
     }
 }
+#[cfg(test)]
 impl Engine {
     pub(super) fn message_change(
         &self,
@@ -604,8 +672,4 @@ pub(crate) enum CommandChange {
     Unchanged,
     Metadata(std::sync::Arc<MetadataNotice>),
     Conversation(String),
-}
-pub(crate) struct CommandOutcome {
-    pub(crate) reply: String,
-    pub(crate) change: CommandChange,
 }

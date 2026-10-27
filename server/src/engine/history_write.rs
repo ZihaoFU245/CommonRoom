@@ -19,9 +19,20 @@ struct Target {
 impl Engine {
     /// The caller holds conversation ordering and the shared audit permit until
     /// commit and publication. Legacy metadata writers hold the exclusive fence.
+    #[cfg(test)]
     pub(super) fn prepare_history_write(
         &self,
         user: &str,
+        operation: &str,
+        audit_target: &str,
+        deletes: Vec<(String, u64)>,
+        cleanups: Vec<(String, u64)>,
+    ) -> Result<PendingHistory, EngineError> {
+        self.prepare_history_write_for(Some(user), operation, audit_target, deletes, cleanups)
+    }
+    pub(super) fn prepare_history_write_for(
+        &self,
+        actor: Option<&str>,
         operation: &str,
         audit_target: &str,
         deletes: Vec<(String, u64)>,
@@ -57,7 +68,7 @@ impl Engine {
             id: uuid::Uuid::new_v4().to_string(),
             time: now(),
             actor_id: self
-                .principal_id(Some(user))
+                .principal_id(actor)
                 .ok_or("Account unavailable.")?
                 .into(),
             operation: operation.into(),
@@ -123,7 +134,7 @@ impl Engine {
     }
 }
 impl PendingHistory {
-    pub(crate) async fn save(&self) -> Result<(), EngineError> {
+    pub(super) fn write(&self) -> MetadataWrite<'_> {
         let mut batch = MetadataWrite::default();
         for target in &self.targets {
             batch.operations.push(MetadataOp::CheckedRevision {
@@ -139,7 +150,10 @@ impl PendingHistory {
             cleanups: &self.cleanups,
         });
         batch.operations.push(MetadataOp::AppendAudit(&self.audit));
-        self.database.save_metadata(&batch).await?;
+        batch
+    }
+    pub(crate) async fn save(&self) -> Result<(), EngineError> {
+        self.database.save_metadata(&self.write()).await?;
         Ok(())
     }
 }

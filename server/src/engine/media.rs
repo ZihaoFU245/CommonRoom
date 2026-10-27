@@ -194,6 +194,7 @@ impl Engine {
             Err(EngineError::NotFound("Conversation not found.".into()))
         }
     }
+    #[cfg(test)]
     pub(super) fn authorize_media_text(
         &self,
         actor: Option<&str>,

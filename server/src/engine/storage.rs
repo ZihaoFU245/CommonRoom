@@ -1,11 +1,15 @@
 //! Database ownership and transactional engine coordination.
 use super::*;
 use database::{MetadataOp, MetadataWrite};
+#[cfg(test)]
 mod accounts;
 mod bootstrap;
+#[cfg(test)]
 mod cursors;
 mod entities;
+#[cfg(test)]
 mod maintenance;
+#[cfg(test)]
 mod messages;
 mod migration;
 #[cfg(test)]
@@ -18,6 +22,7 @@ pub(super) use maintenance::CLEANUP_COUNTS_SQL;
 mod auth;
 pub(super) use auth::session_write;
 mod command_receipts;
+pub(crate) use command_receipts::PendingCommand;
 mod media;
 mod retention;
 
@@ -31,10 +36,13 @@ pub(super) struct Store {
     history: std::sync::Arc<super::history::HistoryStore>,
     pub(super) db: database::Handle,
     pub(super) read_positions: BTreeMap<String, BTreeMap<String, u64>>,
+    #[cfg(test)]
     pub(super) pending_deletes: Vec<(String, u64)>,
+    #[cfg(test)]
     pub(super) pending_cleanups: Vec<(String, u64)>,
 }
 
+#[cfg(test)]
 impl Store {
     fn checkpoint(&self) -> Result<(), EngineError> {
         database::block_on_storage(self.db.checkpoint())?.map_err(EngineError::from)
@@ -54,6 +62,7 @@ impl Engine {
     pub(super) fn save_delta(&mut self, before: &Data) -> Result<(), EngineError> {
         self.save_metadata(&[], changes::Baseline::Data(before))
     }
+    #[cfg(test)]
     pub(super) fn save_metadata(
         &mut self,
         rooms: &[String],
@@ -119,6 +128,13 @@ impl Engine {
         self.finish_metadata_commit(notice);
         Ok(())
     }
+    pub(crate) fn checkpoint_async(
+        &self,
+    ) -> impl std::future::Future<Output = Result<(), EngineError>> + Send + 'static + use<> {
+        let database = self.store.db.clone();
+        async move { database.checkpoint().await.map_err(EngineError::from) }
+    }
+    #[cfg(test)]
     pub fn checkpoint(&self) -> Result<(), EngineError> {
         self.store.checkpoint()
     }

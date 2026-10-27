@@ -51,6 +51,7 @@ impl Engine {
         data.sessions.retain(|_, session| session.expires > now());
         let db = std::sync::Arc::new(database::Database::from_connection(db, location, lock)?);
         let mut engine = Self {
+            #[cfg(test)]
             working: None,
             color_revision: 0,
             committed_colors: Default::default(),
@@ -75,7 +76,9 @@ impl Engine {
                 history: std::sync::Arc::new(super::history::HistoryStore::new(db.clone())),
                 db: database::Handle::new(db),
                 read_positions,
+                #[cfg(test)]
                 pending_deletes: Vec::new(),
+                #[cfg(test)]
                 pending_cleanups: Vec::new(),
             },
         };

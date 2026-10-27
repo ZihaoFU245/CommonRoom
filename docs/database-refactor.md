@@ -804,3 +804,146 @@ The ignored root `chat` executable matches this release build. The elevated nati
 write and read-only cleanup-preview changes are verified; the full refactor remains
 unfinished in the outer bot command transaction, console/fallback paths and final
 bridge removal/audit described above.
+
+
+## Native atomic bot command checkpoint (2026-10-27, after master rebase)
+
+The branch was rebased onto origin/master `7bdc05d` (clipboard image attachments
+and 0.0.2 dependency/version updates), preserving the preceding tested refactor in
+WIP `b2cf097`. The rebase had only Cargo.lock conflicts; required repository checks
+and all 40 then-existing PostgreSQL contracts passed afterward.
+
+`database::CommandWrite` now describes a typed message, metadata/history or empty
+effect plus an owned serialized outcome receipt. Both backends independently
+perform receipt replay/conflict/capacity checks, apply the effect and persist the
+receipt inside the existing SQLx root transaction. PostgreSQL locks the submitting
+account before receipt checks, append counter and conversation rows. Replays skip
+the effect entirely. Capacity retains 4096 rows and 4 MiB per account with a 64 KiB
+receipt reservation; result text remains limited to 32 KiB. Rejected domain
+outcomes have no effect, unavailable failures have no terminal receipt, and
+expired receipts are pruned transactionally. SQL remains disjoint by backend.
+
+Owned message/history/metadata plans expose their typed write request so ordinary
+writes and atomic command transactions share the same native SQL. Committed command
+publication dispatches the matching owned effect once, then exposes its outcome.
+`bots/command_write.rs` handles asynchronous query/history/media/rename continuations
+without retaining an engine guard or sudo authority across awaits. Initial plans
+use a shared metadata permit. Metadata plans release it, acquire the exclusive
+permit and reprepare. Message/history plans similarly acquire sorted conversation
+permits and recheck the target set. Audited deletions hold the audit permit through
+commit/publication. Independent PostgreSQL bot edits now progress on separate
+account and conversation rows while a different command is blocked.
+
+The bot HTTP command route no longer calls `App.engine`, the synchronous generic
+worker or `execute_formatted`. Legacy outer-command execution, command scope
+constructors, command savepoint methods, generic receipt metadata operations and
+usage bridges now have only test callers and are gated accordingly. Console and
+fallback generic execution still require migration; the complete goal is active.
+
+Shared SQLite/PostgreSQL contracts inject receipt insertion failure after room
+creation, first private message, reply, edit, reaction, retraction, cleanup and
+account rename. Every case requires rolled-back DB sequence/history, memory,
+revision and notifications, with no receipt. Successful commands/replays survive
+restart without duplicate effects. Native concurrent requests test same-key replay
+and count/UTF-8 byte capacity before effects, expiry, oversized-result rejection
+without effects and sequence rollback. PostgreSQL cancellation tests block receipt
+persistence after an effect, cancel the caller and require effect/receipt commit
+and publication before queued disable. An additional blocked-row edit test requires
+another bot's independent edit to commit, then validates cancellation/publication
+ordering for the first edit.
+
+Current validation results are recorded below after final checks. Remaining full
+scope: console/fallback migration; startup/maintenance bridge audit; obsolete
+production adapter removal; final full-scope verification (including rebuilt
+binaries and fresh-target PostgreSQL lifecycle/transfer checks).
+
+Final encoded-size handling occurs under the receipt lock after replay lookup:
+JSON escaping can exceed the 64 KiB receipt bound even when result text is below
+32 KiB. Such new requests reject before their effect and persist no oversized
+receipt; an already committed matching key still replays its stored outcome.
+Both backends cover this case. Current PostgreSQL verification passed all 44
+contracts, and Clippy with warnings denied plus formatting/diff checks passed.
+The native command implementation passed the real debug/release HTTP/WebSocket
+harness before this last size-check adjustment. Current binaries were rebuilt;
+the full ordinary suite and final harness result are recorded below when complete.
+
+Verified checkpoint: 392 ordinary Rust tests passed (47 ignored), all 44 opt-in
+PostgreSQL contracts passed serially, all-target Clippy with warnings denied and
+formatting/diff checks passed. The strengthened SQLite/PostgreSQL restart contracts
+also passed through the native receipt API: reopening preserves the stored result,
+returns replayed=true and publishes no effect or sequence change. Current debug and
+release builds passed the full real HTTP/WebSocket harness. The ignored root
+`chat` binary matches this release build. No fresh PostgreSQL migration/lifecycle
+or RustFS smoke was rerun in this checkpoint; their final full-scope runs remain
+required after console/fallback and production bridge cleanup are complete.
+
+## Completion audit (2026-10-27)
+
+The original database refactor is implemented across live browser, bot and console
+paths. Console input now crosses a bounded channel into accepted async operations;
+the blocking stdin thread retains no App/database owner. Console global edits,
+private edits/retractions, cleanup, account provisioning/reset/rename and explicit
+credential output retain their trusted semantics. Direct sends/replies/reactions
+still require an account. Browser unknown/malformed commands reject in memory;
+sudo local controls use the native read-only path. Metadata preparation now calls
+a pure metadata-only dispatcher, so it cannot enter a legacy message writer.
+
+The production engine has no WorkingMessage or pending legacy deletion lists, no
+synchronous App engine/health helpers, no legacy generic command executor, and no
+explicit outer-command session. Those compatibility oracles compile only in tests.
+Production typed writes always use SQLx-owned root transactions, including atomic
+command effects/receipts. The nested savepoint rollback adapter is test-only.
+The public synchronous storage bridge alias is test-only outside the database
+owner. Remaining synchronous SQLx utilities serve initial ownership/schema load,
+offline transfer and final pool draining; no connection owns a runtime.
+Startup retention and media cleanup await native operations. Shutdown stops
+admission, drains all 64 general I/O and two password-job permits through committed
+publication, then awaits checkpointing without an engine guard. Separate contracts
+cover cancelled console work and cancelled login work that holds no general I/O
+permit. A final cold bot-snapshot audit removed its guarded health bridge; metadata
+capture is memory-only and snapshot completion checks native health afterward.
+
+| Original requirement / invariant | Authoritative evidence |
+| --- | --- |
+| SQLx for SQLite and PostgreSQL; remove rusqlite and old PostgreSQL drivers | Frozen Cargo manifest/lockfile, production compilation and source/dependency audit: no rusqlite, tokio-postgres, postgres-native-tls or SQLx Any path. |
+| One typed dispatcher with disjoint backend SQL | `engine/database/{sqlite,postgres}` independently implements messages, metadata/history maintenance, cursors, receipts, media/profile operations and bootstrap. Shared storage carries typed values and owned plans; live SQL remains in backend modules. No SQL translation path exists. |
+| SQLite one writer; PostgreSQL multiple writers | Dispatcher configures one SQLite writer, eight PostgreSQL writers, four readers and a dedicated PostgreSQL ownership session. Capacity/independent-row contracts and independent bot-command edit contracts passed. |
+| Stable append order and monotonic cursors | Transactional global append counter is locked before conversation rows and held through commit; skipped-uncommitted-cursor, rollback, sequence, revision, cursor and receipt contracts passed. Metadata changes retain their exclusive application fence; sorted conversation locks and audit ordering passed queued-writer/cancellation contracts. |
+| Preserve authorization, sessions, identity, caches and media | Shared SQLite/PostgreSQL application contracts cover credentials, policy, account rename/deletion, cursor/history references, bounded history/unread/snapshot caches, immutable media, quotas, uploads/profiles, rollback and publication. Existing read-model/cache and HTTP/WebSocket regressions passed. SQLx owns statement caches. |
+| Atomic command retries and cancellation | Native effect/receipt failure injection, same-key replay, count/UTF-8 byte capacity, expiry, encoded-size limits, restart replay, independent PostgreSQL writers and cancelled accepted work contracts passed. Commit acknowledgement uncertainty still fails closed. |
+| Existing HEAD v19 compatibility and safe offline transfer | Backend/schema rejection/rollback contracts passed. Fresh real-binary transfer preserved all table data and source bytes, then verified PostgreSQL password/session HTTP behavior, restart, shutdown and ownership/config protection. |
+| Complete live entry-point migration | Browser, bot, console, startup maintenance and shutdown compile/run without live synchronous command/write adapters. Native application tests, rebuilt binaries and real transport/storage smoke tests passed. |
+| Preserve upstream changes | Current branch is rebased onto origin/master `7bdc05d`, retaining clipboard image attachments and 0.0.2 dependency/version updates. Required web checks/tests passed. |
+
+Final verification for this implementation:
+
+- `auto/check.sh` passed, including Rust formatting, all-target Clippy with warnings
+  denied, 393 ordinary Rust tests (50 ignored), optional SimpleBot checks/tests,
+  TypeScript, ESLint, web formatting and all 300 web unit tests.
+- All 47 opt-in PostgreSQL contracts passed serially against the disposable cluster
+  on port 55439, including native console and password-only shutdown draining.
+- Current debug/release runtime code passed the full real HTTP/WebSocket harness,
+  including native stdin provisioning, bot worker/retry recovery, permissions,
+  identity reuse, media binding, restart, production cookies/routing and shutdown.
+- Real RustFS smoke passed: attachments/avatars, immutable bytes, private access,
+  completion replay, replacement/removal, restart, daily cleanup, outage rejection
+  and recovery.
+- Fresh real-binary PostgreSQL transfer/lifecycle smoke passed against the initially
+  empty `chat_refactor_console_01a176e8` target. That database is now filled; do not
+  reuse it as an empty transfer target. Working `data/` and `pgdata/` were untouched.
+- Formatting/diff checks passed. Later edits only update comments/documentation;
+  the final source contains no unverified runtime change after those binaries.
+
+No original implementation scope remains outstanding. The intentionally serialized
+global append counter preserves the published global cursor/commit-order contract;
+metadata administration also retains its authority fence. PostgreSQL independent
+edits, reactions, cursor/profile/media work and eligible commands use multiple
+writer leases. No performance claim beyond the verified concurrency behavior is
+made here. Test-only compatibility code remains to support fixture construction,
+old/native parity, crash injection and offline-transfer regression coverage.
+
+Final cleanup: origin/master was fetched again and remains `7bdc05d`; ancestry
+verification passed. The disposable PostgreSQL test cluster in
+`/private/tmp/chatroom-sqlx-pg-81zz_gfu` was stopped cleanly after all checks.
+Its scratch files remain available for diagnostics; no working database/service
+was stopped. The refactor is ready for review under the requested WIP commit naming.

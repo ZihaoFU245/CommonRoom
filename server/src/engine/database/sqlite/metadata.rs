@@ -10,7 +10,9 @@ use super::super::{
 };
 use crate::engine::authorization::Audit;
 use sqlx::SqliteConnection;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::collections::VecDeque;
 
 pub(in crate::engine::database) async fn apply(
     db: &mut SqliteConnection,
@@ -30,6 +32,7 @@ pub(in crate::engine::database) async fn apply(
             }
             MetadataOp::RemoveMessages { conversation } => sqlx::query("DELETE FROM messages WHERE conversation=?1").bind(conversation).execute(&mut *db).await?.rows_affected(),
             MetadataOp::State { json } => sqlx::query("INSERT INTO state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE json!=excluded.json").bind(json).execute(&mut *db).await?.rows_affected(),
+            #[cfg(test)]
             MetadataOp::Audit(entries) => audit(db, entries).await?,
             MetadataOp::AppendAudit(entry) => append_audit(db, entry).await?,
             MetadataOp::RemoveAccountReceipts { account } => {
@@ -56,6 +59,7 @@ pub(in crate::engine::database) async fn apply(
                     deleted + sqlx::query("UPDATE entities SET revision=?3 WHERE kind=?1 AND key=?2").bind(*kind).bind(key).bind(number(revision)?).execute(&mut *db).await?.rows_affected()
                 } else { 0 }
             }
+            #[cfg(test)]
             MetadataOp::CommandReceipt { account, key, digest, created, expired_before, outcome } => {
                 super::receipts::save_command(db, account, key, digest, *created, *expired_before, outcome).await?
             }
@@ -87,6 +91,7 @@ async fn append_audit(db: &mut SqliteConnection, entry: &Audit) -> Result<u64> {
     let removed = sqlx::query("DELETE FROM audit_entries WHERE sequence < (SELECT sequence FROM audit_entries ORDER BY sequence DESC LIMIT 1 OFFSET 999)").execute(db).await?.rows_affected();
     Ok(inserted + removed)
 }
+#[cfg(test)]
 async fn audit(db: &mut SqliteConnection, entries: &VecDeque<Audit>) -> Result<u64> {
     let last: Option<String> =
         sqlx::query_scalar("SELECT entry_id FROM audit_entries ORDER BY sequence DESC LIMIT 1")

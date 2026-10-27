@@ -132,10 +132,17 @@ transfer and online replication are not implemented.
 Both backends use SQLx. The typed async dispatcher handles message transactions
 and cursor advances with one SQLite writer lease or a bounded PostgreSQL pool of
 up to eight write leases. PostgreSQL also has four read-only history sessions and
-a dedicated ownership session. Existing synchronous engine entry points bridge
-to the dispatcher; broader backend SQL extraction and removal of engine-wide
-mutation serialization remain in progress. The pool supports independent writes,
-but this does not yet make all chat requests concurrent.
+a dedicated ownership session. Browser, bot and console operations prepare owned
+typed requests under short memory guards, then await native SQLx transactions.
+Different conversations can write independently. Metadata administration retains
+an exclusive application fence through commit/publication; history deletions use
+a separate audit permit. Command effects and retry receipts commit together,
+with PostgreSQL receipt checks locked per submitting account before append or
+conversation locks. Startup retention/media cleanup and shutdown checkpoints are
+native async operations. Shutdown drains accepted I/O/password work first.
+Synchronous SQLx utilities remain only for bootstrap/offline transfer, final pool
+draining and test compatibility; legacy live command paths are excluded from
+production builds.
 
 Message operations validate the stored conversation identity/revision under a
 PostgreSQL row lock. Appends first lock the global counter row and validate their

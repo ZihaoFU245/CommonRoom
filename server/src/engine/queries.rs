@@ -664,6 +664,7 @@ impl Engine {
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
+            #[cfg(test)]
             "/history" => self.history_command_plan(context)?.finish(),
 
             _ => Err("Unknown command.".into()),

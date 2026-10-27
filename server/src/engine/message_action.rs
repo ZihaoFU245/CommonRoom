@@ -102,10 +102,18 @@ impl Engine {
         view: Option<&str>,
         input: &str,
     ) -> Result<BrowserActionPlan, EngineError> {
+        self.action_plan(Some(user), view, input)
+    }
+    pub(crate) fn action_plan(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        input: &str,
+    ) -> Result<BrowserActionPlan, EngineError> {
         let input = input.trim();
         let command = input.split_whitespace().next().ok_or("Invalid command.")?;
-        self.require_command(Some(user), view, command)?;
-        let context = self.command_scope(Some(user), view)?;
+        self.require_command(actor, view, command)?;
+        let context = self.command_scope(actor, view)?;
         let kind = match command {
             "/reply" => Kind::Reply,
             "/edit" => Kind::Edit,
@@ -113,6 +121,9 @@ impl Engine {
             "/retract" => Kind::Retract,
             _ => return Err("Invalid message action.".into()),
         };
+        if actor.is_none() && matches!(kind, Kind::Reply | Kind::React) {
+            return Err("Message actions require a user account.".into());
+        }
         let content = input
             .strip_prefix(command)
             .ok_or("Invalid command.")?
@@ -148,14 +159,13 @@ impl Engine {
             history: self.history_store().clone(),
         })
     }
-    fn browser_action_target(
+    fn action_target(
         &self,
-        user: &str,
+        actor: Option<&str>,
         view: Option<&str>,
         action: &BrowserAction,
         conversation: &str,
     ) -> Result<(String, Scope, u64), EngineError> {
-        let actor = Some(user);
         let context = self.command_scope(actor, view)?;
         let target = if let Some(room) = view.filter(|view| !view.starts_with('@')) {
             room.to_owned()
@@ -208,7 +218,7 @@ impl Engine {
         action: &BrowserAction,
         conversation: &str,
     ) -> Result<(), EngineError> {
-        self.browser_action_target(user, view, action, conversation)
+        self.action_target(Some(user), view, action, conversation)
             .map(|_| ())
     }
     pub(crate) fn prepare_browser_retraction(
@@ -219,7 +229,17 @@ impl Engine {
         conversation: &str,
         original: &Message,
     ) -> Result<PendingHistory, EngineError> {
-        let (_, scope, _) = self.browser_action_target(user, view, action, conversation)?;
+        self.prepare_retraction(Some(user), view, action, conversation, original)
+    }
+    pub(crate) fn prepare_retraction(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        action: &BrowserAction,
+        conversation: &str,
+        original: &Message,
+    ) -> Result<PendingHistory, EngineError> {
+        let (_, scope, _) = self.action_target(actor, view, action, conversation)?;
         let id = match &scope {
             Scope::Room(id) | Scope::Private(id) => id,
             _ => return Err("Invalid message scope.".into()),
@@ -227,15 +247,15 @@ impl Engine {
         if !action.is_retraction() || id != conversation || original.id != action.id {
             return Err("Message not found in this conversation (it may have expired).".into());
         }
-        if !self.allows(Some(user), &scope, Action::RetractAny)
-            && self.principal_id(Some(user)) != Some(original.author_id.as_str())
+        if !self.allows(actor, &scope, Action::RetractAny)
+            && self.principal_id(actor) != Some(original.author_id.as_str())
         {
             return Err(EngineError::Forbidden(
                 "You can only delete your own messages.".into(),
             ));
         }
-        self.prepare_history_write(
-            user,
+        self.prepare_history_write_for(
+            actor,
             "/retract",
             &action.id,
             vec![(conversation.into(), original.sequence)],
@@ -248,11 +268,25 @@ impl Engine {
         view: Option<&str>,
         action: BrowserAction,
         conversation: &str,
+        original: Message,
+        markdown: bool,
+    ) -> Result<(Option<PendingMessage>, String), EngineError> {
+        self.prepare_action(Some(user), view, action, conversation, original, markdown)
+    }
+    pub(crate) fn prepare_action(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        action: BrowserAction,
+        conversation: &str,
         mut original: Message,
         markdown: bool,
     ) -> Result<(Option<PendingMessage>, String), EngineError> {
-        let (target, scope, revision) =
-            self.browser_action_target(user, view, &action, conversation)?;
+        if actor.is_none() && matches!(action.kind, Kind::Reply | Kind::React) {
+            return Err("Message actions require a user account.".into());
+        }
+        let user = actor.unwrap_or("console");
+        let (target, scope, revision) = self.action_target(actor, view, &action, conversation)?;
         let target_id = match &scope {
             Scope::Room(id) | Scope::Private(id) => id,
             _ => return Err("Invalid message scope.".into()),
@@ -304,8 +338,8 @@ impl Engine {
                 if value.chars().count() > crate::limits::MAX_MESSAGE_CHARS {
                     return Err("Messages support at most 4000 characters.".into());
                 }
-                if self.principal_id(Some(user)) != Some(original.author_id.as_str())
-                    && !self.allows(Some(user), &scope, Action::EditAny)
+                if self.principal_id(actor) != Some(original.author_id.as_str())
+                    && !self.allows(actor, &scope, Action::EditAny)
                 {
                     return Err(EngineError::Forbidden(
                         "You can only edit your own messages.".into(),
@@ -315,6 +349,9 @@ impl Engine {
                     return Ok((None, "Message unchanged.".into()));
                 }
                 let previous = media::media_references(&original.text);
+                if actor.is_none() && !media::media_references(value).is_subset(&previous) {
+                    return Err("Media uploads require an account.".into());
+                }
                 let mut mentions = mentioned_names(value);
                 if let Some(room) = self.data.rooms.get(&target) {
                     mentions.retain(|name| room.members.contains(name));
@@ -331,7 +368,7 @@ impl Engine {
                     PendingMutation::Edit {
                         previous,
                         actor: self
-                            .principal_id(Some(user))
+                            .principal_id(actor)
                             .ok_or("Account unavailable.")?
                             .into(),
                     },

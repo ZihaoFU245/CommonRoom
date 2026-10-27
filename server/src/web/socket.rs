@@ -249,8 +249,6 @@ pub(crate) async fn connection(
                 if bot {
                     continue;
                 }
-                let read_app = app.clone();
-                let read_headers = headers.clone();
                 let old = user.clone();
                 let id = activity["conversation_id"]
                     .as_str()
@@ -259,23 +257,42 @@ pub(crate) async fn connection(
                 if interests.excludes(&Change::Conversation(id.clone())) {
                     continue;
                 }
-                let allowed = tokio::task::spawn_blocking(move || {
-                    let engine = read_app.engine_read()?;
-                    let current = super::auth::identity(&engine, &read_app.config, &read_headers)
-                        .ok_or("Credential revoked.")?;
-                    let allowed = engine
-                        .bot_target(&current, &id, crate::engine::authorization::Action::Read)
-                        .is_ok();
-                    drop(engine);
+                let validated = async {
+                    let identity = super::auth::authenticated_identity(&app, &headers).await?;
+                    let current = identity.user.clone();
+                    let allowed = app
+                        .inspect_engine(move |engine, _| {
+                            identity.verify(engine)?;
+                            Ok::<_, crate::engine::EngineError>(
+                                engine
+                                    .bot_target(
+                                        &identity.user,
+                                        &id,
+                                        crate::engine::authorization::Action::Read,
+                                    )
+                                    .is_ok(),
+                            )
+                        })
+                        .await
+                        .map_err(ApiError::from)?;
                     if old != current {
-                        read_app
-                            .update_presence(Some(&old), Some(&current))
-                            .map_err(crate::engine::EngineError::Unavailable)?;
+                        let state = app.clone();
+                        let current = current.clone();
+                        tokio::task::spawn_blocking(move || {
+                            state.update_presence(Some(&old), Some(&current))
+                        })
+                        .await
+                        .map_err(|error| {
+                            ApiError::from(crate::engine::EngineError::unavailable(error))
+                        })?
+                        .map_err(|error| {
+                            ApiError::from(crate::engine::EngineError::Unavailable(error))
+                        })?;
                     }
-                    Ok::<_, crate::engine::EngineError>((current, allowed))
-                })
+                    Ok::<_, ApiError>((current, allowed))
+                }
                 .await;
-                let Ok(Ok((current, allowed))) = allowed else {
+                let Ok((current, allowed)) = validated else {
                     break;
                 };
                 user = current;

@@ -22,14 +22,14 @@ attachments additionally require Read before lookup. A conversation permit order
 preparation, database commit and memory publication. A new private directory and
 its first message commit together; publication invalidates metadata caches and
 emits a scoped directory notice only after commit. These permits share a metadata
-fence; legacy metadata-changing commands acquire it exclusively before taking the
-engine guard. Bulk cleanup acquires sorted conversation locks before the fence and
+fence; native metadata-changing plans acquire it exclusively before preparation
+and retain it through commit/publication. Bulk cleanup acquires sorted conversation locks before the fence and
 revalidates its complete target set. Audited deletions share a separate audit permit
 through commit/publication; independent message/cursor writes do not acquire it.
 Audit storage appends a single entry and prunes the oldest entries to retain 1,000.
 Attachment media reservation, read, completion, abandonment, download revalidation
 and background cleanup also await native operations outside engine guards. Media
-reads use reader leases except inside an explicit command transaction. First
+reads use independent reader leases. First
 private upload directories commit atomically with quota-checked reservations and
 publish silently after commit. HTTP admission resolves credentials in memory as a
 capacity hint; handlers retain authorization and storage-health checks. Avatar
@@ -56,10 +56,19 @@ history, identity, sessions and cursors change atomically. Versioned bot
 authentication, credential issuance, conversation creation, source facts, receipt
 lookup, socket controls and command discovery use native async health/read/write
 operations. Elevated browser message/history writes share native conversation
-ordering and phase-local sudo authority. Outer bot command contexts, console
-operations and fallback command errors still use the transitional synchronous bridge. Removing those paths
-remains in progress. Backend switching preserves single-process ownership and wire
-contracts. See
+ordering and phase-local sudo authority. Bot command effects and retry outcomes
+commit in one native transaction. Message/history commands use conversation
+permits; metadata commands use the exclusive fence. PostgreSQL serializes receipt
+checks per submitting account before acquiring append/conversation locks, while
+unrelated commands can use independent writer leases. Console administration,
+queries, global edits/retractions and cleanup also use native owned plans. Browser
+fallback errors validate in memory; sudo local controls use the read-only query
+path. Startup retention/media cleanup and shutdown checkpoints await native
+storage. Accepted I/O and password-only login jobs drain through publication before
+checkpointing. The stdin reader owns no database reference. Legacy synchronous
+executors and explicit command sessions compile only in tests; synchronous SQLx
+utilities remain for bootstrap/offline transfer and final pool draining. Backend
+switching preserves single-process ownership and wire contracts. See
 [PostgreSQL](postgresql.md) for runtime and offline transfer details. SQLite/WAL and
 portable-folder details below apply to the SQLite backend.
 
@@ -126,7 +135,7 @@ checkpoint/outbox, not a server-side agent runtime.
 
 `web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` routes commands and configuration output; `credential_commands.rs` handles password/provisioning in the existing blocking command worker. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.
 
-One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes short memory mutations. Native browser message/history mutations, bot sends/reactions and read acknowledgements release it for SQLx I/O, keeping a per-conversation permit through publication. Different conversations share the metadata fence and can write concurrently. Legacy commands take that fence exclusively before the engine guard, preserving authorization and identity while native operations await. Legacy mutation/lock work runs on blocking workers; migrated reads and writes await SQLx directly. HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until accepted async or blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for native database I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
+One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes short memory mutations. Native browser message/history mutations, bot sends/reactions and read acknowledgements release it for SQLx I/O, keeping a per-conversation permit through publication. Different conversations share the metadata fence and can write concurrently. Administrative plans acquire the fence exclusively through native commit/publication. Short memory phases run on blocking workers; all live database reads and writes await SQLx outside engine guards. Legacy synchronous execution/lock helpers exist only in tests. HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until accepted async or blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for native database I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
 
 ## Web ownership
 
@@ -248,8 +257,10 @@ measurement and reuses computed styles until layout/font changes.
 
 `web/media.rs` owns browser upload/config/completion/download HTTP adapters and
 background cleanup orchestration. `engine/media.rs` owns scoped authorization,
-scoped user metadata limits, configured quotas and media lifecycle; `engine/storage/media.rs` owns all media SQL,
-transactional message references, deletion claims and schema v19. `media.rs`
+scoped user metadata limits and configured quotas. `engine/media_store.rs` and
+owned media plans coordinate typed lifecycle operations; independent SQLite and
+PostgreSQL modules under `engine/database/` own media SQL, transactional message
+references, deletion claims and schema v19. `media.rs`
 provides the S3 transport through rust-s3. Storage network calls run outside engine
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe

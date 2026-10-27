@@ -1,13 +1,9 @@
 //! Native server commands and verified source facts; workers own their command ACLs.
 use super::{
-    api::{admit, work},
     auth::Context,
     error::{Code, Error},
 };
-use crate::{
-    engine::authorization::Action,
-    web::{App, Change},
-};
+use crate::{engine::authorization::Action, web::App};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -207,44 +203,31 @@ pub(super) async fn commands(
     .await
     .map_err(Error::storage)?
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CommandInput {
     conversation_id: String,
     command: String,
 }
+#[path = "command_write.rs"]
+mod command_write;
 pub(super) async fn command(
     State(app): State<App>,
     headers: HeaderMap,
     Json(input): Json<CommandInput>,
 ) -> Result<Json<Value>, Error> {
     let key = super::api::idempotency_key(&headers)?;
-    work(app, headers, move |app, context| {
-        let mut engine = app.engine().map_err(Error::storage)?;
-        command_account(&engine, context)?;
-        admit(&mut engine, context)?;
-        let digest = crate::bots::digest(
-            &serde_json::to_string(
-                &json!({"conversation_id":input.conversation_id,"command":input.command.trim()}),
-            )
-            .map_err(Error::storage)?,
-        );
-        let before = engine.revision;
-        let outcome = engine.bot_command_once(&context.account, &key, &digest, |engine| {
-            execute_command(engine, app, context, &input)
-        })?;
-        if before != engine.revision {
-            let _ = app
-                .changes
-                .send(engine.changed_conversation.as_ref().map_or_else(
-                    || Change::Metadata(engine.metadata_change()),
-                    |id| Change::Conversation(id.clone()),
-                ));
-        }
-        outcome.into_result()
+    let permit = app.io_permit().map_err(Error::storage)?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        command_write::execute(&app, headers, input, key)
+            .await
+            .map(Json)
     })
     .await
+    .map_err(Error::storage)?
 }
+
 fn command_account(engine: &crate::engine::Engine, context: &Context) -> Result<(), Error> {
     context.user(engine)?;
     context.permits(engine, "commands", None)?;
@@ -288,12 +271,17 @@ pub(super) async fn command_receipt(
     }).await.map_err(Error::storage)?
 }
 
-fn execute_command(
+fn phase<T>(
     engine: &mut crate::engine::Engine,
-    app: &App,
     context: &Context,
     input: &CommandInput,
-) -> Result<String, Error> {
+    operation: impl FnOnce(
+        &mut crate::engine::Engine,
+        &str,
+        &str,
+        &str,
+    ) -> Result<T, crate::engine::EngineError>,
+) -> Result<T, Error> {
     let (user, view) = command_view(engine, context, &input.conversation_id)?;
     let parts: Vec<_> = input.command.split_whitespace().collect();
     let elevated = crate::engine::sudo_command(&input.command)
@@ -323,31 +311,9 @@ fn execute_command(
     engine
         .require_command(Some(&user), Some(&view), parts[0])
         .map_err(Error::from)?;
-    let result = if inner.as_slice() == ["/help"] {
-        engine
-            .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
-                engine.require_command(Some(&user), Some(&view), "/help")?;
-                Ok(crate::commands::help_for(&model_commands(
-                    engine, &user, &view,
-                )))
-            })
-            .map_err(Error::from)?
-    } else if inner.as_slice() == ["/configs"] {
-        engine
-            .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
-                use crate::engine::authorization::Scope;
-                engine.require_command(Some(&user), Some(&view), "/configs")?;
-                engine.require_target_command(Some(&user), &Scope::Server, "/configs")?;
-                engine.require(Some(&user), &Scope::Server, Action::Config)?;
-                app.config
-                    .display_with_history(engine.history_store().stats()?)
-                    .map_err(crate::engine::EngineError::Invalid)
-            })
-            .map_err(Error::from)?
-    } else {
-        engine
-            .execute_formatted(Some(&user), Some(&view), &input.command, true)
-            .map_err(Error::from)?
-    };
-    Ok(result)
+    engine
+        .with_command_authority(Some(&user), Some(&view), elevated.is_some(), |engine| {
+            operation(engine, &user, &view, elevated.unwrap_or(&input.command))
+        })
+        .map_err(Error::from)
 }

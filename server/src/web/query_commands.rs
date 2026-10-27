@@ -21,7 +21,11 @@ impl Query {
     }
 }
 pub(super) fn supports(input: &str) -> Result<bool, EngineError> {
-    let input = sudo_command(input)?.unwrap_or(input);
+    let elevated = sudo_command(input)?;
+    let input = elevated.unwrap_or(input);
+    if elevated.is_some() && matches!(input.split_whitespace().next(), Some("/clear" | "/logout")) {
+        return Ok(true);
+    }
     let routed = crate::commands::route(input);
     let parts = routed.split_whitespace().collect::<Vec<_>>();
     Ok(match parts.as_slice() {
@@ -43,6 +47,15 @@ fn prepare(
     text: &str,
 ) -> Result<Query, EngineError> {
     identity.verify(engine)?;
+    if sudo_command(&input.text)?.is_some()
+        && matches!(text.split_whitespace().next(), Some("/clear" | "/logout"))
+    {
+        let parts = text.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 1 {
+            return Err(EngineError::Invalid(format!("Usage: {}", parts[0])));
+        }
+        return Ok(Query::Read(CommandRead::Text("Done.".into())));
+    }
     if text.split_whitespace().next() == Some("/configs") {
         engine.require_command(Some(&identity.user), input.room.as_deref(), "/configs")?;
         engine.require_target_command(Some(&identity.user), &Scope::Server, "/configs")?;

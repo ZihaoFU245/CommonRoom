@@ -74,7 +74,7 @@ impl PendingMetadata {
         self
     }
 
-    pub(crate) async fn save(mut self) -> Result<Self, EngineError> {
+    pub(super) fn write(&mut self) -> MetadataWrite<'_> {
         let mut batch = MetadataWrite::default();
         batch
             .operations
@@ -82,8 +82,11 @@ impl PendingMetadata {
         for audit in &self.audit {
             batch.operations.push(MetadataOp::AppendAudit(audit));
         }
-        self.database.save_metadata(&batch).await?;
-        drop(batch);
+        batch
+    }
+    pub(crate) async fn save(mut self) -> Result<Self, EngineError> {
+        let database = self.database.clone();
+        database.save_metadata(&self.write()).await?;
         Ok(self)
     }
 }
@@ -167,7 +170,7 @@ impl Engine {
                 .prepare_account_deletion(actor, parts[2])
                 .map(|(reply, pending)| (reply, Some(pending)));
         }
-        let account_plan = if parts.first() == Some(&"/user") {
+        let account_plan = if matches!(parts.as_slice(), ["/user", "set" | "reset", ..]) {
             Some(self.prepare_account_metadata(actor, view, input)?)
         } else {
             None
@@ -200,7 +203,7 @@ impl Engine {
             (Ok(reply), before, vec![])
         } else {
             let before = self.command_metadata_change(view, &parts);
-            (self.apply(actor, view, input, false), before, vec![])
+            (self.apply_metadata(actor, view, input), before, vec![])
         };
         let result = (|| {
             let reply = reply?;
@@ -316,7 +319,10 @@ impl Engine {
                 positions.retain(|view, _| !pending.removed_cursors.contains(view));
             }
         }
-        self.working = None;
+        #[cfg(test)]
+        {
+            self.working = None;
+        }
         self.authorization = pending.authorization;
         self.bot_index = crate::bots::models::Index::build(&self.data);
         self.advance_colors();

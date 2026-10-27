@@ -1,10 +1,12 @@
 //! Database connections backed by SQLx. Backend SQL is always explicit.
-//! The synchronous surface is transitional while domain operations move behind
-//! the async storage dispatcher; drivers themselves live in separate modules.
+//! Live operations use the typed async dispatcher. Synchronous connection utilities
+//! serve bootstrap, offline transfer and test fixtures; backend SQL is independent.
 mod transfer;
 pub(crate) use transfer::{MigrationReport, transfer_sqlite};
 mod bootstrap;
 pub(crate) use bootstrap::{POSTGRES_SCHEMA, SCHEMA_VERSION};
+mod command;
+pub(crate) use command::{CommandCommit, CommandEffect, CommandWrite};
 mod receipts;
 pub(crate) use receipts::ReceiptRead;
 mod media;
@@ -18,6 +20,7 @@ mod transaction;
 #[cfg(test)]
 pub(crate) use history::wire_size as history_wire_size;
 pub(crate) use history::{PageRead, UnreadHint, UnreadRead};
+#[cfg(test)]
 pub(crate) use runtime::block_on as block_on_storage;
 #[cfg(test)]
 pub(crate) use sqlite::history::{CLEANUP_COUNTS_SQL, PAGE_ASC_SQL};
@@ -69,6 +72,7 @@ pub(crate) enum Error {
     RevisionConflict,
     ReceiptConflict,
     ReceiptCapacity,
+    ReceiptPayload,
     RestartRequired,
     InvalidRequest(&'static str),
     InvalidData(String),
@@ -91,6 +95,7 @@ impl std::fmt::Display for Error {
             Self::MissingMedia => f.write_str("Upload not found."),
             Self::ReceiptConflict => f.write_str("Key already belongs to another message request."),
             Self::ReceiptCapacity => f.write_str("Wait for message receipts to expire."),
+            Self::ReceiptPayload => f.write_str("Command receipt is too large."),
             Self::InvalidRequest(message) | Self::Conflict(message) => f.write_str(message),
             Self::RestartRequired => f.write_str("Database unavailable; restart the service"),
             Self::RevisionConflict => {
@@ -165,7 +170,9 @@ pub(crate) struct Connection {
     readonly: bool,
     changes: ChangeCount,
     transaction: TransactionState,
+    #[cfg(test)]
     command_root: Cell<bool>,
+    #[cfg(test)]
     serial: Cell<u64>,
     failed: Cell<bool>,
 }
@@ -181,7 +188,9 @@ impl Connection {
             readonly,
             changes: ChangeCount::default(),
             transaction: TransactionState::default(),
+            #[cfg(test)]
             command_root: Cell::new(false),
+            #[cfg(test)]
             serial: Cell::new(0),
             failed: Cell::new(false),
         }
@@ -230,6 +239,7 @@ impl Connection {
         };
         self.checked(result)
     }
+    #[cfg(test)]
     async fn execute_batch_async(&mut self, query: &str) -> Result<()> {
         self.ensure_available()?;
         let result = match self.backend.get_mut() {
@@ -449,6 +459,7 @@ impl Connection {
             finished: false,
         })
     }
+    #[cfg(test)]
     pub(crate) fn begin_command(&self) -> Result<()> {
         let root = self.is_autocommit();
         self.command_root.set(root);
@@ -462,9 +473,11 @@ impl Connection {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn rollback_command_effect(&self) -> Result<()> {
         self.execute_batch("ROLLBACK TO bot_command_receipt")
     }
+    #[cfg(test)]
     pub(crate) fn finish_command(&self) -> Result<()> {
         self.execute_batch("RELEASE bot_command_receipt")?;
         if self.is_postgres() && self.command_root.get() {
@@ -474,6 +487,7 @@ impl Connection {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn abort_command(&self) -> Result<()> {
         let result = self.execute_batch(if self.is_postgres() && self.command_root.get() {
             "ROLLBACK"

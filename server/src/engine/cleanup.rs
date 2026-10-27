@@ -162,6 +162,7 @@ impl Engine {
             targets: targets.into_iter().map(|scope| (scope, 0, 0)).collect(),
         })
     }
+    #[cfg(test)]
     fn cleanup_plan(&self, context: &CommandContext<'_>) -> Result<CleanupPlan, EngineError> {
         let mut plan = self.resolve_cleanup_plan(context)?;
         let totals = self.cleanup_counts(&plan.ids(), plan.cutoff)?;
@@ -174,25 +175,42 @@ impl Engine {
         view: Option<&str>,
         input: &str,
     ) -> Result<CleanupPlan, EngineError> {
+        self.prepare_cleanup(Some(user), view, input)
+    }
+    pub(crate) fn prepare_cleanup(
+        &self,
+        actor: Option<&str>,
+        view: Option<&str>,
+        input: &str,
+    ) -> Result<CleanupPlan, EngineError> {
         crate::commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
-        self.require_command(Some(user), view, "/clean")?;
+        self.require_command(actor, view, "/clean")?;
         let parts = input.split_whitespace().collect::<Vec<_>>();
         let context = CommandContext {
-            actor: Some(user),
+            actor,
             command: "/clean",
             room: view.filter(|v| !v.starts_with('@')),
+            #[cfg(test)]
             input,
             parts: &parts,
             view,
-            scope: self.command_scope(Some(user), view)?,
+            scope: self.command_scope(actor, view)?,
+            #[cfg(test)]
             markdown: false,
-            author: user,
+            author: actor.unwrap_or("console"),
         };
         self.resolve_cleanup_plan(&context)
     }
     pub(crate) fn prepare_history_cleanup(
         &self,
         user: &str,
+        plan: &CleanupPlan,
+    ) -> Result<Option<PendingHistory>, EngineError> {
+        self.prepare_cleanup_write(Some(user), plan)
+    }
+    pub(crate) fn prepare_cleanup_write(
+        &self,
+        actor: Option<&str>,
         plan: &CleanupPlan,
     ) -> Result<Option<PendingHistory>, EngineError> {
         if plan.preview || !plan.has_matches() {
@@ -210,8 +228,8 @@ impl Engine {
                 Ok((id.clone(), plan.cutoff))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.prepare_history_write(
-            user,
+        self.prepare_history_write_for(
+            actor,
             "/clean",
             &format!("{} {}", plan.age, plan.scope),
             vec![],
@@ -219,6 +237,7 @@ impl Engine {
         )
         .map(Some)
     }
+    #[cfg(test)]
     pub(super) fn apply_cleanup(
         &mut self,
         context: &CommandContext<'_>,

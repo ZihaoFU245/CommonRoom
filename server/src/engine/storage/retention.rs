@@ -2,7 +2,16 @@
 use super::*;
 
 impl Engine {
+    #[cfg(test)]
     pub fn set_limits(
+        &mut self,
+        max_users: usize,
+        max_rooms: usize,
+        max_messages: usize,
+    ) -> Result<(), EngineError> {
+        database::block_on_storage(self.set_limits_async(max_users, max_rooms, max_messages))?
+    }
+    pub(crate) async fn set_limits_async(
         &mut self,
         max_users: usize,
         max_rooms: usize,
@@ -31,7 +40,7 @@ impl Engine {
                 limit: max_messages,
             });
         }
-        let changed = self.store.db.save_metadata_blocking(&batch)?;
+        let changed = self.store.db.save_metadata(&batch).await?;
         for change in changed {
             if change.kind == "room" {
                 if let Some(room) = self.data.rooms.get_mut(&change.key) {

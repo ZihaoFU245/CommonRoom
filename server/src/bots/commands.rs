@@ -121,6 +121,7 @@ impl Engine {
         Ok(id)
     }
 
+    #[cfg(test)]
     pub(super) fn bot_command(
         &mut self,
         actor: Option<&str>,

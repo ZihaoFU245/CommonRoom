@@ -84,6 +84,7 @@ impl HistoryStore {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub fn ensure_available(&self) -> Result<(), EngineError> {
         database::block_on_storage(self.ensure_available_async())?
     }
@@ -104,8 +105,8 @@ impl HistoryStore {
             unread_incremental: AtomicU64::new(0),
         }
     }
-    // Remaining synchronous engine entry points bridge only at this boundary;
-    // cache guards are released before any native database future is awaited.
+    // Test compatibility releases cache guards before awaiting native storage.
+    #[cfg(test)]
     fn query<T, F>(&self, future: F) -> Result<T, EngineError>
     where
         F: std::future::Future<Output = database::Result<T>> + Send,
@@ -178,6 +179,7 @@ impl HistoryStore {
             .history_contains_sequence(id, sequence)
             .await?)
     }
+    #[cfg(test)]
     pub(crate) fn cleanup_counts(
         &self,
         ids: &[String],
@@ -194,6 +196,7 @@ impl HistoryStore {
         self.next.fetch_add(1, Ordering::Relaxed);
         Ok(self.database.history_cleanup_counts(ids, cutoff).await?)
     }
+    #[cfg(test)]
     pub fn locate(&self, message_id: &str) -> Result<Option<(String, Message)>, EngineError> {
         self.query(self.database.history_locate(message_id))
     }
@@ -205,6 +208,7 @@ impl HistoryStore {
         self.next.fetch_add(1, Ordering::Relaxed);
         Ok(self.database.history_locate(message_id).await?)
     }
+    #[cfg(test)]
     pub fn stats(&self) -> Result<serde_json::Value, EngineError> {
         self.ensure_available()?;
         self.cache_stats()

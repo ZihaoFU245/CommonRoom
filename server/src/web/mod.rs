@@ -76,6 +76,8 @@ pub struct App {
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
     pub shutdown: Arc<tokio::sync::Notify>,
 }
+pub(crate) const IO_JOBS: u32 = 64;
+pub(crate) const PASSWORD_JOBS: u32 = 2;
 impl App {
     pub fn io_permit(&self) -> Result<admission::IoPermit, String> {
         admission::io_permit(&self.io_jobs)
@@ -100,7 +102,38 @@ impl App {
         .map_err(|error| E::from(crate::engine::EngineError::unavailable(error)))?
     }
 
+    pub(crate) async fn checkpoint_after_jobs(&self) -> Result<(), crate::engine::EngineError> {
+        use crate::engine::EngineError;
+        if !self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Internal(
+                "Shutdown requires stopped admission.".into(),
+            ));
+        }
+        // Accepted operations retain these permits through commit/publication,
+        // including cancelled HTTP/console work and password-only login jobs.
+        let _io = self
+            .io_jobs
+            .clone()
+            .acquire_many_owned(IO_JOBS)
+            .await
+            .map_err(EngineError::unavailable)?;
+        let _password = self
+            .password_jobs
+            .clone()
+            .acquire_many_owned(PASSWORD_JOBS)
+            .await
+            .map_err(EngineError::unavailable)?;
+        let checkpoint = self
+            .inspect_engine(|engine, _| Ok::<_, EngineError>(engine.checkpoint_async()))
+            .await?;
+        checkpoint.await?;
+        self.io_jobs.close();
+        self.password_jobs.close();
+        Ok(())
+    }
+
     // Fail closed after a panic; a poisoned engine may contain a partial mutation.
+    #[cfg(test)]
     pub fn engine(&self) -> Result<mutations::EngineGuard<'_>, crate::engine::EngineError> {
         let metadata = self.mutations.exclusive()?;
         let engine = self.engine.write().map_err(|_| {
@@ -145,6 +178,7 @@ impl App {
         engine.ensure_memory()?;
         Ok(engine)
     }
+    #[cfg(test)]
     pub fn engine_read(
         &self,
     ) -> Result<std::sync::RwLockReadGuard<'_, Engine>, crate::engine::EngineError> {

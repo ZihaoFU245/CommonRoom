@@ -1,6 +1,6 @@
-//! Temporary bridge for synchronous engine callers during the async storage move.
-//! New storage operations should await SQLx directly. This runtime never belongs
-//! to a connection, so dropping an engine on Tokio cannot drop a nested runtime.
+//! Persistent SQLx runtime for bootstrap, offline transfer, test compatibility
+//! and final pool draining. Live storage operations await the dispatcher directly.
+//! No runtime belongs to a connection or is dropped inside an application runtime.
 use super::{Error, Result};
 use std::{future::Future, sync::OnceLock};
 
@@ -34,9 +34,8 @@ where
 {
     let runtime = runtime()?;
     match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
-        // Existing application callers already run on blocking workers. Enter
-        // a blocking region rather than starting another OS thread for each
-        // query. This also safely hands off a multithreaded async worker.
+        // Bootstrap/offline callers can run on blocking workers. Final resource
+        // draining may also hand off a multithreaded async worker safely.
         Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
             Ok(tokio::task::block_in_place(|| runtime.block_on(future)))
         }

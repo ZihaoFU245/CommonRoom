@@ -370,6 +370,7 @@ impl Engine {
         values.retain(|key, _| filter.is_none_or(|filter| key == filter));
         Ok(values)
     }
+    #[cfg(test)]
     pub(super) fn apply_objects(
         &mut self,
         context: &dispatch::CommandContext<'_>,
@@ -400,10 +401,12 @@ impl Engine {
             actor,
             command,
             room: view.filter(|v| !v.starts_with('@')),
+            #[cfg(test)]
             input,
             parts: &parts,
             view,
             scope: self.command_scope(actor, view)?,
+            #[cfg(test)]
             markdown: false,
             author: actor.unwrap_or("console"),
         };
@@ -564,6 +567,7 @@ impl Engine {
         }
         Ok(None)
     }
+    #[cfg(test)]
     pub(super) fn commit_account_metadata(
         &mut self,
         before: MetadataChange,

@@ -619,4 +619,4 @@ pub(crate) async fn abandon(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "media_tests.rs"]
-pub(super) mod tests;
+pub(crate) mod tests;

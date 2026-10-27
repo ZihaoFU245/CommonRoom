@@ -13,6 +13,8 @@ mod bot_api;
 #[path = "../bots/commands.rs"]
 mod bots;
 mod cleanup;
+mod command_write;
+pub(crate) use command_write::NativeCommand;
 mod command_read;
 pub(crate) use command_read::CommandRead;
 pub(crate) mod colors;
@@ -52,6 +54,7 @@ mod read_model;
 mod rooms;
 pub(crate) mod snapshot;
 mod storage;
+pub(crate) use storage::PendingCommand;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test assertions fail the test on purpose.
 mod tests;
@@ -86,6 +89,7 @@ pub struct Engine {
     data: Data,
     #[cfg(test)]
     pub(crate) data: Data,
+    #[cfg(test)]
     working: Option<messages::WorkingMessage>,
     pub revision: u64,
     color_revision: u64,
@@ -118,6 +122,7 @@ impl Engine {
         self.store.db.ensure_state()?;
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn ensure_recovered(&self) -> Result<(), EngineError> {
         self.ensure_memory()?;
         self.store.db.ensure_available()?;

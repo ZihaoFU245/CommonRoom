@@ -466,51 +466,55 @@ impl PendingMessage {
         }
         Ok(records)
     }
+    pub(super) fn write<'a>(
+        &'a self,
+        receipt: Option<(&'a str, &'a str)>,
+    ) -> database::Result<database::MessageWrite<'a>> {
+        Ok(database::MessageWrite {
+            conversation: &self.conversation,
+            kind: if self.private { "private" } else { "room" },
+            key: &self.key,
+            revision: self
+                .revision
+                .checked_add(1)
+                .ok_or(database::Error::Conversion(
+                    "Conversation revision exhausted",
+                ))?,
+            expected_revision: self.new_conversation.is_none().then_some(self.revision),
+            message: &self.message,
+            mutation: match &self.mutation {
+                PendingMutation::Append => database::MessageMutation::Append {
+                    retention: self.retention,
+                },
+                PendingMutation::Edit { previous, actor } => database::MessageMutation::Edit {
+                    reconcile_media: *previous != media::media_references(&self.message.text),
+                    actor,
+                },
+                PendingMutation::Reaction {
+                    active,
+                    reaction,
+                    user,
+                } => database::MessageMutation::Reaction {
+                    active: *active,
+                    reaction,
+                    user,
+                },
+            },
+            new_conversation: self.new_conversation.as_deref(),
+            receipt: receipt.map(|(key, digest)| database::MessageReceipt {
+                account_id: &self.message.author_id,
+                key,
+                digest,
+                created: now(),
+            }),
+            at: now(),
+        })
+    }
     pub(crate) async fn save(
         &self,
         receipt: Option<(&str, &str)>,
     ) -> database::Result<database::MessageCommit> {
-        self.database
-            .save_message(&database::MessageWrite {
-                conversation: &self.conversation,
-                kind: if self.private { "private" } else { "room" },
-                key: &self.key,
-                revision: self
-                    .revision
-                    .checked_add(1)
-                    .ok_or(database::Error::Conversion(
-                        "Conversation revision exhausted",
-                    ))?,
-                expected_revision: self.new_conversation.is_none().then_some(self.revision),
-                message: &self.message,
-                mutation: match &self.mutation {
-                    PendingMutation::Append => database::MessageMutation::Append {
-                        retention: self.retention,
-                    },
-                    PendingMutation::Edit { previous, actor } => database::MessageMutation::Edit {
-                        reconcile_media: *previous != media::media_references(&self.message.text),
-                        actor,
-                    },
-                    PendingMutation::Reaction {
-                        active,
-                        reaction,
-                        user,
-                    } => database::MessageMutation::Reaction {
-                        active: *active,
-                        reaction,
-                        user,
-                    },
-                },
-                new_conversation: self.new_conversation.as_deref(),
-                receipt: receipt.map(|(key, digest)| database::MessageReceipt {
-                    account_id: &self.message.author_id,
-                    key,
-                    digest,
-                    created: now(),
-                }),
-                at: now(),
-            })
-            .await
+        self.database.save_message(&self.write(receipt)?).await
     }
 }
 

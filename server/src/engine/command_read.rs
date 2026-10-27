@@ -25,6 +25,7 @@ impl CommandRead {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn finish(self) -> Result<String, EngineError> {
         match self {
             Self::Text(text) => Ok(text),
@@ -48,6 +49,7 @@ impl HistoryCommand {
             .map_err(EngineError::from)?;
         Ok(Self::render(&page, self.range))
     }
+    #[cfg(test)]
     pub(super) fn finish(self) -> Result<String, EngineError> {
         database::block_on_storage(self.finish_async())?
     }

@@ -384,6 +384,7 @@ fn describe_rights(rights: Rights) -> String {
 }
 #[derive(Default)]
 pub(super) struct CompiledPolicy {
+    #[cfg(test)]
     pub(super) revision: u64,
     scopes: HashMap<String, HashMap<Scope, Rights>>,
     pub(super) groups: HashMap<String, BTreeSet<Group>>,
@@ -465,6 +466,7 @@ impl CompiledPolicy {
     }
     pub(super) fn compile(data: &Data) -> Result<Self, EngineError> {
         let mut result = Self {
+            #[cfg(test)]
             revision: data.policy.revision,
             media_revocations: data.policy.media_revocations.clone(),
             ..Self::default()

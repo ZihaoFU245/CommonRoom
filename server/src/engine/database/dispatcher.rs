@@ -1,6 +1,6 @@
 //! Backend resource ownership and async dispatch. PostgreSQL write leases are
-//! independent; SQLite has exactly one writer lease. Command sessions are
-//! supplied explicitly by operation handles, never pinned on the dispatcher.
+//! independent; SQLite has exactly one writer lease. Production handles never
+//! pin a command session; explicit legacy scopes exist only in test fixtures.
 use super::{Backend, ChangeCount, Connection, Error, MessageWrite, Native, Result, runtime};
 use sqlx::{Executor as _, PgPool, SqlitePool};
 use std::{
@@ -147,6 +147,7 @@ impl Database {
             Ok(())
         }
     }
+    #[cfg(test)]
     pub(crate) fn ensure_available(&self) -> Result<()> {
         runtime::run(self.ensure_available_async())
     }
@@ -215,6 +216,7 @@ impl super::Handle {
         let mut session = self.acquire().await?;
         session.advance_cursor_async(request).await
     }
+    #[cfg(test)]
     pub(crate) fn save_message_blocking(
         &self,
         request: &MessageWrite<'_>,
@@ -258,6 +260,7 @@ pub(crate) struct Lease<'a> {
     connection: Connection,
 }
 impl Lease<'_> {
+    #[cfg(test)]
     pub(super) fn into_connection(mut self) -> Connection {
         std::mem::replace(
             &mut self.connection,
@@ -266,6 +269,7 @@ impl Lease<'_> {
     }
 }
 impl Database {
+    #[cfg(test)]
     pub(super) fn invalidate(&self) {
         self.failed.store(true, Ordering::Release);
     }

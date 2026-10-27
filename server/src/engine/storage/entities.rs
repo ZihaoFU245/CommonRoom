@@ -119,6 +119,7 @@ pub(in crate::engine) fn load_entities(
 ) -> Result<(), EngineError> {
     apply_entities(db.metadata_snapshot()?, data)
 }
+#[cfg(test)]
 pub(super) fn write_audit<'a>(batch: &mut MetadataWrite<'a>, data: &'a Data) {
     batch.operations.push(MetadataOp::Audit(&data.policy.audit));
 }
@@ -166,6 +167,7 @@ fn write_map_keys<T: serde::Serialize + PartialEq>(
     }
     Ok(())
 }
+#[cfg(test)]
 pub(super) fn write_delta_view<'a>(
     batch: &mut MetadataWrite<'a>,
     data: &'a Data,

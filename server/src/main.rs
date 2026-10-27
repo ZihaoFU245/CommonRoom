@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Read the explicit backend without writing; acquire ownership before
     // configuration normalization. A secret URL never selects the backend.
-    // Construct the transitional synchronous SQLx engine on a blocking worker.
+    // Bootstrap ownership/schema on a blocking worker; live storage uses native async operations.
     let database = Config::read_database(Path::new(&data_dir))?;
     let selected_database = database.clone();
     let database_path = Path::new(&data_dir).join("chat.sqlite");
@@ -98,22 +98,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) {
         return Err("Media storage must use a separate origin from the chat application.".into());
     }
-    let setup_config = config.clone();
-    let media_enabled = media.is_some();
-    let engine = tokio::task::spawn_blocking(move || -> Result<Engine, engine::EngineError> {
-        engine.set_limits(
-            setup_config.max_users,
-            setup_config.max_rooms,
-            setup_config.max_messages,
-        )?;
-        engine.configure_media(setup_config.media.clone());
-        engine.set_avatar_hosts(setup_config.avatar_hosts.iter().cloned().collect());
-        if media_enabled {
-            engine.prepare_media_cleanup()?;
-        }
-        Ok(engine)
-    })
-    .await??;
+    engine
+        .set_limits_async(config.max_users, config.max_rooms, config.max_messages)
+        .await?;
+    engine.configure_media(config.media.clone());
+    engine.set_avatar_hosts(config.avatar_hosts.iter().cloned().collect());
+    if media.is_some() {
+        engine.prepare_media_cleanup_async().await?;
+    }
     if !engine.has_accounts() {
         tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
     }
@@ -125,8 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         changes,
         config: Arc::new(config),
         admission: Default::default(),
-        io_jobs: Arc::new(tokio::sync::Semaphore::new(64)),
-        password_jobs: Arc::new(tokio::sync::Semaphore::new(2)),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(usize::try_from(web::IO_JOBS)?)),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(usize::try_from(
+            web::PASSWORD_JOBS,
+        )?)),
         snapshots: Default::default(),
         mutations: Default::default(),
         bot_runtimes: Default::default(),
@@ -155,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })
     .await?;
-    app.engine()?.checkpoint()?;
+    app.checkpoint_after_jobs().await?;
     Ok(())
 }
 async fn shutdown_signal() -> io::Result<()> {

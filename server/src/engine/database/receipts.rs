@@ -34,6 +34,7 @@ impl super::Connection {
     ) -> Result<Option<(String, String)>> {
         receipt_read!(self, command, request)
     }
+    #[cfg(test)]
     async fn command_receipt_usage_async(
         &mut self,
         account: &str,
@@ -83,6 +84,7 @@ impl super::Handle {
             .command_receipt_async(request)
             .await
     }
+    #[cfg(test)]
     pub(crate) fn command_receipt_usage_blocking(
         &self,
         account: &str,
@@ -90,6 +92,7 @@ impl super::Handle {
     ) -> Result<(usize, usize)> {
         super::runtime::run(self.command_receipt_usage(account, after))
     }
+    #[cfg(test)]
     pub(crate) async fn command_receipt_usage(
         &self,
         account: &str,

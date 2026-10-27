@@ -303,11 +303,13 @@ fn restore_map<T>(
     }
 }
 
+#[cfg(test)]
 pub(super) enum Baseline<'a> {
     #[cfg(test)]
     Data(&'a Data),
     Captured(&'a MetadataChange),
 }
+#[cfg(test)]
 impl Baseline<'_> {
     pub(super) fn view(&self) -> DataView<'_> {
         match self {
