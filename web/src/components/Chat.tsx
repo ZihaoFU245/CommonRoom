@@ -2,6 +2,8 @@ import { controlMotion } from "../features/preferences/motion.ts";
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
 import { useCommands } from "../hooks/useCommands.ts";
 import { useReadTracking } from "../hooks/useReadTracking.ts";
+import { useHistoryNoticeMotion } from "../hooks/useHistoryNoticeMotion.ts";
+import { useHistoryPaging } from "../hooks/useHistoryPaging.ts";
 import { timelineAtBottom } from "../features/conversation/timelineScroll.ts";
 import { useEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
@@ -155,6 +157,7 @@ export function Chat({
   }, [menu]);
   const menuButton = useRef<HTMLButtonElement>(null);
   const animatedLayout = useRef<HTMLDivElement>(null);
+  const historyNotices = useHistoryNoticeMotion();
   useEffect(() => {
     if (!animatedLayout.current) return;
     const animation = autoAnimate(animatedLayout.current, controlMotion);
@@ -335,7 +338,6 @@ export function Chat({
     lookahead,
     retryHistory,
     loading,
-    refreshing,
     hasBefore,
     hasAfter,
     loadOlder,
@@ -360,27 +362,47 @@ export function Chat({
         room?.name_colors ?? (direct ? state.name_colors : undefined),
       )
     : {};
+  useHistoryPaging(
+    historyElement,
+    historyReady,
+    loading,
+    hasBefore,
+    hasAfter,
+    loadOlder,
+    loadNewer,
+  );
   const colors = useRef(viewColors);
   if (!sameColors(colors.current, viewColors)) colors.current = viewColors;
-  const { unreadBoundary, acknowledgeVisible, rememberPosition, jumpToUnread } =
-    useReadTracking({
-      selected,
-      conversationId: room?.id ?? state.private_access[selected]?.id,
-      unread,
-      messages,
-      historyReady,
-      output,
-      cleared,
-      resetCleared: () =>
-        setCleared((previous) => ({ ...previous, [selected]: 0 })),
-      settingsOpen,
-      menu,
-      status,
-      loadSequence,
-      virtualTimeline,
-      atBottom,
-      historyElement,
-    });
+  const {
+    unreadBoundary,
+    acknowledgeVisible,
+    rememberPosition,
+    jumpToUnread,
+    jumpToBottom,
+    showJumpToBottom,
+    showJumpToUnread,
+    updateNavigation,
+  } = useReadTracking({
+    selected,
+    conversationId: room?.id ?? state.private_access[selected]?.id,
+    unread,
+    messages,
+    historyReady,
+    output,
+    cleared,
+    resetCleared: () =>
+      setCleared((previous) => ({ ...previous, [selected]: 0 })),
+    settingsOpen,
+    menu,
+    status,
+    loadSequence,
+    virtualTimeline,
+    atBottom,
+    historyElement,
+    hasAfter,
+    loadLatest,
+    historyLoading: loading,
+  });
   const entries = useMemo(
     () =>
       timeline(
@@ -404,10 +426,17 @@ export function Chat({
   const handleLoadSequence = useEvent(loadSequence);
   const handleScroll = useEvent(() => {
     const element = historyElement.current;
+    const scrolling = virtualTimeline.current?.isScrolling?.() ?? false;
     if (element)
-      atBottom.current = timelineAtBottom(element, atBottom.current === true);
+      atBottom.current =
+        !scrolling && timelineAtBottom(element, atBottom.current === true);
     rememberPosition();
     acknowledgeVisible();
+    updateNavigation();
+    if (scrolling) {
+      lookahead.reset();
+      return;
+    }
     const prediction = element
       ? lookahead.observe(
           element.scrollTop,
@@ -600,40 +629,17 @@ export function Chat({
               </span>
             </div>
           </header>
-          {unread && unread.count > 0 && (
-            <div class="unread-bar">
-              <span>{unread.count} unread</span>
-              <button onClick={jumpToUnread}>Jump to unread ↓</button>
-            </div>
-          )}
-          {(hasBefore || hasAfter || (loading && !refreshing)) && (
-            <div class="history-navigation">
-              {hasBefore && (
-                <button disabled={loading} onClick={loadOlder}>
-                  Older messages
+          <div class="history-notices" ref={historyNotices}>
+            {(showJumpToUnread || showJumpToBottom) && (
+              <div class="unread-bar" key={selected}>
+                <button
+                  onClick={showJumpToUnread ? jumpToUnread : jumpToBottom}
+                >
+                  {showJumpToUnread ? "Jump to unread ↓" : "Jump to bottom ↓"}
                 </button>
-              )}
-              {loading && !refreshing && (
-                <span role="status">Loading history…</span>
-              )}
-              {hasAfter && (
-                <>
-                  <button disabled={loading} onClick={loadNewer}>
-                    Newer messages
-                  </button>
-                  <button
-                    disabled={loading}
-                    onClick={() => {
-                      atBottom.current = true;
-                      loadLatest();
-                    }}
-                  >
-                    Latest messages
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+              </div>
+            )}
+          </div>
           {historyError && (
             <div class="history-error" role="alert">
               {historyError}

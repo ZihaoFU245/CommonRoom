@@ -5,6 +5,11 @@ import type { Message, Unread, LocalOutput } from "../api/protocol.ts";
 import { useEvent } from "./useEvent.ts";
 import { api } from "../api/client.ts";
 import { visibleReadPosition } from "../features/conversation/unread.ts";
+import {
+  bottomShortcut,
+  UnreadJumpTargets,
+  retainedJumpSequence,
+} from "../features/conversation/historyNavigation.ts";
 interface Context {
   selected: string;
   conversationId?: string | undefined;
@@ -21,6 +26,9 @@ interface Context {
   virtualTimeline: RefObject<VirtualTimelineHandle>;
   atBottom: RefObject<boolean>;
   historyElement: RefObject<HTMLElement>;
+  hasAfter?: boolean;
+  loadLatest?: () => void;
+  historyLoading?: boolean;
 }
 export function useReadTracking({
   selected,
@@ -38,6 +46,9 @@ export function useReadTracking({
   virtualTimeline,
   atBottom,
   historyElement,
+  hasAfter = false,
+  loadLatest,
+  historyLoading = false,
 }: Context) {
   const [unreadBoundary, setUnreadBoundary] = useState<number | null>(null);
   const enteredView = useRef<string | null>(null);
@@ -45,6 +56,57 @@ export function useReadTracking({
     new Map<string, { bottom: boolean; sequence?: number; offset: number }>(),
   );
   const identity = conversationId ?? selected;
+  const pendingJump = useRef<{
+    identity: string;
+    sequence: number;
+    previous: Message[];
+  } | null>(null);
+  const pendingBottom = useRef<string | null>(null);
+  const unreadJumps = useRef(new UnreadJumpTargets());
+  const [navigation, setNavigation] = useState({
+    identity,
+    bottom: false,
+    unread: false,
+  });
+  const updateNavigation = useEvent(() => {
+    const viewport = historyElement.current;
+    if (!viewport || !historyReady) return;
+    // Keep Safari's elastic positions within the actual scrollable range.
+    const maximum = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const top = Math.min(maximum, Math.max(0, viewport.scrollTop));
+    const distance = maximum - top;
+    const away = hasAfter || !atBottom.current;
+    const sequence = virtualTimeline.current?.position()?.sequence;
+    const unreadTarget = unreadJumps.current.target(
+      identity,
+      unread?.first,
+      unread?.count ?? 0,
+    );
+    setNavigation((previous) => {
+      const bottom =
+        away &&
+        bottomShortcut(
+          distance,
+          viewport.clientHeight,
+          hasAfter,
+          previous.identity === identity && previous.bottom,
+        );
+      const unreadAhead =
+        away &&
+        unreadTarget !== undefined &&
+        (sequence === undefined || sequence <= unreadTarget);
+      return previous.identity === identity &&
+        previous.bottom === bottom &&
+        previous.unread === unreadAhead
+        ? previous
+        : { identity, bottom, unread: unreadAhead };
+    });
+  });
+  useLayoutEffect(() => {
+    virtualTimeline.current?.cancelScroll?.();
+    pendingJump.current = null;
+    pendingBottom.current = null;
+  }, [identity]);
   const restoreAttempt = useRef<string | null>(null);
   const rememberPosition = useEvent(() => {
     if (enteredView.current !== identity) return;
@@ -74,6 +136,29 @@ export function useReadTracking({
       viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
   }
   useLayoutEffect(() => {
+    const jump = pendingJump.current;
+    if (
+      jump?.identity === identity &&
+      historyReady &&
+      !historyLoading &&
+      messages !== jump.previous
+    ) {
+      pendingJump.current = null;
+      atBottom.current = false;
+      const nearest = retainedJumpSequence(
+        messages.map((message) => message.sequence),
+        jump.sequence,
+      );
+      if (nearest !== undefined) {
+        setUnreadBoundary(nearest);
+        resetCleared();
+        virtualTimeline.current?.scrollToSequence(nearest, 0, true);
+      }
+    }
+    if (pendingBottom.current === identity && historyReady && !hasAfter) {
+      pendingBottom.current = null;
+      virtualTimeline.current?.scrollToBottom?.(true);
+    }
     if (enteredView.current !== identity && (!unread || historyReady)) {
       const saved = positions.current.get(identity);
       if (
@@ -109,6 +194,7 @@ export function useReadTracking({
           atBottom.current = false;
           virtualTimeline.current?.scrollToSequence(sequence, position.offset);
           setUnreadBoundary(unread?.first ?? null);
+          updateNavigation();
           return;
         }
       }
@@ -133,7 +219,18 @@ export function useReadTracking({
       scrollToBottom();
     }
     rememberPosition();
-  }, [messages, selected, identity, historyReady, output, cleared]);
+    updateNavigation();
+  }, [
+    messages,
+    selected,
+    identity,
+    historyReady,
+    output,
+    cleared,
+    unread,
+    hasAfter,
+    historyLoading,
+  ]);
   function acknowledgeVisible() {
     if (readTimer.current !== undefined) return;
     readTimer.current = setTimeout(() => {
@@ -212,18 +309,29 @@ export function useReadTracking({
     };
   }, []);
   function jumpToUnread() {
-    if (!unread?.first) return;
-    if (
-      !historyReady ||
-      !messages.some((message) => message.sequence === unread.first)
-    ) {
-      loadSequence(unread.first);
+    const target = unreadJumps.current.consume(identity);
+    if (target === undefined) return;
+    const first = Math.max(target, unread?.oldest ?? target);
+    pendingBottom.current = null;
+    atBottom.current = false;
+    updateNavigation();
+    const covers =
+      (messages[0]?.sequence ?? Infinity) <= first &&
+      (messages.at(-1)?.sequence ?? -Infinity) >= first;
+    if (!historyReady || !covers) {
+      pendingJump.current = { identity, sequence: first, previous: messages };
+      loadSequence(first);
       return;
     }
+    const nearest = retainedJumpSequence(
+      messages.map((message) => message.sequence),
+      first,
+    );
+    if (nearest === undefined) return;
     resetCleared();
-    setUnreadBoundary(unread?.first ?? null);
+    setUnreadBoundary(nearest);
     atBottom.current = false;
-    virtualTimeline.current?.scrollToSequence(unread.first);
+    virtualTimeline.current?.scrollToSequence(nearest, 0, true);
     requestAnimationFrame(acknowledgeVisible);
   }
 
@@ -232,6 +340,18 @@ export function useReadTracking({
     acknowledgeVisible,
     rememberPosition,
     jumpToUnread,
+    updateNavigation,
+    showJumpToBottom: navigation.identity === identity && navigation.bottom,
+    showJumpToUnread: navigation.identity === identity && navigation.unread,
+    jumpToBottom: () => {
+      pendingJump.current = null;
+      if (hasAfter || !historyReady) {
+        pendingBottom.current = identity;
+        loadLatest?.();
+      } else {
+        virtualTimeline.current?.scrollToBottom?.(true);
+      }
+    },
     resetEntry: () => {
       enteredView.current = null;
       positions.current.delete(identity);

@@ -118,6 +118,16 @@ try {
     targetId,
     flatten: true,
   });
+  await command(
+    "Emulation.setDeviceMetricsOverride",
+    {
+      width: 1280,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    },
+    sessionId,
+  );
   await command("Page.bringToFront", {}, sessionId);
   const deadline = Date.now() + 45000;
   let result;
