@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { suggestions } from "../src/features/conversation/console.ts";
+import { mentionSuggestions } from "../src/features/conversation/interactions.ts";
 import {
   cursorSuggestions,
   nextHint,
@@ -120,6 +121,39 @@ test("cursor completion replaces only the current token and preserves following 
     "/tell ",
   );
 });
+test("a bare mention inserts before existing text without consuming it", () => {
+  for (const before of ["", "Hello 🙂 "]) {
+    for (const after of [
+      "already typed",
+      "你好🙂 text",
+      " /help",
+      "\nnext line",
+    ]) {
+      const prefix = before + "@";
+      const completion = cursorSuggestions(
+        prefix + after,
+        prefix.length,
+        (text) => mentionSuggestions(text, ["alice", "bob"]),
+      );
+      assert.equal(completion.suffix, after);
+      for (const [index, name] of ["alice", "bob"].entries()) {
+        const inserted = before + `@${name}` + (/^\s/u.test(after) ? "" : " ");
+        const value = completion.hints[index].value;
+        assert.equal(value, inserted + after);
+        assert.equal(value.length - completion.suffix.length, inserted.length);
+      }
+    }
+  }
+});
+
+test("completion within a partially typed mention replaces the remaining name", () => {
+  const completion = cursorSuggestions("Hello @bobby 你好 🙂", 8, (prefix) =>
+    mentionSuggestions(prefix, ["bob"]),
+  );
+  assert.equal(completion.hints[0].value, "Hello @bob 你好 🙂");
+  assert.equal(completion.suffix, " 你好 🙂");
+});
+
 test("permission completions match the server action registry", () => {
   const source = readFileSync(
     new URL("../../server/src/engine/authorization.rs", import.meta.url),
