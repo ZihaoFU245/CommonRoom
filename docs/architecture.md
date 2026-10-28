@@ -168,6 +168,23 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes sho
 - `hooks/useVirtualTimeline.ts` mounts the viewport plus eight rows of overscan, measures variable row heights and preserves a message anchor when pages move. Scroll position stays in a ref; scrolling schedules a render only when the mounted window or viewport height changes. Size/entry changes still recompute the window using the latest position. History anchoring captures the scroll coordinate before DOM commit, so a shorter replacement cannot use the browser's already-clamped offset as the old anchor. Resize callbacks reuse border-box observer sizes, with geometry fallbacks when unavailable; synchronous mount/edit and painted-position measurements remain explicit.
 - `hooks/useReadTracking.ts` owns visible-message acknowledgements, scroll placement, and jump-to-unread.
 - `hooks/useCommands.ts` coordinates aliases, reactions/retractions, output and navigation. `hooks/useCommandComposer.ts` owns drafts, completion, keyboard controls and reply selection. `features/conversation/requestLifecycle.ts` owns exclusive commands, bounded overlapping ordinary sends and completion on send failure/disconnect; `submission.ts` captures confirmed command targets and constructs frames.
+- History loads automatically in both directions in pages of up to 100 messages,
+  retaining the reading anchor without manual paging controls or loading notices.
+  First entry after a page load starts at the first unread message (or the bottom
+  when read); switching conversations restores the in-memory position. Jump to
+  unread offers one fixed destination per unread batch and disappears after use;
+  read acknowledgements cannot move that destination or reoffer it. A new jump is
+  available after the batch clears and later unread messages arrive. Jump to bottom
+  appears three viewports away and stays until reaching bottom, independent of speed.
+  A transparent, zero-height overlay holds one floating jump button at the top
+  right of history, preferring unread over bottom. It has no unread count and only
+  the button captures clicks; messages remain clickable through the empty area.
+  A dedicated AutoAnimate container slides a stable notice node over the shared
+  120 ms ease-out timing, without fading, scaling,
+  animating its height or virtual rows, avoiding repeated viewport resizes during
+  scrolling. `features/conversation/timelineScrollMotion.ts` retargets 300 ms jumps as
+  rows are measured; user input cancels motion and reduced motion skips it.
+  Programmatic scrolling releases bottom following and does not trigger lookahead.
 - `hooks/useLocalConsole.ts` owns the tab-local command ledger and clearing. It never persists command output.
 - `hooks/useFonts.ts` and `useComposerResize.ts` own presentation preferences and input sizing.
 - `CollapsibleMessage.tsx` caps long rendered message bodies at a 256px top preview with small borderless Show more / Show less controls and directional SVG arrows, including fenced code and plain text. `useMessageExpansionMotion.ts` starts the height animation before changing expansion state. `messageExpansion.ts` gives very long messages 420ms, spending 80% of that time revealing the visible viewport portion before completing the offscreen height; short expansions and collapses use 300ms. Collapse pins the visible footer so text compacts from above while following messages stay fixed; manual input releases that anchor. Virtual timeline anchoring yields while a panel carries `data-message-resizing`, keeping its measurements current. Reduced motion changes height without animating. Natural-content ResizeObserver measurements handle delayed Markdown/media and width changes. MessageList retains expansion within the current conversation window across virtual row remounts, clearing it on edits, eviction or conversation switches. Editors remain fully visible.

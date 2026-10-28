@@ -2,6 +2,7 @@ import type { RefObject } from "preact";
 import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { TimelineEntry } from "../api/protocol.ts";
 import { observedBorderBox } from "../features/conversation/observedBorderBox.ts";
+import { TimelineScrollMotion } from "../features/conversation/timelineScrollMotion.ts";
 import {
   indexAt,
   timelineOffsets,
@@ -11,7 +12,14 @@ import {
 export interface VirtualTimelineHandle {
   anchor: () => number | undefined;
   position: () => { sequence: number; offset: number } | undefined;
-  scrollToSequence: (sequence: number, offset?: number) => void;
+  scrollToSequence: (
+    sequence: number,
+    offset?: number,
+    smooth?: boolean,
+  ) => void;
+  isScrolling?: () => boolean;
+  cancelScroll?: () => void;
+  scrollToBottom?: (smooth?: boolean) => void;
 }
 export function useVirtualTimeline(
   entries: TimelineEntry[],
@@ -26,6 +34,9 @@ export function useVirtualTimeline(
   const [measurements, setMeasurements] = useState(0);
   const viewportTop = useRef(0);
   const currentOffsets = useRef<number[]>([]);
+  const currentEntries = useRef(entries);
+  currentEntries.current = entries;
+  const scrollMotion = useRef<TimelineScrollMotion | null>(null);
   const renderedWindow = useRef<{ start: number; end: number } | null>(null);
   const [viewport, setViewport] = useState({ start: 0, end: 0, height: 600 });
   function updateViewport(top: number, height: number) {
@@ -75,15 +86,55 @@ export function useVirtualTimeline(
             }
           : undefined;
       },
-      scrollToSequence: (sequence, offset = 0) => {
+      isScrolling: () => scrollMotion.current?.active ?? false,
+      cancelScroll: () => scrollMotion.current?.cancel(),
+      scrollToBottom: (smooth = false) => {
+        const element = container.current;
+        if (!element) return;
+        const target = () =>
+          Math.max(0, element.scrollHeight - element.clientHeight);
+        const complete = () => {
+          atBottom.current = true;
+          element.scrollTop = target();
+          updateViewport(element.scrollTop, element.clientHeight);
+        };
+        if (smooth && scrollMotion.current) {
+          atBottom.current = false;
+          scrollMotion.current.scrollTo(target, complete);
+        } else {
+          scrollMotion.current?.cancel();
+          complete();
+        }
+      },
+      scrollToSequence: (sequence, offset = 0, smooth = false) => {
         const index = entries.findIndex(
           (entry) =>
             entry.kind === "message" && entry.message.sequence === sequence,
         );
         const element = container.current;
         if (index >= 0 && element) {
-          element.scrollTop = (offsets[index] ?? 0) - offset;
-          updateViewport(element.scrollTop, element.clientHeight);
+          scrollMotion.current?.cancel();
+          if (scrollMotion.current) {
+            atBottom.current = false;
+            const target = () => {
+              const currentIndex = currentEntries.current.findIndex(
+                (entry) =>
+                  entry.kind === "message" &&
+                  entry.message.sequence === sequence,
+              );
+              return currentIndex < 0
+                ? undefined
+                : Math.max(
+                    0,
+                    (currentOffsets.current[currentIndex] ?? 0) - offset,
+                  );
+            };
+            if (smooth) scrollMotion.current.scrollTo(target);
+            else scrollMotion.current.snapTo(target);
+          } else {
+            element.scrollTop = (offsets[index] ?? 0) - offset;
+            updateViewport(element.scrollTop, element.clientHeight);
+          }
         }
       },
     };
@@ -98,7 +149,7 @@ export function useVirtualTimeline(
       element.querySelector(
         "[data-message-resizing], [data-content-resizing]",
       ) !== null;
-    if (!resizing) {
+    if (!resizing && !scrollMotion.current?.active) {
       if (atBottom.current) {
         element.scrollTop = element.scrollHeight - element.clientHeight;
       } else if (old && beforeCommitTop > 0) {
@@ -120,6 +171,19 @@ export function useVirtualTimeline(
   useLayoutEffect(() => {
     const element = container.current;
     if (!element) return;
+    const motion = new TimelineScrollMotion(element, () =>
+      updateViewport(element.scrollTop, element.clientHeight),
+    );
+    scrollMotion.current = motion;
+    const interrupt = () => motion.cancel();
+    const inputs = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    for (const input of inputs)
+      element.addEventListener(input, interrupt, { passive: true });
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const reduceMotion = () => {
+      if (preference.matches && motion.active) motion.finish();
+    };
+    preference.addEventListener("change", reduceMotion);
     let frame = 0;
     const refresh = () => {
       cancelAnimationFrame(frame);
@@ -151,6 +215,10 @@ export function useVirtualTimeline(
     element.addEventListener("scroll", refresh, { passive: true });
     refresh();
     return () => {
+      motion.cancel();
+      scrollMotion.current = null;
+      for (const input of inputs) element.removeEventListener(input, interrupt);
+      preference.removeEventListener("change", reduceMotion);
       cancelAnimationFrame(frame);
       resize.disconnect();
       observer.current?.disconnect();
@@ -159,10 +227,14 @@ export function useVirtualTimeline(
       element.removeEventListener("scroll", refresh);
     };
   }, []);
-  const window = virtualWindow(offsets, viewportTop.current, viewport.height);
+  const visibleWindow = virtualWindow(
+    offsets,
+    viewportTop.current,
+    viewport.height,
+  );
   // Anchoring can restore the previous window after this render computed a
   // different one from new sizes/entries. Compare against what was just mounted.
-  renderedWindow.current = window;
+  renderedWindow.current = visibleWindow;
   useLayoutEffect(() => {
     const currentObserver = observer.current;
     if (!currentObserver) return;
@@ -192,13 +264,13 @@ export function useVirtualTimeline(
     observed.current = liveElements;
     // Resolve new/edited row sizes before motion captures the final positions.
     if (changed) setMeasurements((value) => value + 1);
-  }, [entries, renderVersion, window.start, window.end]);
+  }, [entries, renderVersion, visibleWindow.start, visibleWindow.end]);
   return {
-    visible: entries.slice(window.start, window.end),
-    start: window.start,
-    end: window.end,
+    visible: entries.slice(visibleWindow.start, visibleWindow.end),
+    start: visibleWindow.start,
+    end: visibleWindow.end,
     layoutVersion: measurements,
-    top: window.top,
-    bottom: window.bottom,
+    top: visibleWindow.top,
+    bottom: visibleWindow.bottom,
   };
 }

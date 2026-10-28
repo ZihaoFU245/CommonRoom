@@ -12,6 +12,7 @@ function fixture(t) {
     ResizeObserver: globalThis.ResizeObserver,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    window: globalThis.window,
   };
   const frames = new Map(),
     listeners = new Map(),
@@ -37,6 +38,16 @@ function fixture(t) {
     return frame;
   };
   globalThis.cancelAnimationFrame = (id) => frames.delete(id);
+  let reducedMotion = false;
+  globalThis.window = {
+    matchMedia: () => ({
+      get matches() {
+        return reducedMotion;
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    }),
+  };
   globalThis.ResizeObserver = class {
     constructor(callback) {
       this.callback = callback;
@@ -95,10 +106,10 @@ function fixture(t) {
     }
     assert.equal(harness.dirty, false, "virtual timeline must settle");
   }
-  function flush() {
+  function flush(now = performance.now()) {
     const work = [...frames.values()];
     frames.clear();
-    for (const cb of work) cb();
+    for (const cb of work) cb(now);
     settle();
   }
   settle();
@@ -111,6 +122,14 @@ function fixture(t) {
     viewport,
     handle,
     bottom,
+    flush,
+    settle,
+    reduceMotion() {
+      reducedMotion = true;
+    },
+    interrupt(event) {
+      listeners.get(event)();
+    },
     nodes,
     get result() {
       return result;
@@ -223,4 +242,66 @@ test("anchoring refreshes a temporarily changed window even when it returns to p
     end,
     "mount the anchored window, not the pre-anchor window",
   );
+});
+
+test("animated history navigation retargets measured rows and can be interrupted", (t) => {
+  const f = fixture(t);
+  f.scroll(4917);
+  const started = performance.now();
+  f.handle.current.scrollToSequence(20, 0, true);
+  assert.equal(f.handle.current.isScrolling(), true);
+  f.flush(started + 150);
+  assert.ok(f.viewport.scrollTop < 4917);
+  assert.ok(f.viewport.scrollTop > 1900);
+  // Virtual rows become measured while the animation crosses their window.
+  f.resize("19", 200);
+  f.flush(started + 400);
+  assert.equal(f.viewport.scrollTop, 2000);
+  assert.equal(f.handle.current.isScrolling(), false);
+  f.handle.current.scrollToSequence(1, 0, true);
+  f.flush(performance.now() + 100);
+  f.interrupt("wheel");
+  const stopped = f.viewport.scrollTop;
+  f.flush(performance.now() + 400);
+  assert.equal(f.viewport.scrollTop, stopped);
+  assert.equal(f.handle.current.isScrolling(), false);
+});
+
+test("reduced motion reveals the requested history row immediately", (t) => {
+  const f = fixture(t);
+  f.scroll(4917);
+  f.reduceMotion();
+  f.handle.current.scrollToSequence(20, 0, true);
+  f.settle();
+  assert.equal(f.viewport.scrollTop, 1900);
+  assert.equal(f.handle.current.isScrolling(), false);
+});
+
+test("instant room restoration retains its row while new measurements settle", (t) => {
+  const f = fixture(t);
+  const started = performance.now();
+  f.handle.current.scrollToSequence(50, -17);
+  f.settle();
+  f.resize("49", 200);
+  f.flush(started + 20);
+  f.flush(started + 40);
+  f.flush(started + 60);
+  assert.deepEqual(f.handle.current.position(), { sequence: 50, offset: -17 });
+  assert.equal(f.viewport.scrollTop, 5017);
+  assert.equal(f.handle.current.isScrolling(), false);
+});
+
+test("jump to bottom reaches the end of a message taller than the viewport", (t) => {
+  const f = fixture(t);
+  f.scroll(9400);
+  f.resize("100", 2000);
+  const started = performance.now();
+  f.handle.current.scrollToBottom(true);
+  f.flush(started + 400);
+  assert.equal(
+    f.viewport.scrollTop,
+    f.viewport.scrollHeight - f.viewport.clientHeight,
+  );
+  assert.equal(f.bottom.current, true);
+  assert.equal(f.handle.current.isScrolling(), false);
 });

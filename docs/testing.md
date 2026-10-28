@@ -124,6 +124,21 @@ rtk pnpm --dir web format
 latest-position paging anchors, observer-based row resizing and bottom following.
 Its DOM-commit simulation clamps scroll offsets before layout effects to cover
 history replacement jumping forward or backward to a different retained message.
+History navigation tests check the three-viewport shortcut and one-use unread targets,
+animated virtual scrolling, measurement updates, interruption and reduced motion.
+Regressions cover keyboard paging on short history, editor-key isolation and
+deleted/expired unread destinations both within loaded history and after paging.
+Browser regressions cover unread entry, restored positions between rooms,
+automatic paging without manual controls, live unread notices and jumps to unread
+or the latest messages in wide and compact layouts.
+Notice-motion regressions sample viewport height and scroll position each frame
+during entry and exit, including concurrent smooth scrolling, and verify that
+unread updates reuse the existing notice node.
+Floating-button checks also require unchanged message space, hit-testing through
+the transparent surrounding area, one clickable button and no unread count.
+Open `/scripts/regressions/index.html?test=unread%20notice%20motion` in Safari
+to run just the notice checks, including shared 120 ms timing, slide-only keyframes,
+monotonic movement and disabled elastic overscroll.
 `observedBorderBox.test.js` checks border/padding accounting and geometry fallbacks.
 `connectionHook.test.js` covers resume-event coalescing, hidden-page cancellation,
 socket-baseline recovery and revoked-session handling. Media-cache tests cover

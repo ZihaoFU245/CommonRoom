@@ -302,6 +302,7 @@ export const MessageList = memo(function MessageList({
           onScroll={onScroll}
           class="message-list console-history"
           aria-label="Conversation history"
+          tabIndex={0}
           aria-live="polite"
         >
           <div class="timeline-rows">

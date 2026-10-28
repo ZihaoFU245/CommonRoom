@@ -2,6 +2,8 @@ import { h, render } from "preact";
 import { useHistory } from "../../src/hooks/useHistory.ts";
 import { useSettingsMotion } from "../../src/hooks/useSettingsMotion.ts";
 import { useReadTracking } from "../../src/hooks/useReadTracking.ts";
+import { useHistoryNoticeMotion } from "../../src/hooks/useHistoryNoticeMotion.ts";
+import { useHistoryPaging } from "../../src/hooks/useHistoryPaging.ts";
 import { useCommands } from "../../src/hooks/useCommands.ts";
 import { MediaCache } from "../../src/features/conversation/mediaCache.ts";
 import { MessageList } from "../../src/components/MessageList.tsx";
@@ -23,15 +25,18 @@ import "../../src/style.css";
 
 const tests = document.querySelector("#tests");
 const results = [];
+const testFilter = new URLSearchParams(location.search).get("test");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function check(condition, message) {
   if (!condition) throw new Error(message);
 }
-async function until(predicate) {
+async function until(predicate, detail = () => "") {
   const end = Date.now() + 5000;
   while (!predicate()) {
     if (Date.now() > end)
-      throw new Error("Timed out waiting for browser state");
+      throw new Error(
+        `Timed out waiting for browser state ${predicate.toString()} ${detail()}`,
+      );
     await sleep(10);
   }
 }
@@ -65,6 +70,7 @@ function probe(hook) {
   };
 }
 async function test(name, run) {
+  if (testFilter && !name.includes(testFilter)) return;
   const originals = { ...api };
   try {
     await run();
@@ -795,6 +801,550 @@ for (const view of ["team", "@command", "@direct:bob"]) {
   });
 }
 
+await test("keyboard history paging works without scroll overflow and ignores editors", async () => {
+  const viewport = document.createElement("section");
+  viewport.style.cssText = "height:200px;overflow:auto";
+  viewport.tabIndex = 0;
+  viewport.append(document.createTextNode("Short page"));
+  const editor = document.createElement("textarea");
+  viewport.append(editor);
+  tests.append(viewport);
+  let older = 0,
+    newer = 0,
+    loading = false;
+  const p = probe(() =>
+    useHistoryPaging(
+      { current: viewport },
+      true,
+      loading,
+      true,
+      true,
+      () => older++,
+      () => newer++,
+    ),
+  );
+  p.update();
+  await sleep(50);
+  viewport.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }),
+  );
+  viewport.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }),
+  );
+  check(
+    older === 1 && newer === 1,
+    "keyboard directions load history even on a short page",
+  );
+  editor.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
+  );
+  viewport.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true }),
+  );
+  check(older === 1, "editor and modified keys keep their normal behavior");
+  loading = true;
+  p.update();
+  await sleep(30);
+  viewport.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }),
+  );
+  check(older === 1, "keyboard paging cannot duplicate an in-flight request");
+  p.close();
+  viewport.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "End", bubbles: true }),
+  );
+  check(newer === 1, "unmount removes keyboard listeners");
+});
+
+await test("unread navigation resolves a deleted target after paging and within loaded history", async () => {
+  api.read = async () => ({ ok: true });
+  const viewport = document.createElement("section");
+  viewport.style.cssText = "height:200px;overflow:auto";
+  const content = document.createElement("div");
+  content.style.height = "2000px";
+  viewport.append(content);
+  tests.append(viewport);
+  const jumps = [],
+    loads = [];
+  const bottom = { current: false };
+  const context = {
+    selected: "a",
+    conversationId: "a-id",
+    unread: { first: null, count: 0, oldest: 1, through: 100 },
+    messages: [80, 81, 82].map(message),
+    historyReady: true,
+    historyLoading: false,
+    output: [],
+    cleared: {},
+    resetCleared() {},
+    settingsOpen: false,
+    menu: false,
+    status: "online",
+    loadSequence: (sequence) => loads.push(sequence),
+    virtualTimeline: {
+      current: {
+        position: () => ({ sequence: 80, offset: 0 }),
+        scrollToSequence: (sequence) => jumps.push(sequence),
+      },
+    },
+    atBottom: bottom,
+    historyElement: { current: viewport },
+    hasAfter: true,
+  };
+  const p = probe(() => useReadTracking(context));
+  p.update();
+  await sleep(30);
+  bottom.current = false;
+  context.unread = { ...context.unread, first: 90, count: 11 };
+  p.update();
+  await until(() => p.current.showJumpToUnread);
+  p.current.jumpToUnread();
+  check(loads[0] === 90, "unloaded destination requests an around page");
+  context.historyLoading = true;
+  context.messages = [88, 89, 91, 92].map(message);
+  context.unread = { ...context.unread, first: 91, count: 10 };
+  p.update();
+  await sleep(30);
+  check(jumps.length === 0, "wait for the history request to complete");
+  context.historyLoading = false;
+  p.update();
+  await until(() => jumps[0] === 91);
+  check(!p.current.showJumpToUnread, "fallback consumes the unread jump once");
+  context.unread = { ...context.unread, first: null, count: 0 };
+  p.update();
+  await sleep(30);
+  context.unread = { ...context.unread, first: 90, count: 2 };
+  p.update();
+  await until(() => p.current.showJumpToUnread);
+  p.current.jumpToUnread();
+  check(
+    jumps[1] === 91 && loads.length === 1,
+    "loaded gaps resolve immediately without another request",
+  );
+  p.close();
+});
+
+for (const width of [1100, 360]) {
+  await test(`unread notice motion leaves scroll geometry stable at ${width}px`, async () => {
+    function Notice({ visible, unread = false }) {
+      const ref = useHistoryNoticeMotion();
+      return h(
+        "div",
+        {
+          style: {
+            width: `${width}px`,
+            height: "400px",
+            display: "flex",
+            flexDirection: "column",
+          },
+        },
+        h(
+          "div",
+          { class: "history-notices", ref },
+          visible &&
+            h(
+              "div",
+              { class: "unread-bar", key: "room" },
+              h(
+                "button",
+                null,
+                unread ? "Jump to unread ↓" : "Jump to bottom ↓",
+              ),
+            ),
+        ),
+        h(
+          "section",
+          { class: "message-list" },
+          Array.from({ length: 30 }, (_, i) =>
+            h("div", { key: i, style: { height: "100px" } }, `Message ${i}`),
+          ),
+        ),
+      );
+    }
+    const paint = () =>
+      new Promise((resolve) => requestAnimationFrame(resolve));
+    render(h(Notice, { visible: false }), tests);
+    await sleep(100);
+    const viewport = tests.querySelector(".message-list");
+    const originalHeight = viewport.clientHeight;
+    viewport.scrollTop = 800;
+    render(h(Notice, { visible: true }), tests);
+    await until(() => tests.querySelector(".unread-bar"));
+    const bar = tests.querySelector(".unread-bar");
+    check(
+      viewport.clientHeight === originalHeight,
+      "floating notice reserves no message space",
+    );
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      await until(() =>
+        bar
+          .getAnimations()
+          .some((animation) => animation.playState === "running"),
+      );
+      const effect = bar
+        .getAnimations()
+        .find((animation) => animation.playState === "running").effect;
+      check(
+        effect.getTiming().duration === 120,
+        "notice timing matches shared 120 ms controls",
+      );
+      check(
+        effect
+          .getKeyframes()
+          .every(
+            (frame) =>
+              !frame.transform?.includes("scale") &&
+              frame.opacity === undefined,
+          ),
+        "notice only slides, without scaling or fading",
+      );
+    }
+    const heights = [],
+      tops = [],
+      translations = [];
+    for (let i = 0; i < 12; i++) {
+      await paint();
+      heights.push(viewport.clientHeight);
+      tops.push(viewport.scrollTop);
+      const transform = getComputedStyle(bar).transform;
+      translations.push(
+        transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m42,
+      );
+    }
+    check(
+      Math.max(...heights) - Math.min(...heights) <= 1,
+      `notice motion must not resize the viewport each frame: ${heights}`,
+    );
+    check(
+      Math.max(...tops) - Math.min(...tops) <= 1,
+      "notice motion must not shift the reading position",
+    );
+    const bounds = viewport.getBoundingClientRect();
+    check(
+      document
+        .elementFromPoint(bounds.left + 40, bounds.top + 16)
+        ?.closest(".message-list") === viewport,
+      "transparent space beside the floating button passes clicks through to messages",
+    );
+    const jump = bar.querySelector("button");
+    const jumpBounds = jump.getBoundingClientRect();
+    if (jumpBounds.right < innerWidth)
+      check(
+        jump.contains(
+          document.elementFromPoint(
+            jumpBounds.left + jumpBounds.width / 2,
+            jumpBounds.top + jumpBounds.height / 2,
+          ),
+        ),
+        "floating button still receives clicks",
+      );
+    check(
+      translations.every(
+        (value, index) =>
+          value <= 0.5 && (!index || value >= translations[index - 1] - 0.5),
+      ),
+      `notice enters in one direction with no bounce: ${translations}`,
+    );
+    check(
+      getComputedStyle(viewport).overscrollBehaviorY === "none",
+      "chat disables elastic overscroll",
+    );
+    render(h(Notice, { visible: true, unread: true }), tests);
+    await sleep(180);
+    check(
+      tests.querySelector(".unread-bar") === bar,
+      "changing the jump action keeps the same notice node",
+    );
+    viewport.scrollTo({ top: 1200, behavior: "smooth" });
+    render(h(Notice, { visible: false }), tests);
+    const removalHeights = [];
+    for (let i = 0; i < 12; i++) {
+      await paint();
+      removalHeights.push(viewport.clientHeight);
+    }
+    check(
+      Math.max(...removalHeights) - Math.min(...removalHeights) <= 1,
+      `notice exit must not fight an active scroll: ${removalHeights}`,
+    );
+  });
+}
+
+for (const width of [1100, 360]) {
+  await test(`history navigation starts unread, restores rooms and loads automatically at ${width}px`, async () => {
+    const savedHash = location.hash;
+    const OriginalSocket = window.WebSocket;
+    const savedWidth = tests.style.width;
+    tests.style.width = `${width}px`;
+    history.replaceState(null, "", "#room=a");
+    const all = Array.from({ length: 300 }, (_, i) => ({
+      ...message(i + 1),
+      text: `Message ${i + 1}: ${"你好 🙂 ".repeat((i % 4) + 1)}`,
+    }));
+    let state = {
+      ...empty,
+      rooms: ["a", "b"].map((name) => ({
+        name,
+        id: `${name}-id`,
+        owner: "alice",
+        members: ["alice"],
+        permissions: ["r:message.read", "w:message.create"],
+        commands: [],
+        messages: all.slice(-20).map((m) => ({ ...m, id: `${name}-${m.id}` })),
+      })),
+      unread: {
+        a: { revision: 1, count: 181, first: 120, oldest: 1, through: 300 },
+        b: { revision: 1, count: 0, first: null, oldest: 1, through: 300 },
+      },
+    };
+    const requests = [];
+    let socket;
+    class TestSocket {
+      static OPEN = 1;
+      static CLOSED = 3;
+      readyState = 1;
+      constructor() {
+        socket = this;
+        queueMicrotask(() => this.onopen?.());
+      }
+      send() {}
+      close() {
+        this.readyState = 3;
+      }
+    }
+    window.WebSocket = TestSocket;
+    api.me = async () => state;
+    api.read = async () => ({ ok: true });
+    api.mediaConfig = async () => ({ enabled: false, max_size: 0 });
+    api.botCommands = async (id) => ({ conversation_id: id, bots: [] });
+    api.history = async (view, _signal, range) => {
+      requests.push({ view, ...range });
+      let start = Math.max(0, all.length - 100);
+      if (range.around) start = Math.max(0, range.around - 50);
+      if (range.before) start = Math.max(0, range.before - 101);
+      if (range.after) start = range.after;
+      const batch = all.slice(start, start + 100);
+      return {
+        view,
+        revision: state.unread[view].revision,
+        messages: batch.map((m) => ({ ...m, id: `${view}-${m.id}` })),
+        has_before: start > 0,
+        has_after: start + batch.length < all.length,
+      };
+    };
+    const button = (label) =>
+      [...tests.querySelectorAll("button")].find(
+        (node) => node.textContent.trim() === label,
+      );
+    const rowOffset = (sequence) => {
+      const row = tests.querySelector(`[data-sequence="${sequence}"]`);
+      const viewport = tests.querySelector(".message-list");
+      return row
+        ? row.closest("[data-virtual-key]").getBoundingClientRect().top -
+            viewport.getBoundingClientRect().top
+        : Infinity;
+    };
+    try {
+      render(
+        h(Chat, {
+          initial: state,
+          onLogout() {},
+          appearance: {
+            theme: "light",
+            seeds: defaultSeeds,
+            setTheme() {},
+            setSeeds() {},
+          },
+        }),
+        tests,
+      );
+      await until(
+        () => Math.abs(rowOffset(120)) < 80,
+        () =>
+          JSON.stringify({
+            actual: rowOffset(120),
+            top: tests.querySelector(".message-list")?.scrollTop,
+            requests,
+          }),
+      );
+      await sleep(180);
+      check(
+        !button("Older messages") &&
+          !button("Newer messages") &&
+          !button("Latest messages"),
+        "manual paging controls are removed",
+      );
+      check(
+        !tests.textContent.includes("Loading history…"),
+        "automatic paging has no routine loading notice",
+      );
+      const viewport = tests.querySelector(".message-list");
+      viewport.scrollTop += Math.max(300, viewport.clientHeight);
+      viewport.dispatchEvent(new Event("scroll"));
+      await sleep(150);
+      const visibleRow = [...viewport.querySelectorAll("[data-sequence]")].find(
+        (node) =>
+          node.getBoundingClientRect().bottom >
+          viewport.getBoundingClientRect().top,
+      );
+      const sequence = Number(visibleRow.dataset.sequence);
+      const offset = rowOffset(sequence);
+      const choose = (name) =>
+        [...tests.querySelectorAll(".sidebar button")].find((node) =>
+          node.textContent.trim().startsWith(`#${name}`),
+        );
+      choose("b").click();
+      await until(
+        () =>
+          tests.querySelector(".conversation h1")?.textContent.trim() === "b",
+        () =>
+          JSON.stringify({
+            heading: tests.querySelector(".conversation h1")?.textContent,
+            hash: location.hash,
+            requests: requests.slice(-5),
+          }),
+      );
+      await sleep(150);
+      choose("a").click();
+      await until(
+        () => Math.abs(rowOffset(sequence) - offset) < 2,
+        () =>
+          JSON.stringify({
+            sequence,
+            offset,
+            actual: rowOffset(sequence),
+            top: viewport.scrollTop,
+            requests: requests.slice(-5),
+          }),
+      );
+      // Model the server's read acknowledgement before checking the bottom-only
+      // action; the floating control intentionally gives unread priority.
+      state = {
+        ...state,
+        unread: {
+          ...state.unread,
+          a: { ...state.unread.a, count: 0, first: null },
+        },
+      };
+      socket.onmessage?.({ data: JSON.stringify(state) });
+      if (!button("Jump to bottom ↓")) {
+        // Load enough older history to be three screens from the loaded edge.
+        viewport.scrollTop = 0;
+        viewport.dispatchEvent(new Event("scroll"));
+        viewport.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: -100, bubbles: true }),
+        );
+      }
+      await until(() => button("Jump to bottom ↓"));
+      button("Jump to bottom ↓").click();
+      await until(
+        () => rowOffset(300) < viewport.clientHeight && rowOffset(300) > -100,
+      );
+      await sleep(450);
+      check(!button("Jump to bottom ↓"), "bottom shortcut hides after arrival");
+      // Start a new unread boundary while this room is being read above the tail.
+      viewport.scrollTop -= viewport.clientHeight * 4;
+      viewport.dispatchEvent(new Event("scroll"));
+      await sleep(100);
+      const previousNotice = tests.querySelector(
+        ".history-notices .unread-bar",
+      );
+      all.push(
+        ...[301, 302, 303].map((sequence) => ({
+          ...message(sequence),
+          text: "New arrival",
+        })),
+      );
+      state = {
+        ...state,
+        rooms: state.rooms.map((room) =>
+          room.name === "a"
+            ? {
+                ...room,
+                messages: all
+                  .slice(-20)
+                  .map((m) => ({ ...m, id: `a-${m.id}` })),
+              }
+            : room,
+        ),
+        unread: {
+          ...state.unread,
+          a: {
+            ...state.unread.a,
+            revision: 4,
+            count: 3,
+            first: 301,
+            through: 303,
+          },
+        },
+      };
+      socket.onmessage?.({ data: JSON.stringify(state) });
+      await until(() => button("Jump to unread ↓"));
+      check(
+        tests.querySelectorAll(".history-notices button").length === 1,
+        "only one floating jump button is shown",
+      );
+      check(
+        !/\d+ unread/u.test(
+          tests.querySelector(".history-notices").textContent,
+        ),
+        "floating navigation has no unread count",
+      );
+      check(
+        tests.querySelector(".history-notices .unread-bar"),
+        "new unread notice is inside the AutoAnimate container",
+      );
+      check(
+        !previousNotice ||
+          tests.querySelector(".history-notices .unread-bar") ===
+            previousNotice,
+        "new unread messages update the existing notice without competing exit/entry animations",
+      );
+      button("Jump to unread ↓").click();
+      await until(
+        () => rowOffset(301) < viewport.clientHeight && rowOffset(301) > -100,
+      );
+      await sleep(450);
+      check(
+        !button("Jump to unread ↓"),
+        "the unread shortcut disappears after one use",
+      );
+      state = {
+        ...state,
+        unread: {
+          ...state.unread,
+          a: { ...state.unread.a, first: 302, count: 2 },
+        },
+      };
+      const afterJump = viewport.scrollTop;
+      socket.onmessage?.({ data: JSON.stringify(state) });
+      await sleep(200);
+      check(
+        !button("Jump to unread ↓"),
+        "advancing read acknowledgements cannot reoffer the jump",
+      );
+      check(
+        Math.abs(viewport.scrollTop - afterJump) < 2,
+        "read acknowledgements preserve the reading position",
+      );
+      // Scrolling up fetches earlier pages without a button.
+      const count = requests.length;
+      viewport.scrollTop = 1000;
+      viewport.dispatchEvent(new Event("scroll"));
+      await sleep(100);
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+      await until(() =>
+        requests.slice(count).some((request) => request.before),
+      );
+    } finally {
+      render(null, tests);
+      tests.style.width = savedWidth;
+      window.WebSocket = OriginalSocket;
+      history.replaceState(null, "", savedHash || location.pathname);
+    }
+  });
+}
+
 await test("chat colors update for newly disclosed live and paged authors and reset in place", async () => {
   const OriginalSocket = window.WebSocket;
   let socket;
@@ -921,13 +1471,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
       }),
       tests,
     );
-    await until(
-      () =>
-        socket &&
-        [...tests.querySelectorAll("button")].some(
-          (b) => b.textContent === "Older messages" && !b.disabled,
-        ),
-    );
+    await until(() => socket && requests.length > 0 && author("alice"));
     check(
       !socket.colors && requests.every((enabled) => !enabled),
       "default requests omit color opt-in",
@@ -1229,10 +1773,15 @@ await test("chat colors update for newly disclosed live and paged authors and re
       getComputedStyle(author("bob")).color === "rgb(220, 38, 38)",
       "live author paints its scoped red",
     );
-    const older = [...tests.querySelectorAll("button")].find(
-      (b) => b.textContent === "Older messages",
+    const viewport = tests.querySelector(".message-list");
+    viewport.scrollTop = 100;
+    viewport.dispatchEvent(new Event("scroll"));
+    await sleep(30);
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event("scroll"));
+    viewport.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: -100, bubbles: true }),
     );
-    older.click();
     await until(() => author("carol")?.dataset.nameColor === "teal");
     check(
       getComputedStyle(author("carol")).color === "rgb(15, 118, 110)",
