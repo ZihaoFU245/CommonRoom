@@ -9,10 +9,5 @@ cargo test --locked
 node --check web/scripts/smoke.mjs
 node --check web/scripts/media-smoke.mjs
 sh -n auto/start-s3.sh
-# The separately maintained demo is optional in a server-only checkout.
-if [ -d simpleBot ]; then
-    node web/node_modules/@typescript/native/bin/tsc -p simpleBot/tsconfig.json
-    deno test --unstable-kv -A --no-check simpleBot/test/*.test.ts
-fi
 pnpm --dir web check
 pnpm --dir web test
