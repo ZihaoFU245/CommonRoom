@@ -7,6 +7,10 @@ pub(super) mod messages;
 pub(super) mod metadata;
 pub(super) mod profile;
 pub(super) mod receipts;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Isolated database contracts assert fixture state.
+mod refinement_tests;
 use super::{Error, Result, Value, runtime};
 use sqlx::{
     Connection as _, Executor as _, PgConnection, Postgres, Statement as _, TypeInfo as _,

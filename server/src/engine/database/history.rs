@@ -143,11 +143,13 @@ pub(super) fn attach_reactions(
 macro_rules! read_call {
     ($session:expr, $method:ident $(, $argument:expr)* $(,)?) => {{
         $session.ensure_available()?;
+        let started = std::time::Instant::now();
         let result = match $session.backend.get_mut() {
             Backend::Sqlite(db) => super::sqlite::history::$method(db $(, $argument)*).await,
             Backend::Postgres(db) => super::postgres::history::$method(db $(, $argument)*).await,
             Backend::Closed => Err(Error::Conversion("Database closed")),
         };
+        tracing::debug!(operation=stringify!($method), elapsed_us=started.elapsed().as_micros(), success=result.is_ok(), "Database read completed");
         $session.checked(result)
     }};
 }

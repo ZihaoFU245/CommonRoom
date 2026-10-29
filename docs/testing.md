@@ -33,6 +33,18 @@ advances, distinguish idle pool replacement from ownership loss, and check SQLit
 single-writer capacity and cancelled acquisition recovery. Stale message plans
 must fail without overwriting a committed edit.
 
+PostgreSQL memory/retention regressions check the raw driver payload of a
+reaction-heavy page before decoding, complete reaction users in either direction,
+and pagination progress for a single oversized message. Bulk-deletion EXPLAIN
+requires exactly one retention trigger invocation per statement; partial/full
+multi-conversation deletes preserve counts/oldest and roll back atomically.
+The offline transfer contract explicitly requires SQLite v19 and checks the
+PostgreSQL v1 marker, retained data and unchanged source bytes. Other schema
+versions (including PostgreSQL v2) are rejected unchanged. Idle-pool coverage reclaims
+readers to zero while preserving the writer floor and dedicated ownership.
+Ordinary tests verify cache tuning survives recovery, invalid tuning preserves
+saved configuration, and pool acquisition diagnostics count successes/timeouts.
+
 `auto/test-postgres.py` requires the target's default schema to be empty. It
 provisions a temporary SQLite server through the real stdin console, verifies HTTP
 login, runs the binary's transfer command, then checks PostgreSQL HTTP sessions,

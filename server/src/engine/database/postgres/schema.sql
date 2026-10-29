@@ -50,10 +50,6 @@ BEGIN
  IF TG_OP='INSERT' THEN
   INSERT INTO retention VALUES(NEW.conversation,1,NEW.sequence) ON CONFLICT(conversation)
    DO UPDATE SET count=retention.count+1,oldest=least(coalesce(retention.oldest,NEW.sequence),NEW.sequence);
- ELSIF TG_OP='DELETE' THEN
-  UPDATE retention SET count=count-1,oldest=(SELECT min(sequence) FROM messages WHERE conversation=OLD.conversation)
-   WHERE conversation=OLD.conversation;
-  DELETE FROM retention WHERE conversation=OLD.conversation AND count=0;
  ELSE
   DELETE FROM retention WHERE conversation IN (OLD.conversation,NEW.conversation);
   INSERT INTO retention SELECT conversation,count(*),min(sequence) FROM messages
@@ -63,9 +59,23 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER retention_insert AFTER INSERT ON messages FOR EACH ROW EXECUTE FUNCTION chat_retention();
-CREATE TRIGGER retention_delete AFTER DELETE ON messages FOR EACH ROW EXECUTE FUNCTION chat_retention();
 CREATE TRIGGER retention_move AFTER UPDATE OF conversation,sequence ON messages FOR EACH ROW
  WHEN (OLD.conversation!=NEW.conversation OR OLD.sequence!=NEW.sequence) EXECUTE FUNCTION chat_retention();
+-- Aggregate deletion maintenance once per affected conversation. Transition
+-- rows, retention updates and cascades share the enclosing transaction.
+CREATE FUNCTION chat_retention_deleted() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ UPDATE retention r SET count=r.count-d.removed,
+   oldest=(SELECT min(sequence) FROM messages WHERE conversation=r.conversation)
+ FROM (SELECT conversation,count(*) AS removed FROM deleted_messages GROUP BY conversation) d
+ WHERE r.conversation=d.conversation;
+ DELETE FROM retention r USING (SELECT DISTINCT conversation FROM deleted_messages) d
+ WHERE r.conversation=d.conversation AND r.count=0;
+ RETURN NULL;
+END;
+$$;
+CREATE TRIGGER retention_delete AFTER DELETE ON messages
+ REFERENCING OLD TABLE AS deleted_messages FOR EACH STATEMENT EXECUTE FUNCTION chat_retention_deleted();
 CREATE TABLE media(id TEXT PRIMARY KEY, uploader TEXT NOT NULL, conversation TEXT NOT NULL, size BIGINT NOT NULL, created BIGINT NOT NULL,
  ready BIGINT NOT NULL, unreferenced BIGINT, staging_clean BIGINT NOT NULL DEFAULT 0, json TEXT NOT NULL, expires BIGINT, published BIGINT,
  deleting BIGINT NOT NULL DEFAULT 0, deleted BIGINT NOT NULL DEFAULT 0, cleanup_attempt BIGINT NOT NULL DEFAULT 0, staging_attempt BIGINT NOT NULL DEFAULT 0);

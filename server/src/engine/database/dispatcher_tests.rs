@@ -7,6 +7,38 @@ use crate::engine::{
 use std::time::{Duration, Instant};
 
 #[test]
+fn pool_diagnostics_count_acquisition_timeouts_and_successes() {
+    runtime::run(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_millis(20))
+            .connect("sqlite::memory:")
+            .await?;
+        let metrics = PoolMetrics::default();
+        let first = acquire_pool(&pool, &metrics).await?;
+        let stats = metrics.stats(&Pool::Sqlite(pool.clone()));
+        assert_eq!(stats["open"], 1);
+        assert_eq!(stats["idle"], 0);
+        assert_eq!(stats["acquisitions"], 1);
+        assert!(acquire_pool(&pool, &metrics).await.is_err());
+        let stats = metrics.stats(&Pool::Sqlite(pool.clone()));
+        assert_eq!(stats["acquisitions"], 2);
+        assert_eq!(stats["acquire_errors"], 1);
+        assert_eq!(stats["acquire_timeouts"], 1);
+        assert!(stats["acquire_max_us"].as_u64().unwrap() > 0);
+        drop(first);
+        drop(acquire_pool(&pool, &metrics).await?);
+        assert_eq!(
+            metrics.stats(&Pool::Sqlite(pool.clone()))["acquisitions"],
+            3
+        );
+        close_pool(&pool).await;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn sqlite_head_v19_opens_without_a_postgres_index_upgrade() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("chat.sqlite");
@@ -41,7 +73,7 @@ fn sqlite_head_v19_opens_without_a_postgres_index_upgrade() {
 
 #[test]
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
-fn postgres_current_schema_has_account_index_and_no_legacy_upgrade_path() {
+fn postgres_current_schema_has_account_index_and_rejects_unsupported_versions() {
     let fixture = super::super::tests::PostgresFixture::new();
     let mut engine = Engine::open_postgres(&fixture.url).unwrap();
     engine
@@ -53,7 +85,7 @@ fn postgres_current_schema_has_account_index_and_no_legacy_upgrade_path() {
     let before = engine.data.clone();
     drop(engine);
     let db = Connection::postgres(&fixture.url, false).unwrap();
-    for version in [19, 20] {
+    for version in [0, 2, 3, 19, 20, 99] {
         db.execute("UPDATE chat_schema SET version=$1 WHERE id=1", [version])
             .unwrap();
         assert!(Engine::open_postgres(&fixture.url).is_err());
@@ -1157,6 +1189,7 @@ fn postgres_pool_sizes_follow_validated_configuration() {
             min_readers: 1,
             max_readers: 3,
             max_writers: 2,
+            idle_timeout_seconds: 30,
         },
     )
     .unwrap();
@@ -1169,6 +1202,52 @@ fn postgres_pool_sizes_follow_validated_configuration() {
     assert_eq!(writers.options().get_max_connections(), 2);
     assert_eq!(readers.options().get_min_connections(), 1);
     assert_eq!(readers.options().get_max_connections(), 3);
+    assert_eq!(
+        readers.options().get_idle_timeout(),
+        Some(Duration::from_secs(30))
+    );
+    assert_eq!(
+        writers.options().get_idle_timeout(),
+        Some(Duration::from_secs(30))
+    );
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_idle_reclamation_respects_pool_floors_and_preserves_owner() {
+    let fixture = super::super::tests::PostgresFixture::new();
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Engine::open_postgres_in_folder_with_pool(
+        &fixture.url,
+        &directory.path().join("chat.sqlite"),
+        crate::config::PostgresPoolConfig {
+            min_readers: 0,
+            max_readers: 2,
+            max_writers: 2,
+            idle_timeout_seconds: 1,
+        },
+    )
+    .unwrap();
+    runtime::run(async {
+        let first = engine.store.db.acquire_reader().await?;
+        let second = engine.store.db.acquire_reader().await?;
+        assert_eq!(engine.store.db.pool_stats()["readers"]["open"], 2);
+        drop((first, second));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while engine.store.db.pool_stats()["readers"]["open"] != 0 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let stats = engine.store.db.pool_stats();
+        assert_eq!(stats["writers"]["open"], 1);
+        assert_eq!(stats["dedicated_owner"], true);
+        engine.store.db.check_owner().await?;
+        drop(engine.store.db.acquire_reader().await?);
+        Ok(())
+    })
+    .unwrap();
 }
 
 fn batched_cleanup_contract(mut engine: Engine, postgres: bool) {

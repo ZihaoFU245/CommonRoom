@@ -273,20 +273,18 @@ impl HistoryStore {
                 continue;
             }
             let bytes = result.messages.accounted_bytes();
-            if bytes <= CACHE_BYTES / CACHE_SHARDS {
-                self.cache[cache_shard(id)]
-                    .lock()
-                    .map_err(|_| "History cache unavailable.")?
-                    .insert(CachedPage {
-                        conversation: id.into(),
-                        revision,
-                        range,
-                        messages: result.messages.clone(),
-                        bytes,
-                        before: result.has_before,
-                        after: result.has_after,
-                    });
-            }
+            self.cache[cache_shard(id)]
+                .lock()
+                .map_err(|_| "History cache unavailable.")?
+                .insert(CachedPage {
+                    conversation: id.into(),
+                    revision,
+                    range,
+                    messages: result.messages.clone(),
+                    bytes,
+                    before: result.has_before,
+                    after: result.has_after,
+                });
             return Ok(result);
         }
     }

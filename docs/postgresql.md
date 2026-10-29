@@ -37,9 +37,10 @@ can be supplied with the PostgreSQL `sslrootcert` connection parameter.
 Use a dedicated database with an empty target schema on first start. The role
 needs permission to create tables, indexes, sequences and trigger functions there.
 Startup initializes an empty schema transactionally; an existing application schema
-must match PostgreSQL schema v1. PostgreSQL support is unpublished: historical
-WIP schemas have no upgrade path. Choose a fresh empty target for a changed WIP
-schema. Published SQLite HEAD remains v19, with no SQLite schema migration caused
+must match PostgreSQL schema v1. PostgreSQL is not deployed yet, so fixes are
+incorporated directly into v1, including statement-level deletion retention.
+There are no historical WIP upgrade paths; unsupported schema versions are
+rejected unchanged. Published SQLite HEAD remains v19, with no SQLite schema migration caused
 by PostgreSQL work. See [Data](data.md#database-compatibility).
 The PostgreSQL representation has its own schema marker and indexed
 JSONB projections alongside the original JSON text; the two database files/formats
@@ -152,15 +153,53 @@ Optional `database.postgres_pool` settings tune the connection budget:
 {
   "database": {
     "backend": "postgres",
-    "postgres_pool": { "min_readers": 2, "max_readers": 8, "max_writers": 8 }
+    "postgres_pool": {
+      "min_readers": 2,
+      "max_readers": 8,
+      "max_writers": 8,
+      "idle_timeout_seconds": 600
+    },
+    "history_cache": { "max_bytes": "32m", "max_messages": 10000 }
   }
 }
 ```
 
 Reader maximum must be 1–64, reader minimum 0 through that maximum, and writer
 maximum 1–32. The dedicated ownership session is additional to these limits.
+`idle_timeout_seconds` is 1–86,400 (default 600): idle pooled sessions above the
+minimum are eligible for reclamation after this interval. Both PostgreSQL pools
+have an explicit 30-minute maximum connection lifetime. The ownership session
+never expires or reconnects automatically.
 Invalid settings fail before ownership/bootstrap or configuration rewriting.
 SQLite ignores PostgreSQL pool tuning and retains its own fixed limits.
+
+These settings take effect after restarting chat. The maximum connection budget
+is `max_readers + max_writers + 1` (17 by default); allow additional connections
+for administration and backups. The writer pool keeps at least one session, and
+the ownership session remains connected even when chat is idle. Reader minimums
+control the pool's idle floor, while maximums bound its growth under load.
+For a small machine, start with
+`"postgres_pool": { "min_readers": 0, "max_readers": 2, "max_writers": 2 }`
+for a five-connection ceiling. Lower limits trade concurrent database work for a
+smaller connection budget; pool acquisition still times out after five seconds.
+Pool sizing does not cap total PostgreSQL or chat memory: PostgreSQL server memory
+settings and chat's history/cache limits must be considered separately.
+
+`database.history_cache` applies to both backends and defaults to 32 MiB of
+conservative page accounting and 10,000 message entries. `max_bytes` accepts binary
+`k`/`m`/`g` units from `4k` to `1g`; `max_messages` accepts 4–100,000. Four shards
+each receive one quarter of each budget, rounded down. The fixed 1,000-entry
+per-conversation limit, 256-page limit and separate 4,096-entry unread cache still
+apply. Response-held pages, metadata, SQLx and PostgreSQL allocations are additional
+memory. Recovery clears cached pages while retaining these configured limits.
+
+Authorized `/configs` output includes effective cache limits and
+`history_cache.pools`: open/idle/minimum/maximum reader and writer sessions,
+completed acquisition attempts, errors/timeouts, total and maximum acquisition
+microseconds, and whether a dedicated owner exists. Acquisition timing includes
+checkout health checks and connection creation; it is not pure queue wait time.
+Use `RUST_LOG=chat::engine::database=debug` to record read-operation and write-
+transaction durations and success, without credentials, query parameters or bodies.
 
 Message operations validate the stored conversation identity/revision under a
 PostgreSQL row lock. Appends first lock the global counter row and validate their
@@ -197,7 +236,12 @@ immediately before commit, and cursor autocommit statements validate immediately
 before execution. A probe deadline or known rejected commit is retryable;
 ownership loss and unknown commit outcomes require restart to reload memory.
 The owning session never reconnects automatically. History pages and unread
-batches use one SQL statement each; snapshot page loading runs at most four
+batches use one SQL statement each. Page SQL sizes candidate message and compact
+reaction payloads before assembling a bounded prefix, avoiding full-page decoding
+before the byte budget. Reaction labels are transmitted once per message, with
+their complete user lists. The first eligible message is always returned even if
+it exceeds the byte budget, preserving progress for large imported records.
+Snapshot page loading runs at most four
 requests concurrently and retains its message/byte output budgets.
 Concurrent viewers share cold page reads and bounded encoded page fragments;
 their authorization, cursor and unread projections remain individual.

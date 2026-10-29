@@ -173,8 +173,11 @@ refuses to start if one matches.
 
 Limits are positive integers. Lowering an account or room limit preserves existing data
 but blocks new creation until usage is below it. Lowering `max_messages` also trims
-retained history at the next start. The in-memory caches stay fixed at 1,000 entries per
-conversation and 10,000 entries / 32 MiB globally, regardless of `max_messages`. Hard
+retained history at the next start. The in-memory page caches default to 1,000 entries per
+conversation and 10,000 entries / 32 MiB globally, independently of `max_messages`.
+Tune global cache budgets with `database.history_cache` and PostgreSQL idle
+reclamation with `database.postgres_pool.idle_timeout_seconds`; see
+[PostgreSQL](postgresql.md#runtime-and-backups). Hard
 ceilings are 256 users, 1,024 rooms, and 1,000,000 retained messages; larger values are
 rejected at startup.
 
@@ -734,7 +737,9 @@ in [Bots](bots.md).
 ## Upgrades and backups
 
 SQLite remains HEAD schema v19 and opens without an upgrade. Unpublished
-PostgreSQL initializes only its current v1 schema, without historical WIP upgrades.
+PostgreSQL initializes its current v1 schema, including statement-level deletion
+retention. This unpublished format is not deployed yet; fixes modify v1 directly,
+without historical WIP upgrades. Unsupported schema markers are rejected unchanged.
 The offline transfer always maps HEAD SQLite to current PostgreSQL and leaves
 the SQLite source unchanged. Back up the
 database and object store consistently before replacing a deployment ([Data](data.md)).

@@ -87,10 +87,10 @@ impl HistoryStore {
     }
     pub(super) fn reset_after_recovery(&self) -> Result<(), EngineError> {
         for cache in &self.cache {
-            *cache
+            cache
                 .lock()
-                .map_err(|_| EngineError::unavailable("History cache poisoned"))? =
-                Cache::default();
+                .map_err(|_| EngineError::unavailable("History cache poisoned"))?
+                .clear();
         }
         for cache in &self.unread_cache {
             *cache
@@ -121,6 +121,22 @@ impl HistoryStore {
             unread_full: AtomicU64::new(0),
             unread_incremental: AtomicU64::new(0),
         }
+    }
+    /// Startup-only tuning; replacing shards evicts payloads without changing storage.
+    pub(crate) fn configure_cache(
+        &self,
+        limits: &crate::config::HistoryCacheConfig,
+    ) -> Result<(), EngineError> {
+        let bytes = usize::try_from(limits.max_bytes).map_err(|_| {
+            EngineError::unavailable("History cache byte limit exceeds this platform")
+        })?;
+        for shard in &self.cache {
+            *shard
+                .lock()
+                .map_err(|_| EngineError::unavailable("History cache poisoned"))? =
+                Cache::with_limits(bytes / CACHE_SHARDS, limits.max_messages / CACHE_SHARDS);
+        }
+        Ok(())
     }
     // Test compatibility releases cache guards before awaiting native storage.
     #[cfg(test)]
@@ -235,16 +251,18 @@ impl HistoryStore {
         self.cache_stats()
     }
     fn cache_stats(&self) -> Result<serde_json::Value, EngineError> {
-        let (mut messages, mut bytes) = (0, 0);
+        let (mut messages, mut bytes, mut message_limit, mut byte_limit) = (0, 0, 0, 0);
         for shard in &self.cache {
             let cache = shard.lock().map_err(|_| {
                 EngineError::Unavailable("History storage poisoned; restart the service.".into())
             })?;
             messages += cache.messages;
             bytes += cache.bytes;
+            message_limit += cache.message_limit;
+            byte_limit += cache.byte_limit;
         }
         Ok(
-            serde_json::json!({"unread_full":self.unread_full.load(Ordering::Relaxed),"unread_incremental":self.unread_incremental.load(Ordering::Relaxed),"hits":self.hits.load(Ordering::Relaxed),"misses":self.misses.load(Ordering::Relaxed),"messages":messages,"accounted_bytes":bytes,"message_limit":CACHE_MESSAGES,"byte_limit":CACHE_BYTES,"per_conversation_limit":ROOM_CACHE_MESSAGES,"shards":CACHE_SHARDS}),
+            serde_json::json!({"unread_full":self.unread_full.load(Ordering::Relaxed),"unread_incremental":self.unread_incremental.load(Ordering::Relaxed),"hits":self.hits.load(Ordering::Relaxed),"misses":self.misses.load(Ordering::Relaxed),"messages":messages,"accounted_bytes":bytes,"message_limit":message_limit,"byte_limit":byte_limit,"per_conversation_limit":ROOM_CACHE_MESSAGES,"shards":CACHE_SHARDS,"pools":self.database.pool_stats()}),
         )
     }
 }

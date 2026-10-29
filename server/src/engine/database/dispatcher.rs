@@ -16,9 +16,61 @@ enum Pool {
     Sqlite(SqlitePool),
     Postgres(PgPool),
 }
+#[derive(Default)]
+struct PoolMetrics {
+    acquisitions: AtomicU64,
+    errors: AtomicU64,
+    timeouts: AtomicU64,
+    total_us: AtomicU64,
+    max_us: AtomicU64,
+}
+impl PoolMetrics {
+    fn stats(&self, pool: &Pool) -> serde_json::Value {
+        let (open, idle, min, max) = match pool {
+            Pool::Sqlite(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_min_connections(),
+                pool.options().get_max_connections(),
+            ),
+            Pool::Postgres(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_min_connections(),
+                pool.options().get_max_connections(),
+            ),
+        };
+        serde_json::json!({"open":open,"idle":idle,"min":min,"max":max,
+            "acquisitions":self.acquisitions.load(Ordering::Relaxed),
+            "acquire_errors":self.errors.load(Ordering::Relaxed),
+            "acquire_timeouts":self.timeouts.load(Ordering::Relaxed),
+            "acquire_total_us":self.total_us.load(Ordering::Relaxed),
+            "acquire_max_us":self.max_us.load(Ordering::Relaxed)})
+    }
+}
+async fn acquire_pool<D: sqlx::Database>(
+    pool: &sqlx::Pool<D>,
+    metrics: &PoolMetrics,
+) -> Result<sqlx::pool::PoolConnection<D>> {
+    let start = std::time::Instant::now();
+    let result = pool.acquire().await;
+    let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    metrics.acquisitions.fetch_add(1, Ordering::Relaxed);
+    metrics.total_us.fetch_add(elapsed, Ordering::Relaxed);
+    metrics.max_us.fetch_max(elapsed, Ordering::Relaxed);
+    if result.is_err() {
+        metrics.errors.fetch_add(1, Ordering::Relaxed);
+    }
+    if matches!(&result, Err(sqlx::Error::PoolTimedOut)) {
+        metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(result?)
+}
 pub(crate) struct Database {
     pool: Pool,
     readers: Pool,
+    writer_metrics: PoolMetrics,
+    reader_metrics: PoolMetrics,
     owner: Option<tokio::sync::Mutex<Connection>>,
     #[cfg(test)]
     forced_owner_probes: AtomicU64,
@@ -47,6 +99,8 @@ impl Database {
             let options = location.parse::<sqlx::postgres::PgConnectOptions>()?;
             let pool = sqlx::postgres::PgPoolOptions::new()
                 .min_connections(1).max_connections(limits.max_writers)
+                .idle_timeout(std::time::Duration::from_secs(limits.idle_timeout_seconds))
+                .max_lifetime(std::time::Duration::from_secs(30 * 60))
                 .acquire_timeout(std::time::Duration::from_secs(5))
                 .after_connect(|db, _| Box::pin(async move {
                     db.execute("SET statement_timeout='10s'; SET lock_timeout='2s'; SET idle_in_transaction_session_timeout='30s';").await?;
@@ -76,6 +130,8 @@ impl Database {
                 let options = location.parse::<sqlx::postgres::PgConnectOptions>()?;
                 Pool::Postgres(sqlx::postgres::PgPoolOptions::new()
                     .min_connections(limits.min_readers).max_connections(limits.max_readers)
+                    .idle_timeout(std::time::Duration::from_secs(limits.idle_timeout_seconds))
+                    .max_lifetime(std::time::Duration::from_secs(30 * 60))
                     .acquire_timeout(std::time::Duration::from_secs(5))
                     .after_connect(|db, _| Box::pin(async move {
                         db.execute("SET statement_timeout='10s'; SET lock_timeout='2s'; SET idle_in_transaction_session_timeout='30s'; SET default_transaction_read_only=on;").await?;
@@ -103,6 +159,8 @@ impl Database {
         Ok(Self {
             pool,
             readers,
+            writer_metrics: PoolMetrics::default(),
+            reader_metrics: PoolMetrics::default(),
             owner,
             #[cfg(test)]
             forced_owner_probes: AtomicU64::new(0),
@@ -124,19 +182,25 @@ impl Database {
         *folder = lock;
         Ok(())
     }
+    pub(crate) fn pool_stats(&self) -> serde_json::Value {
+        serde_json::json!({"readers":self.reader_metrics.stats(&self.readers),
+            "writers":self.writer_metrics.stats(&self.pool),"dedicated_owner":self.owner.is_some()})
+    }
     pub(super) async fn acquire_reader(&self) -> Result<Lease<'_>> {
         self.ensure_available_async().await?;
         let connection = match &self.readers {
             Pool::Sqlite(pool) => {
                 Connection::sqlite_session(
-                    Native::Pooled(pool.acquire().await?),
+                    Native::Pooled(acquire_pool(pool, &self.reader_metrics).await?),
                     true,
                     ChangeCount::default(),
                 )
                 .await?
             }
             Pool::Postgres(pool) => Connection::new(
-                Backend::Postgres(Native::Pooled(pool.acquire().await?)),
+                Backend::Postgres(Native::Pooled(
+                    acquire_pool(pool, &self.reader_metrics).await?,
+                )),
                 true,
             ),
         };
@@ -231,7 +295,7 @@ impl Database {
         let connection = match &self.pool {
             Pool::Sqlite(pool) => {
                 Connection::sqlite_session(
-                    Native::Pooled(pool.acquire().await?),
+                    Native::Pooled(acquire_pool(pool, &self.writer_metrics).await?),
                     false,
                     self.changes.clone(),
                 )
@@ -239,7 +303,9 @@ impl Database {
             }
             Pool::Postgres(pool) => {
                 let mut connection = Connection::new(
-                    Backend::Postgres(Native::Pooled(pool.acquire().await?)),
+                    Backend::Postgres(Native::Pooled(
+                        acquire_pool(pool, &self.writer_metrics).await?,
+                    )),
                     false,
                 );
                 connection.changes = self.changes.clone();

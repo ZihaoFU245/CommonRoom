@@ -1,5 +1,45 @@
 # Storage benchmarks
 
+## PostgreSQL memory and bulk deletion refinements
+
+An isolated PostgreSQL 18.6 run on Darwin arm64 on 2026-10-29 compared the
+preceding HEAD retention trigger with the revised v1 implementation. Each
+fixture inserted committed minimal message rows into one conversation after
+clearing the previous fixture and vacuuming/analyzing, then ran
+`EXPLAIN (ANALYZE,BUFFERS) DELETE FROM messages WHERE conversation='review'`.
+
+| Deleted messages | Previous total | Revised v1 total | Revised retention trigger |
+| --- | ---: | ---: | ---: |
+| 4,000 | 532 ms | 19 ms | 1.0 ms, one call |
+| 8,000 | 2,057 ms | 37 ms | 1.4 ms, one call |
+| 16,000 | 8,040 ms | 79 ms | 2.6 ms, one call |
+
+These are local SQL timings, excluding transport/publication and application
+permission checks. The regression asserts one trigger call and correct
+transactional count/oldest maintenance rather than elapsed time:
+
+```sh
+rtk cargo test --locked postgres_bulk_retention_runs_once_per_statement_and_rolls_back \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+A second SQL fixture had 100 tiny messages, each with 32 distinct 128-character
+reaction labels and 32 reacting users. The old query returned 15,118,721 bytes
+of psql text output; the new query returned 1,028,678 bytes with a 1 MiB fetch
+budget. Grouped reaction users avoid repeated labels; candidate sizing selects
+a bounded prefix before assembling payloads. This is result size, not process
+peak RSS. A single message larger than the budget remains allowed for progress.
+The regression measures raw SQL payload bytes against a smaller 64 KiB budget
+and checks complete reactions and ascending/descending pagination:
+
+```sh
+rtk cargo test --locked postgres_history_bounds_driver_payload_before_decoding_reactions \
+  -- --ignored --test-threads=1
+```
+
+Both tests need `CHAT_TEST_POSTGRES_URL` pointing to a disposable database, as
+described in [Testing](testing.md). Working `data/` and `pgdata/` were not used.
+
 ## Shared snapshot fan-out
 
 ```sh

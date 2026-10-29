@@ -10,13 +10,31 @@ pub(super) struct CachedPage {
     pub(super) before: bool,
     pub(super) after: bool,
 }
-#[derive(Default)]
 pub(super) struct Cache {
     pub(super) pages: VecDeque<CachedPage>,
     pub(super) messages: usize,
     pub(super) bytes: usize,
+    pub(super) byte_limit: usize,
+    pub(super) message_limit: usize,
+}
+impl Default for Cache {
+    fn default() -> Self {
+        Self::with_limits(CACHE_BYTES / CACHE_SHARDS, CACHE_MESSAGES / CACHE_SHARDS)
+    }
 }
 impl Cache {
+    pub(super) fn with_limits(byte_limit: usize, message_limit: usize) -> Self {
+        Self {
+            pages: VecDeque::new(),
+            messages: 0,
+            bytes: 0,
+            byte_limit,
+            message_limit,
+        }
+    }
+    pub(super) fn clear(&mut self) {
+        *self = Self::with_limits(self.byte_limit, self.message_limit);
+    }
     pub(super) fn remove(&mut self, index: usize) {
         if let Some(page) = self.pages.remove(index) {
             self.messages -= page.messages.len();
@@ -24,6 +42,9 @@ impl Cache {
         }
     }
     pub(super) fn insert(&mut self, page: CachedPage) {
+        if page.bytes > self.byte_limit || page.messages.len() > self.message_limit {
+            return;
+        }
         let id = page.conversation.clone();
         let revision = page.revision;
         // An older reader can finish after a newer revision has filled the cache.
@@ -59,8 +80,8 @@ impl Cache {
                 break;
             }
         }
-        while self.messages > CACHE_MESSAGES / CACHE_SHARDS
-            || self.bytes > CACHE_BYTES / CACHE_SHARDS
+        while self.messages > self.message_limit
+            || self.bytes > self.byte_limit
             || self.pages.len() > 256 / CACHE_SHARDS
         {
             self.remove(0);

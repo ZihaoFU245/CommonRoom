@@ -62,6 +62,7 @@ impl super::Connection {
     ) -> Result<WriteResult> {
         use sqlx::Connection as _;
         self.ensure_available()?;
+        let started = std::time::Instant::now();
         let backend = self.backend.get_mut();
         let failed = &mut self.failed;
         let result = async move {
@@ -111,6 +112,11 @@ impl super::Connection {
             }
         }
         .await;
+        tracing::debug!(
+            elapsed_us = started.elapsed().as_micros(),
+            success = result.is_ok(),
+            "Database write transaction completed"
+        );
         let (applied, total) = self.checked(result)?;
         if let Some(total) = total {
             self.changes.set(total);

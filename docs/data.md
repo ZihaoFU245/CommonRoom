@@ -14,10 +14,12 @@ databases initialize as v19; existing v19 files open without a schema upgrade.
 Other versions and unversioned existing databases are rejected before journal,
 schema or data changes. PostgreSQL work must not force a SQLite version bump.
 
-PostgreSQL is unpublished and uses its own **v1** schema marker. Empty targets
-initialize transactionally with all current indexes. Existing PostgreSQL targets
-must match the current PostgreSQL schema; there is no migration between WIP
-PostgreSQL schemas. Use a fresh empty target when changing the WIP format.
+PostgreSQL is unpublished and uses its own **v1** schema marker. Fixes are folded
+directly into this unused format. Empty targets initialize transactionally with
+all current indexes and statement-level deletion retention. Existing targets must
+match current v1; historical WIP versions have no upgrade path and unsupported
+schema markers are rejected unchanged. SQLite remains v19 and transfers read-only
+into current PostgreSQL v1.
 
 The offline SQLite-to-PostgreSQL transfer is always maintained from **HEAD SQLite
 to current PostgreSQL**. It opens SQLite read-only, checks its HEAD schema marker,
@@ -105,7 +107,7 @@ The current schema includes message-ID, author/sequence, time, global sequence a
 
 Sends/replies insert one message, prune beyond the configured per-conversation retention, and update counter/revision atomically. A reaction changes membership rows and one revision. SQL range lookups use the conversation/sequence primary key. Cached pages are keyed by stable conversation identity, revision and range, so reaction/cleanup/user rename changes cannot reuse stale content.
 
-Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. One writer connection and four independent read-only connections use WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages are bounded to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting; SQLite page caches and response copies are additional memory.
+Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. SQLite has one writer and two to four readers using WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages default to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting. `database.history_cache` tunes the global message and byte budgets on either backend; SQLite page caches and response copies are additional memory. PostgreSQL sizes message/reaction payloads before fetching a bounded page prefix; a single oversized imported message remains allowed for pagination progress. See [PostgreSQL](postgresql.md#runtime-and-backups) for pool, cache and diagnostic settings.
 
 Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains only resolved entity keys, excluding transient message bodies. Creation and rename include destination keys so rollback also removes tentative inserts. Cleanup counting batches authorized IDs against
 the existing timestamp expression index; this requires no schema change. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.

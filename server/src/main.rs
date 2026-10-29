@@ -93,6 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await??;
     let config = Config::load_for_database(Path::new(&data_dir), &database)?;
+    engine
+        .history_store()
+        .configure_cache(&config.database.history_cache.clone().unwrap_or_default())?;
     let media = media::MediaStorage::from_config(config.production, config.s3.as_ref())?;
     if media.as_ref().is_some_and(|storage| {
         config

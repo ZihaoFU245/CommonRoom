@@ -25,6 +25,24 @@ pub struct DatabaseConfig {
     pub backend: DatabaseBackend,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres_pool: Option<PostgresPoolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_cache: Option<HistoryCacheConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HistoryCacheConfig {
+    #[serde(with = "byte_size")]
+    pub max_bytes: u64,
+    pub max_messages: usize,
+}
+impl Default for HistoryCacheConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: 32 * 1024 * 1024,
+            max_messages: 10_000,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +51,7 @@ pub struct PostgresPoolConfig {
     pub min_readers: u32,
     pub max_readers: u32,
     pub max_writers: u32,
+    pub idle_timeout_seconds: u64,
 }
 impl Default for PostgresPoolConfig {
     fn default() -> Self {
@@ -40,6 +59,7 @@ impl Default for PostgresPoolConfig {
             min_readers: 2,
             max_readers: 8,
             max_writers: 8,
+            idle_timeout_seconds: 600,
         }
     }
 }
@@ -51,8 +71,15 @@ impl DatabaseConfig {
             || pool.min_readers > pool.max_readers
             || pool.max_writers == 0
             || pool.max_writers > 32
+            || !(1..=86_400).contains(&pool.idle_timeout_seconds)
         {
-            return Err("database.postgres_pool requires 0 <= min_readers <= max_readers <= 64, positive max_readers and 1 <= max_writers <= 32.".into());
+            return Err("database.postgres_pool requires 0 <= min_readers <= max_readers <= 64, positive max_readers, 1 <= max_writers <= 32 and 1 <= idle_timeout_seconds <= 86400.".into());
+        }
+        let cache = self.history_cache.clone().unwrap_or_default();
+        if !(4096..=1024 * 1024 * 1024).contains(&cache.max_bytes)
+            || !(4..=100_000).contains(&cache.max_messages)
+        {
+            return Err("database.history_cache requires 4k <= max_bytes <= 1g and 4 <= max_messages <= 100000.".into());
         }
         Ok(())
     }
@@ -466,6 +493,8 @@ mod tests {
             serde_json::json!({"min_readers":9,"max_readers":8}),
             serde_json::json!({"max_readers":0}),
             serde_json::json!({"max_writers":33}),
+            serde_json::json!({"idle_timeout_seconds":0}),
+            serde_json::json!({"idle_timeout_seconds":86401}),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("config.json");
@@ -483,6 +512,34 @@ mod tests {
         assert_eq!(
             serde_json::to_value(selected).unwrap()["postgres_pool"]["max_readers"],
             3
+        );
+    }
+    #[test]
+    fn history_cache_limits_validate_before_rewriting_and_round_trip_units() {
+        for cache in [
+            serde_json::json!({"max_bytes":"1k"}),
+            serde_json::json!({"max_bytes":"2g"}),
+            serde_json::json!({"max_messages":3}),
+            serde_json::json!({"max_messages":100001}),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.json");
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"database":{"history_cache":cache}}))
+                    .unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(Config::read_database(directory.path()).is_err());
+            assert!(Config::load(directory.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let selected: DatabaseConfig = serde_json::from_value(
+            serde_json::json!({"history_cache":{"max_bytes":"8m","max_messages":2000}}),
+        )
+        .unwrap();
+        selected.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(selected).unwrap()["history_cache"]["max_bytes"],
+            "8m"
         );
     }
     #[test]
@@ -640,6 +697,7 @@ mod tests {
             database: DatabaseConfig {
                 backend: DatabaseBackend::Postgres,
                 postgres_pool: None,
+                history_cache: None,
             },
             media: MediaConfig::default(),
             avatar_hosts: vec!["www.gravatar.com".into()],

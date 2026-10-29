@@ -198,6 +198,8 @@ fn populate(e: &mut Engine) -> crate::bots::models::MessageInput {
 #[test]
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
 fn postgres_sqlite_migration_preserves_every_table_and_retries() {
+    assert_eq!(SQLITE_SCHEMA_VERSION, 19);
+    assert_eq!(POSTGRES_SCHEMA_VERSION, 1);
     let fixture = PostgresFixture::new();
     let source = tempfile::tempdir().unwrap();
     let path = source.path().join("chat.sqlite");

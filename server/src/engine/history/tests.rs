@@ -851,6 +851,45 @@ fn each_cache_shard_enforces_its_share_of_bytes_pages_and_lru() {
     assert_eq!(cache.messages, 0);
 }
 #[test]
+fn configured_cache_limits_evict_pages_and_survive_recovery() {
+    let mut engine = super::super::tests::engine();
+    let history = engine.history_store().clone();
+    history
+        .configure_cache(&crate::config::HistoryCacheConfig {
+            max_bytes: 32 * 1024,
+            max_messages: 8,
+        })
+        .unwrap();
+    for _ in 0..6 {
+        engine
+            .execute(Some("alice"), Some("lobby"), "small message")
+            .unwrap();
+    }
+    for sequence in 1..=6 {
+        let result = engine
+            .history_page(
+                "bob",
+                "lobby",
+                HistoryRange {
+                    start: Some(sequence),
+                    end: Some(sequence),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(result.messages.len(), 1);
+    }
+    let stats = history.stats().unwrap();
+    assert_eq!(stats["message_limit"], 8);
+    assert_eq!(stats["byte_limit"], 32 * 1024);
+    assert_eq!(stats["messages"], 2); // One conversation uses one shard's share.
+    history.reset_after_recovery().unwrap();
+    let stats = history.stats().unwrap();
+    assert_eq!(stats["messages"], 0);
+    assert_eq!(stats["message_limit"], 8);
+    assert_eq!(stats["byte_limit"], 32 * 1024);
+}
+#[test]
 fn account_rename_preserves_private_history_across_streaming_batches_and_name_reuse() {
     let mut engine = super::super::tests::engine();
     for index in 0..205 {

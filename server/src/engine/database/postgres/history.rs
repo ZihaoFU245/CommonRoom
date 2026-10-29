@@ -9,6 +9,49 @@ use super::super::{
 };
 use crate::engine::{Message, Unread};
 use sqlx::{Connection as _, PgConnection};
+use std::collections::{BTreeMap, BTreeSet};
+
+// Size candidate rows without materializing their payloads. Only the selected
+// prefix is assembled below. Reaction labels occur once per message, rather
+// than once per reacting user. Conservative padding covers PostgreSQL JSON
+// whitespace, array/tuple punctuation and a full-width sequence value.
+pub(in crate::engine::database::postgres) const PAGE_SQL: &str = r#"
+WITH anchor AS (
+ SELECT sequence FROM messages WHERE conversation=$1 AND sequence<=$5
+ ORDER BY sequence DESC LIMIT 1 OFFSET ($4/2)
+), candidates AS MATERIALIZED (
+ SELECT sequence,octet_length(json)::bigint AS bytes FROM messages WHERE conversation=$1
+ AND sequence>=CASE WHEN $5::bigint IS NOT NULL THEN greatest(coalesce((SELECT sequence FROM anchor),0),1) ELSE $2 END
+ AND sequence<=$3 ORDER BY sequence DIRECTION LIMIT $4
+), sized AS (
+ SELECT c.sequence,c.bytes+64+coalesce((
+   SELECT sum(label_bytes+8+user_bytes+2*(users-1))+2*greatest(count(*)-1,0)
+   FROM (
+     SELECT octet_length(to_json(reaction)::text) AS label_bytes,
+       sum(octet_length(to_json(username)::text)) AS user_bytes,count(*) AS users
+     FROM reactions WHERE conversation=$1 AND sequence=c.sequence GROUP BY reaction
+   ) labels
+ ),0) AS bytes FROM candidates c
+), budgeted AS (
+ SELECT sequence,row_number() OVER (ORDER BY sequence DIRECTION) AS ordinal,
+ sum(bytes) OVER (ORDER BY sequence DIRECTION) AS through FROM sized
+), page AS MATERIALIZED (
+ SELECT sequence FROM budgeted WHERE through<=$6 OR ordinal=1
+)
+SELECT (SELECT revision FROM entities WHERE kind IN ('room','private') AND projection #>> '{id}'=$1),
+ ARRAY(SELECT m.json FROM page JOIN messages m ON m.conversation=$1 AND m.sequence=page.sequence
+       ORDER BY page.sequence DIRECTION),
+ coalesce((SELECT json_agg(json_build_array(page.sequence,r.value) ORDER BY page.sequence DIRECTION)
+   FROM page CROSS JOIN LATERAL (
+     SELECT coalesce(json_object_agg(reaction,users),'{}'::json) AS value FROM (
+       SELECT reaction,json_agg(username ORDER BY username) AS users FROM reactions
+       WHERE conversation=$1 AND sequence=page.sequence GROUP BY reaction
+     ) labels
+   ) r),'[]'::json),
+ (SELECT min(sequence) FROM messages WHERE conversation=$1),
+ (SELECT max(sequence) FROM messages WHERE conversation=$1),
+ coalesce((SELECT sequence FROM anchor),0)
+"#;
 
 pub(crate) const CLEANUP_COUNTS_SQL: &str = "SELECT targets.value,count(DISTINCT m.sequence),count(refs.media_id) FROM unnest($1::text[]) AS targets(value) LEFT JOIN messages AS m ON m.conversation=targets.value AND ((m.projection #>> '{time}'))::bigint<$2 LEFT JOIN message_media AS refs ON refs.conversation=m.conversation AND refs.sequence=m.sequence GROUP BY targets.value";
 
@@ -21,29 +64,12 @@ pub(in crate::engine::database) async fn page(
     let (lower, upper, ascending) = request.interval(0);
     // Only a compile-time direction is interpolated. All request data is bound.
     let direction = if ascending { "ASC" } else { "DESC" };
-    let sql = format!(
-        r#"
-WITH anchor AS (
- SELECT sequence FROM messages WHERE conversation=$1 AND sequence<=$5
- ORDER BY sequence DESC LIMIT 1 OFFSET ($4/2)
-), page AS MATERIALIZED (
- SELECT sequence,json FROM messages WHERE conversation=$1
- AND sequence>=CASE WHEN $5::bigint IS NOT NULL THEN greatest(coalesce((SELECT sequence FROM anchor),0),1) ELSE $2 END
- AND sequence<=$3 ORDER BY sequence {direction} LIMIT $4
-)
-SELECT (SELECT revision FROM entities WHERE kind IN ('room','private') AND projection #>> '{{id}}'=$1),
- ARRAY(SELECT json FROM page ORDER BY sequence {direction}),
- coalesce((SELECT json_agg(json_build_array(sequence,reaction,username)) FROM reactions
-           WHERE conversation=$1 AND sequence IN (SELECT sequence FROM page)),'[]'::json),
- (SELECT min(sequence) FROM messages WHERE conversation=$1),
- (SELECT max(sequence) FROM messages WHERE conversation=$1),
- coalesce((SELECT sequence FROM anchor),0)
-"#
-    );
+    let sql = PAGE_SQL.replace("DIRECTION", direction);
+    type Reactions = BTreeMap<String, BTreeSet<String>>;
     type Row = (
         Option<i64>,
         Vec<String>,
-        sqlx::types::Json<Vec<(i64, String, String)>>,
+        sqlx::types::Json<Vec<(i64, Reactions)>>,
         Option<i64>,
         Option<i64>,
         i64,
@@ -54,6 +80,10 @@ SELECT (SELECT revision FROM entities WHERE kind IN ('room','private') AND proje
         .bind(number(upper)?)
         .bind(limit)
         .bind(request.range.around.map(number).transpose()?)
+        .bind(
+            i64::try_from(request.max_bytes)
+                .map_err(|_| Error::Conversion("Invalid history byte budget"))?,
+        )
         .fetch_one(db)
         .await?;
     if stored != Some(number(request.revision)?) {
@@ -63,7 +93,15 @@ SELECT (SELECT revision FROM entities WHERE kind IN ('room','private') AND proje
         .iter()
         .map(|raw| decode_message(raw))
         .collect::<Result<Vec<_>>>()?;
-    attach_reactions(&mut messages, reactions.0)?;
+    if messages.len() != reactions.0.len() {
+        return Err(Error::Conversion("Invalid history reaction batch"));
+    }
+    for (message, (sequence, reactions)) in messages.iter_mut().zip(reactions.0) {
+        if message.sequence != unsigned(sequence)? {
+            return Err(Error::Conversion("Invalid history reaction sequence"));
+        }
+        message.reactions = reactions;
+    }
     let (lower, upper, ascending) = request.interval(unsigned(anchor)?);
     let (messages, sizes, before, after) = request.finish(messages, lower, upper, ascending)?;
     Ok(PageResult {

@@ -1,5 +1,33 @@
 # PostgreSQL review verification and fixes
 
+## Current memory and retention follow-up
+
+The later pool-memory review found two reproducible issues beyond the historical
+ledger below. PostgreSQL now bounds candidate page payloads before assembly and
+decoding, transmits each reaction label once per message, and updates deletion
+retention once per statement/conversation. [Storage benchmarks](storage-benchmarks.md)
+records the before/after SQL measurements and regression commands.
+
+PostgreSQL stays at schema v1 because it is unused and unpublished. Fixes modify
+v1 directly; there is no PostgreSQL schema-upgrade path. Unsupported schema
+markers remain rejected unchanged. SQLite stays at v19 and read-only HEAD SQLite
+transfer targets current PostgreSQL v1.
+
+Optional history-cache byte/message budgets and PostgreSQL idle timeout settings
+are validated before bootstrap/config rewriting. `/configs` exposes effective
+cache budgets and pool sizes/acquisition timing/errors. Debug storage traces add
+read/write-operation durations without query parameters or message bodies.
+
+Validation: `auto/check.sh` passed (413 ordinary Rust tests and 309 web tests,
+plus formatting, Clippy, web type/lint/format and harness syntax checks). All
+59 PostgreSQL contracts passed in disposable schemas, including new raw-payload,
+bulk-trigger and idle-reclamation contracts. The real-binary
+SQLite-to-PostgreSQL transfer, sessions/passwords, HTTP restart/shutdown and
+second-owner configuration checks passed with unchanged SQLite source bytes.
+Working `data/` and `pgdata/` were not used.
+
+## Historical review
+
 This records verification of `analysis.md` against the current implementation.
 The review mixes reproducible defects, intentional contracts, latent hardening,
 and performance estimates. Findings were checked against call sites, existing
