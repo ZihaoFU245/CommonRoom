@@ -658,6 +658,7 @@ fn postgres_upload_quotas_lock_each_uploader_and_cleanup_skips_busy_rows() {
         expires: None,
         deleting: false,
         deleted: false,
+        source: None,
     };
     let blocker = Connection::postgres(&fixture.url, false).unwrap();
     let hold = blocker.unchecked_transaction().unwrap();

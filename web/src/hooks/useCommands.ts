@@ -170,7 +170,7 @@ export function useCommands({
       return;
     }
     const attachmentMarkdown = attachment
-      ? mediaMarkdown(attachment.media, document.baseURI)
+      ? mediaMarkdown(attachment.media, document.baseURI, attachment.sticker)
       : null;
     if (attachment && !attachmentMarkdown) {
       append(

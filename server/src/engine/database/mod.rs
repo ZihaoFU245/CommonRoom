@@ -11,7 +11,7 @@ mod receipts;
 pub(crate) use receipts::ReceiptRead;
 mod media;
 mod profile;
-pub(crate) use media::{MediaAllocation, MediaWrite};
+pub(crate) use media::{MediaAllocation, MediaWrite, StickerCopy};
 pub(crate) use profile::ProfileWrite;
 mod metadata;
 pub(crate) use metadata::{CursorRows, EntityRow, MetadataOp, MetadataSnapshot, MetadataWrite};

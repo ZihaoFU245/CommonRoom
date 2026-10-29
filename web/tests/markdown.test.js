@@ -256,6 +256,17 @@ test("Markdown images validate URLs on both paths and raw media never renders", 
   }
 });
 
+test("Markdown images keep their title hint on both paths", () => {
+  const src = "/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file";
+  const input = `![sticker](${src} "media:sticker")`;
+  for (const nodes of [plainNodes(input), markdownNodes(input, true)])
+    assert.deepEqual(flatten(nodes).find((node) => node.image).image, {
+      src,
+      alt: "sticker",
+      title: "media:sticker",
+    });
+});
+
 test("sanitizer unwraps benign unknown tags, drops dangerous subtrees, and rejects forged placeholders", () => {
   const nodes = flatten(
     markdownNodes(

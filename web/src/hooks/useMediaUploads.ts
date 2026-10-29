@@ -2,11 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import { filenameHint, uploadFile } from "../api/media.ts";
 import type { CompletedMedia } from "../api/media.ts";
+import type { Sticker } from "../api/stickers.ts";
 import { errorMessage } from "../api/protocol.ts";
 
 export interface Attachment {
   media: CompletedMedia;
   preview: string | null;
+  /** Rendered as a small sticker; the preview is a server URL, not a blob. */
+  sticker?: boolean;
 }
 export function useMediaUploads(
   conversationId: string | undefined,
@@ -48,7 +51,8 @@ export function useMediaUploads(
   }
   function release() {
     const previous = currentAttachment.current;
-    if (previous?.preview) URL.revokeObjectURL(previous.preview);
+    if (previous?.preview && !previous.sticker)
+      URL.revokeObjectURL(previous.preview);
     currentAttachment.current = null;
     setAttachment(null);
   }
@@ -152,6 +156,43 @@ export function useMediaUploads(
       if (valid()) setBusy(false);
     }
   }
+  /** Copies a library sticker into this conversation as the attachment. */
+  async function attachSticker(sticker: Sticker) {
+    if (controller.current || currentAttachment.current) return;
+    if (!conversationId) {
+      setError("Select a conversation before adding a sticker.");
+      return;
+    }
+    const active = new AbortController();
+    controller.current = active;
+    const valid = () =>
+      !active.signal.aborted && currentConversation.current === conversationId;
+    setBusy(true);
+    setError("");
+    setRetryFile(null);
+    setStatus("Adding sticker…");
+    try {
+      const media = await api.sendSticker(
+        sticker.id,
+        conversationId,
+        active.signal,
+      );
+      if (!valid()) return;
+      const value = { media, preview: sticker.path, sticker: true };
+      allocated.current = media.media_id;
+      currentAttachment.current = value;
+      setAttachment(value);
+      setStatus("");
+    } catch (failure) {
+      if (valid()) {
+        setError(errorMessage(failure));
+        setStatus("");
+      }
+    } finally {
+      if (controller.current === active) controller.current = null;
+      if (valid()) setBusy(false);
+    }
+  }
   function cancel() {
     controller.current?.abort();
     controller.current = null;
@@ -177,6 +218,7 @@ export function useMediaUploads(
     error,
     attachment,
     start,
+    attachSticker,
     cancel,
     published,
     retry: retryFile ? () => start(retryFile) : undefined,

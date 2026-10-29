@@ -1,7 +1,12 @@
 import type { AttachmentContext } from "./Attachment.tsx";
 import { ExternalImage } from "./ExternalImage.tsx";
 import { ManagedAttachment } from "./ManagedAttachment.tsx";
-import { attachmentLink, managedMediaLink } from "../api/media.ts";
+import {
+  attachmentLink,
+  managedMediaLink,
+  stickerImage,
+} from "../api/media.ts";
+import { StickerImage } from "./StickerImage.tsx";
 import { createElement } from "preact";
 import type { ComponentChildren } from "preact";
 import { lazy, memo, Suspense } from "preact/compat";
@@ -83,6 +88,17 @@ export const MarkdownContent = memo(function MarkdownContent({
           </Suspense>,
         );
       }
+      const sticker = node.image
+        ? stickerImage(node.image.src, node.image.title, document.baseURI)
+        : null;
+      if (sticker && node.image)
+        return wrap(
+          <StickerImage
+            key={`${index}:${sticker.id}`}
+            id={sticker.id}
+            src={node.image.src}
+          />,
+        );
       if (node.image)
         return wrap(
           <ExternalImage

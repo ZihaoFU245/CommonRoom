@@ -297,6 +297,8 @@ quota/rate checks; rejected allocations leave no pair behind.
 | `POST /api/media/uploads/{id}/abandon` | `{}` | `{ok:true}`; marks an owned unpublished upload for cleanup |
 | `GET /api/media/{id}/file` | Session plus current conversation read permission | 307 redirect to a 60-second signed GET; `no-store` |
 
+Sticker libraries use separate `/api/stickers` routes; see [Stickers](#stickers).
+
 The client sends the file directly to `upload.url` with the returned headers and
 without chat cookies. The browser sets Content-Length from the selected file;
 it must match the allocated size. Completion verifies storage and is idempotent;
@@ -430,6 +432,30 @@ owner/size, completed, expired or abandoned allocation cannot reuse the ID.
 Avatar allocation skips the preliminary storage availability probe; PUT/completion
 report storage failures. Completion retains its immutable-copy validation and
 post-I/O authorization checks.
+
+## Stickers
+
+Each account has a private, permanent sticker library. Library reads, writes and
+downloads are owner-only and do not need room permissions; sending needs
+`w:media.upload` in the target conversation.
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `GET /api/stickers` | Authenticated same-origin read | `{enabled,max_size,limit,stickers:[{id,path,content_type,size}]}`, newest first |
+| `POST /api/stickers/uploads` | `{size}` (1 byte–`max_size`) | Existing media upload ticket shape; rejected at the library `limit` |
+| `POST /api/stickers/uploads/{id}/complete` | `{}` | One sticker entry; bytes must be PNG/JPEG/GIF/WebP |
+| `GET /api/stickers/{id}/file` | Owner session | 307 to private, 60-second signed S3 GET; `no-store` |
+| `POST /api/stickers/{id}/send` | `{conversation_id}` | Completed media shape for a conversation copy |
+| `POST /api/stickers/{id}/delete` | `{}` | `{ok:true}`; already sent copies remain |
+| `POST /api/stickers/collect` | `{media_id}` | One new sticker entry copied from a readable sent sticker |
+
+`send` copies the sticker into an ordinary conversation upload that follows the
+room's retention, quota and cleanup rules. A live, referenced or recently pending
+copy of the same sticker in the same conversation by the same sender is reused.
+Clients send it as `![sticker](/api/media/<id>/file "media:sticker")`; the title
+is a display hint only. `collect` accepts only media that was sent from a
+sticker. Browsers resize PNG/JPEG/WebP to at most 512 px and encode WebP; GIFs
+are uploaded unchanged. Bots have no sticker endpoints.
 
 External avatar URLs require an exact host in server `avatar_hosts` (default empty).
 Only HTTPS without userinfo is accepted; subdomains and suffix lookalikes do not

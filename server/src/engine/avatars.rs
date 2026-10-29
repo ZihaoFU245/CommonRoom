@@ -241,6 +241,7 @@ impl Engine {
             expires: None,
             deleting: false,
             deleted: false,
+            source: None,
         };
         self.store_media_allocation(&media)?;
         Ok(media)

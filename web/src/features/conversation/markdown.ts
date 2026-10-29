@@ -56,7 +56,7 @@ export type MarkdownNode =
       title?: string;
       start?: string;
       math?: { source: string; display: boolean };
-      image?: { src: string; alt: string };
+      image?: { src: string; alt: string; title?: string };
       html?: { source: string; index: number };
     };
 export function markdownTokens(tokens: Token[]): MarkdownNode[] {
@@ -98,9 +98,16 @@ export function markdownTokens(tokens: Token[]): MarkdownNode[] {
           parser.options,
           {},
         );
+        const title = token.attrGet("title");
         current.push(
           safeMediaUrl(src)
-            ? { tag: "img", children: [], image: { src, alt } }
+            ? {
+                tag: "img",
+                children: [],
+                image: title
+                  ? { src, alt, title: String(title) }
+                  : { src, alt },
+              }
             : alt,
         );
       } else if (token.type === "inline") {
