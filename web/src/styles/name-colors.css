@@ -1,0 +1,264 @@
+.name-color-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 20px;
+}
+.name-color-scope {
+  margin-bottom: 12px;
+}
+.name-color-setting > span {
+  font-size: 0.85714rem;
+  font-weight: 600;
+}
+.name-color-control {
+  position: relative;
+  width: min(14rem, 42vw);
+  max-width: 100%;
+  min-width: 0;
+}
+.name-color-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font-size: 0.92857rem;
+  text-align: left;
+}
+.name-color-toggle > span:not(.name-color-swatch) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name-color-toggle:hover {
+  border-color: var(--hairline);
+}
+.name-color-toggle:disabled {
+  opacity: 0.6;
+}
+.name-color-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--subtle);
+  transition: transform var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.name-color-toggle[aria-expanded="true"] .name-color-chevron {
+  transform: rotate(180deg);
+}
+.name-scope-options {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 100%;
+  max-height: min(16rem, 35dvh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+}
+.name-scope-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 0.92857rem;
+  text-align: left;
+}
+.name-scope-option > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name-scope-option:hover,
+.name-scope-option:focus-visible,
+.name-scope-option[aria-selected="true"] {
+  background: var(--wash);
+}
+.name-scope-option > svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  visibility: hidden;
+}
+.name-scope-option[aria-selected="true"] > svg {
+  visibility: visible;
+}
+@media (prefers-reduced-motion: reduce) {
+  .name-color-chevron {
+    transition: none;
+  }
+}
+.name-color-swatch {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--name);
+}
+.name-color-picker {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(6, 28px);
+  overflow-y: auto;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+}
+.name-color-picker[data-side="top"],
+.name-scope-options[data-side="top"] {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+@media (max-width: 500px) {
+  .name-color-setting {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .name-color-control {
+    width: 100%;
+  }
+  .name-color-picker {
+    width: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .name-color-picker .name-color-option {
+    width: 100%;
+    height: auto;
+    min-height: 28px;
+    aspect-ratio: 1;
+  }
+}
+.name-color-option {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--name);
+}
+.name-color-option[aria-pressed="true"] {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Each colored element falls back to the text color unless it carries its own
+   data-name-color; these must precede the palette rules below. */
+.message-author,
+.reply-quote strong,
+.online-list b,
+.mention,
+.name-color-swatch,
+.name-color-option {
+  --name: var(--ink);
+}
+[data-name-color="red"] {
+  --name: var(--name-red);
+}
+[data-name-color="orange"] {
+  --name: var(--name-orange);
+}
+[data-name-color="amber"] {
+  --name: var(--name-amber);
+}
+[data-name-color="yellow"] {
+  --name: var(--name-yellow);
+}
+[data-name-color="lime"] {
+  --name: var(--name-lime);
+}
+[data-name-color="green"] {
+  --name: var(--name-green);
+}
+[data-name-color="emerald"] {
+  --name: var(--name-emerald);
+}
+[data-name-color="teal"] {
+  --name: var(--name-teal);
+}
+[data-name-color="cyan"] {
+  --name: var(--name-cyan);
+}
+[data-name-color="sky"] {
+  --name: var(--name-sky);
+}
+[data-name-color="blue"] {
+  --name: var(--name-blue);
+}
+[data-name-color="indigo"] {
+  --name: var(--name-indigo);
+}
+[data-name-color="violet"] {
+  --name: var(--name-violet);
+}
+[data-name-color="purple"] {
+  --name: var(--name-purple);
+}
+[data-name-color="fuchsia"] {
+  --name: var(--name-fuchsia);
+}
+[data-name-color="pink"] {
+  --name: var(--name-pink);
+}
+
+.message-bar-opacity-setting .account-summary {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.name-color-preview,
+.name-color-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.name-color-preview {
+  padding: 0.25rem;
+}
+.name-color-preview > span {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+.name-color-actions {
+  justify-content: flex-end;
+  padding-top: 0.25rem;
+}
+.name-color-picker > .account-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}

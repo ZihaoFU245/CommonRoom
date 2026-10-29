@@ -1,0 +1,26 @@
+.show-message-bars .message-content {
+  border-left: 3px solid
+    color-mix(in srgb, var(--ink) var(--message-bar-opacity, 50%), transparent);
+  padding-left: 11px;
+}
+.show-message-bars .message-content[data-name-color] {
+  border-left-color: color-mix(
+    in srgb,
+    var(--name) var(--message-bar-opacity, 50%),
+    transparent
+  );
+}
+/* Extend each segment through the row's own padding. Adjacent segments meet
+   without overlapping, preserving the selected opacity at every join. */
+.show-message-bars .message-bar-continued .message-content {
+  margin-top: calc(-1 * var(--message-top-gap));
+  padding-top: var(--message-top-gap);
+}
+.show-message-bars .message-bar-continues .message-content {
+  margin-bottom: -2px;
+  padding-bottom: 2px;
+}
+.show-message-bars .reply-quote {
+  margin-left: 2px;
+  max-width: calc(100% - 2px);
+}

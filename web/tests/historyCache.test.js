@@ -100,7 +100,7 @@ test("byte eviction retains the requested edge and permits an oversized single r
 test("global cache evicts by recency, view count, and payload budget", () => {
   const cache = new HistoryCache();
   for (let i = 0; i < 32; i++) cache.store(page(String(i), 1, 1));
-  cache.store(cache.get("0"));
+  cache.get("0");
   cache.store(page("new", 1, 1));
   assert.ok(cache.has("0"));
   assert.ok(!cache.has("1"));
@@ -275,4 +275,24 @@ test("history merging preserves colors for older authors across page boundaries"
     version: "one",
     values: { alice: "red", bob: "teal" },
   });
+});
+
+test("snapshot budgets preserve legacy direct messages with and without resolvable IDs", () => {
+  const original = {
+    ...snapshot(),
+    username: "alice",
+    rooms: [],
+    private_access: { "@direct:bob": { id: "pair" } },
+    direct: [
+      { ...message(1), to: "bob" },
+      { ...message(2), from: "bob", to: "alice" },
+      { ...message(3), to: "unknown" },
+    ],
+  };
+  assert.deepEqual(boundSnapshot(original).direct, original.direct);
+  original.direct = Array.from({ length: 1200 }, (_, i) => ({
+    ...message(i + 1),
+    to: "unknown",
+  }));
+  assert.equal(boundSnapshot(original).direct.length, 1000);
 });

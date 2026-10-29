@@ -17,6 +17,8 @@ export class BotCommandCache {
   private request: Request | undefined;
   private completedKey: string | undefined;
   private nextRefresh = 0;
+  private signature = "";
+  private refreshDelay = BOT_COMMAND_REFRESH_MS;
   private retryAfter = 0;
   private failures = 0;
   private stopped = false;
@@ -66,8 +68,14 @@ export class BotCommandCache {
           const members = conversations.get(id);
           if (members !== undefined) this.entries.set(id, { members, bots });
         }
+        const signature = JSON.stringify(result);
+        this.refreshDelay =
+          this.completedKey === key && this.signature === signature
+            ? Math.min(this.refreshDelay * 2, 15 * 60_000)
+            : BOT_COMMAND_REFRESH_MS;
+        this.signature = signature;
         this.completedKey = key;
-        this.nextRefresh = Date.now() + BOT_COMMAND_REFRESH_MS;
+        this.nextRefresh = Date.now() + this.refreshDelay;
         this.retryAfter = 0;
         this.failures = 0;
         this.changed();

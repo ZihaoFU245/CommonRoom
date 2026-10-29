@@ -9,6 +9,8 @@ import { MediaCache } from "../../src/features/conversation/mediaCache.ts";
 import { MessageList } from "../../src/components/MessageList.tsx";
 import { Avatar } from "../../src/components/Avatar.tsx";
 import { Composer } from "../../src/components/Composer.tsx";
+import { useComposerResize } from "../../src/hooks/useComposerResize.ts";
+import { useRef, useState } from "preact/hooks";
 import { useCommandComposer } from "../../src/hooks/useCommandComposer.ts";
 import { Chat } from "../../src/components/Chat.tsx";
 import { Login } from "../../src/components/Login.tsx";
@@ -2299,6 +2301,7 @@ for (const width of [1000, 320]) {
     );
     tests.querySelector(".reply-quote").click();
     await until(() => tests.querySelector("#message-m-1"));
+    await until(() => !timeline.current?.isScrolling?.());
     const element = tests.querySelector("#message-m-1");
     const target = element.getBoundingClientRect();
     const bounds = viewport.getBoundingClientRect();
@@ -2411,6 +2414,7 @@ for (const width of [1000, 320]) {
       requested.length === 1 && requested[0] === 1,
       "the missing original is requested by sequence",
     );
+    await until(() => !timeline.current?.isScrolling?.());
     const element = tests.querySelector("#message-m-1");
     const target = element.getBoundingClientRect();
     const bounds = viewport.getBoundingClientRect();
@@ -2493,6 +2497,7 @@ await test("mounted reply jumps release bottom following and clean up motion", a
       bottom.current === false,
       "mounted jumps release bottom intent synchronously",
     );
+    await until(() => target.getAnimations().length > 0);
     const animation = target.getAnimations()[0];
     check(animation, "a mounted target is highlighted");
     reduced = true;
@@ -2508,11 +2513,13 @@ await test("mounted reply jumps release bottom following and clean up motion", a
     );
     reduced = false;
     tests.querySelector(".reply-quote").click();
+    await until(() => target.getAnimations().length > 0);
     const beforeSwitch = target.getAnimations()[0];
     scope = "another-conversation";
     mount();
     await until(() => beforeSwitch.playState === "idle");
     tests.querySelector(".reply-quote").click();
+    await until(() => target.getAnimations().length > 0);
     const beforeUnmount = target.getAnimations()[0];
     render(null, tests);
     check(beforeUnmount.playState === "idle", "unmount cancels the highlight");
@@ -3085,6 +3092,239 @@ await test("avatar upload failures retain the crop and expose a retryable error"
     tests.querySelector(".avatar-crop canvas") === crop,
     "the same crop can be retried without selecting a file again",
   );
+});
+
+await test("new-message announcements exclude initial history, backfill and virtual remounts", async () => {
+  const bottom = { current: true },
+    history = { current: null },
+    timeline = { current: null },
+    end = { current: null };
+  const entry = (sequence) => ({
+    kind: "message",
+    key: `m-${sequence}`,
+    order: sequence,
+    message: message(sequence),
+  });
+  let entries = [entry(2)];
+  const draw = () =>
+    render(
+      h(
+        "div",
+        {
+          style: { height: "300px", display: "flex", flexDirection: "column" },
+        },
+        h(MessageList, {
+          motionScope: "announcements",
+          revision: entries.length,
+          historyReady: true,
+          entries,
+          username: "alice",
+          pending: false,
+          debug: false,
+          allowHtml: false,
+          latex: false,
+          permissions: [],
+          commands: [],
+          unreadBoundary: null,
+          atBottom: bottom,
+          historyElement: history,
+          virtualTimeline: timeline,
+          end,
+          onReact() {},
+          onReply() {},
+          onDelete() {},
+          onScroll() {},
+          loadSequence() {},
+          onEdit: async () => true,
+        }),
+      ),
+      tests,
+    );
+  draw();
+  await sleep(150);
+  const log = () => tests.querySelector('[role="log"]');
+  check(log() && !log().textContent.trim(), "initial history is silent");
+  check(
+    !history.current.hasAttribute("aria-live"),
+    "virtual history is not a live region",
+  );
+  entries = [
+    ...entries,
+    { ...entry(3), message: { ...message(3), text: "a new arrival" } },
+  ];
+  draw();
+  await until(() => log().textContent.includes("a new arrival"));
+  entries = [entry(1), ...entries];
+  draw();
+  await sleep(150);
+  check(
+    !log().textContent.trim(),
+    "backfill does not replay history or the previous arrival",
+  );
+  history.current.dispatchEvent(new Event("scroll"));
+  await sleep(150);
+  check(!log().textContent.trim(), "virtual remounts do not announce history");
+});
+
+await test("external message images require URL-specific consent", async () => {
+  const first = "https://tracker.invalid/first.png";
+  const second = "https://tracker.invalid/second.png";
+  const draw = (src) =>
+    render(
+      h(MarkdownContent, {
+        nodes: markdownNodes(`![Picture](${src})`),
+        mentions: [],
+      }),
+      tests,
+    );
+  draw(first);
+  check(
+    !tests.querySelector("img"),
+    "remote image has no network-capable element before consent",
+  );
+  const button = tests.querySelector("button");
+  check(
+    button?.textContent.includes("tracker.invalid"),
+    "consent identifies the destination",
+  );
+  button.click();
+  await until(() => tests.querySelector("img"));
+  check(tests.querySelector("img").src === first, "approved image loads");
+  check(
+    tests.querySelector("img").referrerPolicy === "no-referrer",
+    "image requests omit page referrers",
+  );
+  draw(second);
+  check(!tests.querySelector("img"), "an edited URL requires fresh consent");
+  draw("data:image/png;base64,iVBORw0KGgo=");
+  check(tests.querySelector("img"), "embedded raster images remain immediate");
+});
+
+for (const native of [false, true]) {
+  await test(`composer grows and shrinks with ${native ? "native" : "fallback"} sizing`, async () => {
+    const supports = CSS.supports;
+    if (native && !supports.call(CSS, "field-sizing", "content")) return;
+    CSS.supports = (...args) =>
+      args[0] === "field-sizing" ? native : supports.apply(CSS, args);
+    let edit;
+    function Editor() {
+      const input = useRef(null);
+      const [draft, setDraft] = useState("");
+      edit = setDraft;
+      const { actualComposerHeight } = useComposerResize(14, input, draft);
+      return h("textarea", {
+        ref: input,
+        value: draft,
+        style: { width: "180px", height: `${actualComposerHeight}px` },
+      });
+    }
+    try {
+      render(h(Editor), tests);
+      const element = tests.querySelector("textarea");
+      await sleep(80);
+      const minimum = element.getBoundingClientRect().height;
+      edit("line\n".repeat(8));
+      await until(() => element.getBoundingClientRect().height > minimum + 20);
+      edit("");
+      await until(() => element.getBoundingClientRect().height <= minimum + 2);
+      check(
+        native
+          ? !document.querySelector('[name="message-size-mirror"]')
+          : document.querySelector('[name="message-size-mirror"]'),
+        "only fallback sizing uses a mirror",
+      );
+    } finally {
+      render(null, tests);
+      CSS.supports = supports;
+    }
+  });
+}
+
+await test("room selection preserves fragments and restores the default view with Back", async () => {
+  const Socket = window.WebSocket;
+  const url = location.href;
+  const sidebar = localStorage.getItem("commonroom-sidebar-open");
+  window.WebSocket = class {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 1;
+    close() {
+      this.readyState = 3;
+    }
+  };
+  localStorage.setItem("commonroom-sidebar-open", "true");
+  history.replaceState(null, "", "#tab=files");
+  const state = {
+    ...empty,
+    rooms: ["alpha", "beta"].map((name) => ({
+      id: name,
+      name,
+      owner: "alice",
+      permissions: [],
+      commands: [],
+      members: ["alice"],
+      messages: [],
+    })),
+    unread: Object.fromEntries(
+      ["alpha", "beta"].map((name) => [
+        name,
+        { count: 0, first: null, through: 0, oldest: 0, revision: 0 },
+      ]),
+    ),
+  };
+  try {
+    render(
+      h(Chat, {
+        initial: state,
+        onLogout() {},
+        appearance: {
+          theme: "light",
+          setTheme() {},
+          seeds: defaultSeeds,
+          setSeeds() {},
+        },
+      }),
+      tests,
+    );
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "alpha",
+    );
+    await sleep(100);
+    check(
+      location.hash === "#tab=files",
+      "mount does not rewrite the default URL",
+    );
+    const beta = [...tests.querySelectorAll(".room-link")].find((button) =>
+      button.textContent.includes("beta"),
+    );
+    check(beta, "second room is available");
+    beta.click();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "beta",
+    );
+    check(
+      new URLSearchParams(location.hash.slice(1)).get("tab") === "files",
+      "room changes preserve other fragment parameters",
+    );
+    history.back();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "alpha",
+    );
+    check(
+      location.hash === "#tab=files",
+      "Back restores the default view and original fragment",
+    );
+    history.forward();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "beta",
+    );
+  } finally {
+    render(null, tests);
+    window.WebSocket = Socket;
+    history.replaceState(null, "", url);
+    if (sidebar === null) localStorage.removeItem("commonroom-sidebar-open");
+    else localStorage.setItem("commonroom-sidebar-open", sidebar);
+  }
 });
 
 document.querySelector("#results").textContent = JSON.stringify(

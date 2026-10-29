@@ -1,3 +1,4 @@
+import { useEvent } from "../../hooks/useEvent.ts";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import { useSettingsMotion } from "../../hooks/useSettingsMotion.ts";
@@ -32,14 +33,14 @@ function useColorMenu() {
   const [open, setOpen] = useState(false);
   const container = useSettingsMotion<HTMLDivElement>();
   const toggle = useRef<HTMLButtonElement>(null);
-  function close(restoreFocus = false) {
+  const close = useEvent((restoreFocus = false) => {
     // AutoAnimate retains exiting elements briefly; remove them from keyboard navigation.
     container.current
       ?.querySelector("[data-name-popup]:not([inert])")
       ?.setAttribute("inert", "");
     setOpen(false);
     if (restoreFocus) toggle.current?.focus();
-  }
+  });
   // Position and focus the popup before its entrance animation is painted.
   useLayoutEffect(() => {
     if (!open) return;
@@ -84,7 +85,7 @@ function useColorMenu() {
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("focusin", outside);
     };
-  }, [open]);
+  }, [open, close, container]);
   return {
     open,
     container,

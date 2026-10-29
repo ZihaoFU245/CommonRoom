@@ -22,9 +22,13 @@ export function useBotCommands(
   online: boolean,
 ) {
   const [, render] = useState(0);
-  const cache = useMemo(
-    () =>
-      new BotCommandCache(api.botCommands, () => render((value) => value + 1)),
+  const { cache } = useMemo(
+    () => ({
+      authority,
+      cache: new BotCommandCache(api.botCommands, () =>
+        render((value) => value + 1),
+      ),
+    }),
     // A changed account, server instance or policy must never reuse private metadata.
     [authority],
   );

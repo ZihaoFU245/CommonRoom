@@ -217,6 +217,9 @@ export function useConnection(
     if (projection.current === nameColors) return;
     const change = () => changeProjection.current(nameColors);
     if (callbacks.current.whenIdle) return callbacks.current.whenIdle(change);
+    // A caller without a drain barrier must fail outstanding work explicitly;
+    // the deliberately detached old socket will not deliver its close callback.
+    callbacks.current.onDisconnect();
     change();
     return undefined;
   }, [nameColors]);

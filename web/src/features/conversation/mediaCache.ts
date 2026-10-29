@@ -1,5 +1,7 @@
 /** Persistent immutable bytes. Every reuse first checks live server authorization. */
+import { rangeStream } from "./rangeStream.ts";
 const cacheName = "commonroom-media-v2";
+const recencyCacheName = "commonroom-media-recency-v1";
 const byteLimit = 256 * 1024 * 1024;
 const entryLimit = 128;
 const touchInterval = 60_000;
@@ -96,6 +98,7 @@ export class MediaCache {
   private readonly fills = new Map<string, Fill>();
   private fillingBytes = 0;
   private readonly touched = new Map<string, number>();
+  private readonly persistedAt = new Map<string, number>();
   private readonly pending = new Map<string, Promise<void>>();
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
   private readonly storage: CacheStorage;
@@ -160,46 +163,74 @@ export class MediaCache {
     this.index.sizes.set(key, size);
     this.index.bytes += size;
   }
-  private touch(
-    cache: Cache,
-    key: string,
-    keepAlive: (work: Promise<void>) => void,
-  ): void {
-    // Keep approximate persisted LRU order without rewriting immutable bytes on
-    // every virtual-row remount or player Range request. Authorization stays live.
+  private touch(key: string, keepAlive: (work: Promise<void>) => void): void {
     const now = Date.now();
-    const previous = this.touched.get(key);
-    if (previous !== undefined && now - previous < touchInterval) return;
+    const previous = this.persistedAt.get(key);
     this.touched.delete(key);
     this.touched.set(key, now);
     if (this.touched.size > entryLimit) {
       const oldest = this.touched.keys().next().value;
-      if (oldest !== undefined) this.touched.delete(oldest);
+      if (oldest !== undefined) {
+        this.touched.delete(oldest);
+        this.persistedAt.delete(oldest);
+      }
     }
+    if (previous !== undefined && now - previous < touchInterval) return;
+    this.persistedAt.set(key, now);
+    // Persist only a tiny timestamp. Immutable attachment bytes are never
+    // deleted/re-written merely because a player seeks or a row remounts.
     const work = this.writes
       .then(async () => {
-        const saved = await cache.match(key);
-        if (!saved) {
-          this.forget(key);
-          return;
-        }
-        await cache.delete(key);
-        this.forget(key);
-        await cache.put(key, saved);
-        this.remember(key, Number(saved.headers.get("Content-Length")) || 0);
+        const recency = await this.storage.open(recencyCacheName);
+        await recency.put(
+          key,
+          new Response(null, { headers: { "X-Accessed-At": String(now) } }),
+        );
+        // Browser eviction can remove bodies without their metadata. Bound this
+        // cache independently, including when body storage never reaches pressure.
+        const records = await recency.keys();
+        for (const record of records.slice(
+          0,
+          Math.max(0, records.length - entryLimit),
+        ))
+          await recency.delete(record);
       })
       .catch(() => {
-        this.index = null;
-        if (this.touched.get(key) === now) this.touched.delete(key);
-        /* Cache maintenance cannot interrupt playback. */
+        if (this.persistedAt.get(key) === now) this.persistedAt.delete(key);
       });
     this.writes = work;
-    this.pending.set(key, work);
-    keepAlive(
-      work.finally(() => {
-        if (this.pending.get(key) === work) this.pending.delete(key);
-      }),
-    );
+    keepAlive(work);
+  }
+  private async oldestKey(index: { sizes: Map<string, number> }) {
+    let oldest = index.sizes.keys().next().value;
+    try {
+      const recency = await this.storage.open(recencyCacheName);
+      let timestamp = Infinity;
+      const ranks = new Map(
+        [...this.touched.keys()].map((key, rank) => [key, rank]),
+      );
+      const keys = [...index.sizes.keys()].sort(
+        (a, b) => (ranks.get(a) ?? -1) - (ranks.get(b) ?? -1),
+      );
+      for (const key of keys) {
+        const saved = await recency.match(key);
+        const accessed = Math.max(
+          this.touched.get(key) ?? 0,
+          Number(saved?.headers.get("X-Accessed-At")) || 0,
+        );
+        if (accessed < timestamp) {
+          timestamp = accessed;
+          oldest = key;
+        }
+      }
+      if (oldest !== undefined) await recency.delete(oldest);
+      // Browser eviction and overlapping workers may leave orphaned metadata.
+      for (const key of await recency.keys())
+        if (!index.sizes.has(key.url)) await recency.delete(key);
+    } catch {
+      /* Storage failure falls back to insertion order. */
+    }
+    return oldest;
   }
   async respond(
     request: Request,
@@ -242,7 +273,7 @@ export class MediaCache {
         }
       }
       if (saved && !range) {
-        this.touch(cache, key.href, keepAlive);
+        this.touch(key.href, keepAlive);
         const size = saved.headers.get("Content-Length");
         if (size) output.set("Content-Length", size);
         const contentRange = saved.headers.get("Content-Range");
@@ -256,8 +287,8 @@ export class MediaCache {
       if (range) {
         const full = saved;
         const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
-        if (full && match && (match[1] || match[2])) {
-          this.touch(cache, key.href, keepAlive);
+        if (full?.body && match && (match[1] || match[2])) {
+          this.touch(key.href, keepAlive);
           const fullSize =
             Number(full.headers.get("Content-Length")) || info.size;
           const start = match[1]
@@ -277,13 +308,15 @@ export class MediaCache {
               status: 416,
               headers: { "Content-Range": `bytes */${fullSize}` },
             });
-          const blob = await full.blob();
           output.set("Content-Length", String(end - start + 1));
           output.set("Content-Range", `bytes ${start}-${end}/${fullSize}`);
-          return new Response(blob.slice(start, end + 1), {
-            status: 206,
-            headers: output,
-          });
+          return new Response(
+            rangeStream(full.body, start, end, request.signal),
+            {
+              status: 206,
+              headers: output,
+            },
+          );
         }
       }
     } catch {
@@ -352,13 +385,14 @@ export class MediaCache {
               index.sizes.size >= entryLimit ||
               index.bytes + size > byteLimit
             ) {
-              const oldest = index.sizes.keys().next().value;
+              const oldest = await this.oldestKey(index);
               if (oldest === undefined) break;
               await target.delete(oldest);
               this.forget(oldest);
             }
             await target.put(key.href, copy);
             this.remember(key.href, size);
+            this.touch(key.href, keepAlive);
           })
           .catch(() => {
             this.index = null;

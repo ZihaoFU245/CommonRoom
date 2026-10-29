@@ -132,13 +132,21 @@ export function setAlias(
       "Use a single command name and a command target; /alias, /sudo and /markdown cannot be remapped.",
     );
   const next = { ...aliases, [a]: b };
-  localStorage.setItem(key, JSON.stringify(next));
+  try {
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    throw new Error("Could not save aliases in this browser.");
+  }
   return next;
 }
 export function removeAlias(aliases: Aliases, name: string): Aliases {
   const next = { ...aliases };
   delete next[name];
-  localStorage.setItem(key, JSON.stringify(next));
+  try {
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    throw new Error("Could not save aliases in this browser.");
+  }
   return next;
 }
 export function expandAlias(input: string, aliases: Aliases): string {

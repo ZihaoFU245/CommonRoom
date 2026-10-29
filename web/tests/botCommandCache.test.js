@@ -135,3 +135,27 @@ test("catalogue version changes cannot bypass an outage backoff", async (t) => {
   assert.equal(requests.length, 2);
   cache.stop();
 });
+
+test("unchanged directories back off polling and version frames still refresh immediately", async (t) => {
+  let now = 1000;
+  t.mock.method(Date, "now", () => now);
+  const { cache, requests } = fixture();
+  const rooms = new Map([["a", "members"]]);
+  cache.refresh(rooms, new Map());
+  requests[0].resolve(directory("a"));
+  await settle();
+  now += BOT_COMMAND_REFRESH_MS;
+  cache.refresh(rooms, new Map());
+  requests[1].resolve(directory("a"));
+  await settle();
+  now += BOT_COMMAND_REFRESH_MS;
+  cache.refresh(rooms, new Map());
+  assert.equal(requests.length, 2, "unchanged data doubles the polling delay");
+  cache.refresh(rooms, new Map([["a", 1]]));
+  assert.equal(
+    requests.length,
+    3,
+    "socket invalidations bypass idle polling delay",
+  );
+  cache.stop();
+});

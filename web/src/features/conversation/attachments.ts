@@ -37,7 +37,7 @@ export function canAttachFile({
 }
 
 /** Screenshots often arrive unnamed, and allocation rejects an empty name. */
-export function pastedImageName(file: File): string {
+function pastedImageName(file: File): string {
   if (file.name) return file.name;
   const [family = ""] = file.type
     .slice("image/".length)

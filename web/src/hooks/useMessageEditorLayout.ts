@@ -1,3 +1,4 @@
+import { useEvent } from "./useEvent.ts";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { editorScrollTop } from "../features/conversation/editorSizing.ts";
 import { messageMotion } from "../features/conversation/timelineMotion.ts";
@@ -35,7 +36,7 @@ export function useMessageEditorLayout({
     animation.current?.cancel();
     animation.current = null;
   }
-  function fitInput() {
+  const fitInput = useEvent(() => {
     const element = input.current;
     if (!element) return;
     const form = element.form ?? element;
@@ -61,10 +62,10 @@ export function useMessageEditorLayout({
           )
         : oldTop;
     }
-  }
+  });
   useLayoutEffect(() => {
     if (active) fitInput();
-  }, [active, text, anchorBottom]);
+  }, [active, text, anchorBottom, fitInput]);
   useLayoutEffect(() => {
     const element = input.current;
     if (!active || !element) return;
@@ -77,7 +78,7 @@ export function useMessageEditorLayout({
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [active, anchorBottom]);
+  }, [active, anchorBottom, fitInput]);
 
   function prepareTransition() {
     const form = body.current;

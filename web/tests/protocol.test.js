@@ -363,3 +363,36 @@ test("credential completion metadata validates labels, identities and credential
   ])
     assert.equal(isSnapshot({ ...snapshot, bot_credentials }), false);
 });
+
+test("snapshot validation bounds rooms, aggregate messages, nesting and strings", () => {
+  assert.equal(
+    isSnapshot({ ...snapshot, rooms: Array(1024).fill(snapshot.rooms[0]) }),
+    true,
+  );
+  assert.equal(
+    isSnapshot({ ...snapshot, rooms: Array(1025).fill(snapshot.rooms[0]) }),
+    false,
+  );
+  const room = { ...snapshot.rooms[0], messages: Array(1000).fill(message) };
+  assert.equal(isSnapshot({ ...snapshot, rooms: Array(20).fill(room) }), true);
+  assert.equal(isSnapshot({ ...snapshot, rooms: Array(21).fill(room) }), false);
+  assert.equal(
+    isSnapshot({
+      ...snapshot,
+      direct: [{ ...message, text: "x".repeat(65537) }],
+    }),
+    false,
+  );
+  assert.equal(
+    isMessage({
+      ...message,
+      reactions: Object.fromEntries(
+        Array.from({ length: 1025 }, (_, i) => [String(i), []]),
+      ),
+    }),
+    false,
+  );
+  let nested = {};
+  for (let i = 0; i < 20; i++) nested = { nested };
+  assert.equal(isSnapshot({ ...snapshot, extra: nested }), false);
+});

@@ -32,10 +32,14 @@ test("name colors fall back to the default for unknown or missing entries", () =
 });
 
 test("every palette name has a light and dark shade and matches the server", () => {
-  const css = readFileSync(
-    new URL("../src/style.css", import.meta.url),
-    "utf8",
-  );
+  const css = ["base", "name-colors"]
+    .map((name) =>
+      readFileSync(
+        new URL(`../src/styles/${name}.css`, import.meta.url),
+        "utf8",
+      ),
+    )
+    .join("\n");
   const rust = readFileSync(
     new URL("../../server/src/engine/colors.rs", import.meta.url),
     "utf8",

@@ -4,7 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import type { MediaInfo } from "../api/media.ts";
 
-export function ExpiredAttachment({ filename }: { filename: string }) {
+function ExpiredAttachment({ filename }: { filename: string }) {
   return (
     <span class="attachment-expired" role="status">
       <img

@@ -71,7 +71,12 @@ export function isUploadTicket(value: unknown): value is UploadTicket {
   try {
     const url = new URL(upload.url);
     return (
-      ["http:", "https:"].includes(url.protocol) &&
+      (url.protocol === "https:" ||
+        (url.protocol === "http:" &&
+          (url.hostname === "localhost" ||
+            url.hostname.endsWith(".localhost") ||
+            url.hostname === "[::1]" ||
+            /^127\.\d+\.\d+\.\d+$/u.test(url.hostname)))) &&
       !url.username &&
       !url.password
     );
@@ -276,6 +281,8 @@ export async function documentSource(
 }
 
 // Keep complete Unicode code points and percent escapes within S3's hint limit.
+// The 256-character budget applies to the encoded ASCII metadata header,
+// so non-ASCII filenames intentionally consume more of the wire budget.
 export function filenameHint(filename: string): string {
   let result = "";
   for (const point of filename) {

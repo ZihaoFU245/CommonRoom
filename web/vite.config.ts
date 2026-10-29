@@ -172,6 +172,37 @@ function mediaWorker(): Plugin {
   };
 }
 
+// Build-only fallback: development HMR has its own inline bootstrap. Header
+// policies still intersect this policy and can name exact storage origins.
+const documentCsp =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; media-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'";
+function documentPolicy(): Plugin {
+  let policy = documentCsp;
+  return {
+    name: "document-policy",
+    apply: "build",
+    configResolved(config) {
+      // Debug artifacts use local HTTP RustFS; release storage stays HTTPS-only.
+      if (config.mode === "development")
+        policy = documentCsp
+          .replace(
+            "connect-src 'self' https: wss:",
+            "connect-src 'self' http: https: ws: wss:",
+          )
+          .replace(
+            "media-src 'self' data: blob: https:",
+            "media-src 'self' data: blob: http: https:",
+          );
+    },
+    transformIndexHtml(html) {
+      return html.replace(
+        "content=\"frame-src 'self'\"",
+        `content="${policy}"`,
+      );
+    },
+  };
+}
+
 const packageInfo: unknown = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8"),
 );
@@ -204,7 +235,13 @@ export default defineConfig({
     target: ["chrome114", "edge107", "firefox104", "safari16"],
     cssTarget: ["chrome114", "edge107", "firefox104", "safari16"],
   },
-  plugins: [preact(), markdownRendererUrl(), markdownFrame(), mediaWorker()],
+  plugins: [
+    preact(),
+    documentPolicy(),
+    markdownRendererUrl(),
+    markdownFrame(),
+    mediaWorker(),
+  ],
   server: {
     port: 5173,
     strictPort: true,

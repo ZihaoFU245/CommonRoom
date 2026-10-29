@@ -9,10 +9,7 @@ import { useEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
-import {
-  notifyMentions,
-  toggleMentionNotifications,
-} from "../features/preferences/notifications.ts";
+import { notifyMentions } from "../features/preferences/notifications.ts";
 import {
   timeline,
   clearedOrder,
@@ -21,7 +18,8 @@ import {
 } from "../features/conversation/console.ts";
 import { DeleteConfirmation } from "./DeleteConfirmation.tsx";
 import { Sidebar } from "./Sidebar.tsx";
-import { OnlineUsers } from "./OnlineUsers.tsx";
+import { ChatHeader } from "./ChatHeader.tsx";
+import { OutgoingPane } from "./OutgoingPane.tsx";
 import { Settings } from "./Settings.tsx";
 import { BotProgress } from "./BotProgress.tsx";
 import { Composer } from "./Composer.tsx";
@@ -30,27 +28,12 @@ import { useConnection } from "../hooks/useConnection.ts";
 import { useBotCommands } from "../hooks/useBotCommands.ts";
 import { useHistory } from "../hooks/useHistory.ts";
 import { useComposerResize } from "../hooks/useComposerResize.ts";
-import { useFonts } from "../hooks/useFonts.ts";
-import {
-  loadMarkdownHtml,
-  saveMarkdownHtml,
-} from "../features/preferences/security.ts";
+import { useChatPreferences } from "../hooks/useChatPreferences.ts";
+import { useChatNotifications } from "../hooks/useChatNotifications.ts";
 import type { useTheme } from "../hooks/useTheme.ts";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
 import { useEvent } from "../hooks/useEvent.ts";
 import autoAnimate from "@formkit/auto-animate";
-import {
-  loadLatex,
-  loadMessageBars,
-  loadMessageBarOpacity,
-  loadNameColors,
-  loadNameBorders,
-  saveLatex,
-  saveMessageBars,
-  saveMessageBarOpacity,
-  saveNameColors,
-  saveNameBorders,
-} from "../features/preferences/formatting.ts";
 import {
   sameColors,
   resolvedColors,
@@ -68,15 +51,22 @@ export function Chat({
   onLogout: () => void;
   appearance: ReturnType<typeof useTheme>;
 }) {
-  const [fonts, setFonts] = useFonts();
-  const [latex, setLatex] = useState(loadLatex);
-  const [showNameColors, setShowNameColors] = useState(loadNameColors);
-  const [messageBars, setMessageBars] = useState(loadMessageBars);
-  const [messageBarOpacity, setMessageBarOpacity] = useState(
-    loadMessageBarOpacity,
-  );
-  const [nameBorders, setNameBorders] = useState(loadNameBorders);
-  const [allowHtml, setAllowHtml] = useState(loadMarkdownHtml);
+  const {
+    fonts,
+    setFonts,
+    latex,
+    setLatex,
+    showNameColors,
+    setShowNameColors,
+    messageBars,
+    setMessageBars,
+    messageBarOpacity,
+    setMessageBarOpacity,
+    nameBorders,
+    setNameBorders,
+    allowHtml,
+    setAllowHtml,
+  } = useChatPreferences();
   const { theme, setTheme, seeds, setSeeds } = appearance;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState(() => {
@@ -89,56 +79,9 @@ export function Chat({
       ? requested
       : initial.rooms[0]?.name || "@command";
   });
+  const initialSelection = useRef(selected);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
-  const [notifications, setNotifications] = useState(() => {
-    try {
-      return (
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted" &&
-        localStorage.getItem("commonroom-notifications") === "on"
-      );
-    } catch {
-      return false;
-    }
-  });
-  const notificationsRef = useRef(notifications);
-  const notificationRequest = useRef(false);
-  async function toggleNotifications() {
-    if (notificationRequest.current) return;
-    notificationRequest.current = true;
-    try {
-      const enabled = await toggleMentionNotifications(
-        notificationsRef.current,
-        window.Notification,
-        window.isSecureContext,
-      );
-      notificationsRef.current = enabled;
-      setNotifications(enabled);
-      try {
-        localStorage.setItem(
-          "commonroom-notifications",
-          enabled ? "on" : "off",
-        );
-      } catch {
-        // The toggle still works for this session without browser storage.
-      }
-    } catch (error) {
-      append("Notifications", errorMessage(error), true);
-    } finally {
-      notificationRequest.current = false;
-    }
-  }
-  useEffect(() => {
-    const checkPermission = () => {
-      if (window.Notification?.permission !== "granted") {
-        notificationsRef.current = false;
-        setNotifications(false);
-      }
-    };
-    window.addEventListener("focus", checkPermission);
-    return () => window.removeEventListener("focus", checkPermission);
-  }, []);
   const [menu, setMenu] = useState(() => {
     try {
       const saved = localStorage.getItem("commonroom-sidebar-open");
@@ -183,6 +126,9 @@ export function Chat({
   const input = useRef<HTMLTextAreaElement>(null);
   const { output, cleared, setCleared, ledger, append, complete, clearView } =
     useLocalConsole(initial, selected, selectedRef, atBottom);
+  const { notifications, notificationsRef, toggleNotifications } =
+    useChatNotifications(append);
+
   const {
     state,
     currentState,
@@ -210,8 +156,10 @@ export function Chat({
             ) ?? data.rooms.find((room) => room.id === oldId)?.name;
           if (renamedView) setSelected(renamedView);
         }
-        const contentChanged =
-          previous.rooms !== data.rooms || previous.direct !== data.direct;
+        const contentChanged = Object.entries(data.unread).some(
+          ([view, unread]) =>
+            unread.through > (previous.unread[view]?.through ?? 0),
+        );
         if (contentChanged)
           notifyMentions(previous, data, {
             baseline,
@@ -243,7 +191,12 @@ export function Chat({
   );
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
-    () => privatePeers(state),
+    () =>
+      privatePeers({
+        username: state.username,
+        direct: state.direct,
+        private_peers: state.private_peers,
+      }),
     [state.private_peers, state.direct, state.username],
   );
   const direct = selected === "@direct" || selected.startsWith("@direct:");
@@ -332,6 +285,7 @@ export function Chat({
   const {
     unread,
     historyReady,
+    renderLedger,
     nameColors,
     messages,
     historyError,
@@ -408,11 +362,11 @@ export function Chat({
       timeline(
         messages,
         output,
-        ledger.current,
+        renderLedger,
         clearedOrder(cleared, selected),
         selected,
       ),
-    [messages, output, cleared, selected],
+    [messages, output, cleared, selected, renderLedger],
   );
   const handleReact = useEvent(reactTo);
   const handleEdit = useEvent(commands.editMessage);
@@ -468,10 +422,40 @@ export function Chat({
       setSelected(
         state.rooms[0]?.name || (peers[0] ? `@direct:${peers[0]}` : "@command"),
       );
-  }, [state.rooms, selected, peers]);
+  }, [state.rooms, selected, peers, peer, direct, consoleView]);
   useEffect(() => {
-    history.replaceState(null, "", `#room=${encodeURIComponent(selected)}`);
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (
+      params.get("room") === selected ||
+      (!params.has("room") && selected === initialSelection.current)
+    )
+      return;
+    params.set("room", selected);
+    history.replaceState(history.state, "", `#${params.toString()}`);
   }, [selected]);
+  const restoreSelection = useEvent(() => {
+    const requested =
+      new URLSearchParams(location.hash.slice(1)).get("room") ||
+      initialSelection.current;
+    if (
+      requested &&
+      (requested === "@command" ||
+        state.rooms.some((room) => room.name === requested) ||
+        (requested.startsWith("@direct:") &&
+          peers.includes(requested.slice(8))))
+    ) {
+      rememberPosition();
+      setSelected(requested);
+    }
+  });
+  useEffect(() => {
+    window.addEventListener("popstate", restoreSelection);
+    window.addEventListener("hashchange", restoreSelection);
+    return () => {
+      window.removeEventListener("popstate", restoreSelection);
+      window.removeEventListener("hashchange", restoreSelection);
+    };
+  }, [restoreSelection]);
   async function logout() {
     try {
       await api.logout();
@@ -484,6 +468,11 @@ export function Chat({
     append("Error", errorMessage(error), true);
   }
   function choose(name: string) {
+    if (name !== selected) {
+      const params = new URLSearchParams(location.hash.slice(1));
+      params.set("room", name);
+      history.pushState(history.state, "", `#${params.toString()}`);
+    }
     rememberPosition();
     setSelected(name);
     if (window.matchMedia("(max-width: 700px)").matches) setMenu(false);
@@ -530,35 +519,17 @@ export function Chat({
           markdown={commands.markdown}
           onMarkdownChange={commands.changeMarkdown}
           latex={latex}
-          onLatexChange={(enabled) => {
-            setLatex(enabled);
-            saveLatex(enabled);
-          }}
+          onLatexChange={setLatex}
           nameColors={showNameColors}
-          onNameColorsChange={(enabled) => {
-            setShowNameColors(enabled);
-            saveNameColors(enabled);
-          }}
+          onNameColorsChange={setShowNameColors}
           messageBarOpacity={messageBarOpacity}
-          onMessageBarOpacityChange={(opacity) => {
-            setMessageBarOpacity(opacity);
-            saveMessageBarOpacity(opacity);
-          }}
+          onMessageBarOpacityChange={setMessageBarOpacity}
           messageBars={messageBars}
-          onMessageBarsChange={(enabled) => {
-            setMessageBars(enabled);
-            saveMessageBars(enabled);
-          }}
+          onMessageBarsChange={setMessageBars}
           nameBorders={nameBorders}
-          onNameBordersChange={(enabled) => {
-            setNameBorders(enabled);
-            saveNameBorders(enabled);
-          }}
+          onNameBordersChange={setNameBorders}
           allowHtml={allowHtml}
-          onAllowHtmlChange={(enabled) => {
-            setAllowHtml(enabled);
-            saveMarkdownHtml(enabled);
-          }}
+          onAllowHtmlChange={setAllowHtml}
           onChange={setFonts}
           onThemeChange={setTheme}
           onSeedsChange={setSeeds}
@@ -592,43 +563,15 @@ export function Chat({
           />
         )}
         <main class="conversation">
-          <header class="chat-header">
-            <div class="room-title">
-              <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
-              <h1>
-                {consoleView
-                  ? "Command"
-                  : direct
-                    ? peer || "Private messages"
-                    : selected}
-              </h1>
-            </div>
-            <div class="header-actions">
-              <OnlineUsers
-                names={state.online}
-                username={state.username}
-                connected={status === "online"}
-              />
-              <span
-                class={`connection ${status}`}
-                role="status"
-                aria-label={
-                  status === "online"
-                    ? "Connected"
-                    : status === "connecting"
-                      ? "Connecting"
-                      : "Reconnecting"
-                }
-              >
-                <i />
-                {status === "online"
-                  ? "Connected"
-                  : status === "connecting"
-                    ? "Connecting"
-                    : "Reconnecting"}
-              </span>
-            </div>
-          </header>
+          <ChatHeader
+            consoleView={consoleView}
+            direct={direct}
+            peer={peer}
+            selected={selected}
+            online={state.online}
+            username={state.username}
+            status={status}
+          />
           <div class="history-notices" ref={historyNotices}>
             {(showJumpToUnread || showJumpToBottom) && (
               <div class="unread-bar" key={selected}>
@@ -683,27 +626,12 @@ export function Chat({
                 (room?.id ?? state.private_access[selected]?.id),
             )}
           />
-          {commands.outgoing.some((item) => item.view === selected) && (
-            <div class="outgoing-messages" aria-live="polite">
-              {commands.outgoing
-                .filter((item) => item.view === selected)
-                .map((item) => (
-                  <div key={item.key} class="outgoing-message">
-                    <p dir="auto">{item.text}</p>
-                    <small>{item.error ?? "Sending…"}</small>
-                    {item.error && (
-                      <button
-                        type="button"
-                        disabled={!!commands.draft}
-                        onClick={() => commands.restoreOutgoing(item.key)}
-                      >
-                        Edit and resend
-                      </button>
-                    )}
-                  </div>
-                ))}
-            </div>
-          )}
+          <OutgoingPane
+            items={commands.outgoing}
+            selected={selected}
+            draft={commands.draft}
+            restore={commands.restoreOutgoing}
+          />
           <Composer
             mediaUpload={commands.mediaUpload}
             canWrite={commands.permissions.includes("w:message.create")}

@@ -73,7 +73,7 @@ export function useCommandComposer({
         expectedCaret.current,
         expectedCaret.current,
       );
-  }, [draft, caret]);
+  }, [draft, caret, input]);
   const draftRef = useRef(draft);
   draftRef.current = draft;
   function setDraft(value: string) {
@@ -93,7 +93,7 @@ export function useCommandComposer({
     setReplyTarget(null);
     setCycle(null);
     setHintIndex(0);
-  }, [selected]);
+  }, [selected, input]);
   useEffect(() => {
     setCycle(null);
     setHintIndex(0);
@@ -241,7 +241,7 @@ export function useCommandComposer({
   }
   useEffect(() => {
     if (!pending) input.current?.focus();
-  }, [pending]);
+  }, [pending, input]);
   return {
     draft,
     draftRef,

@@ -1,0 +1,130 @@
+.outgoing-messages {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+}
+.outgoing-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 64px;
+  overflow-y: auto;
+}
+.outgoing-message small {
+  color: var(--muted);
+}
+.outgoing-message button {
+  margin-left: 8px;
+}
+
+.bot-progress {
+  padding: 8px 16px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.bot-progress small {
+  color: var(--muted);
+}
+.bot-progress p {
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.media-upload-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+.attach-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+.attach-button svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+}
+.attach-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.attach-button:focus-within {
+  outline: 2px solid var(--accent);
+}
+.attach-button:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.composer-attachment {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  margin: 0.5rem 0;
+}
+.composer-attachment img {
+  max-width: 100px;
+  max-height: 80px;
+  object-fit: contain;
+}
+.composer-attachment span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+.composer-attachment small {
+  display: block;
+}
+
+.attachment-viewer {
+  display: block;
+  margin-block: 0.5rem;
+}
+.attachment-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.attachment-viewer audio,
+.attachment-viewer video {
+  display: block;
+  max-width: 100%;
+  margin-top: 0.5rem;
+}
+.attachment-viewer video {
+  max-height: 60dvh;
+}
+.attachment-viewer [role="status"] {
+  display: block;
+  color: var(--muted);
+}
+
+.attachment-download {
+  display: block;
+  margin-top: 0.5rem;
+}

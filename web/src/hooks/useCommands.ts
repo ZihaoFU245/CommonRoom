@@ -188,6 +188,10 @@ export function useCommands({
       (text.startsWith("/") ? lifecycle.pending : !lifecycle.canSubmitMessage())
     )
       return;
+    if (/[\uD800-\uDFFF]/u.test(text)) {
+      append(text, "Remove invalid Unicode characters before sending.", true);
+      return;
+    }
     const local = preferences.handleLocalCommand(text);
     if (local) {
       if (local === "done") setDraft("");

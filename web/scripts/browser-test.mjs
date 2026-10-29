@@ -153,7 +153,7 @@ try {
     clearTimeout(request.timer);
     request.reject(new Error("Browser runner closed"));
   }
-  socket?.close();
+  socket?.terminate();
   if (browser && browser.exitCode === null) {
     const exited = once(browser, "exit");
     browser.kill();
@@ -161,6 +161,7 @@ try {
     await exited;
     clearTimeout(force);
   }
+  server?.httpServer?.closeAllConnections();
   await server?.close();
   await rm(profile, { recursive: true, force: true });
 }

@@ -1,0 +1,90 @@
+.user-avatar {
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.user-avatar[hidden] {
+  display: none;
+}
+.user-avatar.large {
+  width: 72px;
+  height: 72px;
+}
+.account-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--wash);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.account-card p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+.account-avatar {
+  background: var(--field);
+  border: 1px solid var(--line);
+  font-size: 24px;
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.account-avatar .user-avatar {
+  align-self: center;
+  position: absolute;
+  inset: 0;
+}
+.avatar-menu {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.avatar-crop {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+.avatar-crop canvas {
+  width: min(256px, 40dvh, 100%);
+  height: auto;
+  border-radius: 50%;
+  background: var(--paper);
+}
+.avatar-crop label {
+  display: grid;
+  gap: 4px;
+}
+.avatar-crop input {
+  width: 100%;
+}
+
+.account-card > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.avatar-menu button,
+.avatar-crop button {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.avatar-crop button:first-of-type {
+  background: var(--accent);
+  color: var(--accent-label);
+}
+.avatar-menu button:disabled,
+.avatar-crop button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

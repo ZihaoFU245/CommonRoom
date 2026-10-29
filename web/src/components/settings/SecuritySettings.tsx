@@ -32,7 +32,13 @@ export function SecuritySettings(
         </label>
         <p id="markdown-html-description" class="account-summary">
           Offer an isolated preview for all HTML, CSS and JavaScript. Each
-          message requires a click on Render HTML before it runs.
+          message requires a click on Render HTML before it runs. Render only
+          messages you trust: previews can run scripts and show misleading
+          content.
+        </p>
+        <p class="account-summary">
+          External message images load only after you click Load image. Their
+          hosts receive your IP address when you choose to load them.
         </p>
         <h3>Avatars</h3>
         <label class="security-choice">

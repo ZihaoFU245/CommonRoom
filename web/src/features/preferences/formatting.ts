@@ -67,7 +67,7 @@ export function saveNameColors(enabled: boolean): void {
   }
 }
 
-export const defaultMessageBarOpacity = 50;
+const defaultMessageBarOpacity = 50;
 function normalizeMessageBarOpacity(value: number): number {
   return Number.isFinite(value)
     ? Math.min(100, Math.max(0, Math.round(value)))

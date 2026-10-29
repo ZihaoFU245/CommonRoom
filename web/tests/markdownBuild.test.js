@@ -13,6 +13,23 @@ test("production HTML renderer keeps its exports and stays outside the initial i
   const outputs = (Array.isArray(result) ? result : [result]).flatMap(
     (bundle) => bundle.output,
   );
+  const html = outputs.find(
+    (output) => output.type === "asset" && output.fileName === "index.html",
+  );
+  assert.ok(html);
+  const document = String(html.source);
+  assert.ok(document.includes("script-src 'self'"));
+  assert.ok(!document.includes("script-src 'self' 'unsafe-inline'"));
+  assert.ok(document.includes("object-src 'none'"));
+  assert.ok(
+    document.includes("connect-src 'self' https: wss:"),
+    "fallback allows configured HTTPS object storage",
+  );
+  assert.ok(document.includes('name="referrer" content="no-referrer"'));
+  assert.ok(
+    !outputs.some((output) => output.fileName.startsWith("scripts/")),
+    "test harnesses must not ship",
+  );
   const chunks = outputs.filter((output) => output.type === "chunk");
   const rich = chunks.find((chunk) => chunk.fileName.includes("richMarkdown"));
   assert.ok(rich);
@@ -63,4 +80,26 @@ test("production HTML renderer keeps its exports and stays outside the initial i
   );
   assert.ok(frameChunk);
   assert.ok(!visited.has(frameChunk.fileName));
+});
+
+test("debug artifacts allow local HTTP object storage without allowing inline scripts", async () => {
+  const result = await build({
+    root: fileURLToPath(new URL("..", import.meta.url)),
+    configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)),
+    mode: "development",
+    logLevel: "silent",
+    build: { write: false },
+  });
+  const outputs = (Array.isArray(result) ? result : [result]).flatMap(
+    (bundle) => bundle.output,
+  );
+  const html = outputs.find(
+    (output) => output.type === "asset" && output.fileName === "index.html",
+  );
+  assert.ok(html);
+  const document = String(html.source);
+  assert.ok(document.includes("connect-src 'self' http: https: ws: wss:"));
+  assert.ok(document.includes("media-src 'self' data: blob: http: https:"));
+  assert.ok(document.includes("script-src 'self'"));
+  assert.ok(!document.includes("script-src 'self' 'unsafe-inline'"));
 });

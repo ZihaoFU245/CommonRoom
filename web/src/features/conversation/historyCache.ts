@@ -6,7 +6,7 @@ import type {
   Unread,
   MessageColors,
 } from "../../api/protocol.ts";
-export const ROOM_CACHE_LIMIT = 1000;
+const ROOM_CACHE_LIMIT = 1000;
 const TOTAL_CACHE_LIMIT = 5000;
 const BYTE_LIMIT = 16 * 1024 * 1024;
 export interface CachedHistory extends History {
@@ -14,7 +14,7 @@ export interface CachedHistory extends History {
   through: number;
   oldest: number;
 }
-export function messageBytes(message: Message): number {
+function messageBytes(message: Message): number {
   let characters =
     message.text.length +
     message.id.length +
@@ -39,7 +39,12 @@ export class HistoryCache {
     return this.entries.size;
   }
   get(view: string): CachedHistory | undefined {
-    return this.entries.get(view)?.page;
+    const entry = this.entries.get(view);
+    if (entry) {
+      this.entries.delete(view);
+      this.entries.set(view, entry);
+    }
+    return entry?.page;
   }
   has(view: string): boolean {
     return this.entries.has(view);
@@ -180,18 +185,19 @@ export function boundSnapshot(
   const tails = new Map<string, Message[]>();
   const direct = new Map<string, Message[]>();
   for (const message of snapshot.direct) {
-    if (!message.private_id) continue;
-    const messages = direct.get(message.private_id);
+    const peer = message.from === snapshot.username ? message.to : message.from;
+    const id =
+      message.private_id ||
+      (peer ? snapshot.private_access[`@direct:${peer}`]?.id : undefined) ||
+      `legacy:${JSON.stringify([message.from, message.to].sort())}`;
+    const messages = direct.get(id);
     if (messages) messages.push(message);
-    else direct.set(message.private_id, [message]);
+    else direct.set(id, [message]);
   }
   const roomIds = new Set(snapshot.rooms.map((room) => room.id));
   const conversations = [
     ...snapshot.rooms.map((room) => ({ id: room.id, messages: room.messages })),
-    ...Object.values(snapshot.private_access).map((access) => ({
-      id: access.id,
-      messages: direct.get(access.id) ?? [],
-    })),
+    ...[...direct].map(([id, messages]) => ({ id, messages })),
   ];
   conversations.sort(
     (a, b) => Number(b.id === preferredId) - Number(a.id === preferredId),

@@ -38,10 +38,7 @@ export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
       cancelled = true;
     };
   }, [Manual]);
-  const text = useMemo(
-    () => outputMarkdown(entry),
-    [entry.command, entry.result, entry.error, entry.room],
-  );
+  const text = useMemo(() => outputMarkdown(entry), [entry]);
   return (
     <article
       class={`console-output ${entry.error ? "error" : ""}`}

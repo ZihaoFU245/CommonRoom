@@ -1,0 +1,240 @@
+.message-markdown {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.message-markdown .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.message-markdown > :first-child {
+  margin-top: 0;
+}
+.message-markdown > :last-child {
+  margin-bottom: 0;
+}
+.message-markdown p {
+  white-space: normal;
+  margin-block: 0.5em;
+}
+.collapsible-message,
+.collapsible-message-content {
+  display: flow-root;
+  min-width: 0;
+}
+.message-preview {
+  --message-preview-height: 256px;
+  max-height: var(--message-preview-height);
+  overflow: hidden;
+  min-width: 0;
+}
+.message-preview.folded {
+  mask-image: linear-gradient(#000 calc(100% - 24px), transparent);
+}
+.message-preview.expanded {
+  max-height: none;
+  overflow: visible;
+}
+.message-preview-content {
+  display: flow-root;
+}
+.message-expand-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+.message-expand-toggle:hover {
+  color: var(--ink);
+  background: none;
+}
+.message-expand-toggle svg {
+  flex-shrink: 0;
+}
+.message-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: pre;
+}
+.message-markdown blockquote {
+  margin-inline: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--subtle);
+}
+.message-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.message-markdown th,
+.message-markdown td {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+}
+.message-markdown a {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.message-editor {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+.message-editor textarea {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  resize: none;
+  font: inherit;
+}
+.message-editor textarea:focus-visible {
+  outline: none;
+}
+.message-editor > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78571rem;
+  line-height: 1.4;
+}
+.message-edited {
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+.message-editor .primary {
+  margin-top: 0;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.message-editor button[type="button"] {
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.message-editor button[type="button"]:hover {
+  background: var(--wash);
+}
+
+.message-markdown img {
+  max-width: 100%;
+  max-height: 500px;
+  object-fit: contain;
+}
+.html-gate {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}
+.html-gate-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85em;
+}
+.html-gate-controls button,
+.html-gate-status button {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.html-gate-controls button[aria-expanded="true"]:not(.primary) {
+  background: var(--wash);
+}
+.html-gate button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.html-gate-status {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.markdown-frame {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+}
+
+.html-gate-controls > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  margin-right: auto;
+  color: var(--muted);
+}
+.html-gate-controls .primary {
+  margin: 0;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-label);
+}
+.html-gate-controls .primary:hover {
+  background: var(--accent-hover);
+}
+.html-gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.html-gate-content {
+  display: flow-root;
+}
+.html-gate-panel {
+  display: flow-root;
+  min-width: 0;
+}
+.html-gate-source,
+.html-gate-preview {
+  margin-top: 12px;
+}
+.html-gate-source {
+  max-height: 400px;
+  overflow: auto;
+  margin-bottom: 0;
+  white-space: pre;
+  font-size: 0.85em;
+}
+@keyframes html-preview-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .markdown-frame {
+    animation: html-preview-enter 180ms ease-out;
+  }
+}
+
+.external-image {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.external-image-alt {
+  font-size: 0.85em;
+  color: var(--muted);
+}

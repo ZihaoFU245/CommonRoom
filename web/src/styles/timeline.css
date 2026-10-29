@@ -1,0 +1,42 @@
+.history-notices {
+  position: relative;
+  flex-shrink: 0;
+  height: 0;
+  z-index: 2;
+  pointer-events: none;
+  clip-path: inset(0 0 -100vh);
+}
+.history-notices .unread-bar {
+  position: absolute;
+  top: 8px;
+  right: 20px;
+  max-width: calc(100% - 40px);
+  font-size: 0.85714rem;
+  pointer-events: none;
+}
+.history-notices button {
+  pointer-events: auto;
+}
+
+.message-list {
+  overflow-anchor: none;
+  overscroll-behavior-y: none;
+  position: relative;
+}
+.message-exit {
+  position: absolute;
+  pointer-events: none;
+  overflow: clip;
+}
+.timeline-rows {
+  position: relative;
+  display: flow-root;
+}
+.timeline-rows.is-animating {
+  overflow: clip;
+  overflow-clip-margin: 10px;
+}
+.timeline-rows > [data-virtual-key] {
+  display: flow-root;
+  overflow-anchor: none;
+}

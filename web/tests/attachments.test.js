@@ -23,7 +23,7 @@ function fileItem(file) {
   return { kind: "file", type: file.type, getAsFile: () => file };
 }
 
-function stringItem(text) {
+function stringItem(_text) {
   return { kind: "string", type: "text/plain", getAsFile: () => null };
 }
 

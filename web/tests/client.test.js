@@ -85,6 +85,7 @@ test("outbound frames retain the request ID and Unicode text", () => {
   const frame = { id: 1, room: "room", text: "@bob 你好 👋" };
   sendFrame(
     {
+      readyState: 1,
       send: (value) => {
         raw = value;
       },
@@ -148,4 +149,22 @@ test("command directory pagination preserves cancellation and rejects stuck curs
   await assert.rejects(api.botCommands(controller.signal), {
     name: "AbortError",
   });
+});
+
+test("outbound frames reject sockets that are not open before sending", () => {
+  for (const readyState of [0, 2, 3]) {
+    assert.throws(
+      () =>
+        sendFrame(
+          {
+            readyState,
+            send() {
+              assert.fail("must not send");
+            },
+          },
+          { id: 1, room: "team", text: "hello" },
+        ),
+      /Disconnected/,
+    );
+  }
 });

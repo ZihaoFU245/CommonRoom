@@ -127,18 +127,23 @@ test("request deadlines remain active through JSON and preview body reads", asyn
   let started = new Promise((resolve) => {
     bodyStarted = resolve;
   });
-  t.mock.method(globalThis, "fetch", async (_url, options) => ({
-    ok: true,
-    json: () =>
-      new Promise((_resolve, reject) => {
-        options.signal.addEventListener(
-          "abort",
-          () => reject(options.signal.reason),
-          { once: true },
-        );
-        bodyStarted();
-      }),
-  }));
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url, options) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            options.signal.addEventListener(
+              "abort",
+              () => controller.error(options.signal.reason),
+              { once: true },
+            );
+            bodyStarted();
+          },
+        }),
+      ),
+  );
   const pending = api.mediaConfig(parent.signal);
   await started;
   t.mock.timers.tick(15000);

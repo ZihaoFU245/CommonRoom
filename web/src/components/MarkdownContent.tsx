@@ -1,4 +1,5 @@
 import type { AttachmentContext } from "./Attachment.tsx";
+import { ExternalImage } from "./ExternalImage.tsx";
 import { ManagedAttachment } from "./ManagedAttachment.tsx";
 import { attachmentLink, managedMediaLink } from "../api/media.ts";
 import { createElement } from "preact";
@@ -82,6 +83,14 @@ export const MarkdownContent = memo(function MarkdownContent({
           </Suspense>,
         );
       }
+      if (node.image)
+        return wrap(
+          <ExternalImage
+            key={`${index}:${node.image.src}`}
+            src={node.image.src}
+            alt={node.image.alt}
+          />,
+        );
       return wrap(
         createElement(
           node.tag === "p" &&
@@ -101,15 +110,6 @@ export const MarkdownContent = memo(function MarkdownContent({
                 }
               : {}),
             ...(node.start ? { start: node.start } : {}),
-            ...(node.image
-              ? {
-                  src: node.image.src,
-                  alt: node.image.alt,
-                  loading: "lazy",
-                  decoding: "async",
-                  referrerPolicy: "no-referrer",
-                }
-              : {}),
           },
           render(node.children, code || node.tag === "code"),
         ),

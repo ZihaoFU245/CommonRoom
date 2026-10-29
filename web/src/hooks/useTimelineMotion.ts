@@ -1,3 +1,4 @@
+import { useEvent } from "./useEvent.ts";
 import type { RefObject } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { TimelineEntry } from "../api/protocol.ts";
@@ -46,7 +47,15 @@ export function useTimelineMotion(
   ready: boolean,
   container: RefObject<HTMLElement>,
   atBottom: RefObject<boolean>,
-  layout: { start: number; end: number; layoutVersion: number },
+  layout: {
+    start: number;
+    end: number;
+    layoutVersion: number;
+    rowMeasurements?: {
+      rects: ReadonlyMap<HTMLElement, DOMRect>;
+      scrollTop: number;
+    };
+  },
 ) {
   const baseline = useRef<{
     scope: string;
@@ -94,52 +103,62 @@ export function useTimelineMotion(
     pinBottom: boolean;
   } | null>(null);
 
-  function capture() {
-    const viewport = container.current;
-    if (!viewport) return;
-    const bounds = viewport.getBoundingClientRect();
-    capturedScrollTop.current = viewport.scrollTop;
-    rows.current = new Map(
-      [
-        ...viewport.querySelectorAll<HTMLElement>(
-          ".timeline-rows > [data-virtual-key]",
-        ),
-      ].map((element) => {
-        const rect = element.getBoundingClientRect();
-        const body = element.querySelector<HTMLElement>(
-          ".message-body, .message-editor",
-        );
-        return [
-          element.dataset.virtualKey ?? "",
-          {
-            element,
-            top: rect.top - bounds.top - displacement(element),
-            left: rect.left - bounds.left,
-            width: rect.width,
-            height: rect.height,
-            bodyOffset: body
-              ? body.getBoundingClientRect().top - rect.top - displacement(body)
-              : null,
-            meta: chromeSnapshot(
-              element.querySelector<HTMLElement>(".message-meta"),
-              rect,
-            ),
-            day: chromeSnapshot(
-              element.querySelector<HTMLElement>(".message-day"),
-              rect,
-            ),
-          },
-        ];
-      }),
-    );
-  }
-  function stop() {
+  const capture = useEvent(
+    (measured?: {
+      rects: ReadonlyMap<HTMLElement, DOMRect>;
+      scrollTop: number;
+    }) => {
+      const viewport = container.current;
+      if (!viewport || globalThis.document?.hidden) return;
+      const bounds = viewport.getBoundingClientRect();
+      capturedScrollTop.current = viewport.scrollTop;
+      rows.current = new Map(
+        [
+          ...viewport.querySelectorAll<HTMLElement>(
+            ".timeline-rows > [data-virtual-key]",
+          ),
+        ].map((element) => {
+          const rect =
+            (measured?.scrollTop === viewport.scrollTop
+              ? measured.rects.get(element)
+              : undefined) ?? element.getBoundingClientRect();
+          const body = element.querySelector<HTMLElement>(
+            ".message-body, .message-editor",
+          );
+          return [
+            element.dataset.virtualKey ?? "",
+            {
+              element,
+              top: rect.top - bounds.top - displacement(element),
+              left: rect.left - bounds.left,
+              width: rect.width,
+              height: rect.height,
+              bodyOffset: body
+                ? body.getBoundingClientRect().top -
+                  rect.top -
+                  displacement(body)
+                : null,
+              meta: chromeSnapshot(
+                element.querySelector<HTMLElement>(".message-meta"),
+                rect,
+              ),
+              day: chromeSnapshot(
+                element.querySelector<HTMLElement>(".message-day"),
+                rect,
+              ),
+            },
+          ];
+        }),
+      );
+    },
+  );
+  const stop = useEvent(() => {
     for (const animation of animations.current) animation.cancel();
     animations.current.clear();
     for (const ghost of ghosts.current) ghost.remove();
     ghosts.current.clear();
     clearClip();
-  }
+  });
   function clearClip() {
     const content =
       container.current?.querySelector<HTMLElement>(".timeline-rows");
@@ -219,7 +238,7 @@ export function useTimelineMotion(
     animate(clone, [{ opacity: 1 }, { opacity: 0 }], true);
   }
 
-  useLayoutEffect(() => {
+  const updateMotion = useEvent(() => {
     const old = baseline.current;
     if (old?.scope !== scope) {
       stop();
@@ -251,13 +270,18 @@ export function useTimelineMotion(
       const update = pending.current;
       pending.current = null;
       if (!viewport || !update) {
-        capture();
+        capture(layout.rowMeasurements);
         return;
       }
+      // Stopping a running transform changes row geometry; otherwise reuse
+      // the virtualizer's measurements from this commit when scroll is unchanged.
+      const measured = animations.current.size
+        ? undefined
+        : layout.rowMeasurements;
       stop();
       if (update.pinBottom)
         viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
-      capture();
+      capture(measured);
       if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
       for (const [key, row] of rows.current) {
         const before = update.before.get(key);
@@ -308,7 +332,11 @@ export function useTimelineMotion(
       }
       // Final geometry was captured once before starting the animations.
     });
+  });
+  useLayoutEffect(() => {
+    updateMotion();
   }, [
+    updateMotion,
     entries,
     scope,
     revision,
@@ -317,6 +345,9 @@ export function useTimelineMotion(
     layout.end,
     layout.layoutVersion,
   ]);
+  const invalidate = useEvent(() => {
+    scheduled.current++;
+  });
   useEffect(() => {
     const viewport = container.current;
     if (!viewport) return;
@@ -346,7 +377,7 @@ export function useTimelineMotion(
       viewport.addEventListener(input, interrupt, { passive: true });
     preference.addEventListener("change", interrupt);
     return () => {
-      scheduled.current++;
+      invalidate();
       stop();
       resize.disconnect();
       viewport.removeEventListener("scroll", scroll);
@@ -354,5 +385,5 @@ export function useTimelineMotion(
         viewport.removeEventListener(input, interrupt);
       preference.removeEventListener("change", interrupt);
     };
-  }, []);
+  }, [capture, container, invalidate, stop]);
 }

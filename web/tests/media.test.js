@@ -360,3 +360,36 @@ test("expiry metadata validates and generic files use canonical same-origin link
   assert.equal(managedMediaLink(`https://evil.test${media.path}`, base), null);
   assert.equal(managedMediaLink(`${media.path}?download=true`, base), null);
 });
+
+test("upload tickets require TLS except for loopback development endpoints", () => {
+  const ticket = {
+    media_id: "test",
+    upload: {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      expires_in: 60,
+    },
+  };
+  for (const url of [
+    "https://storage.example/upload",
+    "http://localhost:19000/upload",
+    "http://127.0.0.1:19000/upload",
+    "http://[::1]:19000/upload",
+  ])
+    assert.equal(
+      isUploadTicket({ ...ticket, upload: { ...ticket.upload, url } }),
+      true,
+      url,
+    );
+  for (const url of [
+    "http://storage.example/upload",
+    "http://192.168.1.2/upload",
+    "http://localhost.evil.test/upload",
+    "https://user:secret@storage.example/upload",
+  ])
+    assert.equal(
+      isUploadTicket({ ...ticket, upload: { ...ticket.upload, url } }),
+      false,
+      url,
+    );
+});

@@ -67,9 +67,9 @@ test("late completion never inserts into a replacement conversation; cancellatio
     while (effects.length) effects.shift()();
     return hook;
   }
-  let hook = render("room-a");
+  render("room-a");
   await Promise.resolve();
-  hook = render("room-a");
+  let hook = render("room-a");
   const pending = hook.start(new File(["test"], "test.png"));
   for (let i = 0; i < 10 && !completionStarted; i++) await Promise.resolve();
   assert.ok(completionStarted);

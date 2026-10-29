@@ -28,9 +28,16 @@ export function useVirtualTimeline(
   container: RefObject<HTMLElement>,
   handle: RefObject<VirtualTimelineHandle>,
   atBottom: RefObject<boolean>,
-  renderVersion = 0,
+  renderVersion: unknown = 0,
 ) {
   const sizes = useRef(new Map<string, number>());
+  const rowMeasurements = useRef({
+    rects: new Map<HTMLElement, DOMRect>(),
+    scrollTop: 0,
+  });
+  useLayoutEffect(() => {
+    rowMeasurements.current.rects.clear();
+  });
   const observed = useRef(new Set<HTMLElement>());
   const observer = useRef<ResizeObserver | null>(null);
   const [measurements, setMeasurements] = useState(0);
@@ -54,11 +61,14 @@ export function useVirtualTimeline(
         : { start: next.start, end: next.end, height },
     );
   }
-  const offsets = useMemo(() => {
-    return timelineOffsets(
-      entries.map((entry) => entry.key),
-      sizes.current,
-    );
+  const { offsets } = useMemo(() => {
+    return {
+      revision: measurements,
+      offsets: timelineOffsets(
+        entries.map((entry) => entry.key),
+        sizes.current,
+      ),
+    };
   }, [entries, measurements]);
   currentOffsets.current = offsets;
   const previous = useRef<{ keys: string[]; offsets: number[] } | null>(null);
@@ -149,7 +159,16 @@ export function useVirtualTimeline(
               complete?.();
             }
           } else {
-            element.scrollTop = (offsets[index] ?? 0) - offset;
+            atBottom.current = false;
+            element.scrollTop = Math.max(
+              0,
+              (offsets[index] ?? 0) -
+                (center
+                  ? (element.clientHeight -
+                      ((offsets[index + 1] ?? 0) - (offsets[index] ?? 0))) /
+                    2
+                  : offset),
+            );
             updateViewport(element.scrollTop, element.clientHeight);
             complete?.();
           }
@@ -185,7 +204,7 @@ export function useVirtualTimeline(
     const live = new Set(entries.map((entry) => entry.key));
     for (const key of sizes.current.keys())
       if (!live.has(key)) sizes.current.delete(key);
-  }, [entries, offsets, viewport.height]);
+  }, [entries, offsets, viewport.height, atBottom, beforeCommitTop, container]);
   useLayoutEffect(() => {
     const element = container.current;
     if (!element) return;
@@ -244,7 +263,7 @@ export function useVirtualTimeline(
       observed.current.clear();
       element.removeEventListener("scroll", refresh);
     };
-  }, []);
+  }, [container]);
   const visibleWindow = virtualWindow(
     offsets,
     viewportTop.current,
@@ -265,9 +284,12 @@ export function useVirtualTimeline(
       if (!liveElements.has(element)) currentObserver.unobserve(element);
     }
     let changed = false;
+    rowMeasurements.current.scrollTop = container.current?.scrollTop ?? 0;
     for (const element of liveElements) {
       const key = element.dataset.virtualKey;
-      const height = element.getBoundingClientRect().height;
+      const rect = element.getBoundingClientRect();
+      rowMeasurements.current.rects.set(element, rect);
+      const height = rect.height;
       if (
         key &&
         height > 0 &&
@@ -282,8 +304,15 @@ export function useVirtualTimeline(
     observed.current = liveElements;
     // Resolve new/edited row sizes before motion captures the final positions.
     if (changed) setMeasurements((value) => value + 1);
-  }, [entries, renderVersion, visibleWindow.start, visibleWindow.end]);
+  }, [
+    entries,
+    renderVersion,
+    visibleWindow.start,
+    visibleWindow.end,
+    container,
+  ]);
   return {
+    rowMeasurements: rowMeasurements.current,
     visible: entries.slice(visibleWindow.start, visibleWindow.end),
     start: visibleWindow.start,
     end: visibleWindow.end,

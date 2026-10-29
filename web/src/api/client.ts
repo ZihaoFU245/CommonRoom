@@ -1,4 +1,5 @@
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
+import { responseJson } from "./responseJson.ts";
 import { requestAbort } from "./requestAbort.ts";
 import {
   isUploadTicket,
@@ -32,6 +33,8 @@ export function isUnauthorized(error: unknown) {
 }
 
 export function sendFrame(socket: WebSocket, frame: ClientFrame) {
+  if (socket.readyState !== 1)
+    throw new Error("Disconnected. Please reconnect.");
   socket.send(JSON.stringify(frame));
 }
 
@@ -62,7 +65,7 @@ async function request<T>(
           }
         : {}),
     });
-    const value: unknown = await response.json().catch(() => null);
+    const value = await responseJson(response);
     cancellation.signal.throwIfAborted();
     if (!response.ok)
       throw new ApiError(

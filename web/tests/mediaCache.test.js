@@ -29,7 +29,21 @@ function fixture(filePath = path) {
       );
     },
   };
-  const storage = { open: async () => cache };
+  const recency = new Map();
+  let metadataPuts = 0;
+  const metadataCache = {
+    match: async (key) => recency.get(String(key.url ?? key))?.clone(),
+    keys: async () => [...recency.keys()].map((key) => new Request(key)),
+    delete: async (key) => recency.delete(String(key.url ?? key)),
+    put: async (key, response) => {
+      metadataPuts++;
+      recency.set(String(key.url ?? key), response.clone());
+    },
+  };
+  const storage = {
+    open: async (name) =>
+      name === "commonroom-media-recency-v1" ? metadataCache : cache,
+  };
   const calls = [];
   let status = 200;
   let expired = false;
@@ -71,6 +85,7 @@ function fixture(filePath = path) {
     saved,
     reads,
     puts: () => puts,
+    metadataPuts: () => metadataPuts,
     expire: () => {
       expired = true;
     },
@@ -82,7 +97,7 @@ function fixture(filePath = path) {
     },
   };
 }
-test("repeated full and range hits rate-limit recency writes while checking live access", async (t) => {
+test("repeated full and range hits persist small recency records without rewriting bytes", async (t) => {
   let now = 100_000;
   t.mock.method(Date, "now", () => now);
   const f = fixture();
@@ -101,10 +116,10 @@ test("repeated full and range hits rate-limit recency writes while checking live
   now += 60_000;
   await (await f.load(instance)).text();
   await Promise.all(f.work);
-  assert.equal(f.puts(), writes + 1);
+  assert.equal(f.puts(), writes, "recency must not rewrite attachment bytes");
   f.deny();
   assert.equal((await f.load(instance)).status, 403);
-  assert.equal(f.puts(), writes + 1);
+  assert.equal(f.puts(), writes, "recency must not rewrite attachment bytes");
 });
 test("immutable bytes survive reloads, queries share bytes and authorization stays live", async () => {
   const f = fixture();
@@ -321,29 +336,26 @@ test("cache accounting reuses response sizes and enforces byte limits after rest
   assert.equal(f.saved.size, 1);
 });
 
-test("failed maintenance rebuilds accounting and external eviction stays bounded", async (t) => {
+test("failed recency writes preserve bytes and external eviction stays bounded", async (t) => {
   const f = fixture();
+  let now = 100000;
+  t.mock.method(Date, "now", () => now);
   const instance = new MediaCache(f.storage, f.network);
   await (await f.load(instance)).text();
   await Promise.all(f.work);
-  const cache = await f.storage.open();
-  const put = cache.put;
-  let fail = true;
-  t.mock.method(cache, "put", (...args) => {
-    if (fail) {
-      fail = false;
-      throw new Error("quota");
-    }
-    return put(...args);
+  const cache = await f.storage.open("commonroom-media-recency-v1");
+  t.mock.method(cache, "put", () => {
+    throw new Error("quota");
   });
-  // A failed hit touch deletes the entry before put fails; the next miss must
-  // recover its accounting and download normally, without stale byte totals.
+  now += 60000;
   assert.equal(await (await f.load(instance)).text(), "abcdef");
   await Promise.all(f.work);
-  assert.equal(f.saved.size, 0);
+  assert.equal(
+    f.saved.size,
+    1,
+    "metadata failures must not delete immutable bytes",
+  );
   assert.equal(await (await f.load(instance)).text(), "abcdef");
-  await Promise.all(f.work);
-  assert.equal(f.reads.keys, 2);
   f.saved.clear();
   assert.equal(await (await f.load(instance)).text(), "abcdef");
   await Promise.all(f.work);
@@ -436,7 +448,7 @@ test("cold-fill admission bounds concurrent cache copies and releases slots", as
 test("cold-fill byte reservations bound large copies independently of entry count", async () => {
   const f = fixture();
   const size = 150 * 1024 * 1024;
-  const instance = new MediaCache(f.storage, async (url, options) =>
+  const instance = new MediaCache(f.storage, async (url, _options) =>
     String(url).endsWith("/info")
       ? Response.json({
           size,
@@ -559,4 +571,22 @@ test("expired metadata never serves cached bytes or fetches storage", async () =
     assert.equal(await response.text(), "");
   }
   assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+});
+
+test("recency metadata stays bounded when the browser independently evicts bodies", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  for (let index = 0; index < 140; index++) {
+    f.saved.clear();
+    const url = new URL(
+      path.replace("06178/file", `${String(index).padStart(5, "0")}/file`),
+    );
+    await (
+      await instance.respond(new Request(url), url, (work) => f.work.push(work))
+    ).text();
+    await Promise.all(f.work);
+  }
+  const recency = await f.storage.open("commonroom-media-recency-v1");
+  assert.ok((await recency.keys()).length <= 128);
+  assert.equal(f.saved.size, 1);
 });

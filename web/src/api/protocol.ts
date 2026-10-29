@@ -207,6 +207,50 @@ export interface Fonts {
 }
 export type ReplyTarget = Message & { view: string };
 
+// Generous wire budgets independent of the smaller display/cache windows.
+// Check raw bytes before JSON.parse too; guards cannot undo JSON allocation.
+export const MAX_JSON_BYTES = 32 * 1024 * 1024;
+const boundedString = (v: unknown): v is string =>
+  typeof v === "string" && v.length <= 65536;
+function snapshotBudget(v: Record<string, unknown>): boolean {
+  if (
+    !Array.isArray(v.rooms) ||
+    v.rooms.length > 1024 ||
+    !Array.isArray(v.direct) ||
+    v.direct.length > 20000
+  )
+    return false;
+  let count = v.direct.length;
+  for (const room of v.rooms) {
+    if (
+      !record(room) ||
+      !Array.isArray(room.messages) ||
+      room.messages.length > 1000
+    )
+      return false;
+    count += room.messages.length;
+    if (count > 20000) return false;
+  }
+  // Also bound metadata, nested command arrays, keys and strings before walking
+  // their individual validators. Iteration avoids trusting recursive JSON depth.
+  const pending: { value: unknown; depth: number }[] = [{ value: v, depth: 0 }];
+  let nodes = 0;
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || ++nodes > 500000 || item.depth > 16) return false;
+    if (typeof item.value === "string" && !boundedString(item.value))
+      return false;
+    if (item.value && typeof item.value === "object") {
+      const entries = Object.entries(item.value);
+      if (entries.length > 65536) return false;
+      for (const [key, value] of entries) {
+        if (!boundedString(key)) return false;
+        pending.push({ value, depth: item.depth + 1 });
+      }
+    }
+  }
+  return true;
+}
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const strings = (v: unknown): v is string[] =>
@@ -217,7 +261,7 @@ const reply = (v: unknown): v is Reply =>
   record(v) &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&
-  typeof v.text === "string" &&
+  boundedString(v.text) &&
   (v.sequence === undefined || integer(v.sequence));
 export const isMessage = (v: unknown): v is Message =>
   record(v) &&
@@ -227,12 +271,16 @@ export const isMessage = (v: unknown): v is Message =>
   typeof v.id === "string" &&
   typeof v.from === "string" &&
   (v.to === null || typeof v.to === "string") &&
-  typeof v.text === "string" &&
+  boundedString(v.text) &&
   integer(v.time) &&
   v.time <= 8_640_000_000_000 &&
   integer(v.sequence) &&
   record(v.reactions) &&
-  Object.values(v.reactions).every(strings) &&
+  Object.keys(v.reactions).length <= 1024 &&
+  Object.entries(v.reactions).every(
+    ([key, users]) =>
+      boundedString(key) && strings(users) && users.length <= 256,
+  ) &&
   (v.reply === null || reply(v.reply)) &&
   strings(v.mentions);
 const messages = (v: unknown): v is Message[] =>
@@ -272,13 +320,14 @@ const messageColors = (v: unknown): v is MessageColors =>
   );
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
+  v.kind === "snapshot" &&
+  snapshotBudget(v) &&
   (v.color_version === undefined || typeof v.color_version === "string") &&
   (v.name_colors === undefined || messageColors(v.name_colors)) &&
   (v.sync === undefined ||
     (record(v.sync) &&
       typeof v.sync.instance === "string" &&
       integer(v.sync.revision))) &&
-  v.kind === "snapshot" &&
   typeof v.username === "string" &&
   typeof v.admin === "boolean" &&
   strings(v.groups) &&
@@ -346,6 +395,11 @@ export const isHistory = (v: unknown): v is History =>
 export const isOk = (v: unknown): v is { ok: true } =>
   record(v) && v.ok === true;
 export function parseFrame(raw: string): ServerFrame | null {
+  if (
+    raw.length > MAX_JSON_BYTES ||
+    new TextEncoder().encode(raw).byteLength > MAX_JSON_BYTES
+  )
+    return null;
   let value: unknown;
   try {
     value = JSON.parse(raw);

@@ -19,10 +19,37 @@ export function useComposerResize(
     maximumComposerHeight,
     Math.max(minimumComposerHeight, composerHeight, contentHeight),
   );
+  const nativeSizing =
+    globalThis.CSS?.supports("field-sizing", "content") ?? false;
+  // Native content sizing handles shrinkage, fonts and wrapping without a mirror.
+  // Inline dimensions still express the user's manual minimum and viewport cap.
+  useLayoutEffect(() => {
+    const element = input.current;
+    if (!element || !nativeSizing) return;
+    element.style.setProperty("field-sizing", "content");
+    element.style.height = "auto";
+    element.style.minHeight = `${Math.min(maximumComposerHeight, Math.max(minimumComposerHeight, composerHeight))}px`;
+    element.style.maxHeight = `${maximumComposerHeight}px`;
+  });
   const measure = useRef<((refreshStyle?: boolean) => void) | null>(null);
   useLayoutEffect(() => {
     const element = input.current;
     if (!element) return;
+    if (nativeSizing) {
+      const observer = new ResizeObserver(() =>
+        setContentHeight(element.clientHeight),
+      );
+      observer.observe(element);
+      const resize = () => setViewportHeight(window.innerHeight);
+      window.addEventListener("resize", resize);
+      return () => {
+        observer.disconnect();
+        window.removeEventListener("resize", resize);
+        element.style.removeProperty("field-sizing");
+        element.style.removeProperty("min-height");
+        element.style.removeProperty("max-height");
+      };
+    }
     const mirror = document.createElement("textarea");
     mirror.name = "message-size-mirror";
     mirror.tabIndex = -1;
@@ -93,7 +120,7 @@ export function useComposerResize(
       measure.current = null;
       mirror.remove();
     };
-  }, [input]);
+  }, [input, nativeSizing]);
   useLayoutEffect(() => {
     measure.current?.();
   }, [draft]);

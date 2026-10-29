@@ -1,3 +1,6 @@
+import js from "@eslint/js";
+import globals from "globals";
+import hooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -11,7 +14,10 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    plugins: { "react-hooks": hooks },
     rules: {
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "error",
       "no-restricted-properties": [
         "error",
         {
@@ -33,6 +39,21 @@ export default tseslint.config(
         { ignoreVoid: false },
       ],
       "@typescript-eslint/no-misused-promises": "error",
+    },
+  },
+  {
+    files: ["tests/**/*.{js,mjs}", "scripts/**/*.{js,mjs}"],
+    extends: [js.configs.recommended],
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+    rules: {
+      "no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+        },
+      ],
     },
   },
   {

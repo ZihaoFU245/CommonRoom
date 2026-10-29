@@ -15,26 +15,21 @@ import "./style.css";
    wrong background and then corrects itself. */
 bootAppearance();
 
-if (import.meta.env.PROD && location.protocol !== "https:") {
-  location.replace(
-    `https://${location.host}${location.pathname}${location.search}${location.hash}`,
-  );
-} else {
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker
-      .register(new URL(mediaWorkerUrl, document.baseURI), {
-        type: "module",
-        scope: new URL("./", document.baseURI).pathname,
-        updateViaCache: "none",
-      })
-      .catch(() => {
-        /* Browsers without worker storage use ordinary downloads. */
-      });
-  }
-  const root = document.getElementById("app");
-  if (!root) throw new Error("Missing application root.");
-  render(<App />, root);
+// Production HTTPS redirects and HSTS are configured by the serving proxy.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker
+    .register(new URL(mediaWorkerUrl, document.baseURI), {
+      type: "module",
+      scope: new URL("./", document.baseURI).pathname,
+      updateViaCache: "none",
+    })
+    .catch(() => {
+      /* Browsers without worker storage use ordinary downloads. */
+    });
 }
+const root = document.getElementById("app");
+if (!root) throw new Error("Missing application root.");
+render(<App />, root);
 
 function App() {
   const appearance = useTheme();

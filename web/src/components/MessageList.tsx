@@ -1,6 +1,6 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
-import { useEvent } from "../hooks/useEvent.ts";
-import type { HtmlGateChoice, HtmlGateMode } from "./HtmlGateContext.ts";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useHtmlGates } from "../hooks/useHtmlGates.ts";
+import { useReplyJump } from "../hooks/useReplyJump.ts";
 import { HtmlGateContext } from "./HtmlGateContext.ts";
 import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
@@ -8,12 +8,7 @@ import { useVirtualTimeline } from "../hooks/useVirtualTimeline.ts";
 import { useTimelineMotion } from "../hooks/useTimelineMotion.ts";
 import { ContentMotionContext } from "../hooks/useContentResizeMotion.ts";
 import { memo } from "preact/compat";
-import type {
-  Command,
-  Message,
-  Reply,
-  TimelineEntry,
-} from "../api/protocol.ts";
+import type { Command, Message, TimelineEntry } from "../api/protocol.ts";
 import {
   messageDate,
   groupedMessage,
@@ -74,71 +69,50 @@ export const MessageList = memo(function MessageList({
   end,
   onScroll,
 }: Props) {
-  // Bound choices to the current history window and conversation, surviving row unmounts.
-  const choices = useMemo(
-    () => new Map<string, HtmlGateChoice>(),
-    [motionScope, allowHtml],
-  );
-  const [gateRevision, setGateRevision] = useState(0);
-  const liveMessages = useMemo(() => {
-    const messages = new Map<string, string>();
-    if (allowHtml) {
-      for (const entry of entries) {
-        if (entry.kind === "message")
-          messages.set(entry.message.id, entry.message.text);
-      }
-    }
-    return messages;
-  }, [entries, allowHtml]);
-  const gates = useMemo(() => {
-    for (const [key, choice] of choices) {
-      if (liveMessages.get(choice.messageKey) !== choice.text)
-        choices.delete(key);
-    }
-    return {
-      choices,
-      change: (
-        key: string,
-        messageKey: string,
-        text: string,
-        mode: HtmlGateMode,
-      ) => {
-        const previous = choices.get(key);
-        if (previous?.text === text && previous.mode === mode) return;
-        if (mode) choices.set(key, { messageKey, text, mode });
-        else choices.delete(key);
-        setGateRevision((value) => value + 1);
-      },
-    };
-  }, [choices, liveMessages, gateRevision]);
-  const expandedMessages = useMemo(
-    () => new Map<string, string>(),
-    [motionScope],
-  );
-  const expansion = useMemo(() => {
-    const live = new Map(
-      entries.flatMap((entry) =>
-        entry.kind === "message"
-          ? [[entry.message.id, entry.message.text]]
-          : [],
-      ),
+  const announcementWatermark = useRef<{
+    scope: string;
+    through: number;
+  } | null>(null);
+  const [announcements, setAnnouncements] = useState<Message[]>([]);
+  useEffect(() => {
+    if (!historyReady) return;
+    const messages = entries.flatMap((entry) =>
+      entry.kind === "message" ? [entry.message] : [],
     );
-    for (const [key, text] of expandedMessages) {
-      if (live.get(key) !== text) expandedMessages.delete(key);
-    }
-    return (message: Message, expanded: boolean) => {
-      atBottom.current = false;
-      if (expanded) expandedMessages.set(message.id, message.text);
-      else expandedMessages.delete(message.id);
-      setGateRevision((value) => value + 1);
+    const through = Math.max(0, ...messages.map((message) => message.sequence));
+    const previous = announcementWatermark.current;
+    // Initial history, backfill and virtual remounts are silent. Only announce
+    // arrivals while following this conversation's bottom.
+    setAnnouncements(
+      previous?.scope === motionScope && atBottom.current
+        ? messages
+            .filter((message) => message.sequence > previous.through)
+            .slice(-5)
+        : [],
+    );
+    announcementWatermark.current = {
+      scope: motionScope,
+      through:
+        previous?.scope === motionScope
+          ? Math.max(previous.through, through)
+          : through,
     };
-  }, [entries, expandedMessages, atBottom]);
-  const window = useVirtualTimeline(
+  }, [entries, motionScope, historyReady, atBottom]);
+  const { gates, gateRevision, expandedMessages, expansion } = useHtmlGates(
+    entries,
+    motionScope,
+    allowHtml,
+    atBottom,
+  );
+  const virtualWindow = useVirtualTimeline(
     entries,
     historyElement,
     virtualTimeline,
     atBottom,
-    gateRevision * 4 + (allowHtml ? 1 : 0) + (latex ? 2 : 0),
+    useMemo(
+      () => ({ gateRevision, allowHtml, latex }),
+      [gateRevision, allowHtml, latex],
+    ),
   );
   useTimelineMotion(
     entries,
@@ -147,89 +121,19 @@ export const MessageList = memo(function MessageList({
     historyReady,
     historyElement,
     atBottom,
-    window,
+    virtualWindow,
   );
-  // A reply can point outside the virtual window, so scroll the timeline to its
-  // sequence and center the row once that window renders.
-  const pendingReply = useRef<string | null>(null);
-  const highlight = useRef<Animation | null>(null);
-  useLayoutEffect(() => {
-    const reduced = globalThis.matchMedia("(prefers-reduced-motion: reduce)");
-    const stopHighlight = () => {
-      highlight.current?.cancel();
-      highlight.current = null;
-    };
-    reduced.addEventListener("change", stopHighlight);
-    return () => {
-      pendingReply.current = null;
-      stopHighlight();
-      reduced.removeEventListener("change", stopHighlight);
-    };
-  }, [motionScope]);
-  const reveal = (id: string, scroll = true) => {
-    const element = document.getElementById(id);
-    if (!element || !historyElement.current?.contains(element)) return false;
-    atBottom.current = false;
-    if (scroll) element.scrollIntoView({ block: "center" });
-    // Reuse the hover wash so a jump is easy to follow, then let it fade.
-    highlight.current?.cancel();
-    highlight.current = null;
-    if (globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches)
-      return true;
-    highlight.current = element.animate(
-      [
-        { backgroundColor: "var(--wash)" },
-        { backgroundColor: "var(--wash)", offset: 0.6 },
-        { backgroundColor: "transparent" },
-      ],
-      { duration: 1200, easing: "ease-out" },
-    );
-    return true;
-  };
-  const jumpToReply = useEvent((reply: Reply) => {
-    // A second click supersedes a jump whose history request is still pending.
-    pendingReply.current = null;
-    const id = `message-${reply.id}`;
-    const entry = entries.find(
-      (entry) => entry.kind === "message" && entry.message.id === reply.id,
-    );
-    if (entry?.kind === "message") {
-      atBottom.current = false;
-      virtualTimeline.current?.scrollToSequence(
-        entry.message.sequence,
-        0,
-        true,
-        true,
-        () => {
-          reveal(id, false);
-        },
-      );
-      return;
-    }
-    virtualTimeline.current?.cancelScroll?.();
-    // The original is outside the loaded history; page around it by sequence.
-    if (reply.sequence === undefined || reply.sequence === 0) return;
-    atBottom.current = false;
-    pendingReply.current = id;
-    loadSequence(reply.sequence);
-  });
-  useLayoutEffect(() => {
-    const id = pendingReply.current;
-    if (id === null) return;
-    if (reveal(id)) {
-      pendingReply.current = null;
-      return;
-    }
-    const entry = entries.find(
-      (entry) =>
-        entry.kind === "message" && `message-${entry.message.id}` === id,
-    );
-    if (entry?.kind !== "message") return;
-    atBottom.current = false;
-    virtualTimeline.current?.scrollToSequence(entry.message.sequence);
-  }, [entries, window.start, window.end, window.layoutVersion]);
-  const renderedEntries = window.visible.map((entry, localIndex) => {
-    const index = window.start + localIndex;
+  const jumpToReply = useReplyJump(
+    entries,
+    motionScope,
+    historyElement,
+    virtualTimeline,
+    atBottom,
+    loadSequence,
+    virtualWindow,
+  );
+  const renderedEntries = virtualWindow.visible.map((entry, localIndex) => {
+    const index = virtualWindow.start + localIndex;
     if (entry.kind !== "message")
       return (
         <div key={entry.key} data-virtual-key={entry.key}>
@@ -310,21 +214,33 @@ export const MessageList = memo(function MessageList({
           class="message-list console-history"
           aria-label="Conversation history"
           tabIndex={0}
-          aria-live="polite"
         >
           <div class="timeline-rows">
             <div
               aria-hidden="true"
-              style={{ height: window.top, flexShrink: 0 }}
+              style={{ height: virtualWindow.top, flexShrink: 0 }}
             />
             {renderedEntries}
             <div
               aria-hidden="true"
-              style={{ height: window.bottom, flexShrink: 0 }}
+              style={{ height: virtualWindow.bottom, flexShrink: 0 }}
             />
             <div ref={end} />
           </div>
         </section>
+        <div
+          class="visually-hidden"
+          role="log"
+          aria-label="New messages"
+          aria-live="polite"
+          aria-relevant="additions"
+        >
+          {announcements.map((message) => (
+            <p key={message.id}>
+              {message.from}: {Array.from(message.text).slice(0, 2000).join("")}
+            </p>
+          ))}
+        </div>
       </HtmlGateContext.Provider>
     </ContentMotionContext.Provider>
   );

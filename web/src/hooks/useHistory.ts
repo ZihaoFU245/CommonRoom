@@ -1,6 +1,12 @@
 import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "./useVirtualTimeline.ts";
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import type {
   HistoryRange,
   Message,
@@ -17,6 +23,7 @@ import {
   HistoryCache,
 } from "../features/conversation/historyCache.ts";
 import type { CachedHistory } from "../features/conversation/historyCache.ts";
+import { useEvent } from "./useEvent.ts";
 import type { ValueRef } from "./refs.ts";
 
 export function useHistory(
@@ -40,7 +47,9 @@ export function useHistory(
   >();
   const target = jump?.view === selected ? jump.sequence : undefined;
   const active = useRef(selected);
-  active.current = selected;
+  useLayoutEffect(() => {
+    active.current = selected;
+  }, [selected]);
   const current = useRef(loaded);
   const request = useRef<AbortController | null>(null);
   const paused = useRef(false);
@@ -71,7 +80,7 @@ export function useHistory(
           has_after: false,
         }
       : null;
-  }, [selected, id, tail, unread?.revision, unread?.oldest, unread?.through]);
+  }, [selected, id, tail, unread]);
   const cached = cache.current.get(selected);
   const candidate =
     loaded?.view === selected && loaded.id === id
@@ -81,16 +90,25 @@ export function useHistory(
         : completeTail;
   const visible = useMemo(
     () => (candidate && unread ? previewPage(candidate, unread, tail) : null),
-    [candidate, unread?.revision, unread?.oldest, unread?.through, tail],
+    [candidate, unread, tail],
   );
-  // Cached content is available on the selection render, before effects or HTTP.
-  current.current = visible;
   const historyReady = !!unread && visible !== null;
-  // Selection must ingest the immediately visible cached window as well.
-  useMemo(
-    () => ingest(state, ledger.current, visible?.messages ?? []),
-    [state.rooms, state.direct, visible?.messages],
+  // Derive ordering without mutating the committed ledger during render.
+  const renderLedger = useMemo(
+    () =>
+      ingest(
+        { rooms: state.rooms, direct: state.direct },
+        {
+          sequence: ledger.current.sequence,
+          messages: new Map(ledger.current.messages),
+        },
+        visible?.messages ?? [],
+      ),
+    [state.rooms, state.direct, visible?.messages, ledger],
   );
+  useLayoutEffect(() => {
+    ledger.current = renderLedger;
+  }, [renderLedger, ledger]);
   function commit(page: CachedHistory) {
     const metadata = currentState.current.unread[page.view];
     if (metadata)
@@ -146,9 +164,28 @@ export function useHistory(
             throw error;
         }
         if (controller.signal.aborted) return;
+        if (attempt < 2)
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              clearTimeout(timer);
+              controller.signal.removeEventListener("abort", finish);
+              resolve();
+            };
+            const timer = setTimeout(finish, 25 * 2 ** attempt);
+            controller.signal.addEventListener("abort", finish, { once: true });
+          });
+        if (controller.signal.aborted) return;
       }
-      if (!page)
+      if (
+        !page ||
+        currentState.current.unread[view]?.revision !== page.revision ||
+        (nameColors &&
+          page.name_colors &&
+          page.name_colors.version !== currentState.current.color_version)
+      ) {
+        paused.current = true;
         throw new Error("History is changing quickly. Retry the current page.");
+      }
       const latest = currentState.current;
       const latestId =
         latest.private_access[view]?.id ??
@@ -159,12 +196,6 @@ export function useHistory(
         latestId !== conversationId
       )
         return;
-      if (latest.unread[view]?.revision !== page.revision) {
-        paused.current = true;
-        setHistoryError(
-          "History is changing quickly. Showing the last received page; retry to refresh.",
-        );
-      }
       const previous = current.current;
       commit(
         direction &&
@@ -219,17 +250,19 @@ export function useHistory(
       request.current = null;
     };
   }, [selected, id, state.policy_revision, nameColors]);
+  const tailIds = useMemo(
+    () => new Set(tail.map((message) => message.id)),
+    [tail],
+  );
   function colorsReady(page: CachedHistory): boolean {
     return (
       !nameColors ||
       state.color_version === undefined ||
       page.name_colors?.version === state.color_version ||
-      page.messages.every((message) =>
-        tail.some((item) => item.id === message.id),
-      )
+      page.messages.every((message) => tailIds.has(message.id))
     );
   }
-  useEffect(() => {
+  const synchronize = useEvent(() => {
     // Revocation and resource identity reuse cannot retain accessible cached history.
     for (const [view, page] of cache.current) {
       const accessId =
@@ -250,10 +283,13 @@ export function useHistory(
       visible.revision === unread.revision &&
       colorsReady(visible)
     ) {
-      commit(visible);
+      if (current.current !== visible) commit(visible);
       return;
     }
-    const previous = current.current;
+    const previous =
+      current.current?.view === selected && current.current.id === id
+        ? current.current
+        : candidate;
     if (
       target === undefined &&
       previous?.view === selected &&
@@ -295,10 +331,19 @@ export function useHistory(
     fetchPage(anchor === undefined ? {} : { around: anchor }).catch(
       (error: unknown) => setHistoryError(errorMessage(error)),
     );
+  });
+  useEffect(() => {
+    synchronize();
   }, [
+    synchronize,
     selected,
     id,
     unread?.revision,
+    unread?.oldest,
+    unread?.through,
+    tail,
+    state.rooms,
+    state.private_access,
     state.policy_revision,
     state.color_version,
     nameColors,
@@ -322,6 +367,7 @@ export function useHistory(
   );
   return {
     unread,
+    renderLedger,
     lookahead: lookahead.current,
     historyReady,
     messages,
@@ -358,6 +404,7 @@ export function useHistory(
       setLoaded(null);
       current.current = null;
       cache.current.delete(active.current);
+      lastRange.current = { range: {} };
       setRetry((value) => value + 1);
     },
     loadSequence: (sequence: number) => {

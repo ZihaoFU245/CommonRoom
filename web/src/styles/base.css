@@ -1,0 +1,152 @@
+:root {
+  /* First-paint fallback; applyAppearance synchronizes these with controlMotion. */
+  --control-motion-duration: 120ms;
+  --control-motion-easing: ease-out;
+  --chat-header-height: 64px;
+  --chat-footer-height: 80px;
+  /* Light appearance. Every themed surface reads from this palette. */
+  --paper: #f9f9f7;
+  --ink: #2d2d2b;
+  --muted: #2d2d2b;
+  --subtle: #666661;
+  --line: #e5e1db;
+  --wash: #efefec;
+  --accent: #cc7d5e;
+  --accent-hover: #ba6c4f;
+  --accent-ink: #2d2d2b;
+  --field: #ffffffb8;
+  --placeholder: #918c85;
+  --danger: #a04135;
+  --online: #22a06b;
+  --offline: #bbb2a8;
+  --scrim: #2d2d2b55;
+  --hairline: #9c9c95;
+  --shadow-float: 0 6px 20px #00000012;
+  --shadow-pop: 0 4px 15px #2d2d2b12;
+  --shadow-dialog: 0 12px 50px #2d2d2b20;
+  /* Text on --accent stays dark in both themes: the fill itself is unchanged. */
+  --accent-label: #2d2d2b;
+  --accent-contrast: #fff;
+  /* Built-in name shades; custom palettes derive contrast against their surfaces. */
+  --name-red: #dc2626;
+  --name-orange: #c2410c;
+  --name-amber: #b45309;
+  --name-yellow: #a16207;
+  --name-lime: #4d7c0f;
+  --name-green: #15803d;
+  --name-emerald: #047857;
+  --name-teal: #0f766e;
+  --name-cyan: #0e7490;
+  --name-sky: #0369a1;
+  --name-blue: #2563eb;
+  --name-indigo: #4f46e5;
+  --name-violet: #7c3aed;
+  --name-purple: #9333ea;
+  --name-fuchsia: #c026d3;
+  --name-pink: #db2777;
+  color-scheme: light;
+  caret-color: var(--ink);
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  font-synthesis: none;
+  font-weight: 400;
+  font-size: var(--ui-font-size, 14px);
+  line-height: 1.5;
+}
+/* Dark appearance. bootAppearance sets data-theme before the first frame;
+   the app-level useTheme keeps it current afterwards. The surfaces are a
+   blue-tinted near-black (the blue channel leads the red) rather than a warm
+   charcoal, following the ChatGPT/Codex dark family. --accent itself is
+   shared: the brand fill does not change, only the foregrounds tuned for it. */
+:root[data-theme="dark"] {
+  --paper: #181c26;
+  --ink: #e5e9f2;
+  --muted: #a3abbd;
+  --subtle: #959fb3;
+  --line: #2f3646;
+  --wash: #232838;
+  --accent-hover: #d98a66;
+  --accent-ink: #e5e9f2;
+  --accent-label: #1f1d1a;
+  --field: #1f2430;
+  --placeholder: #8892a6;
+  --danger: #f08c7f;
+  --online: #2fbf8f;
+  --offline: #6b7280;
+  --scrim: #000000a6;
+  --hairline: #3d4557;
+  --shadow-float: 0 6px 20px #00000059;
+  --shadow-pop: 0 4px 15px #00000059;
+  --shadow-dialog: 0 12px 50px #00000073;
+  --name-red: #f87171;
+  --name-orange: #fb923c;
+  --name-amber: #fbbf24;
+  --name-yellow: #facc15;
+  --name-lime: #a3e635;
+  --name-green: #4ade80;
+  --name-emerald: #34d399;
+  --name-teal: #2dd4bf;
+  --name-cyan: #22d3ee;
+  --name-sky: #38bdf8;
+  --name-blue: #60a5fa;
+  --name-indigo: #818cf8;
+  --name-violet: #a78bfa;
+  --name-purple: #c084fc;
+  --name-fuchsia: #e879f9;
+  --name-pink: #f472b6;
+  color-scheme: dark;
+  scrollbar-color: var(--line) transparent;
+}
+/* The platform selection blue sits close to this surface hue, so dark tints it
+   with the accent instead; light keeps the default it has always had. */
+:root[data-theme="dark"] ::selection {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--ink);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+textarea {
+  font: inherit;
+  outline-offset: 4px;
+}
+button {
+  cursor: pointer;
+  color: inherit;
+  border: 0;
+  background: none;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+button:focus-visible {
+  outline: 2px solid var(--ink);
+}
+input:focus,
+textarea:focus {
+  outline: none;
+}
+a {
+  color: inherit;
+}
+h1,
+h2,
+p {
+  margin: 0;
+}
+input,
+textarea {
+  color: inherit;
+}

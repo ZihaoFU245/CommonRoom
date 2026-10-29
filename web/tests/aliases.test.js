@@ -87,7 +87,10 @@ test("malformed and unavailable browser storage is handled", () => {
     },
   };
   assert.deepEqual(loadAliases(), { "/good": "/ls" });
-  assert.throws(() => saveAlias({}, "/alias rooms room ls"), /Unavailable/);
+  assert.throws(
+    () => saveAlias({}, "/alias rooms room ls"),
+    /Could not save aliases in this browser/,
+  );
   globalThis.localStorage = {
     getItem: () => {
       throw new Error("Unavailable");
@@ -116,7 +119,10 @@ test("settings and slash commands share alias updates and persistent removal", (
   globalThis.localStorage.setItem = () => {
     throw new Error("Unavailable");
   };
-  assert.throws(() => removeAlias(changed, "/rooms"), /Unavailable/);
+  assert.throws(
+    () => removeAlias(changed, "/rooms"),
+    /Could not save aliases in this browser/,
+  );
   assert.deepEqual(changed, { "/rooms": "/user ls" });
 });
 

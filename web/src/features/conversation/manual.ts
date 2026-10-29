@@ -13,7 +13,7 @@ export function inlineCode(text: string): string {
   const padding = /^[` ]|[` ]$/u.test(text) ? " " : "";
   return `${delimiter}${padding}${text}${padding}${delimiter}`;
 }
-export function codeBlock(text: string, language = "text"): string {
+function codeBlock(text: string, language = "text"): string {
   const fence = "`".repeat(Math.max(3, longestBackticks(text) + 1));
   return `${fence}${language}\n${text}\n${fence}`;
 }

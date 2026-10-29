@@ -106,7 +106,7 @@ export function useReadTracking({
     virtualTimeline.current?.cancelScroll?.();
     pendingJump.current = null;
     pendingBottom.current = null;
-  }, [identity]);
+  }, [identity, virtualTimeline]);
   const restoreAttempt = useRef<string | null>(null);
   const rememberPosition = useEvent(() => {
     if (enteredView.current !== identity) return;
@@ -135,7 +135,7 @@ export function useReadTracking({
     if (viewport)
       viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
   }
-  useLayoutEffect(() => {
+  const restoreHistory = useEvent(() => {
     const jump = pendingJump.current;
     if (
       jump?.identity === identity &&
@@ -220,7 +220,11 @@ export function useReadTracking({
     }
     rememberPosition();
     updateNavigation();
+  });
+  useLayoutEffect(() => {
+    restoreHistory();
   }, [
+    restoreHistory,
     messages,
     selected,
     identity,
@@ -231,7 +235,7 @@ export function useReadTracking({
     hasAfter,
     historyLoading,
   ]);
-  function acknowledgeVisible() {
+  const acknowledgeVisible = useEvent(() => {
     if (readTimer.current !== undefined) return;
     readTimer.current = setTimeout(() => {
       readTimer.current = undefined;
@@ -239,7 +243,7 @@ export function useReadTracking({
         console.error("Read tracking failed", error);
       });
     }, 250);
-  }
+  });
   const recordVisibleRead = useEvent(async () => {
     if (
       !historyReady ||
@@ -257,11 +261,14 @@ export function useReadTracking({
     if (!viewport) return;
     const elements = [
       ...viewport.querySelectorAll<HTMLElement>("[data-sequence]"),
-    ].map((element) => ({
-      sequence: Number(element.dataset.sequence),
-      top: element.getBoundingClientRect().top,
-      bottom: element.getBoundingClientRect().bottom,
-    }));
+    ].map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        sequence: Number(element.dataset.sequence),
+        top: rect.top,
+        bottom: rect.bottom,
+      };
+    });
     const through = visibleReadPosition(
       elements,
       viewport.getBoundingClientRect(),
@@ -293,13 +300,24 @@ export function useReadTracking({
   });
   useEffect(() => {
     acknowledgeVisible();
+  }, [
+    selected,
+    messages,
+    unread,
+    historyReady,
+    menu,
+    settingsOpen,
+    status,
+    acknowledgeVisible,
+  ]);
+  useEffect(() => {
     window.addEventListener("focus", acknowledgeVisible);
     document.addEventListener("visibilitychange", acknowledgeVisible);
     return () => {
       window.removeEventListener("focus", acknowledgeVisible);
       document.removeEventListener("visibilitychange", acknowledgeVisible);
     };
-  }, [selected, messages, unread, historyReady, menu, settingsOpen, status]);
+  }, [acknowledgeVisible]);
   useEffect(() => {
     mounted.current = true;
     return () => {

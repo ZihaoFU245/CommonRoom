@@ -67,5 +67,5 @@ export function useHistoryPaging(
       element.removeEventListener("touchmove", touchmove);
       element.removeEventListener("keydown", keydown);
     };
-  }, []);
+  }, [container, page]);
 }

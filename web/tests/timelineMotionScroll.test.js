@@ -15,6 +15,7 @@ const registration = registerHooks({
         shortCircuit: true,
         source: `
           export const useRef = (value) => ({ current: value });
+          export const useCallback = callback => callback;
           export const useEffect = (callback) => globalThis.scrollEffect = callback;
           export const useLayoutEffect = (callback) => globalThis.scrollLayout = callback;
         `,
@@ -88,4 +89,52 @@ test("idle wheel/touch events do not measure rows and scrolling keeps the cached
   assert.equal(measurements, 1);
   resized();
   assert.equal(measurements, 2);
+});
+
+test("motion reuses row rectangles from this commit and remeasures after scrolling", async (t) => {
+  let reads = 0;
+  const rowRect = { top: 0, left: 0, width: 100, height: 50 };
+  const row = {
+    dataset: { virtualKey: "m" },
+    getBoundingClientRect() {
+      reads++;
+      return rowRect;
+    },
+    querySelector: () => null,
+    getAnimations: () => [],
+  };
+  const viewport = {
+    scrollTop: 0,
+    getBoundingClientRect: () => ({ top: 0, left: 0 }),
+    querySelectorAll: () => [row],
+    querySelector: () => null,
+  };
+  t.after(() => {
+    delete globalThis.scrollLayout;
+  });
+  useTimelineMotion(
+    [],
+    "room",
+    1,
+    true,
+    { current: viewport },
+    { current: false },
+    {
+      start: 0,
+      end: 1,
+      layoutVersion: 0,
+      rowMeasurements: { rects: new Map([[row, rowRect]]), scrollTop: 0 },
+    },
+  );
+  globalThis.scrollLayout();
+  await Promise.resolve();
+  assert.equal(reads, 0, "no duplicate per-row layout read");
+  viewport.scrollTop = 10;
+  globalThis.scrollLayout();
+  await Promise.resolve();
+  assert.equal(
+    reads,
+    1,
+    "a changed scroll position invalidates shared coordinates",
+  );
 });

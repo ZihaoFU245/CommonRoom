@@ -21,7 +21,7 @@ export const nameColors = [
 ] as const;
 export type NameColor = (typeof nameColors)[number];
 
-export function isNameColor(value: unknown): value is NameColor {
+function isNameColor(value: unknown): value is NameColor {
   return nameColors.some((color) => color === value);
 }
 

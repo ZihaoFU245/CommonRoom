@@ -25,13 +25,13 @@ export function ingest(
   ingestIds.set(ledger, current);
   current.clear();
   const messages: Message[] = [];
-  let additions = false;
+  const additions: Message[] = [];
   function collect(source: Message[]) {
     for (const message of source) {
       if (current.has(message.id)) continue;
       current.add(message.id);
       messages.push(message);
-      if (!ledger.messages.has(message.id)) additions = true;
+      if (!ledger.messages.has(message.id)) additions.push(message);
     }
   }
   collect(extras);
@@ -40,14 +40,39 @@ export function ingest(
   for (const key of ledger.messages.keys()) {
     if (!current.has(key)) ledger.messages.delete(key);
   }
-  if (!additions) return ledger;
+  if (!additions.length) return ledger;
+  const addition = additions.length === 1 ? additions[0] : undefined;
+  if (addition) {
+    let before: Message | undefined;
+    let after: Message | undefined;
+    for (const message of messages) {
+      if (message === addition) continue;
+      if (
+        message.sequence < addition.sequence &&
+        (!before || message.sequence > before.sequence)
+      )
+        before = message;
+      if (
+        message.sequence > addition.sequence &&
+        (!after || message.sequence < after.sequence)
+      )
+        after = message;
+    }
+    const left = before ? (ledger.messages.get(before.id) ?? 0) : 0;
+    const right = after ? ledger.messages.get(after.id) : undefined;
+    ledger.messages.set(
+      addition.id,
+      right === undefined ? ++ledger.sequence : (left + right) / 2,
+    );
+    return ledger;
+  }
   messages.sort((a, b) => a.sequence - b.sequence || a.time - b.time);
   // Insert fetched older history before known messages without moving local
   // command output. New live messages still append to the tab's ledger.
   for (let i = 0; i < messages.length;) {
-    const current = messages[i];
-    if (!current) break;
-    if (ledger.messages.has(current.id)) {
+    const message = messages[i];
+    if (!message) break;
+    if (ledger.messages.has(message.id)) {
       i++;
       continue;
     }

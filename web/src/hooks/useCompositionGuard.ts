@@ -1,3 +1,4 @@
+import { useEvent } from "./useEvent.ts";
 import type { JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 
@@ -13,11 +14,11 @@ export function useCompositionGuard(
     clearTimeout(resetTimer.current);
     resetTimer.current = undefined;
   }
-  function reset() {
+  const reset = useEvent(() => {
     cancelReset();
     composing.current = false;
-  }
-  useEffect(() => reset, []);
+  });
+  useEffect(() => reset, [reset]);
   return {
     onCompositionStart: () => {
       cancelReset();

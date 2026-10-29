@@ -153,7 +153,7 @@ test("busy history preserves explicit paging, bounds retries and keeps live tail
         );
         for (const effect of harness.effects) effect();
       }
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 100));
       if (!harness.dirty) return;
     }
     assert.fail("busy history did not settle");
@@ -168,7 +168,11 @@ test("busy history preserves explicit paging, bounds retries and keeps live tail
       { before: 200 },
       { before: 200 },
     ]);
-    assert.ok(result.messages.some((m) => m.sequence === 100));
+    assert.ok(
+      !result.messages.some((m) => m.sequence === 100),
+      "reject a known stale page",
+    );
+    assert.ok(result.messages.some((m) => m.sequence === 200));
     assert.equal(result.historyReady, true);
     assert.match(result.historyError, /changing quickly/);
     // A broken history endpoint cannot hide newly received live messages.
@@ -524,6 +528,7 @@ test("cached author colors refresh after reset even when message revision is unc
     has_after: true,
     name_colors: { version: "instance:1", values: { bob: "red" } },
   });
+  await new Promise((resolve) => setTimeout(resolve, 100));
   await settle();
   assert.equal(result.messages[0].id, "old");
   assert.equal(result.nameColors.version, "instance:2");
@@ -534,4 +539,32 @@ test("cached author colors refresh after reset even when message revision is unc
   await settle();
   assert.equal(result.nameColors.version, "restart:1");
   assert.equal(requests, 3);
+});
+
+test("discarding a selection render does not mutate committed history ordering", () => {
+  const messages = [{ id: "new", sequence: 1, time: 1 }];
+  const state = {
+    rooms: [{ name: "team", id: "stable", messages }],
+    direct: [],
+    private_access: {},
+    unread: { team: { revision: 1, through: 1, oldest: 1 } },
+    policy_revision: 0,
+  };
+  const committed = { sequence: 3, messages: new Map([["old", 2]]) };
+  const ledger = { current: committed };
+  const harness = { slots: [], index: 0, effects: [], dirty: true };
+  useHarness(harness);
+  const result = useHistory(
+    state,
+    "team",
+    messages,
+    { current: state },
+    ledger,
+    { current: null },
+    { current: true },
+  );
+  assert.equal(ledger.current, committed);
+  assert.deepEqual([...committed.messages], [["old", 2]]);
+  assert.equal(committed.sequence, 3);
+  assert.ok(result.renderLedger.messages.has("new"));
 });
