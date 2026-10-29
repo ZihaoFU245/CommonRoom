@@ -1,0 +1,104 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - 'release-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check and build release
+        run: |
+          npm install --global pnpm
+          pnpm --dir web install --frozen-lockfile
+          ./auto/check.sh release
+          ./auto/build.sh release
+      - name: Package release
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir release-assets
+          tar -cJf "release-assets/chat-linux-${ARCH}.tar.xz" chat
+          if [ "$ARCH" = amd64 ]; then
+            mv ui.tar.xz release-assets/
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.arch }}
+          path: release-assets/*.tar.xz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install prebuilt cargo-audit
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-audit
+          fallback: none
+      - name: Audit dependencies
+        run: ./auto/audit.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum *.tar.xz > SHA256SUMS
+          version="${RELEASE_TAG#release-}"
+          commit="$(git rev-parse HEAD)"
+          printf 'Version: %s\nCommit: %s\n' "$version" "$commit" > ../release-notes.txt
+
+          # Retry incomplete drafts without overwriting an edited published release.
+          if draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"; then
+            if [ "$draft" != true ]; then
+              echo "Release already published; preserving its assets and notes."
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$version" --notes-file ../release-notes.txt
+          fi
+          gh release upload "$RELEASE_TAG" *.tar.xz SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
