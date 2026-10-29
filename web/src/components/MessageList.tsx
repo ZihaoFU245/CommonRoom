@@ -166,11 +166,11 @@ export const MessageList = memo(function MessageList({
       reduced.removeEventListener("change", stopHighlight);
     };
   }, [motionScope]);
-  const reveal = (id: string) => {
+  const reveal = (id: string, scroll = true) => {
     const element = document.getElementById(id);
     if (!element || !historyElement.current?.contains(element)) return false;
     atBottom.current = false;
-    element.scrollIntoView({ block: "center" });
+    if (scroll) element.scrollIntoView({ block: "center" });
     // Reuse the hover wash so a jump is easy to follow, then let it fade.
     highlight.current?.cancel();
     highlight.current = null;
@@ -190,16 +190,23 @@ export const MessageList = memo(function MessageList({
     // A second click supersedes a jump whose history request is still pending.
     pendingReply.current = null;
     const id = `message-${reply.id}`;
-    if (reveal(id)) return;
     const entry = entries.find(
       (entry) => entry.kind === "message" && entry.message.id === reply.id,
     );
     if (entry?.kind === "message") {
       atBottom.current = false;
-      pendingReply.current = id;
-      virtualTimeline.current?.scrollToSequence(entry.message.sequence);
+      virtualTimeline.current?.scrollToSequence(
+        entry.message.sequence,
+        0,
+        true,
+        true,
+        () => {
+          reveal(id, false);
+        },
+      );
       return;
     }
+    virtualTimeline.current?.cancelScroll?.();
     // The original is outside the loaded history; page around it by sequence.
     if (reply.sequence === undefined || reply.sequence === 0) return;
     atBottom.current = false;

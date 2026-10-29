@@ -16,5 +16,5 @@ Start with [Development](development.md), then read [Architecture](architecture.
 - [PostgreSQL review fixes](postgres-review.md): verified findings, corrections, tests and independent backend schemas.
 - [PostgreSQL](postgresql.md): alternate backend, offline SQLite transfer, connection settings and backups.
 - [Storage benchmarks](storage-benchmarks.md): mutation latency, write volume, memory, and remaining scaling costs.
-- [Server caches and system metrics](cache.md): committed cache updates, reuse, lifetime counters and su-only operational commands.
+- [Server caches and system metrics](cache.md): committed cache updates, reuse, lifetime counters and grant-authorized operational commands.
 - [Deployment](deployment.md): release builds, configuration, Nginx, Cloudflare Tunnel, and object storage (AWS S3, Cloudflare R2, self-hosted RustFS).

@@ -50,11 +50,11 @@ appends/edits/reactions to refresh warmed pages without another history read.
 Unread results survive edits/reactions and are compared against independent SQL;
 retention/deletion and rejected writes cannot serve stale or uncommitted content.
 Range reuse tests require shared storage and no extra query, with miss-reason
-counters preserved across recovery. `/system` tests cover su-only discovery and
-execution, direct-grant bypass rejection, sudo restoration, revocation, bot and
+counters preserved across recovery. `/system` tests cover global command grant discovery and
+execution, action-only rejection, sudo restoration, revocation, bot and
 stdin paths, and exact fenced configuration/Markdown table rendering. Snapshot
 counters distinguish coalesced reuse, completed builds and cancellation.
-System report receipts must reject replay and lookup after su/sudo authority is
+System report receipts must reject replay and lookup after command/sudo authority is
 revoked, including through the bot HTTP API.
 Sudo completion advertises elevated commands only with the required global grants,
 keeps su-only commands out of direct completion, and drops metadata on revocation.

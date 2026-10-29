@@ -32,6 +32,10 @@ test("system subcommands complete only when the server advertises su access", ()
     suggestions("/sudo /system m", commands, [], [])[0].value,
     "/sudo /system metrics ",
   );
+  assert.equal(
+    suggestions("/system metrics --", commands, [], [])[0].value,
+    "/system metrics --txt ",
+  );
   assert.deepEqual(suggestions("/system ", [], [], []), []);
 });
 

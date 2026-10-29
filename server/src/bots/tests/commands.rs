@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn system_catalogue_and_markdown_results_require_su() {
+async fn system_catalogue_and_reports_follow_global_grants() {
     let (app, token) = fixture();
     let id = conversation(&app);
     let endpoint = format!("/api/bot/v1/commands?conversation_id={id}");
@@ -16,7 +16,7 @@ async fn system_catalogue_and_markdown_results_require_su() {
         .unwrap();
     let (_, catalogue) = request(&app, Some(&token), "GET", &endpoint, json!({})).await;
     assert!(
-        !catalogue["commands"]
+        catalogue["commands"]
             .as_array()
             .unwrap()
             .iter()
@@ -32,12 +32,8 @@ async fn system_catalogue_and_markdown_results_require_su() {
         )
         .await
         .0,
-        StatusCode::FORBIDDEN
+        StatusCode::OK
     );
-    app.engine()
-        .unwrap()
-        .execute(None, None, "/grant helper su")
-        .unwrap();
     let (_, catalogue) = request(&app, Some(&token), "GET", &endpoint, json!({})).await;
     let system = catalogue["commands"]
         .as_array()
@@ -67,7 +63,7 @@ async fn system_catalogue_and_markdown_results_require_su() {
     }
     app.engine()
         .unwrap()
-        .execute(None, None, "/revoke helper su")
+        .execute(None, None, "/revoke helper @global /system")
         .unwrap();
     for (key, command) in [
         ("system-configs", "/system configs"),
@@ -97,7 +93,7 @@ async fn system_catalogue_and_markdown_results_require_su() {
             .execute(None, None, &format!("/grant helper @global {permission}"))
             .unwrap();
     }
-    // Delegated sudo does not silently authorize replay of a plain su command.
+    // Delegated sudo does not silently authorize replay of a plain granted command.
     assert_eq!(
         keyed_command(&app, &token, "system-metrics", execute("/system metrics"))
             .await

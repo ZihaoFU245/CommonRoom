@@ -237,9 +237,6 @@ impl Engine {
         room: Option<&str>,
         command: &str,
     ) -> Result<(), EngineError> {
-        if command == "/system" && !self.is_su(actor) {
-            return Err(EngineError::Forbidden("Only su can use /system.".into()));
-        }
         self.principal_id(actor)
             .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         let scope = self.command_scope(actor, room)?;
@@ -338,7 +335,9 @@ impl Engine {
         crate::commands::available(true, actor.is_none())
             .iter()
             .filter(|command| {
-                allowed.command(command.name) && (command.name != "/system" || self.is_su(actor))
+                allowed.command(command.name)
+                    && (command.name != "/system"
+                        || self.effective(actor, &Scope::Server).command("/system"))
             })
             .map(|command| {
                 let mut command = command.clone();

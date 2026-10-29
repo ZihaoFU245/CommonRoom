@@ -73,12 +73,12 @@ fn server_command_json(command: &crate::commands::Command) -> Value {
             (
                 "configs",
                 "/system configs",
-                "Show active server configuration (su only)",
+                "Show active server configuration",
             ),
             (
                 "metrics",
-                "/system metrics",
-                "Show lifetime cache and database metrics (su only)",
+                "/system metrics [--txt]",
+                "Show lifetime cache and database metrics",
             ),
         ],
         "/user" => &[

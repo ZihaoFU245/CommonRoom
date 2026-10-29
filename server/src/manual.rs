@@ -736,7 +736,7 @@ const SYSTEM: &str = r#"# /system
 ```text
 /system
 /system configs
-/system metrics
+/system metrics [--txt]
 ```
 
 - `/system` lists its subcommands.
@@ -749,7 +749,8 @@ const SYSTEM: &str = r#"# /system
 
 ## Permissions
 
-- Requires su authority. Global admins and direct `/system` or `r:server.config` grants alone cannot run it.
+- Requires a global `/system` command grant, included for su. Use `/grant alice @global /system` to delegate read access. Action grants alone do not enable it.
+- `/system metrics --txt` returns the complete report as plain text in one Markdown code block for sharing.
 - Stdin and authorized `/sudo /system ...` are supported; authority is rechecked before delivery.
 - `/configs` has moved to `/system configs`; the old command is removed.
 "#;

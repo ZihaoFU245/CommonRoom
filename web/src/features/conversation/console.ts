@@ -246,6 +246,8 @@ export function suggestions(
   }
   let values: string[] = [];
   if (name === "/system" && position === 1) values = ["configs", "metrics"];
+  if (name === "/system" && position === 2 && parts[1] === "metrics")
+    values = ["--txt"];
   const scopes = [
     ...rooms.map((room) => `#${room}`),
     "@global",

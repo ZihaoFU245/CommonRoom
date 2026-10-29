@@ -128,7 +128,7 @@ async fn native_read_commands_preserve_output_permissions_and_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn system_requires_su_even_with_direct_grants_and_tracks_revocation() {
+async fn system_accepts_global_command_grants_and_tracks_revocation() {
     let directory = tempfile::tempdir().unwrap();
     let app = app(Engine::open(&directory.path().join("chat.sqlite")).unwrap());
     {
@@ -139,26 +139,59 @@ async fn system_requires_su_even_with_direct_grants_and_tracks_revocation() {
                 .unwrap();
         }
         assert!(
-            !engine
+            engine
                 .commands_for(Some("bob"), None)
                 .iter()
                 .any(|command| command.name == "/system")
         );
-        assert!(
-            !engine
-                .commands_for(Some("alice"), None)
-                .iter()
-                .any(|command| command.name == "/system")
-        );
     }
-    for user in ["alice", "bob"] {
-        for text in ["/system", "/system configs", "/system metrics", "/configs"] {
-            assert!(
-                command(&app, user, None, text).await.is_err(),
-                "{user}: {text}"
-            );
-        }
+    for text in [
+        "/system",
+        "/system configs",
+        "/system metrics",
+        "/system metrics --txt",
+    ] {
+        assert!(command(&app, "bob", None, text).await.is_ok(), "{text}");
+        assert!(command(&app, "alice", None, text).await.is_err(), "{text}");
     }
+    let text = command(&app, "bob", None, "/system metrics --txt")
+        .await
+        .unwrap();
+    assert!(text.starts_with("```text\nSystem metrics"));
+    assert!(text.ends_with("\n```"));
+    assert!(!text.contains("| Metric |"));
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/revoke bob @global /system")
+        .unwrap();
+    assert!(command(&app, "bob", None, "/system metrics").await.is_err());
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/room new lobby")
+        .unwrap();
+    for permission in ["r:server.config", "/system"] {
+        let scope = if permission == "/system" {
+            "#lobby"
+        } else {
+            "@global"
+        };
+        app.engine()
+            .unwrap()
+            .execute(None, None, &format!("/grant alice {scope} {permission}"))
+            .unwrap();
+    }
+    assert!(
+        command(&app, "alice", None, "/system metrics")
+            .await
+            .is_err()
+    );
+    assert!(
+        !app.engine_read()
+            .unwrap()
+            .commands_for(Some("alice"), None)
+            .iter()
+            .any(|command| command.name == "/system")
+    );
     app.engine()
         .unwrap()
         .execute(None, None, "/grant alice su")

@@ -157,12 +157,14 @@ limits also belong in metadata through `history.clean_min_age`. See `/man permis
 /system
 /system configs
 /system metrics
+/system metrics --txt
 ```
 
-`/system` and its subcommands require su authority; global admin or direct command
-and config-read grants alone do not authorize them. Stdin and authorized `/sudo`
+`/system` and its subcommands require a global `/system` command grant (included
+for su). Use `/grant alice @global /system` to delegate read access. Stdin and authorized `/sudo`
 are supported. `/configs` is removed in favor of `/system configs`.
-Configuration is a Markdown JSON block; metrics use Markdown tables and show
+`/system metrics --txt` returns the complete report in one plain text Markdown
+code block for sharing. Configuration is a Markdown JSON block; default metrics use Markdown tables and show
 cache hit rates, misses/evictions, shard occupancy, unread/snapshot results,
 database-pool statistics and current worker capacity. Counters are collected
 cheaply since startup, with no periodic logging/profiling. See

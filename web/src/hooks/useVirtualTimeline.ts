@@ -16,6 +16,8 @@ export interface VirtualTimelineHandle {
     sequence: number,
     offset?: number,
     smooth?: boolean,
+    center?: boolean,
+    complete?: () => void,
   ) => void;
   isScrolling?: () => boolean;
   cancelScroll?: () => void;
@@ -106,7 +108,13 @@ export function useVirtualTimeline(
           complete();
         }
       },
-      scrollToSequence: (sequence, offset = 0, smooth = false) => {
+      scrollToSequence: (
+        sequence,
+        offset = 0,
+        smooth = false,
+        center = false,
+        complete,
+      ) => {
         const index = entries.findIndex(
           (entry) =>
             entry.kind === "message" && entry.message.sequence === sequence,
@@ -126,14 +134,24 @@ export function useVirtualTimeline(
                 ? undefined
                 : Math.max(
                     0,
-                    (currentOffsets.current[currentIndex] ?? 0) - offset,
+                    (currentOffsets.current[currentIndex] ?? 0) -
+                      (center
+                        ? (element.clientHeight -
+                            ((currentOffsets.current[currentIndex + 1] ?? 0) -
+                              (currentOffsets.current[currentIndex] ?? 0))) /
+                          2
+                        : offset),
                   );
             };
-            if (smooth) scrollMotion.current.scrollTo(target);
-            else scrollMotion.current.snapTo(target);
+            if (smooth) scrollMotion.current.scrollTo(target, complete);
+            else {
+              scrollMotion.current.snapTo(target);
+              complete?.();
+            }
           } else {
             element.scrollTop = (offsets[index] ?? 0) - offset;
             updateViewport(element.scrollTop, element.clientHeight);
+            complete?.();
           }
         }
       },

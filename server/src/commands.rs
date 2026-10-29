@@ -225,8 +225,8 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Server",
             "/system",
-            "/system configs | metrics",
-            "Inspect server configuration and lifetime metrics (su only)",
+            "/system configs | metrics [--txt]",
+            "Inspect server configuration and lifetime metrics",
             true,
         ),
         (
@@ -302,7 +302,7 @@ pub fn requirements(command: &str) -> &'static str {
         "/ls" => "room discovery/read grants; r:account.list for accounts and group members",
         "/rm" => "x:room.delete, x:account.delete, or group-management authority on the target",
         "/bot" => "Lifecycle/credentials: global admin or su",
-        "/system" => "su authority; direct command/action grants alone do not authorize access",
+        "/system" => "global /system command grant (included for su)",
         "/rename" => {
             "x:room.rename on the target room; w:account.rename.own on your account or x:account.rename.any on the target account; only su can manage su accounts"
         }
@@ -367,8 +367,10 @@ pub fn usage_forms(command: &Command) -> Vec<String> {
 fn form_description(command: &Command, usage: &str) -> &'static str {
     let parts = usage.split_whitespace().skip(1).take(2).collect::<Vec<_>>();
     match (command.name, parts.as_slice()) {
-        ("/system", ["configs"]) => "Show active configuration in a Markdown JSON block (su only)",
-        ("/system", ["metrics"]) => "Show lifetime cache and pool counters (su only)",
+        ("/system", ["configs"]) => "Show active configuration in a Markdown JSON block",
+        ("/system", ["metrics", ..]) => {
+            "Show lifetime cache and pool counters; --txt returns a shareable text code block"
+        }
         ("/user", ["ls", ..]) => "List accounts globally or members of a room",
         ("/user", ["get", ..]) => "Read one user's metadata, or use @all for the scope",
         ("/user", ["set", ..]) => {

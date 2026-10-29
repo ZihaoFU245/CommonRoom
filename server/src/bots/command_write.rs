@@ -71,7 +71,7 @@ pub(super) async fn execute(
         .then_some(if elevated.is_some() {
             crate::system::ReportAccess::Sudo
         } else {
-            crate::system::ReportAccess::Su
+            crate::system::ReportAccess::Granted
         });
     let digest = crate::bots::digest(
         &serde_json::to_string(

@@ -305,3 +305,22 @@ test("jump to bottom reaches the end of a message taller than the viewport", (t)
   assert.equal(f.bottom.current, true);
   assert.equal(f.handle.current.isScrolling(), false);
 });
+
+test("reply navigation centers measured virtual rows and highlights only on arrival", (t) => {
+  const f = fixture(t);
+  f.scroll(4917);
+  let arrivals = 0;
+  const started = performance.now();
+  f.handle.current.scrollToSequence(20, 0, true, true, () => arrivals++);
+  f.flush(started + 150);
+  assert.equal(arrivals, 0);
+  assert.ok(f.viewport.scrollTop > 1650);
+  f.resize("20", 200);
+  f.flush(started + 400);
+  assert.equal(f.viewport.scrollTop, 1700);
+  assert.equal(arrivals, 1);
+  f.handle.current.scrollToSequence(1, 0, true, true, () => arrivals++);
+  f.interrupt("wheel");
+  f.flush(performance.now() + 400);
+  assert.equal(arrivals, 1);
+});

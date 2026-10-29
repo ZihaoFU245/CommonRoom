@@ -43,20 +43,22 @@ memory. Neither configured budget is a total RSS cap.
 /system
 /system configs
 /system metrics
+/system metrics --txt
 ```
 
-All subcommands require su authority. Stdin and authorized `/sudo /system ...`
-are supported. A normal admin, direct `/system` grant or `r:server.config` grant
-does not bypass the su gate. Old `/configs` execution is removed. Its persisted
+All subcommands require a global `/system` command grant (included for su).
+Use `/grant alice @global /system` to delegate read access. Stdin and authorized
+`/sudo /system ...` are supported. Action grants alone do not enable commands. Old `/configs` execution is removed. Its persisted
 permission name remains readable for existing HEAD data, without authorizing any
 new system command. Outputs are Markdown; configuration is fenced JSON and
-metrics use headings, summary rates and tables.
+metrics use headings, summary rates and tables. Add `--txt` to return the complete
+metrics report as plain text in one Markdown code block for sharing.
 In the browser, metrics sections are collapsed by default and expand independently
 through native disclosure controls. The title and hit-rate summary stay visible;
 console and bot responses retain the complete Markdown report.
 
 Bot command receipts retain the system authority used to issue a report. Both
-replay and receipt lookup recheck that authority, so revoked su/sudo access cannot
+replay and receipt lookup recheck that authority, so revoked command/sudo access cannot
 retrieve an earlier report. This is an additive internal receipt-JSON field.
 Cache changes require no schema migration. SQLite HEAD is v20 (with the v19
 credential upgrade); PostgreSQL remains at its independent v1 schema.

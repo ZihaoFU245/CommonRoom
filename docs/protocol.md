@@ -73,7 +73,7 @@ When the caller has the required contextual/global sudo grants, its `/sudo`
 command descriptor includes optional `subcommands`: a list of ordinary command
 descriptors available under elevation, excluding `/sudo` itself. Browser completion
 uses this list for wrapped commands such as `/sudo /system configs`, without
-advertising `/system` as directly available to a non-su caller. Nested descriptors
+advertising `/system` as directly available without its global command grant. Nested descriptors
 do not themselves contain `subcommands`; revoking sudo removes this list.
 Password commands recheck sudo authorization after asynchronous hashing.
 The acknowledgement contains the wrapped command's result or error. `/sudo /room join room`
