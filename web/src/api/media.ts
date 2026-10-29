@@ -108,6 +108,7 @@ export function isCompletedMedia(value: unknown): value is CompletedMedia {
 export function mediaMarkdown(
   media: CompletedMedia,
   base: string,
+  sticker = false,
 ): string | null {
   let url: URL;
   try {
@@ -120,6 +121,8 @@ export function mediaMarkdown(
   } catch {
     return null;
   }
+  if (sticker && /^image\/(png|jpeg|gif|webp)$/u.test(media.content_type))
+    return `![sticker](${url.pathname} "media:sticker")`;
   const label = media.filename.replace(/[\\[\]<>\r\n]/gu, "_");
   const kind = attachmentKind(media.content_type);
   const image = media.content_type.startsWith("image/") && kind !== "svg";
@@ -128,7 +131,7 @@ export function mediaMarkdown(
 
 export function uploadFile(
   ticket: UploadTicket,
-  file: File,
+  file: Blob,
   signal: AbortSignal,
   progress?: (percent: number) => void,
 ): Promise<void> {
@@ -219,6 +222,15 @@ export function attachmentLink(href: string, title: string, base: string) {
   if (!kind) return null;
   const parsed = managedMediaLink(href, base);
   return parsed ? { ...parsed, kind } : null;
+}
+
+/** The title is a display hint only; reads stay authorized by the server. */
+export function stickerImage(
+  src: string,
+  title: string | undefined,
+  base: string,
+) {
+  return title === "media:sticker" ? managedMediaLink(src, base) : null;
 }
 
 /** Only canonical attachment URLs belonging to this application. */

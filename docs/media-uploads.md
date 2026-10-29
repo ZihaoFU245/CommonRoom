@@ -150,7 +150,9 @@ non-secret settings in `data/config.json` while stopped, then restart:
     "cleanup_batch": 32,
     "user_quota": "1g",
     "pending_limit": 8,
-    "allocations_per_minute": 30
+    "allocations_per_minute": 30,
+    "sticker_max_size": "2m",
+    "sticker_limit": 200
   }
 }
 ```
@@ -161,6 +163,8 @@ cleanup after message references disappear. `max_size` is a hard chat ceiling;
 client validation reads it from the API. Per-grant size restrictions are also
 checked server-side. Pending slots include verified unsent objects; byte quota
 remains reserved until storage deletion succeeds. The default limit is 25 **MiB**.
+`sticker_max_size` (default 2 MiB, also capped by `max_size`) and `sticker_limit`
+(default 200, at most 10000) bound each account's [sticker library](#stickers).
 
 | Environment variable | Purpose |
 | --- | --- |
@@ -299,7 +303,7 @@ rtk proxy env CHAT_DATA="$PWD/tmp/media-chat" \
 
 Development credentials must never be used for public storage. Keep storage's
 administration console private. Service credentials need object read/write/delete
-on `uploads/*`, `media/*`, and `avatars/*`; clients get no listing/deletion/final-key writes.
+on `uploads/*`, `media/*`, `avatars/*`, and `stickers/*`; clients get no listing/deletion/final-key writes.
 
 ## Deployment and verification
 
@@ -416,6 +420,26 @@ and carry a stable-account ticket through signing. Before redirecting, the serve
 rechecks credentials, current read permission, expiry and a writer-change stamp;
 it reloads metadata/references when that stamp changes. Shared-reader media
 cleanup writes also invalidate the stamp. No global API permit spans S3 I/O.
+
+## Stickers
+
+The composer's sticker button, shown beside the attach button wherever attaching
+is available, opens the caller's private library. Any active account can add
+stickers while storage is configured. PNG/JPEG/WebP are resized in the browser
+to at most 512 px and encoded WebP (PNG fallback); GIFs keep their original bytes
+so animation survives, and are rejected above `sticker_max_size`. Completion
+verifies PNG/JPEG/GIF/WebP bytes and copies them to
+`stickers/<stable-account-id>/<upload-id>`. Library entries use conversation
+`@sticker`, permanent retention and the shared byte quota and rate limits; they
+are never treated as unreferenced. Deleting an entry queues its object for the
+cleanup worker. Include `stickers/*` in storage credentials and backups and
+exclude it from expiry lifecycle rules.
+
+Sending copies the sticker into the target conversation as an ordinary upload
+(normal `w:media.upload` permission, room retention, quota and cleanup), so
+deleting a sticker never removes messages already sent. Right-clicking a sent
+sticker offers Add to my stickers, which copies it into the viewer's library.
+See [Protocol](protocol.md#stickers).
 
 ## Bot transport
 

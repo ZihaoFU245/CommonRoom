@@ -317,6 +317,45 @@ impl MediaStorage {
         Ok(())
     }
 
+    /// Copies an already verified object to `media`'s final key. The source's
+    /// classification carries over; bytes never pass through chat.
+    pub async fn copy_verified(
+        &self,
+        source: &crate::engine::media::Media,
+        media: &mut crate::engine::media::Media,
+    ) -> Result<(), StorageError> {
+        use StorageError::{Invalid, Unavailable};
+        if !source.ready || source.object_key.is_empty() || source.size != media.size {
+            return Err(Invalid("Source file is unavailable."));
+        }
+        let _job = self.work()?;
+        let destination = media.final_key();
+        let mut copy = self.bucket.clone();
+        copy.extra_headers = axum::http::HeaderMap::new();
+        copy.extra_headers.insert(
+            "x-amz-metadata-directive",
+            axum::http::HeaderValue::from_static("REPLACE"),
+        );
+        copy.extra_headers.insert(
+            "content-type",
+            axum::http::HeaderValue::from_static("application/octet-stream"),
+        );
+        let status = copy
+            .copy_object_internal(&source.object_key, &destination)
+            .await
+            .map_err(|cause| {
+                tracing::warn!(media_id = %media.id, error = %cause, "S3 copy failed");
+                Unavailable("Media storage unavailable; retry shortly.")
+            })?;
+        if status != 200 {
+            return Err(Unavailable("Cannot copy file; retry shortly."));
+        }
+        media.content_type.clone_from(&source.content_type);
+        media.object_key = destination;
+        media.ready = true;
+        Ok(())
+    }
+
     pub async fn download_url(
         &self,
         media: &crate::engine::media::Media,

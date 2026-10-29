@@ -16,6 +16,15 @@ pub(crate) enum MediaWrite<'a> {
         allocation: MediaAllocation<'a>,
         pending_ttl: u64,
     },
+    /// Counts live library entries under the same uploader lock as quota.
+    StickerAllocate {
+        allocation: MediaAllocation<'a>,
+        limit: u64,
+    },
+    DeleteSticker {
+        id: &'a str,
+        uploader: &'a str,
+    },
     Ready {
         media: &'a Media,
         at: u64,
@@ -102,8 +111,43 @@ impl super::Connection {
         };
         self.checked(result)
     }
+    async fn stickers_async(&mut self, uploader: &str) -> Result<Vec<Media>> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => super::sqlite::media::stickers(db, uploader).await,
+            Backend::Postgres(db) => super::postgres::media::stickers(db, uploader).await,
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+    async fn sticker_copy_async(&mut self, request: &StickerCopy<'_>) -> Result<Option<Media>> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => super::sqlite::media::sticker_copy(db, request).await,
+            Backend::Postgres(db) => super::postgres::media::sticker_copy(db, request).await,
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+}
+/// A reusable copy is ready, live and either published or still well within
+/// its pending grace period, so cleanup cannot claim it before a send.
+pub(crate) struct StickerCopy<'a> {
+    pub(crate) conversation: &'a str,
+    pub(crate) uploader: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) at: u64,
+    pub(crate) pending_after: u64,
 }
 impl super::Handle {
+    pub(crate) async fn stickers(&self, uploader: &str) -> Result<Vec<Media>> {
+        let mut session = self.acquire_read().await?;
+        session.stickers_async(uploader).await
+    }
+    pub(crate) async fn sticker_copy(&self, request: &StickerCopy<'_>) -> Result<Option<Media>> {
+        let mut session = self.acquire_read().await?;
+        session.sticker_copy_async(request).await
+    }
     #[cfg(test)]
     pub(crate) fn media_write_blocking(&self, request: &MediaWrite<'_>) -> Result<MediaCommit> {
         super::runtime::run(self.media_write(request))

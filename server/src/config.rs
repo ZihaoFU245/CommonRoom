@@ -171,6 +171,9 @@ pub struct MediaConfig {
     pub user_quota: u64,
     pub pending_limit: u64,
     pub allocations_per_minute: u64,
+    #[serde(with = "byte_size")]
+    pub sticker_max_size: u64,
+    pub sticker_limit: u64,
 }
 impl Default for MediaConfig {
     fn default() -> Self {
@@ -183,6 +186,8 @@ impl Default for MediaConfig {
             user_quota: 1024 * 1024 * 1024,
             pending_limit: 8,
             allocations_per_minute: 30,
+            sticker_max_size: 2 * 1024 * 1024,
+            sticker_limit: 200,
         }
     }
 }
@@ -198,10 +203,16 @@ impl MediaConfig {
             || self.user_quota > 1_000_000_000_000_000
             || !(1..=1024).contains(&self.pending_limit)
             || !(1..=10000).contains(&self.allocations_per_minute)
+            || !(1..=5_000_000_000).contains(&self.sticker_max_size)
+            || !(1..=10000).contains(&self.sticker_limit)
         {
-            return Err("Invalid media configuration: max_size 1..5000000000 bytes, positive bounded quotas, max_age -1 or 1..315360000 seconds, pending_ttl 3600..604800, cleanup_interval 1..86400, cleanup_batch/pending_limit 1..1024, allocations_per_minute 1..10000 required.".into());
+            return Err("Invalid media configuration: max_size and sticker_max_size 1..5000000000 bytes, positive bounded quotas, max_age -1 or 1..315360000 seconds, pending_ttl 3600..604800, cleanup_interval 1..86400, cleanup_batch/pending_limit 1..1024, allocations_per_minute 1..10000 and sticker_limit 1..10000 required.".into());
         }
         Ok(())
+    }
+    /// Stickers are sent as ordinary attachments, so `max_size` also bounds them.
+    pub(crate) fn sticker_size_limit(&self) -> u64 {
+        self.sticker_max_size.min(self.max_size)
     }
 }
 impl Default for Config {
@@ -786,6 +797,8 @@ mod media_config_tests {
             serde_json::json!({"pending_limit":0}),
             serde_json::json!({"allocations_per_minute":0}),
             serde_json::json!({"user_quota":1}),
+            serde_json::json!({"sticker_max_size":0}),
+            serde_json::json!({"sticker_limit":0}),
         ] {
             let raw = serde_json::json!({"media":media}).to_string();
             let path = dir.path().join("config.json");
@@ -835,5 +848,6 @@ mod byte_size_tests {
         assert_eq!(parsed.media.max_size, 524288);
         assert_eq!(parsed.media.user_quota, 1073741824);
         parsed.media.validate().unwrap();
+        assert_eq!(parsed.media.sticker_size_limit(), 524288);
     }
 }

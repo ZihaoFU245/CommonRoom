@@ -39,6 +39,9 @@ pub(crate) struct Media {
     pub deleting: bool,
     #[serde(default)]
     pub deleted: bool,
+    /// Sticker that a conversation copy was made from; never grants access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 pub(crate) fn timestamp() -> u64 {
@@ -60,6 +63,9 @@ impl Media {
     pub(crate) fn final_key(&self) -> String {
         if self.conversation == "@avatar" {
             return format!("avatars/{}/{}", self.uploader, self.id);
+        }
+        if self.conversation == super::stickers::STICKERS {
+            return format!("stickers/{}/{}", self.uploader, self.id);
         }
         let class = match self.max_age {
             -1 => "permanent".to_owned(),
@@ -317,6 +323,7 @@ impl Engine {
             expires: None,
             deleting: false,
             deleted: false,
+            source: None,
         };
         self.store_media_allocation(&media)?;
         Ok(media)

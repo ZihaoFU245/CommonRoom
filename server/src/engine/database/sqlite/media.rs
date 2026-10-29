@@ -2,7 +2,7 @@
 use super::super::{
     Error, Result,
     history::unsigned,
-    media::{MediaAllocation, MediaColumns, MediaWrite, decode},
+    media::{MediaAllocation, MediaColumns, MediaWrite, StickerCopy, decode},
     message::number,
     metadata::WriteResult,
 };
@@ -28,10 +28,29 @@ pub(in crate::engine::database) async fn apply(
             result.media = reserved.media;
             reserved.changed
         }
+        MediaWrite::StickerAllocate { allocation, limit } => {
+            let live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE uploader=?1 AND conversation='@sticker' AND deleted=0 AND deleting=0")
+                .bind(&allocation.media.uploader).fetch_one(&mut *db).await?;
+            if unsigned(live)? >= *limit {
+                return Err(Error::InvalidRequest(
+                    "Sticker limit reached; delete a sticker first.",
+                ));
+            }
+            allocate(db, allocation).await?
+        }
+        MediaWrite::DeleteSticker { id, uploader } => sqlx::query(
+            "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE id=?1 AND uploader=?2 AND conversation='@sticker' AND deleted=0 AND deleting=0",
+        )
+        .bind(*id)
+        .bind(*uploader)
+        .execute(db)
+        .await?
+        .rows_affected(),
         MediaWrite::Ready { media, at } => {
             let json = serde_json::to_string(media)
                 .map_err(|_| Error::Conversion("Cannot serialize media record"))?;
-            let changed = sqlx::query("UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND uploader=?5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
+            // Library stickers are owned, permanent and never message-referenced.
+            let changed = sqlx::query("UPDATE media SET ready=1,json=?2,unreferenced=CASE WHEN conversation='@sticker' THEN NULL ELSE ?3 END,expires=?4,published=CASE WHEN conversation IN ('@avatar','@sticker') THEN ?3 ELSE published END WHERE id=?1 AND uploader=?5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
                 .bind(media.expires.map(number).transpose()?).bind(&media.uploader).execute(db).await?.rows_affected();
             if changed != 1 {
                 return Err(Error::Conflict("Upload changed; retry completion."));
@@ -200,6 +219,23 @@ async fn avatar_allocate(
         media: vec![request.media.clone()],
         ..Default::default()
     })
+}
+pub(in crate::engine::database) async fn stickers(
+    db: &mut SqliteConnection,
+    uploader: &str,
+) -> Result<Vec<Media>> {
+    let rows: Vec<MediaColumns> = sqlx::query_as("SELECT json,ready,expires,deleting,deleted FROM media WHERE uploader=?1 AND conversation='@sticker' AND ready=1 AND deleting=0 AND deleted=0 ORDER BY created DESC,id")
+        .bind(uploader).fetch_all(db).await?;
+    rows.into_iter().map(decode).collect()
+}
+pub(in crate::engine::database) async fn sticker_copy(
+    db: &mut SqliteConnection,
+    request: &StickerCopy<'_>,
+) -> Result<Option<Media>> {
+    let row: Option<MediaColumns> = sqlx::query_as("SELECT json,ready,expires,deleting,deleted FROM media WHERE uploader=?1 AND conversation=?2 AND json_extract(json,'$.source')=?3 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (unreferenced IS NULL OR (published IS NULL AND unreferenced>?5)) ORDER BY created DESC LIMIT 1")
+        .bind(request.uploader).bind(request.conversation).bind(request.source)
+        .bind(number(request.at)?).bind(number(request.pending_after)?).fetch_optional(db).await?;
+    row.map(decode).transpose()
 }
 pub(in crate::engine::database) async fn load(
     db: &mut SqliteConnection,

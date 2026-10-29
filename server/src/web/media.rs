@@ -185,7 +185,7 @@ async fn owner(
 }
 enum MediaMutation {
     Ready(
-        crate::engine::media::Media,
+        Box<crate::engine::media::Media>,
         tokio::sync::OwnedMutexGuard<()>,
     ),
     Abandon(String),
@@ -314,7 +314,10 @@ async fn reserve(
     .await
     .map_err(|_| unavailable())?
 }
-fn media_json(app: &App, media: &crate::engine::media::Media) -> Json<serde_json::Value> {
+pub(super) fn media_json(
+    app: &App,
+    media: &crate::engine::media::Media,
+) -> Json<serde_json::Value> {
     Json(
         json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename}),
     )
@@ -443,7 +446,7 @@ pub(crate) async fn complete_as(
         mutate(
             &app,
             &access,
-            MediaMutation::Ready(media.clone(), object_lock),
+            MediaMutation::Ready(Box::new(media.clone()), object_lock),
         )
         .await?;
     }

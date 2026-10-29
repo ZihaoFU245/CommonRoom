@@ -53,6 +53,7 @@ mod queries;
 mod read_model;
 mod rooms;
 pub(crate) mod snapshot;
+pub(crate) mod stickers;
 mod storage;
 pub(crate) use storage::PendingCommand;
 #[cfg(test)]

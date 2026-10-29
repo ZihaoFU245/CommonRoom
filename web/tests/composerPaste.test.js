@@ -10,6 +10,8 @@ const hooks = registerHooks({
       return { url: "test:composer-hooks", shortCircuit: true };
     if (specifier.endsWith("/useCompositionGuard.ts"))
       return { url: "test:composition-guard", shortCircuit: true };
+    if (specifier.endsWith("/StickerPicker.tsx"))
+      return { url: "test:sticker-picker", shortCircuit: true };
     return next(specifier, context);
   },
   load(url, context, next) {
@@ -18,7 +20,13 @@ const hooks = registerHooks({
         format: "module",
         shortCircuit: true,
         source:
-          "export const useRef=(value)=>({current:value});export const useEffect=()=>{};",
+          "export const useRef=(value)=>({current:value});export const useEffect=()=>{};export const useState=(value)=>[value,()=>{}];export const useCallback=(callback)=>callback;",
+      };
+    if (url === "test:sticker-picker")
+      return {
+        format: "module",
+        shortCircuit: true,
+        source: "export const StickerPicker=()=>null;",
       };
     if (url === "test:composition-guard")
       return {

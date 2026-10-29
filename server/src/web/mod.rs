@@ -17,6 +17,7 @@ pub(crate) mod mutations;
 pub(crate) mod security;
 pub(crate) mod snapshots;
 pub(crate) mod socket;
+mod stickers;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests;
@@ -267,6 +268,16 @@ pub fn router(app: App) -> Router {
         .route("/api/media/uploads/{id}/abandon", post(media::abandon))
         .route("/api/media/{id}/file", get(media::download))
         .route("/api/media/{id}/info", get(media::info))
+        .route("/api/stickers", get(stickers::list))
+        .route("/api/stickers/uploads", post(stickers::allocate))
+        .route(
+            "/api/stickers/uploads/{id}/complete",
+            post(stickers::complete),
+        )
+        .route("/api/stickers/collect", post(stickers::collect))
+        .route("/api/stickers/{id}/file", get(stickers::download))
+        .route("/api/stickers/{id}/send", post(stickers::send))
+        .route("/api/stickers/{id}/delete", post(stickers::remove))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))

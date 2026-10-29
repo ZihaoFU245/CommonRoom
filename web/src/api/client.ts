@@ -7,6 +7,7 @@ import {
   isMediaConfig,
   isMediaInfo,
 } from "./media.ts";
+import { isSticker, isStickerLibrary } from "./stickers.ts";
 import {
   isSnapshot,
   isHistory,
@@ -138,6 +139,36 @@ export const api = {
       isCompletedMedia,
       {},
       signal,
+      120000,
+    ),
+  stickers: (signal: AbortSignal) =>
+    request("stickers", isStickerLibrary, undefined, signal),
+  allocateSticker: (size: number, signal: AbortSignal) =>
+    request("stickers/uploads", isUploadTicket, { size }, signal),
+  completeSticker: (id: string, signal: AbortSignal) =>
+    request(
+      `stickers/uploads/${encodeURIComponent(id)}/complete`,
+      isSticker,
+      {},
+      signal,
+      120000,
+    ),
+  deleteSticker: (id: string) =>
+    request(`stickers/${encodeURIComponent(id)}/delete`, isOk, {}),
+  sendSticker: (id: string, conversationId: string, signal: AbortSignal) =>
+    request(
+      `stickers/${encodeURIComponent(id)}/send`,
+      isCompletedMedia,
+      { conversation_id: conversationId },
+      signal,
+      120000,
+    ),
+  collectSticker: (mediaId: string) =>
+    request(
+      "stickers/collect",
+      isSticker,
+      { media_id: mediaId },
+      undefined,
       120000,
     ),
   botCommands: async (signal: AbortSignal): Promise<BotCommandDirectory> => {

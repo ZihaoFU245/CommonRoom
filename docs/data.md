@@ -323,3 +323,14 @@ while disabled. Replacing/removing the avatar or deleting its account releases t
 reference.
 They count toward existing byte quotas and rate limits; completed avatars do not
 consume pending-upload slots. Backups must include the `avatars/` prefix.
+
+## Stickers
+
+Sticker library entries are media records with conversation `@sticker`, the
+owner as uploader and permanent retention. Completion sets them published with
+no unreferenced timestamp, so orphan cleanup never claims them; deleting one sets
+`deleting`. Bytes live at `stickers/<stable-account-id>/<upload-id>`. Conversation
+copies are ordinary media rows whose JSON adds an optional `source` sticker ID,
+used only for copy reuse and collection; it never grants access. Both use the
+existing media table and JSON column without changing schema v20. Backups must
+include the `stickers/` prefix.
