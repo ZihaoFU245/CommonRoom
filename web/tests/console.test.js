@@ -11,6 +11,73 @@ import {
   clearedOrder,
 } from "../src/features/conversation/console.ts";
 
+test("system subcommands complete only when the server advertises su access", () => {
+  const commands = [
+    {
+      name: "/system",
+      usage: "/system configs | metrics",
+      description: "System operations",
+    },
+    { name: "/sudo", usage: "/sudo /command", description: "Elevate" },
+  ];
+  assert.deepEqual(
+    suggestions("/system ", commands, [], []).map((hint) => hint.value),
+    ["/system configs ", "/system metrics "],
+  );
+  assert.equal(
+    suggestions("/system m", commands, [], [])[0].value,
+    "/system metrics ",
+  );
+  assert.equal(
+    suggestions("/sudo /system m", commands, [], [])[0].value,
+    "/sudo /system metrics ",
+  );
+  assert.deepEqual(suggestions("/system ", [], [], []), []);
+});
+
+test("sudo completion uses elevated commands without exposing them directly", () => {
+  const system = {
+    name: "/system",
+    usage: "/system configs | metrics",
+    description: "System operations",
+  };
+  const sudo = {
+    name: "/sudo",
+    usage: "/sudo /command",
+    description: "Elevate",
+    subcommands: [system],
+  };
+  const commands = [sudo];
+  assert.equal(
+    suggestions("/sudo ", commands, [], [])[0].value,
+    "/sudo /system ",
+  );
+  assert.deepEqual(suggestions("/sys", commands, [], []), []);
+  assert.deepEqual(suggestions("/system ", commands, [], []), []);
+  assert.equal(
+    suggestions("/sudo /sys", commands, [], [])[0].value,
+    "/sudo /system ",
+  );
+  assert.deepEqual(
+    suggestions("/sudo /system ", commands, [], []).map((hint) => hint.value),
+    ["/sudo /system configs ", "/sudo /system metrics "],
+  );
+  for (const subcommand of ["configs", "metrics"])
+    assert.equal(
+      suggestions(`/sudo /system ${subcommand[0]}`, commands, [], [])[0].value,
+      `/sudo /system ${subcommand} `,
+    );
+  assert.deepEqual(suggestions("/sudo /sudo ", commands, [], []), []);
+  assert.deepEqual(
+    suggestions("/sudo /sys", [{ ...sudo, subcommands: undefined }], [], []),
+    [],
+  );
+  assert.equal(
+    suggestions("/sudo /sys", [...commands, system], [], []).length,
+    1,
+  );
+});
+
 test("prototype member room names preserve transcript and local clear behavior", () => {
   const message = { id: "one", sequence: 1, time: 1 };
   const ledger = { sequence: 2, messages: new Map([["one", 1]]) };

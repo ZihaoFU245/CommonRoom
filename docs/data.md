@@ -42,6 +42,11 @@ username. They contain no password, token or request body. Session creation and
 logout commit atomically with their event. Throttled requests and malformed
 credentials do not create authentication events.
 
+Bot command receipts for `/system` reports include an optional authority marker
+inside their existing JSON result. Replaying or retrieving these reports checks
+the caller's current su or explicitly used sudo authority. This adds no tables or
+schema version change; ordinary receipts retain their existing format.
+
 Back up the entire data folder and object store with the server stopped. Tests
 use isolated temporary data and never modify working `data/`.
 

@@ -17,7 +17,6 @@ mod metadata;
 pub(crate) use metadata::{CursorRows, EntityRow, MetadataOp, MetadataSnapshot, MetadataWrite};
 mod history;
 mod transaction;
-#[cfg(test)]
 pub(crate) use history::wire_size as history_wire_size;
 pub(crate) use history::{PageRead, UnreadHint, UnreadRead};
 #[cfg(test)]

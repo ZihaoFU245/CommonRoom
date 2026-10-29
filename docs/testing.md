@@ -45,6 +45,22 @@ readers to zero while preserving the writer floor and dedicated ownership.
 Ordinary tests verify cache tuning survives recovery, invalid tuning preserves
 saved configuration, and pool acquisition diagnostics count successes/timeouts.
 
+Cache publication contracts run on both backends and require committed native
+appends/edits/reactions to refresh warmed pages without another history read.
+Unread results survive edits/reactions and are compared against independent SQL;
+retention/deletion and rejected writes cannot serve stale or uncommitted content.
+Range reuse tests require shared storage and no extra query, with miss-reason
+counters preserved across recovery. `/system` tests cover su-only discovery and
+execution, direct-grant bypass rejection, sudo restoration, revocation, bot and
+stdin paths, and exact fenced configuration/Markdown table rendering. Snapshot
+counters distinguish coalesced reuse, completed builds and cancellation.
+System report receipts must reject replay and lookup after su/sudo authority is
+revoked, including through the bot HTTP API.
+Sudo completion advertises elevated commands only with the required global grants,
+keeps su-only commands out of direct completion, and drops metadata on revocation.
+Browser metrics reports keep their summary visible while each section expands
+independently with native keyboard-accessible disclosure controls.
+
 `auto/test-postgres.py` requires the target's default schema to be empty. It
 provisions a temporary SQLite server through the real stdin console, verifies HTTP
 login, runs the binary's transfer command, then checks PostgreSQL HTTP sessions,

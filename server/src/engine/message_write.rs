@@ -363,6 +363,7 @@ impl Engine {
                 "Committed conversation unavailable; recovery required, retry shortly.".into(),
             ));
         };
+        let previous_revision = *revision;
         *revision = (*revision).max(commit.revision);
         self.data.next_sequence = self.data.next_sequence.max(commit.sequence);
         self.revision = self.revision.wrapping_add(1);
@@ -373,6 +374,16 @@ impl Engine {
             );
         }
         append.message.sequence = commit.sequence;
+        if previous_revision == append.revision {
+            append.history.publish_committed(
+                &append.conversation,
+                append.revision,
+                commit.revision,
+                &append.message,
+                matches!(append.mutation, PendingMutation::Append),
+                append.retention,
+            )?;
+        }
         Ok(SendResult {
             message: append.message,
             replayed: false,

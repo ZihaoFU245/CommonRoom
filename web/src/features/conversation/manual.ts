@@ -158,9 +158,15 @@ export function outputMarkdown(
     return literal(result);
   }
   if (
-    ["/help", "/man", "/permissions", "/grant", "/revoke", "/clean"].includes(
-      command ?? "",
-    )
+    [
+      "/help",
+      "/man",
+      "/permissions",
+      "/grant",
+      "/revoke",
+      "/clean",
+      "/system",
+    ].includes(command ?? "")
   )
     return result;
   // History may contain arbitrary user text, including Markdown and fences.
@@ -172,11 +178,9 @@ export function outputMarkdown(
         parts[4] ??
         (/^(?:#|@global$)/u.test(parts[3] ?? "") ? parts[3] : undefined);
       const title =
-        command === "/configs"
-          ? "Configuration"
-          : command === "/user" && parts[1] === "get"
-            ? `User metadata for ${parts[2] === "@all" ? "all users" : parts[2]} ${scopeLabel(metadataScope)}`
-            : "Result";
+        command === "/user" && parts[1] === "get"
+          ? `User metadata for ${parts[2] === "@all" ? "all users" : parts[2]} ${scopeLabel(metadataScope)}`
+          : "Result";
       if (command === "/user" && parts[1] === "get")
         return `## ${literal(title)}\n\n${metadataList(value)}`;
       return `## ${literal(title)}\n\n${codeBlock(JSON.stringify(value, null, 2), "json")}`;

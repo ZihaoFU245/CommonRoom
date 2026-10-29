@@ -86,16 +86,10 @@ async fn execute_inner(app: &App, line: String) -> Result<Output, EngineError> {
     let provision = commands::provision_command(&parts).map_err(EngineError::Invalid)?;
     let reply = match (parts.first().copied(), provision) {
         (Some("/help"), _) if parts.len() == 1 => commands::help(true, true),
-        (Some("/configs"), _) => {
-            if parts.len() != 1 {
-                return Err("Usage: /configs".into());
-            }
-            let history = app
-                .inspect_engine(|engine, _| Ok::<_, EngineError>(engine.history_store().clone()))
+        (Some("/system"), _) => {
+            app.inspect_engine(|engine, _| engine.require_command(None, None, "/system"))
                 .await?;
-            app.config
-                .display_with_history(history.stats_async().await?)
-                .map_err(EngineError::Invalid)?
+            crate::system::Command::parse(command)?.execute(app).await?
         }
         (_, Some(account)) => {
             let name = account.name.to_owned();

@@ -190,7 +190,7 @@ impl super::Connection {
 impl super::Database {
     pub(crate) async fn history_page(&self, request: &PageRead<'_>) -> Result<PageResult> {
         let mut reader = self.acquire_reader().await?;
-        reader.read_page(request).await
+        self.observe_history(reader.read_page(request).await)
     }
     pub(crate) async fn history_unreads(
         &self,
@@ -198,19 +198,19 @@ impl super::Database {
         requests: &[UnreadRead<'_>],
     ) -> Result<UnreadBatch> {
         let mut reader = self.acquire_reader().await?;
-        reader.read_unreads(user, requests).await
+        self.observe_history(reader.read_unreads(user, requests).await)
     }
     pub(crate) async fn history_has_author(&self, ids: &[String], author: &str) -> Result<bool> {
         let mut reader = self.acquire_reader().await?;
-        reader.read_author(ids, author).await
+        self.observe_history(reader.read_author(ids, author).await)
     }
     pub(crate) async fn history_contains_sequence(&self, id: &str, sequence: u64) -> Result<bool> {
         let mut reader = self.acquire_reader().await?;
-        reader.read_sequence(id, sequence).await
+        self.observe_history(reader.read_sequence(id, sequence).await)
     }
     pub(crate) async fn history_locate(&self, id: &str) -> Result<Option<(String, Message)>> {
         let mut reader = self.acquire_reader().await?;
-        reader.read_locate(id).await
+        self.observe_history(reader.read_locate(id).await)
     }
     pub(crate) async fn history_cleanup_counts(
         &self,
@@ -218,6 +218,6 @@ impl super::Database {
         cutoff: u64,
     ) -> Result<CleanupCounts> {
         let mut reader = self.acquire_reader().await?;
-        reader.read_cleanup_counts(ids, cutoff).await
+        self.observe_history(reader.read_cleanup_counts(ids, cutoff).await)
     }
 }

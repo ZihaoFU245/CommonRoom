@@ -316,10 +316,7 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         .iter()
         .map(|command| command.name)
         .filter(|name| {
-            ![
-                "/sudo", "/configs", "/passwd", "/reset", "/clear", "/logout",
-            ]
-            .contains(name)
+            !["/sudo", "/system", "/passwd", "/reset", "/clear", "/logout"].contains(name)
         })
         .collect();
     assert_eq!(
@@ -1756,7 +1753,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         format!("/reply {id} reply"),
         format!("/edit {id} edited"),
         "/history".into(),
-        "/configs".into(),
+        "/system".into(),
         "/clean 7d #team".into(),
         "/room owner bob #team".into(),
         "/clear".into(),

@@ -453,7 +453,7 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         HeaderValue::from_static("chat_session=fixture"),
     );
     for (text, changed, expected) in [
-        ("/sudo /configs", false, None),
+        ("/sudo /system configs", false, None),
         (
             "/sudo /user passwd actor-old-password actor-new-password",
             true,
@@ -486,7 +486,14 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
         if let Some(expected) = expected {
             assert_eq!(reply, expected, "{text}");
         } else {
-            let config: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            let raw = reply
+                .split("```json\n")
+                .nth(1)
+                .unwrap()
+                .split("\n```")
+                .next()
+                .unwrap();
+            let config: serde_json::Value = serde_json::from_str(raw).unwrap();
             assert_eq!(config["bind"], "127.0.0.1:3000");
         }
         // Native accepted work publishes before returning; compatibility paths
@@ -801,12 +808,10 @@ fn engine_readers_overlap_and_io_admission_is_bounded() {
 }
 
 #[test]
-fn configs_with_cache_statistics_remain_one_json_document() {
+fn displayed_configuration_remains_one_json_document_without_runtime_metrics() {
     let config = Config::default();
-    let stats = json!({"hits":42,"messages":100});
-    let result: serde_json::Value =
-        serde_json::from_str(&config.display_with_history(stats.clone()).unwrap()).unwrap();
-    assert_eq!(result["history_cache"], stats);
+    let result: serde_json::Value = serde_json::from_str(&config.display().unwrap()).unwrap();
+    assert!(result.get("history_cache").is_none());
     assert_eq!(result["max_messages"], 1000);
     assert_eq!(result["bind"], config.bind);
 }
@@ -1194,7 +1199,7 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         (Some("team"), "/retract $message"),
         (Some("team"), "/clean 7d #team --dry-run"),
         (Some("team"), "/clean 7d #team"),
-        (None, "/configs"),
+        (None, "/system"),
         (None, "/sudo /whoami"),
         // Clear/logout are browser-local; their elevated forms authorize here.
         (None, "/sudo /clear"),

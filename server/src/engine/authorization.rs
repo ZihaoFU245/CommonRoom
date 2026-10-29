@@ -185,7 +185,7 @@ const COMMANDS: &[&str] = &[
     "/rm",
     "/grant",
     "/revoke",
-    "/configs",
+    "/configs", // Retained only to read legacy persisted grants; no executable command.
     "/clean",
     "/clear",
     "/logout",
@@ -199,6 +199,7 @@ const COMMANDS: &[&str] = &[
     "/console",
     "/sudo",
     "/bot",
+    "/system",
 ];
 fn direct_grant(parts: &[&str]) -> bool {
     parts.len() >= 4
@@ -341,8 +342,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
                 Action::PolicyRead,
             ],
             &[
-                "/new", "/disable", "/enable", "/rm", "/grant", "/revoke", "/configs", "/debug",
-                "/bot",
+                "/new", "/disable", "/enable", "/rm", "/grant", "/revoke", "/debug", "/bot",
             ],
         ));
     }

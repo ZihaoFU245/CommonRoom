@@ -14,7 +14,7 @@ markers remain rejected unchanged. SQLite stays at v19 and read-only HEAD SQLite
 transfer targets current PostgreSQL v1.
 
 Optional history-cache byte/message budgets and PostgreSQL idle timeout settings
-are validated before bootstrap/config rewriting. `/configs` exposes effective
+are validated before bootstrap/config rewriting. `/system metrics` exposes effective
 cache budgets and pool sizes/acquisition timing/errors. Debug storage traces add
 read/write-operation durations without query parameters or message bodies.
 

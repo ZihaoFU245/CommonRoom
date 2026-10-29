@@ -14,6 +14,7 @@ import { Chat } from "../../src/components/Chat.tsx";
 import { Login } from "../../src/components/Login.tsx";
 import { Settings } from "../../src/components/Settings.tsx";
 import { MarkdownContent } from "../../src/components/MarkdownContent.tsx";
+import { ConsoleOutput } from "../../src/components/ConsoleOutput.tsx";
 import { markdownNodes } from "../../src/features/conversation/markdown.ts";
 import { api, ApiError } from "../../src/api/client.ts";
 import {
@@ -83,6 +84,50 @@ async function test(name, run) {
     tests.replaceChildren();
   }
 }
+await test("system metrics sections expand independently while keeping rates visible", async () => {
+  for (const command of ["/system metrics", "/sudo /system metrics"]) {
+    render(
+      h(ConsoleOutput, {
+        entry: {
+          command,
+          result:
+            "# System metrics\n\n- History page hit rate: **84.86%**\n\n## History and unread caches\n\n| Metric | Value |\n| --- | ---: |\n| hits | 4752 |\n\n## Snapshot cache\n\n| Metric | Value |\n| --- | ---: |\n| hits | 10 |",
+          error: false,
+        },
+      }),
+      tests,
+    );
+    await until(() => tests.querySelectorAll("details").length === 2);
+    const sections = [...tests.querySelectorAll("details")];
+    check(
+      sections.every((section) => !section.open),
+      "Metrics sections start collapsed",
+    );
+    check(
+      tests.querySelector("strong").getBoundingClientRect().height > 0,
+      "Hit rate is visible",
+    );
+    const summary = sections[0].querySelector("summary");
+    summary.click();
+    check(
+      sections[0].open && !sections[1].open,
+      "Each section opens independently",
+    );
+    check(
+      sections[0].querySelector("table").getBoundingClientRect().height > 0,
+      "Expanded section displays its table",
+    );
+    summary.click();
+    check(!sections[0].open, "Section closes again");
+    summary.focus();
+    check(
+      document.activeElement === summary,
+      "Native summary is keyboard focusable",
+    );
+    render(null, tests);
+  }
+});
+
 const message = (sequence) => ({
   id: `m-${sequence}`,
   sequence,

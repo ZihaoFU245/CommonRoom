@@ -39,8 +39,10 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
             .unwrap()
             .contains("console source")
     );
-    assert!(command(&app, "/configs").await.is_ok());
-    assert!(command(&app, "/configs unexpected").await.is_err());
+    assert!(command(&app, "/system configs").await.is_ok());
+    assert!(command(&app, "/system metrics").await.is_ok());
+    assert!(command(&app, "/configs").await.is_err());
+    assert!(command(&app, "/system configs unexpected").await.is_err());
     assert!(
         command(&app, "/tell alice forbidden console direct")
             .await

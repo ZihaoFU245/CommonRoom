@@ -18,12 +18,29 @@ pub struct SnapshotCache {
     entries: HashMap<Key, (Value, usize)>,
     order: VecDeque<Key>,
     bytes: usize,
+    hits: u64,
+    misses: u64,
+    coalesced: u64,
+    builds: u64,
+    failures: u64,
+    incomplete: u64,
+    evictions: u64,
 }
 impl SnapshotCache {
+    pub(crate) fn stats(&self) -> serde_json::Value {
+        serde_json::json!({"hits":self.hits,"misses":self.misses,"coalesced":self.coalesced,
+            "builds":self.builds,"failures":self.failures,"incomplete":self.incomplete,"evictions":self.evictions,
+            "entries":self.entries.len(),"bytes":self.bytes,"entry_limit":128,"byte_limit":32*1024*1024})
+    }
     fn claim(&mut self, key: &Key) -> Value {
         if let Some((value, _)) = self.entries.get(key) {
+            self.hits += 1;
+            if value.get().is_none() {
+                self.coalesced += 1;
+            }
             return value.clone();
         }
+        self.misses += 1;
         self.entries.retain(|old, (_, size)| {
             let keep = old.0 != key.0 || old.1 != key.1 || old.4 != key.4;
             if !keep {
@@ -54,6 +71,7 @@ impl SnapshotCache {
             if let Some(key) = self.order.pop_front() {
                 if let Some((_, size)) = self.entries.remove(&key) {
                     self.bytes -= size;
+                    self.evictions += 1;
                 }
             } else {
                 break;
@@ -297,8 +315,10 @@ async fn cached<F: std::future::Future<Output = Result<(String, bool), SnapshotE
         .lock()
         .map_err(|_| EngineError::Unavailable("Snapshot cache unavailable.".into()))?
         .claim(&key);
+    let mut built = false;
     let result = value
         .get_or_init(|| async {
+            built = true;
             build().await.map(|(frame, complete)| Baseline {
                 frame: frame.into(),
                 complete,
@@ -310,6 +330,15 @@ async fn cached<F: std::future::Future<Output = Result<(String, bool), SnapshotE
         .snapshots
         .lock()
         .map_err(|_| EngineError::Unavailable("Snapshot cache unavailable.".into()))?;
+    if built {
+        cache.builds += 1;
+        if result.is_err() {
+            cache.failures += 1;
+        }
+        if result.as_ref().is_ok_and(|baseline| !baseline.complete) {
+            cache.incomplete += 1;
+        }
+    }
     if let Ok(baseline) = &result
         && baseline.complete
     {
@@ -380,5 +409,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(frame.as_str().as_ptr(), reused.as_str().as_ptr());
+        let metrics = app.snapshots.lock().unwrap().stats();
+        assert_eq!(metrics["misses"], 1);
+        assert_eq!(metrics["hits"], 2);
+        assert_eq!(metrics["coalesced"], 1);
+        assert_eq!(metrics["builds"], 1); // Only completed builds; cancellation does not invent a result.
+        assert_eq!(metrics["failures"], 0);
+        assert_eq!(metrics["entries"], 1);
     }
 }

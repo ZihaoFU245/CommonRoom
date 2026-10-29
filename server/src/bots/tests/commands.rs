@@ -1,6 +1,175 @@
 use super::*;
 
 #[tokio::test]
+async fn system_catalogue_and_markdown_results_require_su() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let endpoint = format!("/api/bot/v1/commands?conversation_id={id}");
+    let execute = |command: &str| json!({"conversation_id":id,"command":command});
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper admin")
+        .unwrap();
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper @global /system")
+        .unwrap();
+    let (_, catalogue) = request(&app, Some(&token), "GET", &endpoint, json!({})).await;
+    assert!(
+        !catalogue["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command["name"] == "/system")
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "POST",
+            "/api/bot/v1/commands",
+            execute("/system metrics")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper su")
+        .unwrap();
+    let (_, catalogue) = request(&app, Some(&token), "GET", &endpoint, json!({})).await;
+    let system = catalogue["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "/system")
+        .unwrap();
+    assert_eq!(system["subcommands"][0]["name"], "configs");
+    assert_eq!(system["subcommands"][1]["name"], "metrics");
+    for (command, title) in [
+        ("/system configs", "# System configuration"),
+        ("/system metrics", "# System metrics"),
+    ] {
+        let (status, result) = keyed_command(
+            &app,
+            &token,
+            if command.ends_with("configs") {
+                "system-configs"
+            } else {
+                "system-metrics"
+            },
+            execute(command),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert!(result["result"].as_str().unwrap().starts_with(title));
+    }
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/revoke helper su")
+        .unwrap();
+    for (key, command) in [
+        ("system-configs", "/system configs"),
+        ("system-metrics", "/system metrics"),
+    ] {
+        assert_eq!(
+            keyed_command(&app, &token, key, execute(command)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            request(
+                &app,
+                Some(&token),
+                "GET",
+                &format!("/api/bot/v1/commands/receipts/{key}"),
+                json!({})
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    for permission in ["/sudo", "x:command.sudo"] {
+        app.engine()
+            .unwrap()
+            .execute(None, None, &format!("/grant helper @global {permission}"))
+            .unwrap();
+    }
+    // Delegated sudo does not silently authorize replay of a plain su command.
+    assert_eq!(
+        keyed_command(&app, &token, "system-metrics", execute("/system metrics"))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        keyed_command(
+            &app,
+            &token,
+            "sudo-system",
+            execute("/sudo /system metrics")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            "/api/bot/v1/commands/receipts/sudo-system",
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/revoke helper @global x:command.sudo")
+        .unwrap();
+    assert_eq!(
+        keyed_command(
+            &app,
+            &token,
+            "sudo-system",
+            execute("/sudo /system metrics")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "GET",
+            "/api/bot/v1/commands/receipts/sudo-system",
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+
+    assert_eq!(
+        request(
+            &app,
+            Some(&token),
+            "POST",
+            "/api/bot/v1/commands",
+            execute("/system metrics")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
 async fn native_commands_follow_bot_grants_and_recheck_scope_and_revocation() {
     let (app, token) = fixture();
     let id = conversation(&app);
@@ -615,6 +784,7 @@ async fn restart_command_receipt(mut engine: Engine) {
             &digest,
             Ok("must not replace stored outcome".into()),
             crate::engine::PendingCommand::None,
+            None,
         )
         .await
         .unwrap();
@@ -696,14 +866,16 @@ async fn command_capacity_contract(
             "same-key",
             "same-digest",
             Ok("same result".into()),
-            PendingCommand::Message(Box::new(one))
+            PendingCommand::Message(Box::new(one)),
+            None
         ),
         receipts.commit(
             &account,
             "same-key",
             "same-digest",
             Ok("same result".into()),
-            PendingCommand::Message(Box::new(two))
+            PendingCommand::Message(Box::new(two)),
+            None
         ),
     );
     let (a, b) = {
@@ -743,14 +915,16 @@ async fn command_capacity_contract(
             "capacity-one",
             "one",
             Ok("one".into()),
-            PendingCommand::Message(Box::new(one))
+            PendingCommand::Message(Box::new(one)),
+            None
         ),
         receipts.commit(
             &account,
             "capacity-two",
             "two",
             Ok("two".into()),
-            PendingCommand::Message(Box::new(two))
+            PendingCommand::Message(Box::new(two)),
+            None
         ),
     );
     assert_ne!(one.is_ok(), two.is_ok());
@@ -791,6 +965,7 @@ async fn command_capacity_contract(
             "fresh",
             Ok("after expiry".into()),
             PendingCommand::None,
+            None,
         )
         .await
         .unwrap();
@@ -817,6 +992,7 @@ async fn command_capacity_contract(
             "fresh",
             Ok("\0".repeat(16000)),
             PendingCommand::None,
+            None,
         )
         .await
         .unwrap();
@@ -835,6 +1011,7 @@ async fn command_capacity_contract(
             "escaped",
             Ok("\0".repeat(16000)),
             PendingCommand::None,
+            None,
         )
         .await;
     assert_eq!(rejected.err().unwrap().code, Code::PayloadTooLarge);
@@ -862,6 +1039,7 @@ async fn command_capacity_contract(
             "large",
             Ok("x".repeat(32769)),
             PendingCommand::Message(Box::new(pending)),
+            None,
         )
         .await
         .unwrap();
@@ -890,6 +1068,7 @@ async fn command_capacity_contract(
             "bytes",
             Ok("no effect".into()),
             PendingCommand::None,
+            None,
         )
         .await;
     assert_eq!(result.err().unwrap().code, Code::IdempotencyCapacity);

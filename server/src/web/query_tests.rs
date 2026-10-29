@@ -75,20 +75,39 @@ async fn contract(mut app: App) {
             "{text}"
         );
     }
-    let expected = app
-        .config
-        .display_with_history(app.engine_read().unwrap().history_store().stats().unwrap())
+    let configs = command(&app, "bob", None, "/sudo /system configs")
+        .await
+        .unwrap();
+    assert!(configs.starts_with("# System configuration"));
+    let raw = configs
+        .split("```json\n")
+        .nth(1)
+        .unwrap()
+        .split("\n```")
+        .next()
         .unwrap();
     assert_eq!(
-        command(&app, "bob", None, "/sudo /configs").await.unwrap(),
-        expected
+        serde_json::from_str::<serde_json::Value>(raw).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&app.config.display().unwrap()).unwrap()
     );
-    assert!(command(&app, "bob", None, "/configs").await.is_err());
+    let metrics = command(&app, "bob", None, "/sudo /system metrics")
+        .await
+        .unwrap();
+    assert!(metrics.starts_with("# System metrics"));
+    assert!(metrics.contains("| `readers.open` |"));
+    assert!(command(&app, "bob", None, "/system").await.is_err());
+    assert!(
+        command(&app, "alice", None, "/system configs")
+            .await
+            .is_err()
+    ); // ordinary admin
     for text in [
         "/history",
         "/history #missing",
         "/history 4 1",
-        "/configs unexpected",
+        "/configs",
+        "/system configs unexpected",
+        "/sudo /system unknown",
         "/sudo /sudo /help",
     ] {
         assert!(command(&app, "bob", None, text).await.is_err(), "{text}");
@@ -106,6 +125,78 @@ async fn native_read_commands_preserve_output_permissions_and_state() {
         Engine::open(&directory.path().join("chat.sqlite")).unwrap()
     ))
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_requires_su_even_with_direct_grants_and_tracks_revocation() {
+    let directory = tempfile::tempdir().unwrap();
+    let app = app(Engine::open(&directory.path().join("chat.sqlite")).unwrap());
+    {
+        let mut engine = app.engine().unwrap();
+        for permission in ["/system", "r:server.config"] {
+            engine
+                .execute(None, None, &format!("/grant bob @global {permission}"))
+                .unwrap();
+        }
+        assert!(
+            !engine
+                .commands_for(Some("bob"), None)
+                .iter()
+                .any(|command| command.name == "/system")
+        );
+        assert!(
+            !engine
+                .commands_for(Some("alice"), None)
+                .iter()
+                .any(|command| command.name == "/system")
+        );
+    }
+    for user in ["alice", "bob"] {
+        for text in ["/system", "/system configs", "/system metrics", "/configs"] {
+            assert!(
+                command(&app, user, None, text).await.is_err(),
+                "{user}: {text}"
+            );
+        }
+    }
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant alice su")
+        .unwrap();
+    assert!(
+        app.engine_read()
+            .unwrap()
+            .commands_for(Some("alice"), None)
+            .iter()
+            .any(|command| command.name == "/system")
+    );
+    assert!(
+        command(&app, "alice", None, "/system")
+            .await
+            .unwrap()
+            .starts_with("# System")
+    );
+    assert!(
+        command(&app, "alice", None, "/system metrics")
+            .await
+            .unwrap()
+            .contains("Snapshot cache")
+    );
+    assert!(
+        command(&app, "alice", None, "/system configs")
+            .await
+            .unwrap()
+            .contains("```json")
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/revoke alice su")
+        .unwrap();
+    assert!(
+        command(&app, "alice", None, "/system metrics")
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

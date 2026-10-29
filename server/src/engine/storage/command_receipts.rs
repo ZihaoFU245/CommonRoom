@@ -15,8 +15,16 @@ pub(crate) struct CommandOutcome {
     pub created: u64,
     pub expires: u64,
     pub replayed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_authority: Option<crate::system::ReportAccess>,
 }
 impl CommandOutcome {
+    pub(crate) fn authorize(&self, engine: &Engine, user: &str) -> Result<(), Error> {
+        if let Some(access) = self.system_authority {
+            access.authorize(engine, user)?;
+        }
+        Ok(())
+    }
     pub fn into_result(self) -> Result<serde_json::Value, Error> {
         if let Some(error) = self.error {
             return Err(error);
@@ -48,6 +56,7 @@ impl CommandReceipts {
         digest: &str,
         result: Result<String, Error>,
         mut effect: PendingCommand,
+        system_authority: Option<crate::system::ReportAccess>,
     ) -> Result<CommittedCommand, Error> {
         let result = result.and_then(|reply| {
             if reply.len() > MAX_RESULT / 2 {
@@ -72,6 +81,7 @@ impl CommandReceipts {
             created,
             expires: created + TTL,
             replayed: false,
+            system_authority,
         };
         let raw = serde_json::to_string(&outcome).map_err(Error::storage)?;
         let commit = {
@@ -308,6 +318,7 @@ impl Engine {
             created,
             expires: created + TTL,
             replayed: false,
+            system_authority: None,
         };
         let persist = (|| {
             let raw = serde_json::to_string(&outcome).map_err(Error::storage)?;

@@ -258,12 +258,6 @@ impl Config {
     pub fn display(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|_| "Could not display configuration.".into())
     }
-    pub fn display_with_history(&self, history_cache: serde_json::Value) -> Result<String, String> {
-        let mut config: serde_json::Value = serde_json::from_str(&self.display()?)
-            .map_err(|_| "Could not display configuration.")?;
-        config["history_cache"] = history_cache;
-        serde_json::to_string_pretty(&config).map_err(|_| "Could not display configuration.".into())
-    }
     #[cfg(test)]
     pub fn load(data: &std::path::Path) -> Result<Self, String> {
         Self::load_inner(data, None)

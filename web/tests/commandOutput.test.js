@@ -61,20 +61,60 @@ test("command documentation never activates HTML, images or unsafe links", () =>
   );
 });
 test("JSON configuration remains exact data inside code blocks", () => {
-  for (const command of ["/configs"]) {
+  for (const command of ["/system configs", "/sudo /system configs"]) {
     const value = {
       __proto__: "literal",
       label: "```\n# forged\n<script>bad</script>",
       names: ["alice", "你好"],
     };
     const raw = JSON.stringify(value);
-    const nodes = output(command, raw);
+    const nodes = output(
+      command,
+      `# System configuration\n\n\`\`\`json\n${raw}\n\`\`\``,
+    );
     const blocks = nodesWithTag(nodes, "pre");
     assert.equal(blocks.length, 1);
     assert.deepEqual(JSON.parse(text(blocks[0].children)), JSON.parse(raw));
     assert.equal(nodesWithTag(nodes, "script").length, 0);
   }
 });
+test("system metrics preserve server Markdown tables and percentages", () => {
+  const nodes = output(
+    "/system metrics",
+    "# System metrics\n\n- Hit rate: **84.85%**\n\n| Metric | Value |\n| --- | ---: |\n| hits | 4752 |\n| misses | 848 |",
+  );
+  assert.equal(nodesWithTag(nodes, "h1").length, 1);
+  assert.equal(nodesWithTag(nodes, "table").length, 1);
+  assert.equal(nodesWithTag(nodes, "strong").length, 1);
+});
+test("metrics sections fold into native disclosures while the summary stays visible", () => {
+  const report =
+    "# System metrics\n\n- Hit rate: **84.86%**\n\n## History and unread caches\n\n| Metric | Value |\n| --- | ---: |\n| hits | 4752 |\n\n## Snapshot cache\n\n| Metric | Value |\n| --- | ---: |\n| hits | 10 |\n\n## Database pools\n\nNo extra profiling.\n\n## Server admission\n\nAvailable workers.";
+  const nodes = commandNodes(report, true);
+  assert.equal(nodesWithTag(nodes, "details").length, 4);
+  assert.deepEqual(
+    nodesWithTag(nodes, "summary").map((node) => text(node.children)),
+    [
+      "History and unread caches",
+      "Snapshot cache",
+      "Database pools",
+      "Server admission",
+    ],
+  );
+  assert.equal(nodes[0].tag, "h1");
+  assert.ok(text(nodes[1].children).includes("84.86%"));
+  assert.equal(
+    nodesWithTag(nodesWithTag(nodes, "details")[0].children, "table").length,
+    1,
+  );
+  assert.equal(nodesWithTag(commandNodes(report), "details").length, 0);
+  assert.equal(
+    nodesWithTag(commandNodes("## <script>bad()</script>", true), "script")
+      .length,
+    0,
+  );
+});
+
 test("history and newly issued credentials cannot escape their literal code block", () => {
   const raw =
     "before\n```\n# forged heading\n`````\n![tracking](https://outside.test)\nafter";

@@ -1,11 +1,13 @@
 //! Bounded revision-keyed history caches above the typed async database API.
 use super::*;
 mod cache;
+mod committed;
 mod page;
 mod unread;
 use cache::*;
 #[cfg(test)]
-use database::{PAGE_ASC_SQL, history_wire_size as wire_size};
+use database::PAGE_ASC_SQL;
+use database::history_wire_size as wire_size;
 pub use page::{HistoryRange, MessagePage};
 use std::sync::{
     Arc, Mutex,
@@ -61,6 +63,7 @@ impl std::fmt::Display for HistoryError {
 }
 
 pub struct HistoryStore {
+    started: std::time::Instant,
     database: Arc<database::Database>,
     next: AtomicUsize,
     cache: [Mutex<Cache>; CACHE_SHARDS],
@@ -93,10 +96,18 @@ impl HistoryStore {
                 .clear();
         }
         for cache in &self.unread_cache {
-            *cache
+            let mut cache = cache
                 .lock()
-                .map_err(|_| EngineError::unavailable("Unread cache poisoned"))? =
-                UnreadCache::default();
+                .map_err(|_| EngineError::unavailable("Unread cache poisoned"))?;
+            let (hits, misses, evictions, carried) =
+                (cache.hits, cache.misses, cache.evictions, cache.carried);
+            *cache = UnreadCache {
+                hits,
+                misses,
+                evictions,
+                carried,
+                ..UnreadCache::default()
+            };
         }
         Ok(())
     }
@@ -111,6 +122,7 @@ impl HistoryStore {
     }
     pub(crate) fn new(database: Arc<database::Database>) -> Self {
         Self {
+            started: std::time::Instant::now(),
             database,
             next: AtomicUsize::new(0),
             cache: std::array::from_fn(|_| Mutex::new(Cache::default())),
@@ -252,6 +264,8 @@ impl HistoryStore {
     }
     fn cache_stats(&self) -> Result<serde_json::Value, EngineError> {
         let (mut messages, mut bytes, mut message_limit, mut byte_limit) = (0, 0, 0, 0);
+        let mut shards = Vec::new();
+        let mut events = serde_json::Map::<String, serde_json::Value>::new();
         for shard in &self.cache {
             let cache = shard.lock().map_err(|_| {
                 EngineError::Unavailable("History storage poisoned; restart the service.".into())
@@ -260,9 +274,47 @@ impl HistoryStore {
             bytes += cache.bytes;
             message_limit += cache.message_limit;
             byte_limit += cache.byte_limit;
+            let metrics = cache.metrics.stats();
+            if let Some(metrics) = metrics.as_object() {
+                for (key, value) in metrics {
+                    let previous = events
+                        .get(key)
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    events.insert(
+                        key.clone(),
+                        serde_json::json!(previous.saturating_add(value.as_u64().unwrap_or(0))),
+                    );
+                }
+            }
+            let mut stats = serde_json::json!({});
+            stats["messages"] = serde_json::json!(cache.messages);
+            stats["bytes"] = serde_json::json!(cache.bytes);
+            stats["pages"] = serde_json::json!(cache.pages.len());
+            stats["byte_limit"] = serde_json::json!(cache.byte_limit);
+            stats["message_limit"] = serde_json::json!(cache.message_limit);
+            stats["page_limit"] = serde_json::json!(256 / CACHE_SHARDS);
+            shards.push(stats);
+        }
+        let (
+            mut unread_hits,
+            mut unread_misses,
+            mut unread_entries,
+            mut unread_evictions,
+            mut unread_carried,
+        ) = (0u64, 0u64, 0usize, 0u64, 0u64);
+        for cache in &self.unread_cache {
+            let cache = cache
+                .lock()
+                .map_err(|_| EngineError::unavailable("Unread cache poisoned"))?;
+            unread_hits += cache.hits;
+            unread_misses += cache.misses;
+            unread_entries += cache.recency.len();
+            unread_evictions += cache.evictions;
+            unread_carried += cache.carried;
         }
         Ok(
-            serde_json::json!({"unread_full":self.unread_full.load(Ordering::Relaxed),"unread_incremental":self.unread_incremental.load(Ordering::Relaxed),"hits":self.hits.load(Ordering::Relaxed),"misses":self.misses.load(Ordering::Relaxed),"messages":messages,"accounted_bytes":bytes,"message_limit":message_limit,"byte_limit":byte_limit,"per_conversation_limit":ROOM_CACHE_MESSAGES,"shards":CACHE_SHARDS,"pools":self.database.pool_stats()}),
+            serde_json::json!({"uptime_seconds":self.started.elapsed().as_secs(),"unread_hits":unread_hits,"unread_misses":unread_misses,"unread_entries":unread_entries,"unread_entry_limit":4096,"unread_evictions":unread_evictions,"unread_carried":unread_carried,"unread_full":self.unread_full.load(Ordering::Relaxed),"unread_incremental":self.unread_incremental.load(Ordering::Relaxed),"hits":self.hits.load(Ordering::Relaxed),"misses":self.misses.load(Ordering::Relaxed),"messages":messages,"accounted_bytes":bytes,"message_limit":message_limit,"byte_limit":byte_limit,"per_conversation_limit":ROOM_CACHE_MESSAGES,"shards":CACHE_SHARDS,"shard_stats":shards,"events":events,"pools":self.database.pool_stats()}),
         )
     }
 }

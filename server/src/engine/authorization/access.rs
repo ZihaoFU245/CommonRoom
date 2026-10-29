@@ -237,6 +237,9 @@ impl Engine {
         room: Option<&str>,
         command: &str,
     ) -> Result<(), EngineError> {
+        if command == "/system" && !self.is_su(actor) {
+            return Err(EngineError::Forbidden("Only su can use /system.".into()));
+        }
         self.principal_id(actor)
             .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?;
         let scope = self.command_scope(actor, room)?;
@@ -334,8 +337,26 @@ impl Engine {
         }
         crate::commands::available(true, actor.is_none())
             .iter()
-            .filter(|command| allowed.command(command.name))
-            .cloned()
+            .filter(|command| {
+                allowed.command(command.name) && (command.name != "/system" || self.is_su(actor))
+            })
+            .map(|command| {
+                let mut command = command.clone();
+                if command.name == "/sudo"
+                    && self.require_command(actor, room, "/sudo").is_ok()
+                    && self
+                        .require_target_command(actor, &Scope::Server, "/sudo")
+                        .is_ok()
+                    && self.require(actor, &Scope::Server, Action::Sudo).is_ok()
+                {
+                    command.subcommands = crate::commands::available(true, actor.is_none())
+                        .iter()
+                        .filter(|command| command.name != "/sudo")
+                        .cloned()
+                        .collect();
+                }
+                command
+            })
             .collect()
     }
     pub(in crate::engine) fn assign(&mut self, account_id: String, group: Group, scope: Scope) {
@@ -503,6 +524,79 @@ impl Engine {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod unwind_tests {
+    #[test]
+    fn sudo_completion_tracks_global_authority_without_granting_direct_access() {
+        let mut engine = crate::engine::tests::engine();
+        let catalogue = |engine: &crate::engine::Engine, room| {
+            let commands = engine.commands_for(Some("alice"), room);
+            assert!(!commands.iter().any(|command| command.name == "/system"));
+            commands.into_iter().find(|command| command.name == "/sudo")
+        };
+        engine
+            .execute(None, None, "/grant alice #lobby /sudo")
+            .unwrap();
+        engine
+            .execute(None, None, "/grant alice #lobby x:command.sudo")
+            .unwrap();
+        assert!(
+            catalogue(&engine, Some("lobby"))
+                .unwrap()
+                .subcommands
+                .is_empty()
+        );
+        engine
+            .execute(None, None, "/grant alice @global /sudo")
+            .unwrap();
+        assert!(catalogue(&engine, None).unwrap().subcommands.is_empty());
+        engine
+            .execute(None, None, "/grant alice @global x:command.sudo")
+            .unwrap();
+        for room in [None, Some("lobby")] {
+            let sudo = catalogue(&engine, room).unwrap();
+            assert!(
+                sudo.subcommands
+                    .iter()
+                    .any(|command| command.name == "/system")
+            );
+            assert!(
+                sudo.subcommands
+                    .iter()
+                    .all(|command| command.name != "/sudo" && command.subcommands.is_empty())
+            );
+            let wire = serde_json::to_value(sudo).unwrap();
+            assert!(
+                wire["subcommands"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|command| command["name"] == "/system")
+            );
+        }
+        assert!(!engine.is_su(Some("alice")));
+        assert!(
+            engine
+                .require_command(Some("alice"), None, "/system")
+                .is_err()
+        );
+        engine
+            .execute(None, None, "/revoke alice @global x:command.sudo")
+            .unwrap();
+        assert!(catalogue(&engine, None).unwrap().subcommands.is_empty());
+        assert!(
+            catalogue(&engine, Some("lobby"))
+                .unwrap()
+                .subcommands
+                .is_empty()
+        );
+        engine
+            .execute(None, None, "/revoke alice @global /sudo")
+            .unwrap();
+        engine
+            .execute(None, None, "/revoke alice #lobby /sudo")
+            .unwrap();
+        assert!(catalogue(&engine, None).is_none());
+    }
+
     #[test]
     fn panic_restores_sudo_authority_before_unwinding() {
         let mut engine = crate::engine::tests::engine();

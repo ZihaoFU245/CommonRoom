@@ -25,7 +25,16 @@ function render(nodes: MarkdownNode[]): ComponentChildren {
   );
 }
 
-export function Manual({ text }: { text: string }) {
-  const nodes = useMemo(() => commandNodes(text), [text]);
+export function Manual({
+  text,
+  foldSections = false,
+}: {
+  text: string;
+  foldSections?: boolean;
+}) {
+  const nodes = useMemo(
+    () => commandNodes(text, foldSections),
+    [text, foldSections],
+  );
   return <div class="manual">{render(nodes)}</div>;
 }

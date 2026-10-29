@@ -107,7 +107,7 @@ Failed recovery stays unavailable; unknown commits, ownership loss and poisoned
 locks must not enter this recovery path. Shutdown must drain queued recovery.
 
 Read-only browser commands use owned plans. `/history`, elevated cleanup previews
-and `/configs` await native readers/statistics outside engine guards; memory-only
+and `/system` await native readers/statistics outside engine guards; memory-only
 commands use the same capture/revalidation path. Sudo query phases elevate only
 inside their synchronous guard and recheck authority before delivery. Avatar/color
 updates use per-account ordering and atomic profile/media transactions. Accepted

@@ -76,6 +76,9 @@ pub struct Command {
     pub section: &'static str,
     pub admin: bool,
     pub console: bool,
+    /// Wrapped commands available through sudo, independent of direct grants.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subcommands: Vec<Command>,
 }
 
 pub fn available(admin: bool, console: bool) -> &'static [Command] {
@@ -219,9 +222,9 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         ),
         (
             "Server",
-            "/configs",
-            "/configs",
-            "Show active configuration; changes require restart",
+            "/system",
+            "/system configs | metrics",
+            "Inspect server configuration and lifetime metrics (su only)",
             true,
         ),
         (
@@ -255,6 +258,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             requirements: requirements(name),
             admin,
             console: false,
+            subcommands: Vec::new(),
         })
         .collect();
     if !console {
@@ -266,6 +270,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             requirements: requirements("/clear"),
             admin: false,
             console: false,
+            subcommands: Vec::new(),
         });
         result.push(Command {
             name: "/logout",
@@ -275,6 +280,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             requirements: requirements("/logout"),
             admin: false,
             console: false,
+            subcommands: Vec::new(),
         });
     }
     result
@@ -294,7 +300,7 @@ pub fn requirements(command: &str) -> &'static str {
         "/ls" => "room discovery/read grants; r:account.list for accounts and group members",
         "/rm" => "x:room.delete, x:account.delete, or group-management authority on the target",
         "/bot" => "Lifecycle/credentials: global admin or su",
-        "/configs" => "r:server.config at @global",
+        "/system" => "su authority; direct command/action grants alone do not authorize access",
         "/rename" => {
             "x:room.rename on the target room; w:account.rename.own on your account or x:account.rename.any on the target account; only su can manage su accounts"
         }
@@ -359,6 +365,8 @@ pub fn usage_forms(command: &Command) -> Vec<String> {
 fn form_description(command: &Command, usage: &str) -> &'static str {
     let parts = usage.split_whitespace().skip(1).take(2).collect::<Vec<_>>();
     match (command.name, parts.as_slice()) {
+        ("/system", ["configs"]) => "Show active configuration in a Markdown JSON block (su only)",
+        ("/system", ["metrics"]) => "Show lifetime cache and pool counters (su only)",
         ("/user", ["ls", ..]) => "List accounts globally or members of a room",
         ("/user", ["get", ..]) => "Read one user's metadata, or use @all for the scope",
         ("/user", ["set", ..]) => {

@@ -112,6 +112,7 @@ impl super::Connection {
             }
         }
         .await;
+        database.observe_transaction(result.is_ok());
         tracing::debug!(
             elapsed_us = started.elapsed().as_micros(),
             success = result.is_ok(),

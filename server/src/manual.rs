@@ -15,6 +15,7 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         "sudo" => SUDO,
         "bot" => BOT,
         "clean" => CLEAN,
+        "system" => SYSTEM,
         _ => {
             let name = format!("/{topic}");
             let command = commands::available(true, false)
@@ -710,6 +711,33 @@ const BOT: &str = r#"# /bot
 @helper /config set prompt "Help with Rust questions."
 @helper /config get
 ```"#;
+
+const SYSTEM: &str = r#"# /system
+
+- Inspect configuration and operational counters with su authority.
+
+## Usage
+
+```text
+/system
+/system configs
+/system metrics
+```
+
+- `/system` lists its subcommands.
+- `/system configs` shows active configuration in a Markdown JSON block. Restart after changing configuration. Database URLs and credentials are environment-only.
+- `/system metrics` shows cumulative history/unread/snapshot cache counters, hit rates, eviction/miss reasons, shard occupancy, database pool statistics and current worker availability.
+- Counters start at server startup and survive cache eviction/recovery. Rates use cumulative counts; concurrent observations are approximate. No lookups shows n/a.
+- A coalesced page request counts as a hit; snapshot reuse includes callers sharing an in-progress build. Full/incremental unread counters describe database calculations after unread-cache misses.
+- Collection uses integer counters on existing cache/pool paths. Reports are formatted only when requested; no periodic profiling or metric logging runs in the background.
+- Cache byte budgets do not cap total process memory. Responses, database buffers and metadata consume additional memory.
+
+## Permissions
+
+- Requires su authority. Global admins and direct `/system` or `r:server.config` grants alone cannot run it.
+- Stdin and authorized `/sudo /system ...` are supported; authority is rechecked before delivery.
+- `/configs` has moved to `/system configs`; the old command is removed.
+"#;
 
 const CLEAN: &str = r#"# /clean
 

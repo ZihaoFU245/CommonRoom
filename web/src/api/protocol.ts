@@ -45,6 +45,8 @@ export interface Command {
   section: string;
   admin: boolean;
   console: boolean;
+  /** Commands available inside /sudo, which can differ from direct grants. */
+  subcommands?: Command[];
 }
 export interface BotCommand {
   name: string;
@@ -232,7 +234,7 @@ const unread = (v: unknown): v is Unread =>
   integer(v.revision);
 const unreads = (v: unknown): v is Record<string, Unread> =>
   record(v) && Object.values(v).every(unread);
-const commands = (v: unknown): v is Command[] =>
+const commands = (v: unknown, depth = 0): v is Command[] =>
   Array.isArray(v) &&
   v.every(
     (c) =>
@@ -243,7 +245,9 @@ const commands = (v: unknown): v is Command[] =>
       (c.requirements === undefined || typeof c.requirements === "string") &&
       typeof c.section === "string" &&
       typeof c.admin === "boolean" &&
-      typeof c.console === "boolean",
+      typeof c.console === "boolean" &&
+      (c.subcommands === undefined ||
+        (depth === 0 && commands(c.subcommands, depth + 1))),
   );
 const colorMap = (v: unknown): v is Record<string, string> =>
   record(v) && Object.values(v).every((color) => typeof color === "string");

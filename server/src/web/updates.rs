@@ -246,6 +246,16 @@ pub(crate) async fn browser_with_interests_async(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn history_work(app: &App) -> serde_json::Value {
+        let mut stats = app.engine_read().unwrap().history_store().stats().unwrap();
+        let pools = stats.as_object_mut().unwrap().remove("pools").unwrap();
+        stats.as_object_mut().unwrap().remove("uptime_seconds");
+        // Live pool occupancy can change when an asynchronously returned connection
+        // becomes idle, even when this request performs no database work.
+        stats["operations"] = pools["operations"].clone();
+        stats
+    }
     #[test]
     fn metadata_targets_new_and_revoked_members_without_history_work_for_outsiders() {
         let app = crate::web::tests::login_test_app();
@@ -296,7 +306,7 @@ mod tests {
             assert!(!interests[0].excludes(&change));
             assert!(!interests[1].excludes(&change));
             assert!(interests[2].excludes(&change));
-            let before = app.engine_read().unwrap().history_store().stats().unwrap();
+            let before = history_work(&app);
             let (_, outsider) = browser_with_interests(
                 &app,
                 &headers[2],
@@ -306,10 +316,7 @@ mod tests {
             )
             .unwrap();
             assert!(outsider.is_empty());
-            assert_eq!(
-                before,
-                app.engine_read().unwrap().history_store().stats().unwrap()
-            );
+            assert_eq!(before, history_work(&app));
             let (_, frames) =
                 browser_with_interests(&app, &headers[1], false, &[change], &mut interests[1])
                     .unwrap();
@@ -365,7 +372,7 @@ mod tests {
                 engine.data.rooms["shared"].id.clone(),
             )
         };
-        let before = app.engine_read().unwrap().history_store().stats().unwrap();
+        let before = history_work(&app);
         let (_, frames) = browser_with_interests(
             &app,
             &headers,
@@ -382,10 +389,7 @@ mod tests {
             frames,
             vec![serde_json::json!({"kind":"bot_commands","conversation_id":id})]
         );
-        assert_eq!(
-            before,
-            app.engine_read().unwrap().history_store().stats().unwrap()
-        );
+        assert_eq!(before, history_work(&app));
     }
     #[test]
     fn a_reserved_private_conversation_invalidates_negative_hints_before_its_first_message() {

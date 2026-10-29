@@ -151,10 +151,27 @@ Grant/revoke only change access. Upload size, retention and byte quota belong in
 limits also belong in metadata through `history.clean_min_age`. See `/man permissions`,
 `/man groups`, and `/man scopes` for action/command grants and predefined bundles.
 
+## System operations
+
+```text
+/system
+/system configs
+/system metrics
+```
+
+`/system` and its subcommands require su authority; global admin or direct command
+and config-read grants alone do not authorize them. Stdin and authorized `/sudo`
+are supported. `/configs` is removed in favor of `/system configs`.
+Configuration is a Markdown JSON block; metrics use Markdown tables and show
+cache hit rates, misses/evictions, shard occupancy, unread/snapshot results,
+database-pool statistics and current worker capacity. Counters are collected
+cheaply since startup, with no periodic logging/profiling. See
+[Server caches and system metrics](cache.md) and `/man system` for definitions.
+
 ## Other commands and browser aliases
 
 Message commands (`/tell`, `/history`, `/reply`, `/react`, `/edit`, `/retract`),
-`/permissions`, `/sudo`, `/bot`, `/configs`, `/clean`, `/debug`, `/whoami`,
+`/permissions`, `/sudo`, `/bot`, `/system`, `/clean`, `/debug`, `/whoami`,
 `/console`, `/clear`, `/logout`, `/help` and `/man` retain their purposes.
 `/clean age scope [--dry-run]` always requires an explicit scope. Use `#ROOM`,
 `@direct:USER` for your existing private chat, `@private:a:b` for one pair,

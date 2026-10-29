@@ -5,6 +5,282 @@ fn sequences(page: &History) -> Vec<u64> {
         .map(|message| message.sequence)
         .collect()
 }
+
+fn commit_browser_message(engine: &mut Engine, text: &str) -> Message {
+    let pending = engine
+        .prepare_browser_message("alice", Some("lobby"), text, false)
+        .unwrap();
+    let commit = database::block_on_storage(pending.save(None))
+        .unwrap()
+        .unwrap();
+    engine.publish_message(pending, commit).unwrap().message
+}
+fn committed_cache_contract(mut engine: Engine) {
+    for (name, admin) in [("alice", true), ("bob", false)] {
+        engine.provision(name, "hash".into(), admin, false).unwrap();
+    }
+    engine
+        .execute(Some("alice"), None, "/room new lobby")
+        .unwrap();
+    engine.execute(None, None, "/room add bob #lobby").unwrap();
+    engine.set_limits(64, 64, 3).unwrap();
+    let history = engine.history_store().clone();
+    assert!(engine.history("bob", "lobby").unwrap().messages.is_empty());
+    let first_misses = history.stats().unwrap()["misses"].as_u64().unwrap();
+    for index in 0..8 {
+        commit_browser_message(&mut engine, &format!("committed {index}"));
+        let result = engine.history("bob", "lobby").unwrap();
+        assert_eq!(
+            result.messages.last().unwrap().text,
+            format!("committed {index}")
+        );
+        assert_eq!(result.messages.len(), (index + 1).min(3));
+        assert!(!result.has_before && !result.has_after);
+    }
+    assert_eq!(history.stats().unwrap()["misses"], first_misses);
+    assert!(
+        history.stats().unwrap()["events"]["tail_updates"]
+            .as_u64()
+            .unwrap()
+            >= 8
+    );
+    let before = engine.history("bob", "lobby").unwrap();
+    let id = engine.data.rooms["lobby"].id.clone();
+    let unread = history.unread(&id, "bob", 0, before.revision).unwrap();
+    let loads = history.stats().unwrap()["unread_full"].as_u64().unwrap();
+    let target = before.messages.last().unwrap().clone();
+    let pending = engine
+        .prepare_reaction("bob", &id, target, "👍", true)
+        .unwrap()
+        .unwrap();
+    let commit = database::block_on_storage(pending.save(None))
+        .unwrap()
+        .unwrap();
+    engine.publish_message(pending, commit).unwrap();
+    let reacted = engine.history("bob", "lobby").unwrap();
+    assert!(reacted.messages.last().unwrap().reactions["👍"].contains("bob"));
+    let carried = history.unread(&id, "bob", 0, reacted.revision).unwrap();
+    assert_eq!(carried.count, unread.count);
+    assert_eq!(carried.first, unread.first);
+    assert_eq!(history.stats().unwrap()["unread_full"], loads);
+    assert_eq!(history.stats().unwrap()["misses"], first_misses);
+    // Compare the optimized page and unread result to independent SQL reads.
+    let page = database::block_on_storage(history.database.history_page(&database::PageRead {
+        conversation: &id,
+        revision: reacted.revision,
+        range: HistoryRange::default(),
+        limit: 100,
+        max_bytes: PAGE_BYTES,
+    }))
+    .unwrap()
+    .unwrap();
+    assert!(page.messages == reacted.messages.to_vec());
+    let oracle = database::block_on_storage(history.database.history_unreads(
+        "bob",
+        &[database::UnreadRead {
+            conversation: &id,
+            read: 0,
+            revision: reacted.revision,
+            previous: None,
+        }],
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(oracle.results[0].as_ref().unwrap().count, carried.count);
+    // A text edit carries unread state and replaces cached immutable content.
+    let original = reacted.messages.last().unwrap().clone();
+    let mut edited = original.clone();
+    edited.text = "edited after publication".into();
+    let pending = engine
+        .pending_message_at(
+            "alice",
+            "lobby",
+            engine.room_scope("lobby").unwrap(),
+            reacted.revision,
+            edited,
+            super::super::message_write::PendingMutation::Edit {
+                previous: BTreeSet::new(),
+                actor: engine.data.users["alice"].id.clone(),
+            },
+        )
+        .unwrap();
+    let commit = database::block_on_storage(pending.save(None))
+        .unwrap()
+        .unwrap();
+    engine.publish_message(pending, commit).unwrap();
+    let edited = engine.history("bob", "lobby").unwrap();
+    assert_eq!(
+        edited.messages.last().unwrap().text,
+        "edited after publication"
+    );
+    assert_eq!(reacted.messages.last().unwrap().text, original.text); // Old responses stay immutable.
+    assert_eq!(
+        history
+            .unread(&id, "bob", 0, edited.revision)
+            .unwrap()
+            .count,
+        unread.count
+    );
+    assert_eq!(history.stats().unwrap()["unread_full"], loads);
+    assert_eq!(history.stats().unwrap()["misses"], first_misses);
+    // Deletions still invalidate: a cached reaction/edit must never revive a row.
+    assert!(
+        history.stats().unwrap()["pools"]["operations"]["transactions"]["succeeded"]
+            .as_u64()
+            .unwrap()
+            >= 10
+    );
+    engine
+        .execute(
+            Some("alice"),
+            Some("lobby"),
+            &format!("/retract {}", original.id),
+        )
+        .unwrap();
+    assert_eq!(engine.history("bob", "lobby").unwrap().messages.len(), 2);
+    assert!(history.stats().unwrap()["misses"].as_u64().unwrap() > first_misses);
+}
+#[test]
+fn committed_tails_and_unreads_avoid_database_reloads() {
+    let directory = tempfile::tempdir().unwrap();
+    committed_cache_contract(Engine::open(&directory.path().join("chat.sqlite")).unwrap());
+}
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_committed_tails_and_unreads_avoid_database_reloads() {
+    let fixture = database::tests::PostgresFixture::new();
+    committed_cache_contract(Engine::open_postgres(&fixture.url).unwrap());
+}
+#[test]
+fn bounded_ranges_reuse_shared_pages_and_report_miss_causes() {
+    let mut engine = super::super::tests::engine();
+    for _ in 0..8 {
+        engine
+            .execute(Some("alice"), Some("lobby"), "cached")
+            .unwrap();
+    }
+    let page = engine.history("bob", "lobby").unwrap();
+    let store = engine.history_store().clone();
+    let misses = store.stats().unwrap()["misses"].as_u64().unwrap();
+    let subset = engine
+        .history_page(
+            "bob",
+            "lobby",
+            HistoryRange {
+                start: Some(2),
+                end: Some(7),
+                limit: Some(3),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(sequences(&subset), vec![2, 3, 4]);
+    assert!(subset.has_before && subset.has_after);
+    assert!(subset.messages.shares_storage(&page.messages));
+    let stats = store.stats().unwrap();
+    assert_eq!(stats["misses"], misses);
+    assert_eq!(stats["events"]["subset_hits"], 1);
+    assert_eq!(stats["events"]["cold_misses"], 1);
+    engine
+        .history_page(
+            "bob",
+            "lobby",
+            HistoryRange {
+                after: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(store.stats().unwrap()["events"]["range_misses"], 1);
+    engine
+        .execute(
+            Some("alice"),
+            Some("lobby"),
+            "legacy publication invalidates",
+        )
+        .unwrap();
+    engine.history("bob", "lobby").unwrap();
+    assert_eq!(store.stats().unwrap()["events"]["revision_misses"], 1);
+    let before = store.stats().unwrap();
+    store.reset_after_recovery().unwrap();
+    let after = store.stats().unwrap();
+    assert_eq!(after["hits"], before["hits"]);
+    assert_eq!(
+        after["events"]["cold_misses"],
+        before["events"]["cold_misses"]
+    );
+    assert_eq!(after["messages"], 0);
+}
+#[test]
+fn rejected_native_writes_do_not_change_cached_content() {
+    let mut engine = super::super::tests::engine();
+    engine
+        .execute(Some("alice"), Some("lobby"), "unchanged")
+        .unwrap();
+    let before = engine.history("bob", "lobby").unwrap();
+    engine.store.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_cache_write BEFORE INSERT ON messages BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+    let pending = engine
+        .prepare_browser_message("alice", Some("lobby"), "rejected", false)
+        .unwrap();
+    assert!(
+        database::block_on_storage(pending.save(None))
+            .unwrap()
+            .is_err()
+    );
+    assert!(engine.history("bob", "lobby").unwrap().messages.to_vec() == before.messages.to_vec());
+    assert_eq!(
+        engine.history_store().stats().unwrap()["events"]["tail_updates"],
+        0
+    );
+    assert!(
+        engine.history_store().stats().unwrap()["pools"]["operations"]["transactions"]["failed"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+}
+
+#[test]
+fn reactions_carry_unaffected_historical_pages_without_copying() {
+    let mut engine = super::super::tests::engine();
+    for _ in 0..5 {
+        engine
+            .execute(Some("alice"), Some("lobby"), "retained")
+            .unwrap();
+    }
+    let latest = engine.history("bob", "lobby").unwrap();
+    let range = HistoryRange {
+        after: Some(0),
+        limit: Some(2),
+        ..Default::default()
+    };
+    let old = engine.history_page("bob", "lobby", range).unwrap();
+    let misses = engine.history_store().stats().unwrap()["misses"]
+        .as_u64()
+        .unwrap();
+    let id = engine.data.rooms["lobby"].id.clone();
+    let pending = engine
+        .prepare_reaction(
+            "bob",
+            &id,
+            latest.messages.last().unwrap().clone(),
+            "👍",
+            true,
+        )
+        .unwrap()
+        .unwrap();
+    let commit = database::block_on_storage(pending.save(None))
+        .unwrap()
+        .unwrap();
+    engine.publish_message(pending, commit).unwrap();
+    let carried = engine.history_page("bob", "lobby", range).unwrap();
+    assert!(carried.messages.shares_storage(&old.messages));
+    assert_eq!(sequences(&carried), vec![1, 2]);
+    assert!(carried.has_after && !carried.has_before);
+    let stats = engine.history_store().stats().unwrap();
+    assert_eq!(stats["misses"], misses);
+    assert_eq!(stats["events"]["carried_pages"], 1);
+}
 #[test]
 fn unrelated_conversations_do_not_wait_for_another_cache_shard() {
     let mut engine = super::super::tests::engine();

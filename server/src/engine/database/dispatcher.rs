@@ -71,6 +71,9 @@ pub(crate) struct Database {
     readers: Pool,
     writer_metrics: PoolMetrics,
     reader_metrics: PoolMetrics,
+    history_results: ResultMetrics,
+    transaction_results: ResultMetrics,
+    cursor_results: ResultMetrics,
     owner: Option<tokio::sync::Mutex<Connection>>,
     #[cfg(test)]
     forced_owner_probes: AtomicU64,
@@ -79,6 +82,24 @@ pub(crate) struct Database {
     changes: ChangeCount,
     failed: AtomicBool,
     folder_lock: Mutex<Option<std::fs::File>>,
+}
+#[derive(Default)]
+struct ResultMetrics {
+    succeeded: AtomicU64,
+    failed: AtomicU64,
+}
+impl ResultMetrics {
+    fn record(&self, succeeded: bool) {
+        if succeeded {
+            &self.succeeded
+        } else {
+            &self.failed
+        }
+        .fetch_add(1, Ordering::Relaxed);
+    }
+    fn stats(&self) -> serde_json::Value {
+        serde_json::json!({"succeeded":self.succeeded.load(Ordering::Relaxed),"failed":self.failed.load(Ordering::Relaxed)})
+    }
 }
 impl Database {
     pub(crate) fn from_connection(
@@ -161,6 +182,9 @@ impl Database {
             readers,
             writer_metrics: PoolMetrics::default(),
             reader_metrics: PoolMetrics::default(),
+            history_results: ResultMetrics::default(),
+            transaction_results: ResultMetrics::default(),
+            cursor_results: ResultMetrics::default(),
             owner,
             #[cfg(test)]
             forced_owner_probes: AtomicU64::new(0),
@@ -184,7 +208,15 @@ impl Database {
     }
     pub(crate) fn pool_stats(&self) -> serde_json::Value {
         serde_json::json!({"readers":self.reader_metrics.stats(&self.readers),
-            "writers":self.writer_metrics.stats(&self.pool),"dedicated_owner":self.owner.is_some()})
+            "writers":self.writer_metrics.stats(&self.pool),"dedicated_owner":self.owner.is_some(),
+            "operations":{"history_reads":self.history_results.stats(),"transactions":self.transaction_results.stats(),"cursor_advances":self.cursor_results.stats()}})
+    }
+    pub(super) fn observe_history<T>(&self, result: Result<T>) -> Result<T> {
+        self.history_results.record(result.is_ok());
+        result
+    }
+    pub(super) fn observe_transaction(&self, succeeded: bool) {
+        self.transaction_results.record(succeeded);
     }
     pub(super) async fn acquire_reader(&self) -> Result<Lease<'_>> {
         self.ensure_available_async().await?;
@@ -345,7 +377,9 @@ impl super::Handle {
         // Cursor advancement is one autocommit statement rather than a root
         // transaction, so its forced ownership check belongs directly here.
         self.check_owner().await?;
-        session.advance_cursor_async(request).await
+        let result = session.advance_cursor_async(request).await;
+        self.cursor_results.record(result.is_ok());
+        result
     }
     #[cfg(test)]
     pub(crate) fn save_message_blocking(

@@ -197,9 +197,13 @@ export function suggestions(
     }));
   }
   if (name === "/sudo") {
+    const wrapped = new Map(commands.map((command) => [command.name, command]));
+    for (const command of spec.subcommands ?? [])
+      wrapped.set(command.name, command);
+    wrapped.delete("/sudo");
     return suggestions(
-      draft.replace(/^\/sudo\s+/u, ""),
-      commands.filter((command) => command.name !== "/sudo"),
+      draft.replace(/^\/sudo\s+/u, "") || "/",
+      [...wrapped.values()],
       users,
       rooms,
       context,
@@ -238,6 +242,7 @@ export function suggestions(
     if (position > 3 && granted) return [];
   }
   let values: string[] = [];
+  if (name === "/system" && position === 1) values = ["configs", "metrics"];
   const scopes = [
     ...rooms.map((room) => `#${room}`),
     "@global",

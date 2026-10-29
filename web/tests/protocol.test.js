@@ -108,6 +108,24 @@ test("protocol accepts complete Unicode snapshots, history, and every server fra
   ])
     assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
 });
+test("sudo completion metadata validates wrapped commands with bounded nesting", () => {
+  const system = { ...snapshot.commands[0], name: "/system" };
+  const sudo = {
+    ...snapshot.commands[0],
+    name: "/sudo",
+    subcommands: [system],
+  };
+  const value = { ...snapshot, commands: [sudo] };
+  assert.deepEqual(parseFrame(JSON.stringify(value)), value);
+  for (const subcommands of [null, {}, [{}], [{ ...system, usage: 1 }], [sudo]])
+    assert.equal(
+      parseFrame(
+        JSON.stringify({ ...snapshot, commands: [{ ...sudo, subcommands }] }),
+      ),
+      null,
+    );
+});
+
 test("protocol rejects malformed nested data before it reaches UI state", () => {
   for (const invalid of [
     null,

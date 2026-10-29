@@ -68,6 +68,12 @@ The canonical frontend declarations and runtime guards are in `web/src/api/proto
 `/sudo /command [arguments]` uses the same outbound frame and acknowledgement.
 It requires `/sudo` and `x:command.sudo` at global scope and elevates only the
 wrapped command. Snapshots retain the caller's actual groups and permissions.
+When the caller has the required contextual/global sudo grants, its `/sudo`
+command descriptor includes optional `subcommands`: a list of ordinary command
+descriptors available under elevation, excluding `/sudo` itself. Browser completion
+uses this list for wrapped commands such as `/sudo /system configs`, without
+advertising `/system` as directly available to a non-su caller. Nested descriptors
+do not themselves contain `subcommands`; revoking sudo removes this list.
 Password commands recheck sudo authorization after asynchronous hashing.
 The acknowledgement contains the wrapped command's result or error. `/sudo /room join room`
 saves the caller's membership and room user grants and broadcasts updated snapshots.

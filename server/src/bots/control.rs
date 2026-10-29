@@ -44,7 +44,7 @@ fn supported_command(name: &str) -> bool {
             | "/revoke"
             | "/permissions"
             | "/rename"
-            | "/configs"
+            | "/system"
             | "/sudo"
     )
 }
@@ -69,6 +69,18 @@ fn server_command_json(command: &crate::commands::Command) -> Value {
     let mut value =
         json!({"name":command.name,"usage":command.usage,"description":command.description});
     let children: &[(&str, &str, &str)] = match command.name {
+        "/system" => &[
+            (
+                "configs",
+                "/system configs",
+                "Show active server configuration (su only)",
+            ),
+            (
+                "metrics",
+                "/system metrics",
+                "Show lifetime cache and database metrics (su only)",
+            ),
+        ],
         "/user" => &[
             ("ls", "/user ls [scope]", "List users in a scope"),
             ("get", "/user get who [key] [scope]", "Read user metadata"),
@@ -267,6 +279,7 @@ pub(super) async fn command_receipt(
         store.health().await?;
         app.inspect_engine(move |engine, _| -> Result<_, Error> {
             command_account(engine, &context)?;
+            if let Some((_, outcome)) = &receipt { outcome.authorize(engine, &context.user(engine)?)?; }
             Ok(Json(match receipt {
                 None => json!({"state":"not_found"}),
                 Some((_, outcome)) => json!({"state":if outcome.error.is_some(){"failed"}else{"succeeded"},"result":outcome.result,"error":outcome.error,"created":outcome.created,"expires":outcome.expires}),

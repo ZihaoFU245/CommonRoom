@@ -5,7 +5,7 @@ use super::*;
 pub(crate) enum NativeCommand {
     Ready(String, PendingCommand),
     Read(CommandRead),
-    Configs(std::sync::Arc<HistoryStore>),
+    System(crate::system::Command),
     Metadata(MetadataPreparation),
     Action(BrowserActionPlan),
     Cleanup(cleanup::CleanupPlan),

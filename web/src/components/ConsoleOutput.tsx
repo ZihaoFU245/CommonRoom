@@ -1,5 +1,6 @@
 import type { LocalOutput } from "../api/protocol.ts";
 import { outputMarkdown } from "../features/conversation/manual.ts";
+import { commandText } from "../features/conversation/console.ts";
 import { useEffect, useMemo, useState } from "preact/hooks";
 
 type Renderer = (typeof import("./Manual.tsx"))["Manual"];
@@ -50,7 +51,17 @@ export function ConsoleOutput({ entry }: { entry: LocalOutput }) {
         <span aria-hidden="true">›</span>
         <code>{entry.command}</code>
       </div>
-      {Manual ? <Manual text={text} /> : <pre>{entry.result ?? "…"}</pre>}
+      {Manual ? (
+        <Manual
+          text={text}
+          foldSections={
+            !entry.error &&
+            /^\/system\s+metrics$/u.test(commandText(entry.command))
+          }
+        />
+      ) : (
+        <pre>{entry.result ?? "…"}</pre>
+      )}
       {error && (
         <p role="status">Unable to load formatting. Reload to retry.</p>
       )}

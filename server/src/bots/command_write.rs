@@ -6,7 +6,7 @@ use crate::{
         auth::Context,
         error::{Code, Error},
     },
-    engine::{EngineError, MetadataPreparation, NativeCommand, PendingCommand},
+    engine::{MetadataPreparation, NativeCommand, PendingCommand},
     web::{App, Change},
 };
 use axum::http::HeaderMap;
@@ -47,12 +47,11 @@ async fn prepare(
                             PendingCommand::None,
                         ));
                     }
-                    if text.split_whitespace().collect::<Vec<_>>() == ["/configs"] {
-                        use crate::engine::authorization::{Action, Scope};
-                        engine.require_command(Some(user), Some(view), "/configs")?;
-                        engine.require_target_command(Some(user), &Scope::Server, "/configs")?;
-                        engine.require(Some(user), &Scope::Server, Action::Config)?;
-                        return Ok(NativeCommand::Configs(engine.history_store().clone()));
+                    if text.split_whitespace().next() == Some("/system") {
+                        use crate::engine::authorization::Scope;
+                        engine.require_command(Some(user), Some(view), "/system")?;
+                        engine.require_target_command(Some(user), &Scope::Server, "/system")?;
+                        return crate::system::Command::parse(text).map(NativeCommand::System);
                     }
                     engine.prepare_native_command(user, view, text, true)
                 })
@@ -67,6 +66,13 @@ pub(super) async fn execute(
     key: String,
 ) -> Result<Value, Error> {
     let context = Context::authenticate_async(app, &headers).await?;
+    let elevated = crate::engine::sudo_command(&input.command)?;
+    let system = (elevated.unwrap_or(&input.command).split_whitespace().next() == Some("/system"))
+        .then_some(if elevated.is_some() {
+            crate::system::ReportAccess::Sudo
+        } else {
+            crate::system::ReportAccess::Su
+        });
     let digest = crate::bots::digest(
         &serde_json::to_string(
             &json!({"conversation_id":input.conversation_id,"command":input.command.trim()}),
@@ -85,19 +91,22 @@ pub(super) async fn execute(
         })
         .await?;
     if let Some((previous, outcome)) = receipts.lookup(&context.account, &key).await? {
-        ordering
+        return ordering
             .with(app, {
                 let context = context.clone();
-                move |engine| command_account(engine, &context)
+                move |engine| {
+                    command_account(engine, &context)?;
+                    if previous != digest {
+                        return Err(Error::new(
+                            Code::IdempotencyConflict,
+                            "Key already belongs to a different command request.",
+                        ));
+                    }
+                    outcome.authorize(engine, &context.user(engine)?)?;
+                    outcome.into_result()
+                }
             })
-            .await?;
-        if previous != digest {
-            return Err(Error::new(
-                Code::IdempotencyConflict,
-                "Key already belongs to a different command request.",
-            ));
-        }
-        return outcome.into_result();
+            .await;
     }
     let mut planned = prepare(app, &ordering, &context, &input).await;
     if let Ok(plan) = &planned {
@@ -138,16 +147,26 @@ pub(super) async fn execute(
     ordering
         .with(app, {
             let context = context.clone();
-            move |engine| command_account(engine, &context)
+            let report = result.is_ok().then_some(system).flatten();
+            move |engine| {
+                command_account(engine, &context)?;
+                if let Some(access) = report {
+                    access.authorize(engine, &context.user(engine)?)?;
+                }
+                Ok(())
+            }
         })
         .await?;
     let committed = receipts
-        .commit(&context.account, &key, &digest, result, effect)
+        .commit(&context.account, &key, &digest, result, effect, system)
         .await?;
     let changes = app.changes.clone();
     ordering
         .with(app, move |engine| -> Result<_, Error> {
             let (outcome, change) = engine.publish_command(committed)?;
+            if outcome.system_authority.is_some() {
+                outcome.authorize(engine, &context.user(engine)?)?;
+            }
             if let Some(change) = Change::command(change) {
                 let _ = changes.send(change);
             }
@@ -166,12 +185,7 @@ async fn finish(
     let ready = match plan {
         NativeCommand::Ready(reply, effect) => (reply, effect),
         NativeCommand::Read(plan) => (plan.finish_async().await?, PendingCommand::None),
-        NativeCommand::Configs(history) => (
-            app.config
-                .display_with_history(history.stats_async().await?)
-                .map_err(|e| Error::from(EngineError::Invalid(e)))?,
-            PendingCommand::None,
-        ),
+        NativeCommand::System(command) => (command.execute(app).await?, PendingCommand::None),
         NativeCommand::Metadata(MetadataPreparation::Ready(reply, pending)) => (
             reply,
             pending.map_or(PendingCommand::None, PendingCommand::Metadata),

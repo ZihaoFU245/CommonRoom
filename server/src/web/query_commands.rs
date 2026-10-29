@@ -1,22 +1,18 @@
 //! Read-only command phases capture authority briefly, then await native readers.
 use super::commands::Input;
 use super::*;
-use crate::engine::{
-    CommandRead, EngineError,
-    authorization::{Action, Scope},
-    sudo_command,
-};
+use crate::engine::{CommandRead, EngineError, authorization::Scope, sudo_command};
 use std::collections::BTreeSet;
 
 enum Query {
     Read(CommandRead),
-    Configs,
+    System(crate::system::Command),
 }
 impl Query {
     fn ids(&self) -> BTreeSet<String> {
         match self {
             Self::Read(plan) => plan.ids(),
-            Self::Configs => BTreeSet::new(),
+            Self::System(_) => BTreeSet::new(),
         }
     }
 }
@@ -33,7 +29,7 @@ pub(super) fn supports(input: &str) -> Result<bool, EngineError> {
         ["/bot", "ls" | "info", ..] | ["/bot", "token", "ls", ..] => true,
         ["/clean", ..] => parts.last() == Some(&"--dry-run"),
         [
-            "/configs" | "/permissions" | "/debug" | "/help" | "/man" | "/whoami" | "/console"
+            "/system" | "/permissions" | "/debug" | "/help" | "/man" | "/whoami" | "/console"
             | "/ls" | "/members" | "/history",
             ..,
         ] => true,
@@ -56,14 +52,10 @@ fn prepare(
         }
         return Ok(Query::Read(CommandRead::Text("Done.".into())));
     }
-    if text.split_whitespace().next() == Some("/configs") {
-        engine.require_command(Some(&identity.user), input.room.as_deref(), "/configs")?;
-        engine.require_target_command(Some(&identity.user), &Scope::Server, "/configs")?;
-        engine.require(Some(&identity.user), &Scope::Server, Action::Config)?;
-        if text.split_whitespace().count() != 1 {
-            return Err("Usage: /configs".into());
-        }
-        return Ok(Query::Configs);
+    if text.split_whitespace().next() == Some("/system") {
+        engine.require_command(Some(&identity.user), input.room.as_deref(), "/system")?;
+        engine.require_target_command(Some(&identity.user), &Scope::Server, "/system")?;
+        return crate::system::Command::parse(text).map(Query::System);
     }
     engine
         .prepare_read_command(Some(&identity.user), input.room.as_deref(), text)
@@ -147,10 +139,7 @@ pub(super) async fn execute(
                 history.ensure_available_async().await?;
                 plan.finish_async().await?
             }
-            Query::Configs => app
-                .config
-                .display_with_history(history.stats_async().await?)
-                .map_err(EngineError::Invalid)?,
+            Query::System(command) => command.execute(app).await?,
         };
         let (current, current_stamp) = capture(app, identity.clone(), input.clone()).await?;
         if current_stamp == stamp && current.ids() == ids {

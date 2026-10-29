@@ -715,6 +715,21 @@ textarea {
   font-size: 1rem;
   line-height: 1.5;
 }
+.manual details {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.manual summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.manual summary:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
 .manual > :first-child {
   margin-top: 0;
 }

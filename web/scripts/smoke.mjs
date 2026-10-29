@@ -9,6 +9,7 @@ import { AgentClient, BotApi } from "./bot/client.mjs";
 import { validate, schema as botSchema } from "./bot/contract.mjs";
 import { applyConversation } from "../src/features/conversation/historyCache.ts";
 import { parseFrame, isHistory } from "../src/api/protocol.ts";
+import { suggestions } from "../src/features/conversation/console.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const binary = join(
@@ -310,19 +311,36 @@ try {
   await send(bob, "/configs", null, "error");
   await send(bob, "/clean 7d @all", null, "error");
   const sudoTab = await connect(cookies.bob);
-  await send(sudoTab, "/sudo /configs", null, "error");
+  await send(sudoTab, "/sudo /system configs", null, "error");
   child.stdin.write("/grant bob @global /sudo\n");
   await until(
     () => sudoTab.snapshot.commands.some((command) => command.name === "/sudo"),
     "sudo command grant delivery",
   );
-  await send(sudoTab, "/sudo /configs", null, "error");
+  await send(sudoTab, "/sudo /system configs", null, "error");
   child.stdin.write("/grant bob @global x:command.sudo\n");
   await until(
     () => sudoTab.snapshot.permissions.includes("x:command.sudo"),
     "sudo action grant delivery",
   );
-  await send(sudoTab, "/sudo /configs");
+  assert.deepEqual(
+    suggestions("/sudo /system ", sudoTab.snapshot.commands, [], []).map(
+      (hint) => hint.value,
+    ),
+    ["/sudo /system configs ", "/sudo /system metrics "],
+  );
+  assert.deepEqual(suggestions("/sys", sudoTab.snapshot.commands, [], []), []);
+  await send(sudoTab, "/sudo /system configs");
+  const configs = JSON.parse(
+    sudoTab.frames
+      .find((f) => f.id === sudoTab.serial)
+      .text.split("```json\n")[1]
+      .split("\n```")[0],
+  );
+  await send(sudoTab, "/sudo /system metrics");
+  const metrics = sudoTab.frames.find((f) => f.id === sudoTab.serial).text;
+  assert.ok(metrics.startsWith("# System metrics"));
+  assert.ok(metrics.includes("| `readers.open` |"));
   await send(sudoTab, "/sudo /whoami");
   assert.match(
     sudoTab.frames.find((frame) => frame.id === sudoTab.serial).text,
@@ -344,13 +362,17 @@ try {
   assert.equal(sudoTab.snapshot.admin, false);
   assert.deepEqual(sudoTab.snapshot.groups, ["user"]);
   await send(sudoTab, "/configs", null, "error");
-  await send(sudoTab, "/sudo /sudo /configs", null, "error");
+  await send(sudoTab, "/sudo /sudo /system configs", null, "error");
   child.stdin.write("/revoke bob @global x:command.sudo\n");
   await until(
     () => !sudoTab.snapshot.permissions.includes("x:command.sudo"),
     "sudo action revocation delivery",
   );
-  await send(sudoTab, "/sudo /configs", null, "error");
+  assert.deepEqual(
+    suggestions("/sudo /sys", sudoTab.snapshot.commands, [], []),
+    [],
+  );
+  await send(sudoTab, "/sudo /system configs", null, "error");
   child.stdin.write("/revoke bob @global /sudo\n");
   await until(
     () =>
@@ -362,14 +384,14 @@ try {
     () => sudoTab.ws.readyState === WebSocket.CLOSED,
     "sudo test tab closes",
   );
-  await send(alice, "/configs", null);
-  const configs = JSON.parse(
-    alice.frames.find((f) => f.id === alice.serial).text,
+  await send(alice, "/system configs", null, "error"); // ordinary admin
+  assert.ok(
+    !alice.snapshot.commands.some((command) => command.name === "/system"),
   );
   assert.equal(configs.max_users, 4);
   assert.equal(configs.max_rooms, 1);
   assert.equal(configs.max_messages, 1000);
-  await send(alice, "/configs max_users 9", null, "error");
+  await send(alice, "/system configs max_users 9", null, "error");
   await send(alice, "/help");
   const help = alice.frames.find((f) => f.id === alice.serial).text;
   assert.ok(help.split("\n").length > 10);
@@ -988,12 +1010,23 @@ try {
       .reactions["❤️"].includes("alice"),
   );
   const migratedAlice = await connect(cookies.alice);
-  await send(migratedAlice, "/configs", null);
-  assert.equal(
-    JSON.parse(
-      migratedAlice.frames.find((f) => f.id === migratedAlice.serial).text,
-    ).max_messages,
-    4,
+  child.stdin.write("/grant alice su\n");
+  await until(
+    () => migratedAlice.snapshot.groups.includes("su"),
+    "su system access after restart",
+  );
+  await send(migratedAlice, "/system configs", null);
+  const migratedConfigs = JSON.parse(
+    migratedAlice.frames
+      .find((f) => f.id === migratedAlice.serial)
+      .text.split("```json\n")[1]
+      .split("\n```")[0],
+  );
+  assert.equal(migratedConfigs.max_messages, 4);
+  child.stdin.write("/revoke alice su\n");
+  await until(
+    () => !migratedAlice.snapshot.groups.includes("su"),
+    "su system access revoked",
   );
   for (const text of [
     "ring first",
@@ -1501,12 +1534,19 @@ try {
     (await request("history?view=paged&start=6&end=9", deniedCookie)).status,
     403,
   );
-  await send(pagingClient, "/configs");
-  const pagingConfigs = JSON.parse(
-    pagingClient.frames.find((f) => f.id === pagingClient.serial).text,
+  child.stdin.write("/grant alice su\n");
+  await until(
+    () => pagingClient.snapshot.groups.includes("su"),
+    "paging metrics su access",
   );
-  assert.ok(pagingConfigs.history_cache.hits > 0);
-  assert.ok(pagingConfigs.history_cache.messages <= 1000);
+  await send(pagingClient, "/system metrics");
+  const pagingMetrics = pagingClient.frames.find(
+    (f) => f.id === pagingClient.serial,
+  ).text;
+  assert.ok(Number(pagingMetrics.match(/\| `hits` \| (\d+) \|/)[1]) > 0);
+  assert.ok(
+    Number(pagingMetrics.match(/\| `messages` \| (\d+) \|/)[1]) <= 1000,
+  );
   await request("logout", pagingCookie, {});
   assert.equal((await request("history?view=paged", pagingCookie)).status, 401);
   await stop();

@@ -21,7 +21,7 @@ rtk cargo run --locked
 ```
 
 The URL is environment-only: it is not saved in `config.json` or shown by
-`/configs`. Setting the URL does not override `database.backend=sqlite`. Selecting
+`/system configs`. Setting the URL does not override `database.backend=sqlite`. Selecting
 `postgres` without a nonempty URL fails startup without falling back to SQLite.
 S3 access keys, secret keys and session tokens also remain environment-only;
 non-secret S3 endpoint/bucket/region settings stay in the existing `s3` section.
@@ -193,11 +193,15 @@ per-conversation limit, 256-page limit and separate 4,096-entry unread cache sti
 apply. Response-held pages, metadata, SQLx and PostgreSQL allocations are additional
 memory. Recovery clears cached pages while retaining these configured limits.
 
-Authorized `/configs` output includes effective cache limits and
-`history_cache.pools`: open/idle/minimum/maximum reader and writer sessions,
+Su-only `/system configs` shows active configuration as Markdown-fenced JSON.
+`/system metrics` shows lifetime counters and effective cache limits, plus
+open/idle/minimum/maximum reader and writer sessions,
 completed acquisition attempts, errors/timeouts, total and maximum acquisition
 microseconds, and whether a dedicated owner exists. Acquisition timing includes
 checkout health checks and connection creation; it is not pure queue wait time.
+Metrics include history miss/eviction reasons, per-shard usage and unread/snapshot
+reuse. Collection uses existing cache/pool paths without periodic profiling or
+logging; formatting runs on request. See [Cache metrics](cache.md).
 Use `RUST_LOG=chat::engine::database=debug` to record read-operation and write-
 transaction durations and success, without credentials, query parameters or bodies.
 

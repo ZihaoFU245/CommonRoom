@@ -11,6 +11,13 @@ pub struct HistoryRange {
     pub limit: Option<usize>,
 }
 impl HistoryRange {
+    pub(super) fn is_tail(&self) -> bool {
+        self.start.is_none()
+            && self.end.is_none()
+            && self.before.is_none()
+            && self.after.is_none()
+            && self.around.is_none()
+    }
     pub fn validate(&self) -> Result<usize, EngineError> {
         let limit = self.limit.unwrap_or(PAGE_SIZE);
         if !(1..=PAGE_SIZE).contains(&limit)
@@ -50,6 +57,16 @@ pub struct MessagePage {
     end: usize,
 }
 impl MessagePage {
+    pub(super) fn wire_sizes(&self) -> &[usize] {
+        &self.data.sizes[self.start..self.end]
+    }
+    pub(super) fn slice(&self, start: usize, end: usize) -> Self {
+        Self {
+            data: self.data.clone(),
+            start: self.start + start,
+            end: self.start + end,
+        }
+    }
     pub(super) fn new(messages: Vec<Message>, sizes: Vec<usize>) -> Self {
         let end = messages.len();
         Self {
@@ -186,36 +203,47 @@ impl HistoryStore {
                 let mut cache = self.cache[cache_shard(id)]
                     .lock()
                     .map_err(|_| "History cache unavailable.")?;
-                if let Some(index) = cache.pages.iter().position(|p| {
-                    p.conversation == id
-                        && p.revision == revision
-                        && (p.range == range
-                            || range.start.is_none()
-                                && range.end.is_none()
-                                && range.before.is_none()
-                                && range.after.is_none()
-                                && range.around.is_none()
-                                && p.range.start.is_none()
-                                && p.range.end.is_none()
-                                && p.range.before.is_none()
-                                && p.range.after.is_none()
-                                && p.range.around.is_none()
-                                && !p.after
-                                && p.messages.len() >= limit)
-                }) {
+                let (mut seen_conversation, mut seen_revision) = (false, false);
+                let found = cache.pages.iter().enumerate().find_map(|(index, page)| {
+                    if page.conversation != id {
+                        return None;
+                    }
+                    seen_conversation = true;
+                    if page.revision != revision {
+                        return None;
+                    }
+                    seen_revision = true;
+                    page.reuse(range, limit).map(|hit| (index, hit))
+                });
+                if let Some((index, (messages, before, after, subset))) = found {
                     let page = cache.pages.remove(index).ok_or("History cache changed.")?;
                     let result = History {
                         name_colors: None,
                         view: view.into(),
                         revision,
-                        messages: page.messages.latest(limit),
-                        has_before: page.before || page.messages.len() > limit,
-                        has_after: page.after,
+                        messages,
+                        has_before: before,
+                        has_after: after,
                     };
                     cache.pages.push_back(page);
                     self.hits.fetch_add(1, Ordering::Relaxed);
+                    if fill.is_some() {
+                        cache.metrics.coalesced_hits += 1;
+                    }
+                    if subset {
+                        cache.metrics.subset_hits += 1;
+                    }
                     Some(result)
                 } else {
+                    if fill.is_some() {
+                        if !seen_conversation {
+                            cache.metrics.cold_misses += 1;
+                        } else if !seen_revision {
+                            cache.metrics.revision_misses += 1;
+                        } else {
+                            cache.metrics.range_misses += 1;
+                        }
+                    }
                     None
                 }
             };
