@@ -331,3 +331,35 @@ test("history and live color projections validate nullable values and versions",
     assert.equal(parseFrame(JSON.stringify({ ...update, name_colors })), null);
   }
 });
+
+test("credential completion metadata validates labels, identities and credential kinds", () => {
+  const hint = {
+    id: "token-id",
+    bot: "helper",
+    label: "production",
+    kind: "worker",
+  };
+  assert.ok(isSnapshot({ ...snapshot, bot_credentials: [hint] }));
+  assert.ok(isSnapshot({ ...snapshot, bot_credentials: [] }));
+  // The server limits credentials per bot, not the total number of bots.
+  assert.ok(
+    isSnapshot({
+      ...snapshot,
+      bot_credentials: Array.from({ length: 2049 }, (_, i) => ({
+        ...hint,
+        id: `token-${i}`,
+        bot: `helper-${i}`,
+      })),
+    }),
+  );
+  for (const bot_credentials of [
+    null,
+    {},
+    [null],
+    [{ ...hint, id: 1 }],
+    [{ ...hint, bot: null }],
+    [{ ...hint, label: [] }],
+    [{ ...hint, kind: "admin" }],
+  ])
+    assert.equal(isSnapshot({ ...snapshot, bot_credentials }), false);
+});

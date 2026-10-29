@@ -3,14 +3,6 @@ use crate::bots::{
     auth::Context,
     discovery::{Command, Control, Runtime},
 };
-fn context(app: &App, token: &str) -> Context {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::AUTHORIZATION,
-        format!("Bearer {token}").parse().unwrap(),
-    );
-    Context::authenticate(app, &headers).unwrap()
-}
 fn catalogue() -> Vec<Command> {
     vec![Command {
         name: "/model".into(),
@@ -19,6 +11,83 @@ fn catalogue() -> Vec<Command> {
         subcommands: Vec::new(),
         operator_only: false,
     }]
+}
+
+#[tokio::test]
+async fn failed_discovery_refresh_preserves_registration_and_catalogue() {
+    let (app, token) = fixture();
+    let context = context(&app, &token);
+    let mut runtime = Runtime::default();
+    let conversation = publish(&app, &context, &mut runtime);
+    app.stopping
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(runtime.apply(&app, &context, None).await.is_err());
+    assert!(
+        runtime.active(),
+        "failed verification must retain the socket lease"
+    );
+    app.stopping
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    runtime.apply(&app, &context, None).await.unwrap();
+    assert_eq!(
+        app.bot_runtimes
+            .commands
+            .visible(&app.engine_read().unwrap(), "admin", &conversation)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn rejected_catalogue_can_be_corrected_using_the_same_request() {
+    let (app, token) = fixture();
+    let context = context(&app, &token);
+    let mut runtime = Runtime::default();
+    runtime.control(&app, &context, Control::Ready).unwrap();
+    let query = runtime.next().unwrap();
+    let id = query["id"].as_str().unwrap().to_owned();
+    assert!(
+        runtime
+            .control(
+                &app,
+                &context,
+                Control::Response {
+                    id: id.clone(),
+                    commands: catalogue(),
+                    expires_in: 0
+                }
+            )
+            .is_err()
+    );
+    let mut invalid = catalogue();
+    invalid[0].name = "invalid".into();
+    assert!(
+        runtime
+            .control(
+                &app,
+                &context,
+                Control::Response {
+                    id: id.clone(),
+                    commands: invalid,
+                    expires_in: 300
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        runtime
+            .control(
+                &app,
+                &context,
+                Control::Response {
+                    id,
+                    commands: catalogue(),
+                    expires_in: 300
+                }
+            )
+            .is_ok()
+    );
 }
 fn publish(app: &App, context: &Context, runtime: &mut Runtime) -> String {
     runtime.control(app, context, Control::Ready).unwrap();
@@ -30,6 +99,7 @@ fn publish(app: &App, context: &Context, runtime: &mut Runtime) -> String {
             app,
             context,
             Control::Response {
+                expires_in: 120,
                 id,
                 commands: catalogue(),
             },
@@ -123,6 +193,7 @@ fn changed_catalogues_cancel_old_requests_and_responses_cannot_inject_targets() 
                 &app,
                 &context,
                 Control::Response {
+                    expires_in: 120,
                     id: stale,
                     commands: catalogue()
                 }
@@ -135,6 +206,7 @@ fn changed_catalogues_cancel_old_requests_and_responses_cannot_inject_targets() 
                 &app,
                 &context,
                 Control::Response {
+                    expires_in: 120,
                     id: "unsolicited".into(),
                     commands: catalogue()
                 }
@@ -230,23 +302,10 @@ fn subcommands_validate_full_paths_depth_siblings_and_total_nodes() {
 }
 #[tokio::test]
 async fn scoped_runtime_discovery_does_not_require_configuration_or_operator_grants() {
-    let (app, token) = fixture();
-    let operator = context(&app, &token);
+    let (app, _token) = fixture();
     let conversation = conversation(&app);
-    let worker = app
-        .engine()
-        .unwrap()
-        .issue_bot_credential(
-            &operator,
-            crate::bots::models::CredentialInput {
-                label: "commands".into(),
-                expires: crate::bots::now() + 600,
-                conversations: [conversation.clone()].into(),
-                operations: ["read".into(), "send".into()].into(),
-            },
-        )
-        .unwrap();
-    let worker = context(&app, worker["token"].as_str().unwrap());
+    let worker = scoped_worker(&app, "commands", &[&conversation], &["read", "send"]).await;
+    let worker = context(&app, &worker);
     let mut runtime = Runtime::default();
     runtime
         .apply(&app, &worker, Some(Control::Ready))
@@ -259,6 +318,7 @@ async fn scoped_runtime_discovery_does_not_require_configuration_or_operator_gra
             &app,
             &worker,
             Some(Control::Response {
+                expires_in: 120,
                 id: request["id"].as_str().unwrap().into(),
                 commands: catalogue(),
             }),
@@ -319,6 +379,49 @@ async fn browser_catalogues_are_session_authenticated_and_conversation_authorize
             assert_eq!(value["bots"][0]["commands"][0]["name"], "/model");
         }
     }
+    {
+        let mut engine = app.engine().unwrap();
+        engine
+            .provision("viewer", "viewer-hash".into(), false, false)
+            .unwrap();
+        engine
+            .execute(None, None, "/room add viewer #support")
+            .unwrap();
+        engine
+            .execute(None, None, "/grant viewer user #support")
+            .unwrap();
+        engine
+            .login("batch-viewer".into(), "viewer", "viewer-hash", None)
+            .unwrap();
+    }
+    let read_all = || {
+        web::router(app.clone()).oneshot(
+            Request::builder()
+                .uri("/api/bot-commands")
+                .header("sec-fetch-site", "same-origin")
+                .header(header::COOKIE, "chat_session=batch-viewer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let response = read_all().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+    assert_eq!(value["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(value["conversations"][0]["conversation_id"], conversation);
+    assert_eq!(
+        value["conversations"][0]["bots"][0]["commands"][0]["name"],
+        "/model"
+    );
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/room kick viewer #support")
+        .unwrap();
+    let response = read_all().await.unwrap();
+    let value: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+    assert!(value["conversations"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -352,6 +455,7 @@ fn private_catalogues_are_visible_only_to_authorized_participants() {
                 &app,
                 &context,
                 Control::Response {
+                    expires_in: 120,
                     id: request["id"].as_str().unwrap().into(),
                     commands: catalogue(),
                 },
@@ -400,6 +504,7 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
             &app,
             &context,
             Control::Response {
+                expires_in: 120,
                 id: request["id"].as_str().unwrap().into(),
                 commands,
             },
@@ -454,20 +559,18 @@ fn operator_catalogues_follow_current_bot_owner_and_admin_membership() {
 }
 
 #[test]
-fn slow_refresh_keeps_catalogues_and_pending_requests_until_replacement() {
+fn metadata_refresh_keeps_unexpired_catalogues_without_requerying_plugins() {
     let (app, token) = fixture();
     let context = context(&app, &token);
     let mut runtime = Runtime::default();
     let conversation = publish(&app, &context, &mut runtime);
-    runtime.refresh(&app, &context).unwrap();
-    let pending = runtime.next().unwrap();
     for _ in 0..10 {
         runtime.refresh(&app, &context).unwrap();
+        assert!(
+            runtime.next().is_none(),
+            "unexpired catalogues must be reused"
+        );
     }
-    assert!(
-        runtime.next().is_none(),
-        "metadata churn must not restart a slow request"
-    );
     assert_eq!(
         app.bot_runtimes
             .commands
@@ -476,11 +579,21 @@ fn slow_refresh_keeps_catalogues_and_pending_requests_until_replacement() {
             .len(),
         1
     );
+    runtime.control(&app, &context, Control::Changed).unwrap();
+    let pending = runtime.next().unwrap();
+    for _ in 0..10 {
+        runtime.refresh(&app, &context).unwrap();
+    }
+    assert!(
+        runtime.next().is_none(),
+        "metadata churn must not restart a pending request"
+    );
     runtime
         .control(
             &app,
             &context,
             Control::Response {
+                expires_in: 120,
                 id: pending["id"].as_str().unwrap().into(),
                 commands: vec![],
             },
@@ -493,4 +606,119 @@ fn slow_refresh_keeps_catalogues_and_pending_requests_until_replacement() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn command_catalogue_lifetime_defaults_and_remains_bounded() {
+    let (app, token) = fixture();
+    let context = context(&app, &token);
+    let mut runtime = Runtime::default();
+    runtime.control(&app, &context, Control::Ready).unwrap();
+    for expires_in in [0, 29, 3601, u64::MAX, 30, 3600] {
+        runtime.control(&app, &context, Control::Changed).unwrap();
+        let query = runtime.next().unwrap();
+        let id = query["id"].as_str().unwrap().to_owned();
+        let result = runtime.control(
+            &app,
+            &context,
+            Control::Response {
+                id: id.clone(),
+                commands: catalogue(),
+                expires_in,
+            },
+        );
+        assert_eq!(result.is_ok(), (30..=3600).contains(&expires_in));
+        let corrected = runtime.control(
+            &app,
+            &context,
+            Control::Response {
+                id,
+                commands: catalogue(),
+                expires_in: 120,
+            },
+        );
+        assert_eq!(
+            corrected.is_err(),
+            result.is_ok(),
+            "only successful responses consume a request"
+        );
+    }
+    let legacy: Control =
+        serde_json::from_value(json!({"kind":"commands_response","id":"query","commands":[]}))
+            .unwrap();
+    assert!(matches!(
+        legacy,
+        Control::Response {
+            expires_in: 300,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn command_directory_pages_are_bounded_ordered_and_complete() {
+    let (app, _) = fixture();
+    let expected = {
+        let mut engine = app.engine().unwrap();
+        for n in 0..60 {
+            engine
+                .execute(Some("admin"), None, &format!("/new room page{n}"))
+                .unwrap();
+        }
+        engine
+            .login("directory-pages".into(), "admin", "hash", None)
+            .unwrap();
+        let mut ids: Vec<_> = engine
+            .bot_index
+            .conversations
+            .keys()
+            .filter(|id| {
+                engine
+                    .bot_target("admin", id, crate::engine::authorization::Action::Read)
+                    .is_ok()
+            })
+            .cloned()
+            .collect();
+        ids.sort();
+        ids
+    };
+    let mut after = None;
+    let mut actual = Vec::new();
+    let mut pages = 0;
+    loop {
+        let path = after.as_ref().map_or_else(
+            || "/api/bot-commands".to_owned(),
+            |id| format!("/api/bot-commands?after={id}"),
+        );
+        let response = web::router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::COOKIE, "chat_session=directory-pages")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                .unwrap();
+        let entries = value["conversations"].as_array().unwrap();
+        assert!(entries.len() <= 32);
+        actual.extend(
+            entries
+                .iter()
+                .map(|entry| entry["conversation_id"].as_str().unwrap().to_owned()),
+        );
+        pages += 1;
+        assert!(pages < 10, "pagination must advance");
+        after = value["next"].as_str().map(str::to_owned);
+        if after.is_none() {
+            break;
+        }
+    }
+    assert!(pages >= 2);
+    assert_eq!(actual, expected);
 }

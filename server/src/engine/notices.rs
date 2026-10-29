@@ -104,6 +104,7 @@ impl MetadataNotice {
             }
         }
         let mut directory = false;
+        let mut credentials = BTreeSet::new();
         for key in keys(
             before.keys.map(|keys| &keys.users),
             before.users,
@@ -120,8 +121,23 @@ impl MetadataNotice {
                     .chain(current)
                     .map(|account| account.id.clone()),
             );
-            directory |= previous.map(|account| (&account.id, account.disabled))
+            let identity_changed = previous.map(|account| (&account.id, account.disabled))
                 != current.map(|account| (&account.id, account.disabled));
+            directory |= identity_changed;
+            if identity_changed {
+                credentials.extend(
+                    previous
+                        .into_iter()
+                        .chain(current)
+                        .filter(|account| {
+                            data.bots.contains_key(&account.id)
+                                || before
+                                    .bots
+                                    .is_some_and(|bots| bots.contains_key(&account.id))
+                        })
+                        .map(|account| account.id.clone()),
+                );
+            }
             let avatar = |account: &Account| {
                 account
                     .metadata
@@ -148,6 +164,7 @@ impl MetadataNotice {
             if previous == current {
                 continue;
             }
+            credentials.insert(id.clone());
             notice.accounts.insert(id.clone());
             notice.accounts.extend(
                 previous
@@ -188,7 +205,9 @@ impl MetadataNotice {
             .map(|account| account.id.clone())
             .collect();
         for id in ids {
-            if directory
+            if credentials.iter().any(|target| {
+                manages_credentials(old, &id, target) || manages_credentials(new, &id, target)
+            }) || directory
                 && (old
                     .effective_for(&id, &Scope::Server)
                     .has(Action::Directory)
@@ -204,6 +223,21 @@ impl MetadataNotice {
         }
         notice
     }
+}
+fn manages_credentials(policy: &CompiledPolicy, actor: &str, target: &str) -> bool {
+    use authorization::Group;
+    let groups = policy.groups.get(actor);
+    let su = groups.is_some_and(|groups| groups.contains(&Group::Su));
+    (su || groups.is_some_and(|groups| groups.contains(&Group::Admin)))
+        && policy.effective_for(actor, &Scope::Server).command("/bot")
+        && policy
+            .effective_for(actor, &Scope::Account(target.into()))
+            .has(Action::BotCredentials)
+        && (su
+            || !policy
+                .groups
+                .get(target)
+                .is_some_and(|groups| groups.contains(&Group::Su)))
 }
 fn watches(policy: &CompiledPolicy, id: &str, scope: &Scope) -> bool {
     let rights = policy.effective_for(id, scope);

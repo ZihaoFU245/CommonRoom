@@ -38,7 +38,7 @@ reaction-heavy page before decoding, complete reaction users in either direction
 and pagination progress for a single oversized message. Bulk-deletion EXPLAIN
 requires exactly one retention trigger invocation per statement; partial/full
 multi-conversation deletes preserve counts/oldest and roll back atomically.
-The offline transfer contract explicitly requires SQLite v19 and checks the
+The offline transfer contract explicitly requires HEAD SQLite v20 and checks the
 PostgreSQL v1 marker, retained data and unchanged source bytes. Other schema
 versions (including PostgreSQL v2) are rejected unchanged. Idle-pool coverage reclaims
 readers to zero while preserving the writer floor and dedicated ownership.
@@ -81,9 +81,9 @@ rtk proxy ./auto/check.sh
 ```
 
 This runs Rust formatting, Clippy with warnings as errors, Rust tests, integration-harness syntax, TypeScript
-checks, type-aware ESLint, web formatting, and web tests. When the optional
-`simpleBot/` demo is present, its type checks and unit tests run too. Dependencies must be
-installed first. To run individual checks:
+checks, type-aware ESLint, web formatting, and web tests. The optional
+`simpleBot/` demo has separate checks below; the release workflow does not require
+Deno. Dependencies must be installed first. To run individual checks:
 
 ```sh
 rtk cargo fmt --all --check
@@ -102,8 +102,8 @@ rtk pnpm --dir web test:integration
 running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 
-Dependency advisory CI runs `python3 auto/audit.py` with Python 3.11+, Git,
-Cargo and cargo-audit 0.22.2. The script fetches a fresh RustSec database and audits
+The release workflow runs `./auto/audit.sh` with a POSIX shell, AWK, Git,
+Cargo and cargo-audit. The script fetches a fresh RustSec database and audits
 the locked workspace graph with all workspace features and target platforms.
 Use `--db PATH` for an already-fetched advisory database. It creates a temporary
 lockfile projection without modifying `Cargo.lock` or ignoring advisory IDs.
@@ -195,7 +195,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover HEAD SQLite v19 initialization and restart, lazy history loading, state/cursor preservation, and unchanged v19 reopen, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover HEAD SQLite v20 initialization and restart, lazy history loading, state/cursor preservation, unchanged v20 reopen, atomic v19-to-v20 credential upgrades, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -322,7 +322,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, HEAD SQLite v19 initialization and restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, HEAD SQLite v20 initialization and restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -475,9 +475,15 @@ integration suite.
 
 ## Optional simpleBot checks
 
-When the separately supplied `simpleBot/` directory is present,
-`auto/check.sh` also checks `simpleBot/tsconfig.json` and runs the worker's unit
-and transport tests. They use temporary Deno KV databases and local loopback HTTP
+When the separately supplied `simpleBot/` directory is present, run its checks
+separately from `auto/check.sh`:
+
+```sh
+rtk proxy node web/node_modules/@typescript/native/bin/tsc -p simpleBot/tsconfig.json
+rtk proxy deno test --unstable-kv -A --no-check simpleBot/test/*.test.ts
+```
+
+The worker's unit and transport tests use temporary Deno KV databases and local loopback HTTP
 servers, with no model credentials. Regression coverage includes multipart
 restart recovery, repeated edits, in-flight retraction, multipage catch-up,
 receipt expiry, malformed responses, safe retry boundaries, streamed UTF-8 and
@@ -581,7 +587,8 @@ cannot read the catalogue loses the tool with a logged warning. The real worker
 integration checks multi-user autonomous bursts, reply targets, silence and restart
 against an isolated server/model stub.
 
-SimpleBot requires Deno 2.5+ for worker tests. Durable-storage regressions cover
+SimpleBot requires Deno 2.9.8+ for worker tests, including Node-compatible test
+mocks and fake timers. Durable-storage regressions cover
 restart recall, silent group memory, conversation/account isolation, conditional
 updates, pagination, nested targeted writes, private database permissions,
 interrupted large-plan staging, and stale-writer rejection. Source checks use
@@ -1099,3 +1106,49 @@ bytes. A deferred PostgreSQL profile trigger blocks inside COMMIT while its HTTP
 request is cancelled; publication, subsequent authentication and another write
 must succeed. A panic through `with_conversation` must poison the engine and
 reject subsequent reads/mutations until restart, as documented in Security.
+
+Bot transport-boundary regressions reject bearer headers across every browser
+route and unknown future routes, with valid Origin/cookie combinations and a
+non-root base path. V1 media/profile contracts cover anonymous and restricted
+token operation checks, default upload denial, granted upload/completion/attachment/
+info/download/abandon, signed 307 redirects, conversation revocation, self-service
+avatar completion, allowed external hosts, color updates and token revocation.
+Browser media/avatar tests continue to exercise the same shared services using
+sessions. JSON Schema contracts cover all added payload shapes without a v2.
+
+Worker media/profile regressions check scoped downloads and upload completion/
+abandon, cross-conversation denial even for the same uploader account, missing
+read/send/upload operations, empty conversation scopes, account grant revocation,
+expired credentials, explicit global profile delegation, room color scopes and
+avatar visibility restricted to the worker's conversations despite global
+account-directory grants. Account-wide and browser-session coverage is retained.
+
+
+Issuer/worker regressions cover issuer-only exchange, mandatory worker expiry,
+issuance-time account permission checks, worker delegation denial and deletion of
+all bot credentials. SQLite v19-to-v20 tests cover exact scope preservation,
+restart, malformed legacy metadata and atomic rollback after a rejected write.
+PostgreSQL transfer fixtures include both credential kinds. Browser command-cache
+tests require one logical directory load across 200 conversations, 120-second refresh, immediate
+invalidation and stale-response rejection. Server discovery tests cover catalogue
+expiry, refresh scheduling, per-runtime byte/count limits and aggregate response
+privacy after membership revocation.
+
+Bot discovery review regressions retain registration/catalogues after failed async
+verification, allow corrected responses to reuse a rejected request, and preserve
+legacy v1 responses with a default 300-second lifetime. Hook tests replay changing
+conversation/version maps without postponing initial or periodic refresh timers;
+cache tests require outage backoff across version changes. Directory tests page
+through more than 32 readable conversations in stable order, while the client
+rejects non-advancing cursors and propagates cancellation. Batched catalogue
+notifications keep unreadable IDs private and emit one directory invalidation per
+worker batch. Staging cleanup tests require exactly four concurrent requests,
+eight confirmed deletions and durable acknowledgements.
+
+Bot-management completion regressions require explicit `#room` scopes in syntax,
+acceptance and output, browser-local credential creation/expiry dates, and all
+lifecycle/token completion levels. Credential suggestions display bot/label/kind
+but insert IDs; both ID-only and bot-qualified revocation remain supported.
+Snapshots expose only credential IDs and labels the viewer may manage, never
+secrets/digests. Tests cover ordinary accounts, protected su targets, rename and
+revocation audience refreshes, and native SQLite/PostgreSQL ID-only revocation.

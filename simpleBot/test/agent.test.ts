@@ -11,8 +11,8 @@ import { test } from "node:test";
 import {
   existsSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { BotApi } from "../src/api.ts";
 import { Agent } from "../src/agent.ts";
 import { ConfigStore, DEFAULTS } from "../src/config.ts";
-import { Store, STATE_VERSION } from "../src/store.ts";
+import { STATE_VERSION, Store } from "../src/store.ts";
 import { createSocketEvents } from "../src/wiring.ts";
 import type { ChatModel, CompletionRequest } from "../src/model.ts";
 import type { ServerFrame } from "../src/wire.ts";
@@ -74,7 +74,12 @@ class FakeSocket {
     id: string,
     commands: import("../src/wire.ts").BotCommand[],
   ): void {
-    this.server.receive({ kind: "commands_response", id, commands });
+    this.server.receive({
+      kind: "commands_response",
+      id,
+      commands,
+      expires_in: 120,
+    });
   }
   commandsChanged(): void {
     this.server.receive({ kind: "commands_changed" });
@@ -116,7 +121,10 @@ async function harness(
       config,
       model,
       workspace: join(dir, "workspace"),
-      log: (level, message) => logs.push(`${level} ${message}`),
+      log: (level, message) => {
+        logs.push(`${level} ${message}`);
+        if (process.env.BOT_TEST_DEBUG === "1") console.error(`${level} ${message}`);
+      },
       presence: () => [],
       socketReady: () => true,
       setActivity: (_conversationId, state) => {
@@ -617,11 +625,13 @@ test("catch-up pages past parked inputs and finds a task in the middle of histor
   const h = await harness();
   try {
     const first = h.server.addMessage("@helper /ping");
-    for (let i = 0; i < 120; i++)
+    for (let i = 0; i < 120; i++) {
       h.server.addMessage("room chatter", { mentions: [] });
+    }
     const middle = h.server.addMessage("@helper /whoami");
-    for (let i = 0; i < 120; i++)
+    for (let i = 0; i < 120; i++) {
       h.server.addMessage("more chatter", { mentions: [] });
+    }
     await h.agent.handleSnapshot(h.server.snapshot());
     assert.equal(
       h.store.task(h.server.conversationId, first.id)?.status,
@@ -921,13 +931,14 @@ test("model knows server grants and never receives worker administration or lega
       "/newroom",
       "/model",
       "no tool access",
-    ])
+    ]) {
       assert.ok(
         !h.model.requests
           .at(-1)!
           .messages.some((message) => message.content.includes(privateName)),
         privateName,
       );
+    }
     const request = h.model.requests.at(-1)!;
     assert.ok(
       request.tools?.some((tool) => tool.function.name === "read_history"),
@@ -1153,8 +1164,9 @@ test("owner config lists all keys, parses quoted values, reloads file edits and 
     h.server.addMessage("@helper /config get");
     await h.agent.handleSnapshot(h.server.snapshot());
     const listing = h.server.state.sends.at(-1)!.text;
-    for (const key of Object.keys(h.config.all()))
+    for (const key of Object.keys(h.config.all())) {
       assert.ok(listing.includes(`"${key}"`), key);
+    }
     assert.ok(listing.startsWith("```json\n"));
     assert.ok(!listing.includes(h.server.token));
     h.server.addMessage(
@@ -1310,8 +1322,9 @@ test("debug explains task selection and model preparation without exposing conve
       "private-chatter-marker",
       "private-question-marker",
       h.server.token,
-    ])
+    ]) {
       assert.ok(!logs.includes(secret));
+    }
   } finally {
     await h.stop();
   }
@@ -1325,8 +1338,9 @@ test("default context includes the newest 50 messages and keeps instructions sta
     assert.equal(DEFAULTS["model.contextTokens"], 32768);
     assert.equal(DEFAULTS["model.compactTokens"], 24576);
     h.config.set("chat.historyWindow", DEFAULTS["chat.historyWindow"]);
-    for (let i = 0; i < 60; i++)
+    for (let i = 0; i < 60; i++) {
       h.server.addMessage(`discussion item ${i}`, { mentions: [] });
+    }
     const first = h.server.addMessage("@helper summarize the discussion");
     await h.agent.handleSnapshot(h.server.snapshot());
     const request = h.model.requests.at(-1)!;
@@ -1414,8 +1428,9 @@ test("fresh bounded context loads a quoted older page and the model can fetch mo
     const older = h.server.addMessage("older launch decision: ship Tuesday", {
       mentions: [],
     });
-    for (let i = 0; i < 12; i++)
+    for (let i = 0; i < 12; i++) {
       h.server.addMessage(`recent discussion ${i}`, { mentions: [] });
+    }
     const question = h.server.addMessage("@helper explain the quoted decision");
     question.reply = { id: older.id, from: older.from, text: older.text };
     await h.agent.handleSnapshot(h.server.snapshot());
@@ -1723,14 +1738,15 @@ test("every granted server command is offered and executed, including sends", as
       const system = request.messages
         .map((message) => message.content)
         .join("\n");
-      for (const usage of ["/reply id text", "/tell user text"])
+      for (const usage of ["/reply id text", "/tell user text"]) {
         assert.ok(system.includes(usage), usage);
+      }
       for (const command of [
         "/reply m1 duplicate",
         "/tell alice duplicate",
         "/sudo /reply m1 duplicate",
         "/sudo /tell alice duplicate",
-      ])
+      ]) {
         assert.match(
           await request.executeTool!(
             "run_server_command",
@@ -1738,6 +1754,7 @@ test("every granted server command is offered and executed, including sends", as
           ),
           /Server command completed/,
         );
+      }
       return complete(request);
     };
     h.server.addMessage("@helper hello");
@@ -2166,11 +2183,12 @@ test("sixteen distinct command effects survive checkpoint reload", async () => {
   const h = await harness();
   try {
     h.model.complete = async (request) => {
-      for (let index = 0; index < 16; index++)
+      for (let index = 0; index < 16; index++) {
         await request.executeTool!(
           "run_server_command",
           JSON.stringify({ command: `/new room demo${index}` }),
         );
+      }
       return "";
     };
     h.server.addMessage("@helper do sixteen steps");
@@ -2408,7 +2426,9 @@ test("the agent can execute KV source, save scripts and rerun shared workspace f
         await request.executeTool!(
           "execute_code",
           JSON.stringify({
-            code: `await Deno.writeTextFile("answer.ts", ${JSON.stringify(source)});`,
+            code: `await Deno.writeTextFile("answer.ts", ${JSON.stringify(
+              source,
+            )});`,
           }),
         ),
       );

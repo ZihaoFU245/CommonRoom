@@ -1,4 +1,4 @@
--- PostgreSQL v1 representation of SQLite HEAD v19. JSON stays text to preserve
+-- PostgreSQL v1 representation of SQLite HEAD v20. JSON stays text to preserve
 -- serialized payloads and no-op comparisons across an offline transfer.
 CREATE TABLE chat_schema(id BIGINT PRIMARY KEY CHECK(id=1), version BIGINT NOT NULL);
 INSERT INTO chat_schema VALUES(1,1);

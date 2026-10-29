@@ -209,7 +209,7 @@ Login uses the same 1–32 Unicode character name rules as account creation.
 Missing and disabled accounts perform dummy Argon2 verification with the default
 password work parameters before returning the common invalid-credentials error.
 
-SQLite HEAD remains v19 and opens without an upgrade. Unpublished PostgreSQL has its own current v1 schema with no historical WIP upgrades. Empty databases initialize transactionally. Unsupported schemas are rejected without modification, as described in [Data](data.md).
+SQLite HEAD is v20; v19 upgrades atomically to explicit issuer/worker credential kinds. Unpublished PostgreSQL has its own current v1 schema with no historical WIP upgrades. Empty databases initialize transactionally. Unsupported schemas are rejected without modification, as described in [Data](data.md).
 
 Policy updates, ownership changes and their audit records are saved atomically.
 Failed writes preserve both persisted and compiled permissions. The audit retains
@@ -240,7 +240,7 @@ Bots are ordinary accounts, without a bot/human flag. /bot lifecycle and credent
 
 New room bots receive explicit direct grants rather than the user bundle: discover/read/member-list/join/send/react and /help, /man, /whoami, /user ls, /history, /room join, /reply, /react. Settings, message retraction/cleanup, private creation and administrative commands are excluded. Explicit @global creation applies these grants globally and requires the creator to hold each corresponding permission/command there. Ordinary admins with only room access cannot delegate global content access.
 
-Credential authentication resolves stable account ID to the current active username, then uses the same command execution, history/read checks, and snapshot filtering as browser sessions. Credentials cannot specify an author or bypass grants. Only hashes of 244-bit random secrets (two UUIDv4 values) are stored. Revocation is checked on subsequent actions and WebSocket updates/heartbeats; revocation broadcasts wake connected sockets. Already-delivered content cannot be recalled. Account-wide input throttling is shared across credentials and sockets. See [Bots](bots.md).
+Issuance checks requested worker capabilities against live account permissions. Worker authentication resolves stable account ID to the current active username, then uses the same command execution, history/read checks, and snapshot filtering as browser sessions. Credentials cannot specify an author or bypass grants. Only hashes of 244-bit random secrets (two UUIDv4 values) are stored. Revocation is checked on subsequent actions and WebSocket updates/heartbeats; revocation broadcasts wake connected sockets. Already-delivered content cannot be recalled. Account-wide input throttling is shared across credentials and sockets. See [Bots](bots.md).
 
 Direct bot access: a bot running on the configured `trust` socket IP may use HTTP/WS directly against `/api/bot/v1/` (including the configured base path) without `X-Forwarded-Proto`. Bearer authentication and current account grants remain required. Socket identity, not X-Forwarded-For, authorizes this exception. Browser endpoints still require forwarded HTTPS; a bot request carrying X-Forwarded-Proto must also indicate https. With the default bind/trust of 127.0.0.1, same-machine agents can connect directly; when trust names a remote proxy, a local process must use the proxy or originate from the configured trusted IP.
 
@@ -321,3 +321,19 @@ Subsequent engine reads and mutations return unavailable until restart. Sudo
 restoration removes temporary authority before unwinding, but cannot prove that
 all other state stayed consistent. Never recover the poisoned guard with
 `PoisonError::into_inner`; restart reloads authoritative persisted state.
+
+## Machine transport boundary
+
+Bot tokens authenticate only explicit `/api/bot/v1/` routes. All browser routes
+and `/ws` reject Authorization headers, including bearer plus session-cookie
+requests. Browser identity resolution is session-only, independently of that
+router guard, so new browser handlers cannot inherit bot authentication.
+Bot media/avatar/color adapters share services with browser handlers using an
+explicit caller type. Only worker tokens are accepted; issuer tokens can only obtain workers. Media
+reads require token `read` in the object's conversation; media writes require
+`media_upload`, `read` and `send` there, in addition to existing account grants.
+Avatar reads restrict visibility to the worker's allowed conversations; account
+directory rights cannot bypass that filter. Explicit token `profile` delegates
+own account-wide appearance, while room colors additionally enforce room scope.
+Existing account grants, object ownership and live credential checks remain in
+the service/engine paths. See [Bot media and profiles](bots.md#media-and-profiles-v1-extension).

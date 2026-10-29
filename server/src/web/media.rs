@@ -31,10 +31,77 @@ fn unavailable() -> ApiError {
     error(StatusCode::SERVICE_UNAVAILABLE, "Media worker unavailable.")
 }
 
+/// Explicit service caller. Browser handlers cannot opt into machine authentication
+/// merely by receiving an Authorization header.
+#[derive(Clone)]
+pub(crate) enum Access {
+    Browser(HeaderMap),
+    Bot {
+        context: crate::bots::auth::Context,
+        operation: &'static str,
+    },
+}
+#[derive(Clone)]
+pub(super) struct Identity {
+    pub user: String,
+    pub account: String,
+    access: Access,
+    config: Arc<Config>,
+}
+impl Access {
+    fn user(&self, engine: &Engine, config: &Config) -> Result<String, ApiError> {
+        match self {
+            Self::Browser(access) => auth::identity(engine, config, access)
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired session.")),
+            Self::Bot { context, operation } => {
+                context
+                    .permits(engine, operation, crate::bots::auth::Scope::Global)
+                    .map_err(|cause| error(cause.status(), &cause.message))?;
+                context
+                    .user(engine)
+                    .map_err(|cause| error(cause.status(), &cause.message))
+            }
+        }
+    }
+}
+impl Identity {
+    pub(super) fn permit_conversation(&self, engine: &Engine, id: &str) -> Result<(), ApiError> {
+        if let Access::Bot { context, operation } = &self.access {
+            context
+                .permits(
+                    engine,
+                    operation,
+                    crate::bots::auth::Scope::Conversation(id),
+                )
+                .map_err(|cause| error(cause.status(), &cause.message))?;
+            if *operation == "media_upload" {
+                for op in ["read", "send"] {
+                    context
+                        .permits(engine, op, crate::bots::auth::Scope::Conversation(id))
+                        .map_err(|cause| error(cause.status(), &cause.message))?;
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn avatar_conversations<'a>(
+        &self,
+        engine: &'a Engine,
+    ) -> Result<Option<&'a std::collections::BTreeSet<String>>, ApiError> {
+        match &self.access {
+            Access::Browser(_) => Ok(None),
+            Access::Bot { context, .. } => Ok(context
+                .metadata(engine)
+                .map_err(|cause| error(cause.status(), &cause.message))?
+                .conversations
+                .as_ref()),
+        }
+    }
+}
 pub(super) async fn native_context(
     app: &App,
-    headers: HeaderMap,
-) -> Result<(auth::Identity, crate::engine::MediaStore), ApiError> {
+    access: Access,
+) -> Result<(Identity, crate::engine::MediaStore), ApiError> {
     if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -43,17 +110,16 @@ pub(super) async fn native_context(
     }
     let config = app.config.clone();
     app.inspect_engine(move |engine, _| {
-        let user = auth::identity(engine, &config, &headers)
-            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))?;
+        let user = access.user(engine, &config)?;
         let account = engine
             .active_account_id(&user)
             .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
             .to_owned();
         Ok((
-            auth::Identity {
-                headers,
+            Identity {
                 user,
                 account,
+                access,
                 config,
             },
             engine.media_store(),
@@ -61,22 +127,20 @@ pub(super) async fn native_context(
     })
     .await
 }
-pub(super) fn verify_identity(identity: &auth::Identity, engine: &Engine) -> Result<(), ApiError> {
-    identity
-        .verify(engine)
-        .map_err(|_| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+pub(super) fn verify_identity(identity: &Identity, engine: &Engine) -> Result<(), ApiError> {
+    if identity.access.user(engine, &identity.config)? != identity.user
+        || engine.active_account_id(&identity.user) != Some(identity.account.as_str())
+    {
+        return Err(error(StatusCode::UNAUTHORIZED, "Account unavailable."));
+    }
+    Ok(())
 }
 async fn native_media<T: Send + 'static>(
     app: &App,
-    headers: &HeaderMap,
+    access: &Access,
     id: String,
     missing: &'static str,
-    inspect: impl FnOnce(
-        &Engine,
-        &auth::Identity,
-        crate::engine::media::Media,
-        bool,
-    ) -> Result<T, ApiError>
+    inspect: impl FnOnce(&Engine, &Identity, crate::engine::media::Media, bool) -> Result<T, ApiError>
     + Send
     + 'static,
 ) -> Result<T, ApiError> {
@@ -84,16 +148,17 @@ async fn native_media<T: Send + 'static>(
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let app = app.clone();
-    let headers = headers.clone();
+    let access = access.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        let (identity, store) = native_context(&app, headers).await?;
+        let (identity, store) = native_context(&app, access).await?;
         let (media, attached) = store
             .load(&id)
             .await
             .map_err(|cause| super::error::hidden(cause, missing))?;
         app.inspect_engine(move |engine, _| {
             verify_identity(&identity, engine)?;
+            identity.permit_conversation(engine, &media.conversation)?;
             inspect(engine, &identity, media, attached)
         })
         .await
@@ -103,12 +168,12 @@ async fn native_media<T: Send + 'static>(
 }
 async fn owner(
     app: &App,
-    headers: &HeaderMap,
+    access: &Access,
     id: String,
 ) -> Result<crate::engine::media::Media, ApiError> {
     native_media(
         app,
-        headers,
+        access,
         id,
         "Upload not found.",
         |engine, identity, media, attached| {
@@ -125,15 +190,15 @@ enum MediaMutation {
     ),
     Abandon(String),
 }
-async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Result<(), ApiError> {
+async fn mutate(app: &App, access: &Access, mutation: MediaMutation) -> Result<(), ApiError> {
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let app = app.clone();
-    let headers = headers.clone();
+    let access = access.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        let (identity, store) = native_context(&app, headers).await?;
+        let (identity, store) = native_context(&app, access).await?;
         let ordering = app.mutations.conversations(vec![]).await?;
         let id = match &mutation {
             MediaMutation::Ready(media, _) => &media.id,
@@ -145,6 +210,7 @@ async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Resu
                 let identity = identity.clone();
                 move |engine| -> Result<_, ApiError> {
                     verify_identity(&identity, engine)?;
+                    identity.permit_conversation(engine, &current.conversation)?;
                     match &mutation {
                         MediaMutation::Ready(_, _) => {
                             engine.authorize_media_owner(&identity.user, &current, attached)?;
@@ -183,7 +249,7 @@ async fn mutate(app: &App, headers: &HeaderMap, mutation: MediaMutation) -> Resu
 }
 async fn reserve(
     app: &App,
-    identity: auth::Identity,
+    identity: Identity,
     input: Upload,
 ) -> Result<crate::engine::media::Media, ApiError> {
     let permit = app
@@ -200,13 +266,15 @@ async fn reserve(
                 let hints = input.hints.clone();
                 move |engine, _| -> Result<_, ApiError> {
                     verify_identity(&identity, engine)?;
-                    Ok(engine.validate_media_target(
+                    let id = engine.validate_media_target(
                         &identity.user,
                         &target,
                         &filename,
                         input.size,
                         &hints,
-                    )?)
+                    )?;
+                    identity.permit_conversation(engine, &id)?;
+                    Ok(id)
                 }
             })
             .await?;
@@ -216,6 +284,7 @@ async fn reserve(
                 let identity = identity.clone();
                 move |engine| -> Result<_, ApiError> {
                     verify_identity(&identity, engine)?;
+                    identity.permit_conversation(engine, &id)?;
                     let pending = engine.prepare_media_allocation(
                         &identity.user,
                         &input.conversation_id,
@@ -237,6 +306,7 @@ async fn reserve(
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
             let media = engine.publish_media_allocation(pending)?;
             verify_identity(&identity, engine)?;
+            identity.permit_conversation(engine, &media.conversation)?;
             Ok(media)
         })
         .await
@@ -257,17 +327,16 @@ pub(super) fn storage_failure(failure: crate::media::StorageError) -> ApiError {
     error(status, failure.message())
 }
 
-pub(crate) async fn config(
+pub(crate) async fn config_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin_or_bot(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     tokio::spawn(async move {
         let _permit = permit;
-        let (identity, store) = native_context(&app, headers).await?;
+        let (identity, store) = native_context(&app, access).await?;
         store.health().await?;
         let enabled = app.media.is_some();
         app.inspect_engine(move |engine, config| {
@@ -282,32 +351,32 @@ pub(crate) async fn config(
     .map_err(|_| unavailable())?
 }
 
-pub(crate) async fn allocate(
+pub(crate) async fn allocate_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let worker = app.clone();
     let (storage, identity, input) = tokio::spawn(async move {
         let _permit = permit;
-        let (identity, store) = native_context(&worker, headers).await?;
+        let (identity, store) = native_context(&worker, access).await?;
         let storage = storage(&worker)?;
         let input = worker
             .inspect_engine({
                 let identity = identity.clone();
                 move |engine, _| -> Result<_, ApiError> {
                     verify_identity(&identity, engine)?;
-                    engine.validate_media_target(
+                    let id = engine.validate_media_target(
                         &identity.user,
                         &input.conversation_id,
                         &input.filename,
                         input.size,
                         &input.hints,
                     )?;
+                    identity.permit_conversation(engine, &id)?;
                     Ok(input)
                 }
             })
@@ -346,19 +415,18 @@ pub(crate) async fn allocate(
     ))
 }
 
-pub(crate) async fn complete(
+pub(crate) async fn complete_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
     // Authenticate before taking an object lock; recheck after it is acquired.
-    owner(&app, &headers, id.clone()).await?;
+    owner(&app, &access, id.clone()).await?;
     let object_lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let mut media = owner(&app, &headers, id).await?;
+    let mut media = owner(&app, &access, id).await?;
     if !media.ready {
         tokio::time::timeout(
             std::time::Duration::from_secs(100),
@@ -374,7 +442,7 @@ pub(crate) async fn complete(
         .map_err(storage_failure)?;
         mutate(
             &app,
-            &headers,
+            &access,
             MediaMutation::Ready(media.clone(), object_lock),
         )
         .await?;
@@ -383,20 +451,20 @@ pub(crate) async fn complete(
 }
 
 #[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct MediaInfoQuery {
     #[serde(default)]
     include_expired: bool,
 }
-pub(crate) async fn info(
+pub(crate) async fn info_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
     Query(options): Query<MediaInfoQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin_or_bot(&app, &headers)?;
     let media = native_media(
         &app,
-        &headers,
+        &access,
         id,
         "Attachment not found.",
         move |engine, identity, media, attached| {
@@ -417,21 +485,21 @@ pub(crate) async fn info(
     Ok(Json(value))
 }
 #[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Download {
     #[serde(default)]
     download: bool,
 }
-pub(crate) async fn download(
+pub(crate) async fn download_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
     Query(options): Query<Download>,
 ) -> Result<Redirect, ApiError> {
-    security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
     let ticket = native_media(
         &app,
-        &headers,
+        &access,
         id,
         "Attachment not found.",
         |engine, identity, media, attached| {
@@ -450,7 +518,7 @@ pub(crate) async fn download(
         })?;
     native_media(
         &app,
-        &headers,
+        &access,
         ticket.media.id.clone(),
         "Attachment not found.",
         move |engine, identity, current, attached| {
@@ -541,6 +609,16 @@ async fn delete_media(
     Ok((media, lock))
 }
 
+async fn delete_staging(
+    app: App,
+    id: String,
+) -> Result<(String, tokio::sync::OwnedMutexGuard<()>), String> {
+    let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
+    let lock = storage.lock_media(&id)?;
+    storage.delete(&format!("uploads/{id}")).await?;
+    Ok((id, lock))
+}
+
 pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
     if app.media.is_none() {
         return Ok(true);
@@ -595,17 +673,21 @@ pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
         .await?;
         let count = ids.len();
         let mut completed = Vec::new();
+        let mut jobs = tokio::task::JoinSet::new();
         for id in ids {
-            let storage = app.media.as_ref().ok_or("Storage unavailable.")?;
-            let Ok(_lock) = storage.lock_media(&id) else {
-                failed += 1;
-                continue;
-            };
-            if storage.delete(&format!("uploads/{id}")).await.is_err() {
-                failed += 1;
-                continue;
+            jobs.spawn(delete_staging(app.clone(), id));
+            if jobs.len() == 4 {
+                match jobs.join_next().await {
+                    Some(Ok(Ok(record))) => completed.push(record),
+                    _ => failed += 1,
+                }
             }
-            completed.push((id, _lock));
+        }
+        while let Some(result) = jobs.join_next().await {
+            match result {
+                Ok(Ok(record)) => completed.push(record),
+                _ => failed += 1,
+            }
         }
         if !completed.is_empty() {
             cleanup_db(app, move |store| async move {
@@ -629,13 +711,12 @@ pub(super) async fn cleanup(app: &App) -> Result<bool, String> {
     Ok(failed == 0)
 }
 
-pub(crate) async fn abandon(
+pub(crate) async fn abandon_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
-    mutate(&app, &headers, MediaMutation::Abandon(id)).await?;
+    mutate(&app, &access, MediaMutation::Abandon(id)).await?;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -643,3 +724,75 @@ pub(crate) async fn abandon(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "media_tests.rs"]
 pub(crate) mod tests;
+
+pub(crate) async fn config(
+    State(app): State<App>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    config_as(State(app), super::media::Access::Browser(headers)).await
+}
+
+pub(crate) async fn allocate(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<Upload>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    allocate_as(
+        State(app),
+        super::media::Access::Browser(headers),
+        Json(input),
+    )
+    .await
+}
+
+pub(crate) async fn complete(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    complete_as(State(app), super::media::Access::Browser(headers), Path(id)).await
+}
+
+pub(crate) async fn abandon(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    abandon_as(State(app), super::media::Access::Browser(headers), Path(id)).await
+}
+
+pub(crate) async fn info(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(options): Query<MediaInfoQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    info_as(
+        State(app),
+        super::media::Access::Browser(headers),
+        Path(id),
+        Query(options),
+    )
+    .await
+}
+
+pub(crate) async fn download(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(options): Query<Download>,
+) -> Result<Redirect, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    download_as(
+        State(app),
+        super::media::Access::Browser(headers),
+        Path(id),
+        Query(options),
+    )
+    .await
+}

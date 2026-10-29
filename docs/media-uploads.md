@@ -314,7 +314,7 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite stays at HEAD schema v19 without an upgrade. Other SQLite versions
+SQLite HEAD is v20, with an atomic v19 credential upgrade. Other SQLite versions
 are rejected unchanged; PostgreSQL has an independent current schema.
 
 ```sh
@@ -416,3 +416,11 @@ and carry a stable-account ticket through signing. Before redirecting, the serve
 rechecks credentials, current read permission, expiry and a writer-change stamp;
 it reloads metadata/references when that stamp changes. Shared-reader media
 cleanup writes also invalidate the stamp. No global API permit spans S3 I/O.
+
+## Bot transport
+
+Machine uploads/downloads and avatar changes use explicit `/api/bot/v1/`
+counterparts. The browser `/api/media/*` and `/api/avatars/*` routes reject bearer
+headers. Bot handlers share the same storage, quotas, grants, ownership and
+finalization services. See [Bot media and profiles](bots.md#media-and-profiles-v1-extension)
+for the endpoint mapping, worker operation/conversation scopes and redirect rules.

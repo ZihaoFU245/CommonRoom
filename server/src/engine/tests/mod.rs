@@ -1119,7 +1119,7 @@ fn su_retracts_any_room_or_private_message_and_admin_retracts_own() {
 
 #[test]
 fn old_and_unversioned_databases_are_rejected_without_modification() {
-    for version in (0..=18).chain([20, 99]) {
+    for version in (0..=18).chain([21, 99]) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.sqlite");
         {

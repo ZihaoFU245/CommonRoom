@@ -1,10 +1,19 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import { api } from "../api/client.ts";
 import type { BotCommands } from "../api/protocol.ts";
-import { BotCommandCache } from "../features/conversation/botCommandCache.ts";
+import {
+  BotCommandCache,
+  BOT_COMMAND_REFRESH_MS,
+} from "../features/conversation/botCommandCache.ts";
 const EMPTY: BotCommands[] = [];
 
-/** Warm nearby catalogues and refresh in the background; typing is always local. */
+/** Fetch one directory in the background; typing and conversation switching are local. */
 export function useBotCommands(
   conversationId: string | undefined,
   versions: ReadonlyMap<string, number>,
@@ -19,44 +28,34 @@ export function useBotCommands(
     // A changed account, server instance or policy must never reuse private metadata.
     [authority],
   );
+  const latest = useRef({ conversations, versions });
+  latest.current = { conversations, versions };
+  const pending = useRef<number | undefined>(undefined);
+  const refresh = useCallback(() => {
+    if (!document.hidden)
+      cache.refresh(latest.current.conversations, latest.current.versions);
+  }, [cache]);
   useEffect(() => () => cache.stop(), [cache]);
   useEffect(() => {
-    cache.retain(new Set(conversations.keys()));
     if (!online) return;
-    const refresh = (force: boolean) => {
-      const ids = [
-        ...new Set([
-          ...(conversationId ? [conversationId] : []),
-          ...conversations.keys(),
-        ]),
-      ].slice(0, 32);
-      for (const id of ids) {
-        const members = conversations.get(id);
-        if (members !== undefined)
-          cache.refresh(
-            id,
-            members,
-            versions.get(id) ?? 0,
-            force,
-            id === conversationId,
-          );
-      }
-    };
-    refresh(false);
-    // Retry failed discovery at rest intervals; empty catalogues stay cached until
-    // the server announces commands_ready/changed or the window regains focus.
-    const retry = window.setInterval(() => {
-      if (!document.hidden) refresh(false);
-    }, 30_000);
-    const focus = () => {
-      if (!document.hidden) refresh(true);
-    };
+    const retry = window.setInterval(refresh, BOT_COMMAND_REFRESH_MS);
+    const focus = refresh;
     window.addEventListener("focus", focus);
     return () => {
+      window.clearTimeout(pending.current);
+      pending.current = undefined;
       window.clearInterval(retry);
       window.removeEventListener("focus", focus);
     };
-  }, [cache, conversationId, versions, conversations, online]);
+  }, [cache, online, refresh]);
+  useEffect(() => {
+    if (!online || pending.current !== undefined) return;
+    // Coalesce a burst without moving its first scheduled deadline.
+    pending.current = window.setTimeout(() => {
+      pending.current = undefined;
+      refresh();
+    }, 100);
+  }, [refresh, versions, conversations, online]);
   const members = conversationId
     ? conversations.get(conversationId)
     : undefined;

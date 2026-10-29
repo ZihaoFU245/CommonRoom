@@ -40,8 +40,8 @@ Startup initializes an empty schema transactionally; an existing application sch
 must match PostgreSQL schema v1. PostgreSQL is not deployed yet, so fixes are
 incorporated directly into v1, including statement-level deletion retention.
 There are no historical WIP upgrade paths; unsupported schema versions are
-rejected unchanged. Published SQLite HEAD remains v19, with no SQLite schema migration caused
-by PostgreSQL work. See [Data](data.md#database-compatibility).
+rejected unchanged. SQLite HEAD is v20, with a v19 startup upgrade for explicit bot credential kinds.
+The offline transfer requires v20 and preserves issuer/worker credential metadata. See [Data](data.md#database-compatibility).
 The PostgreSQL representation has its own schema marker and indexed
 JSONB projections alongside the original JSON text; the two database files/formats
 are not interchangeable.
@@ -103,7 +103,7 @@ reset, account recreation or message renumbering.
 The command:
 
 1. Acquires the SQLite server's ownership lock and opens the source read-only at
-   HEAD SQLite v19. It checks integrity, foreign keys and metadata before importing.
+   HEAD SQLite v20. It checks integrity, foreign keys and metadata before importing.
 2. Acquires PostgreSQL ownership and requires an empty target schema.
 3. Creates the PostgreSQL schema and streams base rows using binary `COPY` inside
    one transaction. It retains accounts/password hashes, sessions, policy, bots,

@@ -1,8 +1,10 @@
 mod api;
 pub(crate) mod auth;
 mod control;
+pub(crate) use control::supported_command;
 pub(crate) mod discovery;
 pub(crate) mod error;
+mod media;
 mod mutations;
 pub(crate) mod socket;
 pub(crate) use api::contract;

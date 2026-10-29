@@ -248,18 +248,118 @@ impl Engine {
             .map(|pending| (result, pending))
             .map_err(Error::storage)
     }
+    fn authorize_worker_request(
+        &self,
+        user: &str,
+        input: &models::CredentialInput,
+    ) -> Result<(), Error> {
+        if input.operations.contains("media_upload")
+            && !["read", "send"]
+                .iter()
+                .all(|op| input.operations.contains(*op))
+        {
+            return Err(Error::new(
+                Code::InvalidRequest,
+                "Media upload requires read and send operations.",
+            ));
+        }
+        if input.conversations.is_some()
+            && input
+                .operations
+                .iter()
+                .any(|op| matches!(op.as_str(), "commands" | "create"))
+        {
+            return Err(Error::new(
+                Code::Forbidden,
+                "Commands and conversation creation require an explicit account-wide worker scope (conversations:null).",
+            ));
+        }
+        let targets = match &input.conversations {
+            Some(ids) => ids
+                .iter()
+                .map(|id| self.bot_target(user, id, Action::Read))
+                .collect::<Result<Vec<_>, _>>()?,
+            None => self
+                .bot_index
+                .conversations
+                .keys()
+                .filter_map(|id| self.bot_target(user, id, Action::Read).ok())
+                .collect(),
+        };
+        for operation in &input.operations {
+            if operation == "profile" {
+                continue;
+            } // Own appearance is self-service.
+            if operation == "create" {
+                let room = self.allows(Some(user), &Scope::Server, Action::CreateRoom)
+                    && self
+                        .require_target_command(Some(user), &Scope::Server, "/new")
+                        .is_ok();
+                let direct = self.allows(Some(user), &Scope::Server, Action::Direct)
+                    && self
+                        .data
+                        .users
+                        .keys()
+                        .filter(|peer| peer.as_str() != user)
+                        .any(|peer| {
+                            let scope = self.private_scope(&private_key(user, peer));
+                            self.allows(Some(user), &scope, Action::Send)
+                                && self
+                                    .require_target_command(Some(user), &scope, "/tell")
+                                    .is_ok()
+                        });
+                if room || direct {
+                    continue;
+                }
+                return Err(Error::new(
+                    Code::Forbidden,
+                    "Account cannot create conversations.",
+                ));
+            }
+            let allowed = |target: &Target| {
+                let rights = self.effective(Some(user), &target.scope);
+                match operation.as_str() {
+                    "read" | "read_ack" | "config" => rights.has(Action::Read),
+                    "send" | "activity" => rights.has(Action::Read) && rights.has(Action::Send),
+                    "react" => {
+                        rights.has(Action::Read)
+                            && rights.has(Action::React)
+                            && rights.command("/react")
+                    }
+                    "media_upload" => {
+                        rights.has(Action::Read)
+                            && rights.has(Action::Send)
+                            && rights.has(Action::MediaUpload)
+                    }
+                    "commands" => self
+                        .commands_for(Some(user), Some(&target.view))
+                        .iter()
+                        .any(|command| crate::bots::supported_command(command.name)),
+                    _ => false,
+                }
+            };
+            // Explicit scopes promise every requested operation on every listed
+            // conversation. Null delegates the account's live grants, so an
+            // operation must be possible somewhere, never broader than those grants.
+            let permitted = match &input.conversations {
+                Some(_) => targets.iter().all(allowed),
+                None => targets.iter().any(allowed),
+            };
+            if !permitted {
+                return Err(Error::new(
+                    Code::Forbidden,
+                    format!("Account permissions cannot satisfy worker operation {operation}."),
+                ));
+            }
+        }
+        Ok(())
+    }
     fn apply_bot_credential(
         &mut self,
         context: &crate::bots::auth::Context,
         input: models::CredentialInput,
     ) -> Result<(serde_json::Value, MetadataChange), Error> {
-        context.permits(self, "credentials", crate::bots::auth::Scope::Global)?;
-        if context.metadata(self)?.conversations.is_some() {
-            return Err(Error::new(
-                Code::Forbidden,
-                "Only an account-wide provisioning credential may issue tokens.",
-            ));
-        }
+        let user = context.issuer(self)?;
         if !valid_name(&input.label)
             || input.expires <= now()
             || input.expires > now().saturating_add(86400)
@@ -268,17 +368,17 @@ impl Engine {
                 .operations
                 .iter()
                 .any(|op| !models::OPERATIONS.contains(&op.as_str()))
-            || input.conversations.iter().any(|id| !models::valid_id(id))
+            || input
+                .conversations
+                .as_ref()
+                .is_some_and(|ids| ids.iter().any(|id| !models::valid_id(id)))
         {
             return Err(Error::new(
                 Code::InvalidRequest,
                 "Use valid scopes, operations and an expiry within 24 hours.",
             ));
         }
-        let user = context.user(self)?;
-        for id in &input.conversations {
-            self.bot_target(&user, id, Action::Read)?;
-        }
+        self.authorize_worker_request(&user, &input)?;
         let before = MetadataChange::keyed(
             &self.data,
             changes::DirtyKeys {
@@ -308,11 +408,12 @@ impl Engine {
         registration.tokens.insert(
             id.clone(),
             models::Credential {
+                kind: models::CredentialKind::Worker,
                 label: input.label,
                 digest: crate::bots::digest(&secret),
                 created: now(),
                 expires: Some(input.expires),
-                conversations: Some(input.conversations),
+                conversations: input.conversations,
                 operations: Some(input.operations),
             },
         );

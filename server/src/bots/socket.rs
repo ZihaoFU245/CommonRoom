@@ -330,7 +330,7 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                 if changes.contains(&Change::Shutdown) {
                     break;
                 }
-                changes.retain(|change| !matches!(change, Change::Metadata(notice) if !notice.targets(&context.account)) && !interests.excludes(change) && !matches!(change, Change::BotCommands(_) | Change::Avatar(_))
+                changes.retain(|change| !matches!(change, Change::Metadata(notice) if !notice.targets(&context.account)) && !interests.excludes(change) && !matches!(change, Change::BotCommands(_) | Change::BotCatalogues(_) | Change::Avatar(_))
                     && !matches!(change, Change::Read(name) | Change::Account(name) if name != &presence.user));
                 if changes.is_empty() {
                     continue;

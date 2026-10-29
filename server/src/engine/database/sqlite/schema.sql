@@ -64,4 +64,4 @@ CREATE TRIGGER retention_move AFTER UPDATE OF conversation,sequence ON messages 
 END;
 
 CREATE TABLE auth_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,client TEXT,username TEXT,outcome TEXT NOT NULL CHECK(outcome IN ('success','failure','logout')));
-PRAGMA user_version=19;
+PRAGMA user_version=20;

@@ -12,11 +12,11 @@ A bot is an ordinary account with a machine registration. The server owns
 identity, grants and chat history; an external worker owns models, tools and
 configuration. This keeps the API independent of any agent framework.
 
-Global administrators, su or stdin manage registrations and account-wide tokens:
+Global administrators, su or stdin manage registrations and issuer tokens:
 
 ```text
 /bot new helper #support
-/bot token new helper worker
+/bot token new helper issuer
 /bot info helper #support
 /bot token ls helper
 /bot token rm helper CREDENTIAL_ID
@@ -38,31 +38,62 @@ participation; `/user disable` suspends tokens; rename preserves stable IDs; acc
 deletion removes tokens and retry receipts. Name reuse restores no old authority.
 
 Tokens are shown once, hashed at rest and individually revocable, with at most
-eight unique labels per account. They have the account's current permissions,
-when issued through operator commands. Keep these provisioning credentials
-with the operator. `POST /credentials` issues a worker token with mandatory
-conversation IDs, operations and UTC epoch-second expiry within the next 24 hours:
+eight unique labels per account across both credential kinds. `/bot token new`
+creates an **issuer** token. It can only call `POST /api/bot/v1/credentials`;
+it cannot read chat, change profiles, upload media or open a socket. Keep it
+with a trusted plugin supervisor. The supervisor requests a **worker** token:
 
-```json
+```http
+POST /api/bot/v1/credentials
+Authorization: Bearer bot_<issuer-secret>
+Content-Type: application/json
+
 {
-  "label": "worker",
-  "expires": 1792000000,
+  "label": "worker-session-123",
+  "expires": 1793206800,
   "conversations": ["CONVERSATION_ID"],
   "operations": ["read", "send", "react", "activity"]
 }
 ```
 
-Use a future expiry appropriate to the deployment. Operations are `read`, `send`,
-`react`, `read_ack`, `activity`, `config`, and `commands`. Empty conversation scopes grant no
-chat access. Scopes intersect the account's current grants; they never grant new
-account authority. Restricted tokens cannot issue credentials, create conversations,
-or authenticate browser/legacy transports. `/me` exposes the credential ID,
-expiry, conversation scopes and operations. Revocation and expiry are checked on
-requests and sockets; a heartbeat closes an idle expired socket within 25 seconds.
-Tokens remain individually revocable through `/bot token rm`, with the existing
-eight-token/unique-label limit. Expired entries must be removed before reusing their
-label or capacity. Credentials survive restart in existing JSON metadata; no SQLite
-schema migration is required. Never log credentials or message bodies.
+`expires` is a required future Unix timestamp in seconds, at most 24 hours ahead;
+replace the example timestamp before use. A successful HTTP 200 response is:
+
+```json
+{"id":"CREDENTIAL_ID","token":"bot_<worker-secret>","expires":1793206800}
+```
+
+Use the returned secret as the Bearer credential for worker requests. It is
+returned once. Worker tokens cannot issue tokens, including account-wide workers.
+All request fields are required. `conversations` is an array of stable IDs or
+explicit `null` to delegate the account's live conversation scope. An empty array
+grants no chat access. Operations are `read`, `send`, `react`, `read_ack`,
+`activity`, `config`, `commands`, `media_upload`, `profile`, and `create`.
+`commands` and `create` require `conversations:null`. Uploads require all of
+`read`, `send` and `media_upload`.
+
+Issuance checks current account permissions: every explicitly listed conversation
+must support every requested operation. For `null`, each operation must be possible
+under the account's current grants somewhere; it does not grant access everywhere.
+During use, the worker's operations and scope also intersect live account grants.
+Permission revocation therefore applies before token expiry. Own appearance is
+self-service through explicit `profile` delegation.
+
+`/me` exposes the worker's credential kind, ID, expiry, scope and operations.
+Issuer and worker tokens cannot authenticate browser transports. Revocation and
+expiry are checked on requests and sockets; a heartbeat closes an idle expired
+socket within 25 seconds. Remove expired credentials with `/bot token rm` before
+reusing their label or capacity. `/bot token ls` returns metadata, never secrets.
+Browser output formats creation and expiry timestamps in local time; the JSON
+metadata retains epoch seconds. `/bot token rm ID` locates the authorized bot
+automatically, while `/bot token rm BOT ID` remains supported. Tab completion
+shows bot names, labels and kinds, then inserts the credential ID. These hints
+are filtered by the same account/credential grants and protected-su checks as
+revocation and refresh after issuance, rename and revocation.
+Deleting the bot removes all issuer and worker credentials and retry receipts.
+Credentials persist across restart. SQLite v19 upgrades to v20 atomically to add
+explicit credential kinds; PostgreSQL retains its current unpublished v1 marker.
+Never log credentials or message bodies.
 
 ## HTTP contract
 
@@ -115,13 +146,104 @@ Use the **conversation ID** in every operation. IDs are opaque strings of 1–12
 never derive them from names. Rename preserves an ID. Delete/recreate uses a
 new ID, so an old request cannot be redirected into a replacement conversation.
 Existing private conversations work the same way; their participants remain
-fixed. `POST /conversations` uses an account-wide provisioning credential and existing
+fixed. `POST /conversations` requires an account-wide worker with the `create` operation and existing
 account permissions. Rooms require `/room` and `w:room.create`; direct conversations
 require `/tell`, private send access, and `w:private.create` when the pair does not
 already exist. Creation does not grant authority that the account lacks. Existing
 direct pairs return the same ID without sending a message; room name collisions
 return `conflict`. Bots created with room defaults need explicit operator grants
 before initiating either kind. Creation is not automatically retried by the client.
+
+## Media and profiles (v1 extension)
+
+Bot bearer credentials are accepted only under `/api/bot/v1/`. Browser routes,
+including `/api/me`, `/api/media/*`, `/api/avatars/*`, `/api/color` and `/ws`,
+reject Authorization headers even when a valid session cookie accompanies them.
+New browser routes do not inherit machine authentication. The bot adapters share
+media/profile services and engine authorization with browser handlers, rather
+than reusing browser authentication.
+
+These routes accept expiring worker tokens with scoped or account-wide access.
+Issuer tokens cannot call them.
+Worker capabilities intersect their explicit operations, conversation IDs and the
+account's current grants. Existing worker tokens gain no additional operations
+automatically: issue a replacement with the required capabilities. All routes
+require bearer authentication, accept no session-only authentication, and require
+no Origin header. Existing production ingress rules apply.
+
+| Capability | Worker-token requirements |
+| --- | --- |
+| Media configuration | `read` (no conversation-specific data) |
+| Media info/download | `read` and the attachment's conversation ID |
+| Media allocation/completion/abandon | `media_upload`, `read`, `send` and the upload's conversation ID |
+| Avatar info/download | `read`; another account must be visible through an allowed conversation's members/peer or retained history |
+| Own avatar set/upload/complete | `profile` |
+| Own global name color | `profile` |
+| Own room name color | `profile` and that room's conversation ID |
+
+`profile` explicitly delegates the bot account's own global appearance, even on a
+conversation-scoped token. It does not authorize another account's profile or
+arbitrary metadata. Omit it from room workers that should not change shared
+appearance. A `read` token may inspect its own selected avatar; global account
+directory grants and visibility through other conversations cannot expose other
+accounts' avatars outside its scope. Account-wide tokens have no additional token
+scope restrictions, but still need the same account grants and ownership checks.
+
+| Method and endpoint (under `/api/bot/v1`) | Request / response schema |
+| --- | --- |
+| `GET /media/config` | `MediaConfig` |
+| `POST /media/uploads` | `MediaUploadRequest` → `UploadResponse` |
+| `POST /media/uploads/{id}/complete` | No request body required; `MediaResponse` |
+| `POST /media/uploads/{id}/abandon` | No request body required; `Ok` |
+| `GET /media/{id}/info` | Optional `MediaInfoQuery`; `MediaInfo` |
+| `GET /media/{id}/file` | Optional `MediaDownloadQuery`; 307 redirect |
+| `POST /avatars` | `AvatarRequest` → `Ok` |
+| `POST /avatars/uploads` | `AvatarUploadRequest` → `UploadResponse` |
+| `POST /avatars/uploads/{id}/complete` | No request body required; `AvatarCompleteResponse` |
+| `GET /avatars/{id}/info` | `AvatarInfo` |
+| `GET /avatars/{id}/file` | 307 redirect |
+| `POST /color` | `ColorRequest` → `Ok` |
+
+For attachments, allocate with `{conversation_id,filename,size,hints?}`, PUT
+bytes directly to the returned `upload.url` using exactly its supplied headers,
+then complete the upload. Allocation/completion still require current
+conversation read/send and `w:media.upload`; default bot provisioning does not
+grant upload. Quotas, size limits, ownership, retention and cleanup are shared
+with browser uploads. Abandon removes an unused reservation. Download and info
+require current conversation read access and an attached, available object;
+`include_expired=true` on info can inspect expired attachment metadata.
+`download=true` requests attachment disposition on file downloads.
+
+The returned `path` is the canonical browser media path used in message Markdown,
+e.g. `/api/media/ID/file` (including the configured base path). Send that path in
+`POST /messages`; do not replace stored Markdown links with bot-specific URLs.
+For machine retrieval, request `/api/bot/v1/media/ID/info` or `/file` instead.
+Downloads return a presigned bucket URL in Location, valid for at most 60 seconds
+and shortened to remaining retention. Follow it without forwarding the bot bearer
+header to storage. Retraction/expiry/access revocation prevents issuance of new
+URLs; an already-issued URL can remain usable until it expires.
+
+Avatar allocation uses `{size,upload_id?}` (1–65,536 bytes); the optional canonical
+UUID supports allocation retries. PUT and complete as above. Completion validates
+PNG/JPEG/WebP and selects the avatar atomically. Avatar `path` values retain the
+canonical `/api/avatars/ID/file` form; machine downloads use the v1 avatar route.
+Avatar uploads are self-service and do not require `w:media.upload`, but retain
+account quota and allocation limits. `POST /avatars` sets an allowed external
+HTTPS URL with `{url}` or clears it with `{url:null}`; `avatar_hosts` still applies.
+
+`POST /color` accepts `{color,room?}`. Color is one of the fixed palette names or
+null to clear; room is a stable room ID, omitted/null for the global default.
+Global own-color updates need no color grant; room updates require the existing
+own-color permission. These routes cannot edit another account's profile or
+arbitrary metadata. Use authorized native `/user get` and `/user set` commands for
+metadata. The v1 snapshot/message projections are unchanged by this extension.
+
+Uploads and profile changes use their existing allocation/profile rate limits;
+they do not acquire message-send idempotency receipts. Retry avatar allocation
+with the same upload_id; repeating completion cannot select an older avatar over
+a newer one. Attachment allocation has no idempotency key: a lost allocation
+response may leave a pending reservation for cleanup. This remains API v1; no v2
+namespace or automatic browser-route fallback exists.
 
 ## Messages and reactions
 
@@ -253,6 +375,7 @@ readable, writable conversation IDs. Respond on the same socket with:
 {
   "kind": "commands_response",
   "id": "REQUEST_ID",
+  "expires_in": 300,
   "commands": [
     {
       "name": "/model",
@@ -275,6 +398,13 @@ readable, writable conversation IDs. Respond on the same socket with:
 }
 ```
 
+`expires_in` is an optional integer duration from 30 to 3,600 seconds, including
+for empty catalogues. Omitted lifetimes default to 300 seconds for existing v1
+plugins. The shipped workers also use 300 seconds. The server stores the validated catalogue until that
+monotonic deadline and requests a replacement over the existing worker socket.
+Socket maintenance notices expiry within 25 seconds. Expired catalogues are hidden
+from reads until refreshed; unchanged metadata is not continually queried.
+
 Return an empty array for no commands. Responses contain command metadata only,
 never secrets or requester-specific private information. Set `operator_only:true`
 on commands intended for the bot owner or global administrators; child commands
@@ -293,16 +423,21 @@ rediscovery. Chat sends and history revisions do not trigger discovery. Registra
 `config_ack` frame; errors retain the request ID when available.
 
 Each request has a sixty-second deadline, at most eight in flight, and at most 256
-conversations per runtime. Each catalogue admits at most 64 command nodes total
+conversations per runtime, selected in stable conversation-ID order. Each catalogue admits at most 64 command nodes total
 and 32 KiB serialized JSON. Commands may contain `subcommands` arrays, up to three
 levels including the root. Root names match `/[a-z0-9_-]{1,32}`; child names match
 `[a-z0-9_-]{1,32}` without a slash. Names must be unique among siblings. Usage
 starts with the full command path (for example `/history before`) followed by a
 space or ends there. Usage/description are at most 256/512
 UTF-8 bytes with no control characters. Description must be nonempty. A runtime
-caches at most 256 KiB of catalogue JSON. Malformed, unsolicited, expired,
+caches at most 256 KiB of catalogue JSON. The server admits at most 128 command
+runtimes and 8 MiB of cached catalogue JSON across them. Replacements are checked
+before publication; capacity rejection preserves the previous entry. Malformed, unsolicited, expired,
 cancelled and wrong-socket responses are rejected. Responses to issued requests
-do not consume the unsolicited control-frame budget.
+do not consume the unsolicited control-frame budget. A rejected response leaves
+its pending request available for correction until the original deadline; only
+successful publication consumes the request. Async verification/inspection
+failures retain the socket's discovery registration and catalogue state.
 
 Timed-out requests are retried up to three attempts per conversation; routine
 metadata changes do not continually cancel a slow response.
@@ -318,21 +453,18 @@ arguments are free text. Metadata describes syntax; the worker still parses and
 validates the ordinary message. Bot accounts need explicit private-conversation
 grants for DM discovery and execution, just as for all other Bot API operations.
 
-The browser reads cached metadata through session-authenticated
-`GET /api/bot-commands?conversation_id=ID`, returning
-`{conversation_id,bots:[{account_id,username,commands}]}`. It needs conversation
-read/send/member-list access and includes only active participating bots with
-current read/send credentials and grants. The browser socket emits
-`{kind:"bot_commands",conversation_id}` when that cache changes. Selecting a
-conversation, resuming focus, or receiving an invalidation refreshes this cache;
-typing never queries the bot. The browser prefetches up to 32 conversations with
-four simultaneous requests, prioritizing the selected conversation. Its in-memory
-cache holds at most 32 conversations/512 KiB, survives selection changes and
-transient refresh failures, and is discarded on logout, account/server-instance
-or policy changes. Membership changes hide incompatible entries immediately;
-authoritative access denials remove them. `@Bot /mo` completes to `@Bot /model ` in rooms
-and DMs, retaining the explicit mention prefix. Bare slash commands remain
-CommonRoom commands. Metadata contains no browser-executable code or action.
+`GET /api/bot-commands` is the browser-session endpoint. Responses contain
+`{conversations:[{conversation_id,bots:[{account_id,username,commands}]}],next}`.
+Pages contain at most 32 conversations and target 512 KiB of serialized entries;
+a single larger conversation is included for progress, bounded by the existing
+128-publisher and 32-KiB-per-catalogue limits. Request `?after=NEXT` until `next`
+is null to read the complete directory in stable conversation-ID order. Each entry applies live viewer and plugin
+credential permissions; inaccessible conversations and protected commands are
+filtered. Reading the cache does not send a plugin request. The optional legacy
+`?conversation_id=ID` form still returns a single `{conversation_id,bots}`.
+The browser fetches the complete paginated directory on connection, rechecks every 120 seconds, and
+invalidates it on command notifications, membership or policy changes. Switching
+conversations and typing reuse local metadata.
 
 ## Errors and limits
 
@@ -483,7 +615,8 @@ catalogues, duplicate suppression and bounded tool loops reduce unnecessary
 calls without embedding any model runtime in the chat server.
 
 Browser discovery failures retry with 30-second exponential rests capped at five
-minutes. Empty successful catalogues stay cached until an invalidation or a focus
-refresh after five minutes; populated focus refreshes rest for one minute.
-WebSocket catalogue notifications and changed conversation membership can refresh
-immediately. Typing and ordinary renders never bypass failed-request backoff.
+minutes, shared across catalogue-version changes within the same authority.
+Successful directories, including empty ones, are cached for 120 seconds.
+WebSocket catalogue notifications and changed conversation membership invalidate
+the directory without resetting its outage backoff. Typing and ordinary renders
+never bypass failed-request backoff.

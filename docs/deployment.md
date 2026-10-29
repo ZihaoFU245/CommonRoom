@@ -726,6 +726,11 @@ references. Do not copy `data/` while the server is running.
 
 ## External agent workers
 
+Bot bearer tokens no longer authenticate browser `/api/*` routes or `/ws`. Move
+workers using media, avatar or color APIs to their `/api/bot/v1/` counterparts
+listed in [Bots](bots.md#media-and-profiles-v1-extension). Message Markdown keeps
+canonical browser media paths; machine retrieval uses the bot file endpoint.
+
 Agents use the bot HTTP/WebSocket API under `/api/bot/v1/`, which the existing `/api/`
 location already proxies. Keep `Authorization` and `Idempotency-Key` headers intact, and
 give each worker its own runtime directory, supervisor, secrets, and checkpoint store;
@@ -736,7 +741,8 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-SQLite remains HEAD schema v19 and opens without an upgrade. Unpublished
+SQLite HEAD is v20; v19 upgrades atomically to explicit issuer/worker credentials.
+Exchange issuer tokens for expiring workers before making operational bot calls. Unpublished
 PostgreSQL initializes its current v1 schema, including statement-level deletion
 retention. This unpublished format is not deployed yet; fixes modify v1 directly,
 without historical WIP upgrades. Unsupported schema markers are rejected unchanged.

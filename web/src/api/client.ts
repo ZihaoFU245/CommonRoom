@@ -13,7 +13,11 @@ import {
   responseError,
   isBotCommandDirectory,
 } from "./protocol.ts";
-import type { ClientFrame, HistoryRange } from "./protocol.ts";
+import type {
+  BotCommandDirectory,
+  ClientFrame,
+  HistoryRange,
+} from "./protocol.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -133,13 +137,25 @@ export const api = {
       signal,
       120000,
     ),
-  botCommands: (conversationId: string, signal: AbortSignal) =>
-    request(
-      `bot-commands?${new URLSearchParams({ conversation_id: conversationId })}`,
-      isBotCommandDirectory,
-      undefined,
-      signal,
-    ),
+  botCommands: async (signal: AbortSignal): Promise<BotCommandDirectory> => {
+    const conversations: BotCommandDirectory["conversations"] = [];
+    let after: string | undefined;
+    do {
+      const page = await request(
+        `bot-commands${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`,
+        isBotCommandDirectory,
+        undefined,
+        signal,
+      );
+      conversations.push(...page.conversations);
+      if (!page.next) return { conversations };
+      if (after !== undefined && page.next <= after)
+        throw new Error("Command directory cursor did not advance.");
+      after = page.next;
+    } while (!signal.aborted);
+    signal.throwIfAborted();
+    return { conversations };
+  },
   me: (nameColors = false) =>
     request("me", isSnapshot, undefined, undefined, 15000, nameColors),
   session: () => request("session", isOk),

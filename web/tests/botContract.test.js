@@ -99,7 +99,12 @@ test("Bot HTTP and both WebSocket directions have complete named contracts", () 
   for (const frame of [
     { kind: "commands_ready" },
     { kind: "commands_changed" },
-    { kind: "commands_response", id: "request-id", commands: [] },
+    {
+      kind: "commands_response",
+      expires_in: 120,
+      id: "request-id",
+      commands: [],
+    },
   ])
     validate("ClientFrame", frame);
   assert.equal(schema.$id, "urn:commonroom:bot-api:v1");
@@ -168,6 +173,7 @@ test("v1 command discovery has bounded typed request and response contracts", ()
     { kind: "commands_changed" },
     {
       kind: "commands_response",
+      expires_in: 120,
       id: "request-id",
       commands: [
         { name: "/model", usage: "/model", description: "Display settings" },
@@ -178,6 +184,7 @@ test("v1 command discovery has bounded typed request and response contracts", ()
   for (const frame of [
     {
       kind: "commands_response",
+      expires_in: 120,
       id: "request-id",
       commands: new Array(65).fill({
         name: "/a",
@@ -187,11 +194,12 @@ test("v1 command discovery has bounded typed request and response contracts", ()
     },
     {
       kind: "commands_response",
+      expires_in: 120,
       id: "request-id",
       commands: [{ name: "no-slash", usage: "no-slash", description: "a" }],
     },
     { kind: "commands_ready", account_id: "someone-else" },
-    { kind: "commands_response", commands: [] },
+    { kind: "commands_response", expires_in: 120, commands: [] },
   ])
     assert.throws(() => validate("ClientFrame", frame), /Invalid/);
 });
@@ -217,6 +225,7 @@ test("v1 subcommands use bare names with at most three command levels", () => {
   };
   const frame = {
     kind: "commands_response",
+    expires_in: 120,
     id: "request-id",
     commands: [command],
   };
@@ -274,6 +283,7 @@ test("native commands, source context and private bot catalogues have distinct v
   });
   validate("ClientFrame", {
     kind: "commands_response",
+    expires_in: 120,
     id: "query-id",
     commands: [
       {
@@ -309,4 +319,87 @@ test("native commands, source context and private bot catalogues have distinct v
       }),
     /Invalid/,
   );
+});
+
+test("v1 media and profile extension validates requests and responses", () => {
+  const media = {
+    media_id: "upload-id",
+    path: "/api/media/upload-id/file",
+    content_type: "image/png",
+    size: 8,
+    filename: "photo.png",
+  };
+  for (const [name, value] of [
+    ["MediaConfig", { enabled: true, max_size: 26214400 }],
+    [
+      "MediaUploadRequest",
+      { conversation_id: "room-id", filename: "photo.png", size: 8 },
+    ],
+    [
+      "UploadResponse",
+      {
+        media_id: "upload-id",
+        upload: {
+          method: "PUT",
+          url: "https://storage.example/signed",
+          headers: { "Content-Type": "application/octet-stream" },
+          expires_in: 300,
+        },
+      },
+    ],
+    ["MediaResponse", media],
+    ["MediaInfo", { ...media, expires: null, expired: false }],
+    ["MediaInfoQuery", { include_expired: true }],
+    ["MediaDownloadQuery", { download: true }],
+    ["AvatarRequest", { url: null }],
+    ["AvatarUploadRequest", { size: 65536, upload_id: "a-uuid" }],
+    [
+      "AvatarCompleteResponse",
+      { ok: true, media_id: "upload-id", path: "/api/avatars/upload-id/file" },
+    ],
+    [
+      "AvatarInfo",
+      { size: 8, content_type: "image/png", filename: "avatar.png" },
+    ],
+    ["ColorRequest", { color: "blue", room: "room-id" }],
+    ["ColorRequest", { color: null }],
+  ])
+    assert.equal(validate(name, value), value);
+  for (const [name, value] of [
+    [
+      "MediaUploadRequest",
+      { conversation_id: "room-id", filename: "a.png", size: 0 },
+    ],
+    ["AvatarUploadRequest", { size: 65537 }],
+    ["AvatarRequest", { url: null, username: "another-user" }],
+    ["ColorRequest", { color: "#ff0000" }],
+    ["MediaDownloadQuery", { unrelated: true }],
+    ["MediaResponse", { ...media, secret: "denied" }],
+  ])
+    assert.throws(() => validate(name, value));
+});
+
+test("worker credentials explicitly delegate media uploads and profile changes", () => {
+  const input = {
+    label: "media-worker",
+    expires: 1792000000,
+    conversations: ["room-id"],
+    operations: ["read", "send", "media_upload", "profile"],
+  };
+  assert.equal(validate("CredentialRequest", input), input);
+  assert.throws(() =>
+    validate("CredentialRequest", {
+      ...input,
+      operations: ["arbitrary_admin"],
+    }),
+  );
+});
+
+test("v1 plugin command responses allow an omitted lifetime and validate explicit bounds", () => {
+  const frame = { kind: "commands_response", id: "request", commands: [] };
+  validate("ClientFrame", frame);
+  for (const expires_in of [30, 120, 3600])
+    validate("ClientFrame", { ...frame, expires_in });
+  for (const expires_in of [0, 29, 3601, -1, 1.5, "120", null])
+    assert.throws(() => validate("ClientFrame", { ...frame, expires_in }));
 });

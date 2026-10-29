@@ -11,6 +11,8 @@ pub const RENAME_USAGE: &str = "/room rename #name new-name | /user rename [who]
 pub fn validate_room_arguments(input: &str) -> Result<(), String> {
     let parts = input.split_whitespace().collect::<Vec<_>>();
     let index = match parts.as_slice() {
+        ["/bot", "ls", ..] => Some(2),
+        ["/bot", "new" | "info", ..] => Some(3),
         ["/room", "join" | "leave" | "delete" | "rename", ..] => Some(2),
         ["/room", "add" | "kick" | "owner", ..] => Some(3),
         ["/join" | "/leave" | "/members", ..] => Some(1),
@@ -111,7 +113,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         (
             "Server",
             "/bot",
-            "/bot new name [scope] | ls [scope] | info name [scope] | owner name user | rm name @global | token new name label | token ls name | token rm name id",
+            "/bot ls [#room|@global] | new <bot name> [#room|@global] | info <bot name> [#room|@global] | owner <bot name> <user name> | rm <bot name> @global | token new <bot name> <label> | token ls <bot name> | token rm <credential id> | token rm <bot name> <credential id>",
             "Manage bot accounts and credentials",
             true,
         ),
@@ -395,8 +397,8 @@ fn form_description(command: &Command, usage: &str) -> &'static str {
         ("/bot", ["info", ..]) => "Show bot ownership, status and permissions",
         ("/bot", ["owner", ..]) => "Assign the bot owner",
         ("/bot", ["rm", ..]) => "Delete a bot account and its credentials",
-        ("/bot", ["token", "new"]) => "Issue an account-wide credential, shown once",
-        ("/bot", ["token", "ls"]) => "List credential IDs and labels",
+        ("/bot", ["token", "new"]) => "Issue an issuer-only bot token, shown once",
+        ("/bot", ["token", "ls"]) => "List issuer/worker credentials, scopes and expiry",
         ("/bot", ["token", "rm"]) => "Revoke a credential",
         ("/grant", [_, "group", ..]) => "Assign a predefined permission bundle",
         ("/grant", _) => "Add a scoped action or command grant",
@@ -533,7 +535,8 @@ mod output_tests {
             }
         }
         assert!(text.contains("/user new name password [user|admin]"));
-        assert!(text.contains("/bot token rm name id"));
+        assert!(text.contains("/bot token rm <credential id>"));
+        assert!(text.contains("/bot token rm <bot name> <credential id>"));
         assert!(!text.contains("[General]"));
     }
 

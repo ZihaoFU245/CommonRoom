@@ -333,6 +333,8 @@ impl Engine {
             colors: BTreeMap::new(),
             online: self.online(name),
             users: directory.users,
+            bots: self.bot_completion_names(name),
+            bot_credentials: self.bot_credential_hints(name),
             rooms: visible.rooms,
             direct: Vec::new(),
             private_peers: visible.peers,

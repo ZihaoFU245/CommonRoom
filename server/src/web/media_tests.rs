@@ -54,7 +54,7 @@ pub(in crate::web) async fn request(
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
     )
 }
-pub(in crate::web) async fn storage_server()
+pub(crate) async fn storage_server()
 -> (Arc<crate::media::MediaStorage>, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let storage =
@@ -521,6 +521,78 @@ async fn postgres_cancelled_media_reservation_releases_engine_and_orders_revocat
         changes.try_recv().is_err(),
         "upload reservations must not broadcast directories"
     );
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn orphan_staging_cleanup_uses_four_requests_and_acknowledges_deletions() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chat.sqlite");
+    let app = app(Engine::open(&path).unwrap());
+    let db = crate::engine::database::Connection::open(&path).unwrap();
+    let store = app.engine_read().unwrap().media_store();
+    let ids = {
+        let engine = app.engine().unwrap();
+        let ids: Vec<_> = (0..8)
+            .map(|_| engine.allocate_avatar("alice", 8).unwrap().id)
+            .collect();
+        let old =
+            crate::engine::media::timestamp().saturating_sub(app.config.media.pending_ttl + 1);
+        db.execute("UPDATE media SET deleted=1,created=?1", [old])
+            .unwrap();
+        ids
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let storage =
+        crate::media::tests::test_storage(&format!("http://{}", listener.local_addr().unwrap()));
+    let barrier = Arc::new(tokio::sync::Barrier::new(4));
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn({
+        let maximum = maximum.clone();
+        let requests = requests.clone();
+        async move {
+            let mut jobs = tokio::task::JoinSet::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let barrier = barrier.clone();
+                let active = active.clone();
+                let maximum = maximum.clone();
+                let requests = requests.clone();
+                jobs.spawn(async move {
+                    let mut bytes = Vec::new();
+                    while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+                        let mut chunk = [0;4096];
+                        let n = socket.read(&mut chunk).await.unwrap();
+                        assert!(n > 0);
+                        bytes.extend_from_slice(&chunk[..n]);
+                    }
+                    assert!(bytes.starts_with(b"DELETE "));
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    maximum.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    barrier.wait().await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    socket.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                });
+            }
+        }
+    });
+    let mut app = app;
+    app.media = Some(storage);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), cleanup(&app))
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 8);
+    assert_eq!(maximum.load(Ordering::SeqCst), 4);
+    for id in ids {
+        assert!(store.load(&id).await.is_err());
+    }
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }

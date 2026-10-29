@@ -150,7 +150,7 @@ test("every list and bot detail output has readable Markdown structure", () => {
       "/bot info helper",
       "helper (id) at room\nOwner: alice\nConnected: 1\nCommands: /user, /room",
     ],
-    ["/bot ls #room", "Bot connections at room: helper, worker"],
+    ["/bot ls #room", "helper\nworker"],
     [
       "/ls",
       "Your rooms:\n#support\n\nPrivate conversations:\n@private:alice:bob",
@@ -332,4 +332,50 @@ test("cleanup metadata distinguishes role defaults, disabled values and minimum 
   );
   assert.ok(text(limited).includes("1w"));
   assert.ok(text(limited).includes("inherited"));
+});
+
+test("bot credential metadata is formatted without exposing Markdown from fields", () => {
+  const raw = JSON.stringify([
+    {
+      id: "credential-id",
+      label: "[tracking](https://outside.test)",
+      kind: "worker",
+      created: 100,
+      expires: 200,
+      conversations: ["room-id"],
+      operations: ["read", "send"],
+    },
+    {
+      id: "issuer-id",
+      label: "issuer",
+      kind: "issuer",
+      created: 100,
+      expires: null,
+      conversations: null,
+      operations: null,
+    },
+  ]);
+  const nodes = output("/bot token ls helper", raw);
+  assert.equal(nodesWithTag(nodes, "h2").length, 1);
+  assert.equal(nodesWithTag(nodes, "a").length, 0);
+  assert.equal(nodesWithTag(nodes, "pre").length, 0);
+  assert.ok(text(nodes).includes("worker"));
+  assert.ok(text(nodes).includes("No expiry"));
+  assert.ok(text(nodes).includes("read, send"));
+  assert.ok(
+    text(nodes).includes(
+      new Intl.DateTimeFormat(undefined, {
+        dateStyle: "full",
+        timeStyle: "long",
+      }).format(new Date(100000)),
+    ),
+  );
+  assert.ok(
+    text(nodes).includes(
+      new Intl.DateTimeFormat(undefined, {
+        dateStyle: "full",
+        timeStyle: "long",
+      }).format(new Date(200000)),
+    ),
+  );
 });

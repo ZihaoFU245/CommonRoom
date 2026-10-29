@@ -39,7 +39,7 @@ fn pool_diagnostics_count_acquisition_timeouts_and_successes() {
 }
 
 #[test]
-fn sqlite_head_v19_opens_without_a_postgres_index_upgrade() {
+fn sqlite_head_v20_opens_without_a_postgres_index_upgrade() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("chat.sqlite");
     let mut engine = Engine::open(&path).unwrap();
@@ -58,7 +58,7 @@ fn sqlite_head_v19_opens_without_a_postgres_index_upgrade() {
     assert_eq!(
         db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        19
+        20
     );
     assert_eq!(
         db.query_row::<u64, _, _>(
@@ -1338,4 +1338,103 @@ fn postgres_append_uses_one_forced_ownership_probe() {
         "50 PostgreSQL appends: {probes} forced ownership probes, {} ms",
         started.elapsed().as_millis()
     );
+}
+
+#[test]
+fn sqlite_v19_bot_credentials_upgrade_atomically_and_preserve_worker_scopes() {
+    use axum::http::{HeaderMap, header};
+    for failure in [None, Some("malformed"), Some("write")] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chat.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.execute(None, None, "/room new support").unwrap();
+        engine
+            .execute(None, Some("support"), "/bot new helper")
+            .unwrap();
+        let issuer = engine
+            .execute(None, None, "/bot token new helper issuer")
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap()
+            .to_owned();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {issuer}").parse().unwrap(),
+        );
+        let context = crate::bots::auth::Context::from_headers(&engine, &headers).unwrap();
+        let worker = engine
+            .issue_bot_credential(
+                &context,
+                crate::bots::models::CredentialInput {
+                    label: "reader".into(),
+                    expires: crate::bots::now() + 600,
+                    conversations: Some([engine.data.rooms["support"].id.clone()].into()),
+                    operations: ["read".into()].into(),
+                },
+            )
+            .unwrap();
+        let expected = serde_json::to_value(&engine.data.bots).unwrap();
+        drop(engine);
+        let db = Connection::open(&path).unwrap();
+        let state: String = db
+            .query_row("SELECT json FROM state WHERE id=1", [], |row| row.get(0))
+            .unwrap();
+        let mut state: serde_json::Value = serde_json::from_str(&state).unwrap();
+        for bot in state["bots"].as_object_mut().unwrap().values_mut() {
+            for token in bot["tokens"].as_object_mut().unwrap().values_mut() {
+                token.as_object_mut().unwrap().remove("kind");
+            }
+            if failure == Some("malformed") {
+                bot["tokens"][worker["id"].as_str().unwrap()]["expires"] = serde_json::Value::Null;
+            }
+        }
+        let legacy = state.to_string();
+        db.execute("UPDATE state SET json=?1 WHERE id=1", [&legacy])
+            .unwrap();
+        db.execute_batch("PRAGMA user_version=19;").unwrap();
+        if failure == Some("write") {
+            db.execute_batch("CREATE TRIGGER reject_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        }
+        drop(db);
+        if failure.is_some() {
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(Engine::open(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap(),
+                19
+            );
+            assert_eq!(
+                db.query_row::<String, _, _>("SELECT json FROM state WHERE id=1", [], |row| row
+                    .get(0))
+                    .unwrap(),
+                legacy
+            );
+        } else {
+            let engine = Engine::open(&path).unwrap();
+            assert_eq!(serde_json::to_value(&engine.data.bots).unwrap(), expected);
+            let issuer = crate::bots::auth::Context::from_headers(&engine, &headers).unwrap();
+            assert!(issuer.issuer(&engine).is_ok());
+            assert!(issuer.user(&engine).is_err());
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {}", worker["token"].as_str().unwrap())
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(
+                crate::bots::auth::Context::from_headers(&engine, &headers)
+                    .unwrap()
+                    .user(&engine)
+                    .is_ok()
+            );
+            drop(engine);
+            let engine = Engine::open(&path).unwrap();
+            assert_eq!(serde_json::to_value(&engine.data.bots).unwrap(), expected);
+        }
+    }
 }

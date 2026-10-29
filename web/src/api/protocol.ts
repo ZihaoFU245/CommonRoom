@@ -60,9 +60,19 @@ export interface BotCommands {
   username: string;
   commands: BotCommand[];
 }
-export interface BotCommandDirectory {
+export interface BotCredentialHint {
+  id: string;
+  bot: string;
+  label: string;
+  kind: "issuer" | "worker";
+}
+export interface BotCommandConversation {
   conversation_id: string;
   bots: BotCommands[];
+}
+export interface BotCommandDirectory {
+  conversations: BotCommandConversation[];
+  next?: string | null;
 }
 export interface Unread {
   count: number;
@@ -92,6 +102,8 @@ export interface Snapshot {
   policy_revision: number;
   admin: boolean;
   users: string[];
+  bots?: string[];
+  bot_credentials?: BotCredentialHint[];
   avatars?: Record<string, string>;
   online: string[];
   colors?: Record<string, string>;
@@ -287,6 +299,17 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   commands(v.private_commands) &&
   integer(v.policy_revision) &&
   strings(v.users) &&
+  (v.bots === undefined || strings(v.bots)) &&
+  (v.bot_credentials === undefined ||
+    (Array.isArray(v.bot_credentials) &&
+      v.bot_credentials.every(
+        (item: unknown) =>
+          record(item) &&
+          typeof item.id === "string" &&
+          typeof item.bot === "string" &&
+          typeof item.label === "string" &&
+          (item.kind === "issuer" || item.kind === "worker"),
+      ))) &&
   (v.avatars === undefined ||
     (record(v.avatars) &&
       Object.values(v.avatars).every((url) => typeof url === "string"))) &&
@@ -448,13 +471,21 @@ export const isBotCommandDirectory = (
   value: unknown,
 ): value is BotCommandDirectory =>
   record(value) &&
-  typeof value.conversation_id === "string" &&
-  Array.isArray(value.bots) &&
-  value.bots.length <= 128 &&
-  value.bots.every(
-    (bot: unknown) =>
-      record(bot) &&
-      typeof bot.account_id === "string" &&
-      typeof bot.username === "string" &&
-      botCommandCatalogue(bot.commands),
+  (value.next === undefined ||
+    value.next === null ||
+    typeof value.next === "string") &&
+  Array.isArray(value.conversations) &&
+  value.conversations.every(
+    (value: unknown) =>
+      record(value) &&
+      typeof value.conversation_id === "string" &&
+      Array.isArray(value.bots) &&
+      value.bots.length <= 128 &&
+      value.bots.every(
+        (bot: unknown) =>
+          record(bot) &&
+          typeof bot.account_id === "string" &&
+          typeof bot.username === "string" &&
+          botCommandCatalogue(bot.commands),
+      ),
   );

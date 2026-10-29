@@ -11,11 +11,12 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
 | `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
+| `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
 
-Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are same-origin, HttpOnly, SameSite Strict, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript.
+Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are same-origin, HttpOnly, SameSite Strict, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript. Browser routes and `/ws` reject Authorization headers; bot bearer authentication is confined to `/api/bot/v1/`. Media/profile bot counterparts are listed in [Bots](bots.md#media-and-profiles-v1-extension).
 
 Login throttling uses the client address from the configured `set_real_ip_from`
 header (default `X-Forwarded-For`) only when the socket peer matches `trust`.
@@ -58,7 +59,7 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
 - `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,colors,color_version,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"conversation",view,id,messages,unread,name_colors}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
-- `{kind:"bot_commands",conversation_id}`: invalidate cached bot command metadata for this readable conversation; refresh cached metadata for prefetched conversations in the background.
+- `{kind:"bot_commands",conversation_id}`: invalidate the cached command directory; the ID is one currently readable conversation from the changed batch. Fetch all directory pages in the background.
 - `{kind:"activity",conversation_id,account_id,state,expires,draft?}`: transient bot progress for current readers. `state` is working/idle; optional plain-text draft is provisional, bounded to 4,000 characters, expires after 30 seconds, and is never inserted into history.
 - `{kind:"presence",online}`: authorized online account names; preserves existing message data.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
@@ -191,7 +192,8 @@ command reply shares a lazy Markdown renderer built from validated text nodes.
 HTML remains literal, images are disabled, and only safe HTTP/HTTPS/mail links
 are clickable. Structured JSON, history and credential wire text is preserved;
 the browser formats metadata as per-user scope sections with value/source lists and configuration,
-history and credentials in fenced code blocks. User getters include effective
+history and newly issued credential secrets in fenced code blocks. Bot credential
+listings render structured metadata as labeled fields. User getters include effective
 media defaults and resolve room overrides over global values. Global custom
 values require account-level read authority; room-only readers see local custom
 values and effective media/cleanup limits. `@all` in the key
@@ -467,3 +469,18 @@ revoked viewers. Unrelated clients may retain an older `policy_revision`; it des
 their last captured snapshot and is not a global notification sequence. Permission
 checks always use current server authority. Bot credential changes can also emit
 compact `bot_commands` invalidations for readable conversations without a baseline.
+
+
+Browser plugin command discovery uses `GET /api/bot-commands` with session auth.
+It returns `{conversations:[{conversation_id,bots}]}` for accessible conversations,
+with command metadata filtered by current viewer and bot authority. One directory
+request is cached locally and rechecked every 120 seconds; server invalidations
+refresh it earlier. Bot v1 `commands_response` requires `expires_in` (30–3,600
+seconds). The server owns expiry refresh and bounds the cache; see [Bots](bots.md#command-discovery).
+
+Browser snapshots may include `bot_credentials:[{id,bot,label,kind}]` for `/bot`
+credential completion. The list contains only credentials the viewer may manage
+under global `/bot`, account credential and protected-su checks. `kind` is
+`issuer` or `worker`; secrets and digests are omitted. Credential metadata changes
+refresh authorized managers in addition to bot/owner audiences. Omitted fields
+remain compatible with older servers.

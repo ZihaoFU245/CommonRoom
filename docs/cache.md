@@ -57,8 +57,9 @@ console and bot responses retain the complete Markdown report.
 
 Bot command receipts retain the system authority used to issue a report. Both
 replay and receipt lookup recheck that authority, so revoked su/sudo access cannot
-retrieve an earlier report. This is an additive internal receipt-JSON field;
-SQLite v19 and PostgreSQL v1 schema markers remain unchanged.
+retrieve an earlier report. This is an additive internal receipt-JSON field.
+Cache changes require no schema migration. SQLite HEAD is v20 (with the v19
+credential upgrade); PostgreSQL remains at its independent v1 schema.
 
 `/system configs` shows configuration only. `/system metrics` reports cumulative
 operational counters since startup plus current occupancy and worker capacity.

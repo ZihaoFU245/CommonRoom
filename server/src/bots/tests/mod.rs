@@ -12,6 +12,67 @@ use std::{
 use tower::ServiceExt;
 #[path = "commands.rs"]
 mod command_tests;
+#[path = "issuance.rs"]
+mod issuance_tests;
+#[path = "media.rs"]
+mod media_tests;
+
+static ISSUERS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, String>>> =
+    std::sync::OnceLock::new();
+fn issuer(app: &App) -> String {
+    let id = app.engine_read().unwrap().data.users["helper"].id.clone();
+    ISSUERS.get().unwrap().lock().unwrap()[&id].clone()
+}
+fn context(app: &App, token: &str) -> Context {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    Context::authenticate(app, &headers).unwrap()
+}
+
+fn test_credentials(engine: &mut Engine, name: &str, label: &str) -> (String, String) {
+    let issuer = engine
+        .execute(None, None, &format!("/bot token new {name} {label}-issuer"))
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_owned();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {issuer}").parse().unwrap(),
+    );
+    let context = crate::bots::auth::Context::from_headers(engine, &headers).unwrap();
+    let was_su = engine.groups(Some(name)).iter().any(|g| g == "su");
+    if !was_su {
+        engine
+            .execute(None, None, &format!("/grant {name} su"))
+            .unwrap();
+    }
+    let response = engine
+        .issue_bot_credential(
+            &context,
+            crate::bots::models::CredentialInput {
+                label: label.into(),
+                expires: crate::bots::now() + 86400,
+                conversations: None,
+                operations: crate::bots::models::OPERATIONS
+                    .iter()
+                    .map(|s| (*s).into())
+                    .collect(),
+            },
+        )
+        .unwrap();
+    if !was_su {
+        engine
+            .execute(None, None, &format!("/revoke {name} su"))
+            .unwrap();
+    }
+    (issuer, response["token"].as_str().unwrap().to_owned())
+}
 
 fn fixture() -> (App, String) {
     fixture_with_engine(Engine::open(Path::new(":memory:")).unwrap())
@@ -27,13 +88,12 @@ fn fixture_with_engine(mut engine: Engine) -> (App, String) {
     engine
         .execute(Some("admin"), Some("support"), "/bot new helper")
         .unwrap();
-    let secret = engine
-        .execute(Some("admin"), None, "/bot token new helper test")
+    let (issuer_token, secret) = test_credentials(&mut engine, "helper", "test");
+    ISSUERS
+        .get_or_init(Default::default)
+        .lock()
         .unwrap()
-        .lines()
-        .last()
-        .unwrap()
-        .to_owned();
+        .insert(engine.data.users["helper"].id.clone(), issuer_token);
     let (changes, _) = tokio::sync::broadcast::channel(16);
     (
         App {
@@ -54,6 +114,22 @@ fn fixture_with_engine(mut engine: Engine) -> (App, String) {
         secret,
     )
 }
+async fn scoped_worker(app: &App, label: &str, ids: &[&str], operations: &[&str]) -> String {
+    let (status, result) = request(
+        app,
+        Some(&issuer(app)),
+        "POST",
+        "/api/bot/v1/credentials",
+        json!({
+            "label":label, "expires":crate::bots::now()+3600,
+            "conversations":ids, "operations":operations,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    result["token"].as_str().unwrap().to_owned()
+}
+
 async fn request(
     app: &App,
     secret: Option<&str>,
@@ -330,15 +406,7 @@ async fn read_cursor_inputs_share_the_budget_across_credentials_and_mutations() 
             StatusCode::OK
         );
     }
-    let second = app
-        .engine()
-        .unwrap()
-        .execute(Some("admin"), None, "/bot token new helper second")
-        .unwrap()
-        .lines()
-        .last()
-        .unwrap()
-        .to_owned();
+    let second = test_credentials(&mut app.engine().unwrap(), "helper", "second").1;
     for credential in [&token, &second] {
         let blocked = request(
             &app,
@@ -361,9 +429,33 @@ async fn read_cursor_inputs_share_the_budget_across_credentials_and_mutations() 
     assert_eq!(blocked.0, StatusCode::TOO_MANY_REQUESTS);
 }
 
+async fn history_request(app: &App, token: &str, path: &str) -> (StatusCode, serde_json::Value) {
+    if path.contains("/bot/") {
+        return request(app, Some(token), "GET", path, json!({})).await;
+    }
+    let response = web::router(app.clone())
+        .oneshot(
+            Request::builder()
+                .uri(path)
+                .header(header::COOKIE, "chat_session=browser-history")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
 #[tokio::test]
 async fn browser_and_bot_history_distinguish_revision_conflicts_from_storage_failures() {
     let (app, token) = fixture();
+    app.engine()
+        .unwrap()
+        .login("browser-history".into(), "admin", "hash", None)
+        .unwrap();
     let id = conversation(&app);
     let (store, revision) = {
         let mut engine = app.engine().unwrap();
@@ -392,7 +484,7 @@ async fn browser_and_bot_history_distinguish_revision_conflicts_from_storage_fai
         format!("/api/bot/v1/history?conversation_id={id}"),
         "/api/history?view=support".into(),
     ] {
-        let response = request(&app, Some(&token), "GET", &path, json!({})).await;
+        let response = history_request(&app, &token, &path).await;
         assert_eq!(response.0, StatusCode::CONFLICT);
         if path.contains("/bot/") {
             assert_eq!(response.1["error"]["code"], "conflict");
@@ -420,7 +512,7 @@ async fn browser_and_bot_history_distinguish_revision_conflicts_from_storage_fai
         format!("/api/bot/v1/history?conversation_id={id}"),
         "/api/history?view=support".into(),
     ] {
-        let response = request(&app, Some(&token), "GET", &path, json!({})).await;
+        let response = history_request(&app, &token, &path).await;
         assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
         if path.contains("/bot/") {
             assert_eq!(response.1["error"]["code"], "unavailable");
@@ -713,13 +805,13 @@ async fn revisions_detect_edits_and_retractions_without_advancing_sequence() {
 
 #[tokio::test]
 async fn restricted_credentials_are_scoped_expiring_and_cannot_escape_v1() {
-    let (app, token) = fixture();
+    let (app, _token) = fixture();
     let id = conversation(&app);
     let expires = crate::bots::now() + 300;
     let mut changes = app.changes.subscribe();
     let issued = request(
         &app,
-        Some(&token),
+        Some(&issuer(&app)),
         "POST",
         "/api/bot/v1/credentials",
         json!({"label":"reader","expires":expires,"conversations":[id],"operations":["read"]}),
@@ -950,15 +1042,7 @@ fn bot_baselines_share_buffers_but_isolate_credentials_and_recheck_revocation() 
     app.update_presence(None, Some("admin")).unwrap();
     let after_presence = { crate::web::snapshots::bot_value(&app, &context).unwrap() };
     assert_eq!(first.as_str().as_ptr(), after_presence.as_str().as_ptr());
-    let second = app
-        .engine()
-        .unwrap()
-        .execute(None, None, "/bot token new helper scoped")
-        .unwrap()
-        .lines()
-        .last()
-        .unwrap()
-        .to_owned();
+    let second = test_credentials(&mut app.engine().unwrap(), "helper", "scoped").1;
     headers.insert(
         header::AUTHORIZATION,
         format!("Bearer {second}").parse().unwrap(),
@@ -996,10 +1080,20 @@ async fn reconnect_session_check_authenticates_without_building_history() {
             .await
             .is_ok()
     );
+    let after = app.engine_read().unwrap().history_store().stats().unwrap();
     assert_eq!(
-        app.engine_read().unwrap().history_store().stats().unwrap(),
-        before
+        after["pools"]["operations"]["history_reads"],
+        before["pools"]["operations"]["history_reads"]
     );
+    // Pool idle counts change when asynchronous lease returns finish; elapsed
+    // uptime also says nothing about whether authentication built history.
+    let cache_stats = |mut stats: Value| {
+        let stats = stats.as_object_mut().unwrap();
+        stats.remove("pools");
+        stats.remove("uptime_seconds");
+        stats.clone()
+    };
+    assert_eq!(cache_stats(after), cache_stats(before));
     app.engine().unwrap().logout("web").unwrap();
     assert_eq!(
         web::auth::session_status(State(app), headers)
@@ -1099,15 +1193,23 @@ fn socket_batches_preserve_live_credential_scopes_and_skip_unrelated_events() {
         serde_json::from_str::<Value>(&frames[1]).unwrap()["kind"],
         "presence"
     );
+    let issuer_context = {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", issuer(&app)).parse().unwrap(),
+        );
+        Context::from_headers(&app.engine_read().unwrap(), &headers).unwrap()
+    };
     let scoped = app
         .engine()
         .unwrap()
         .issue_bot_credential(
-            &context,
+            &issuer_context,
             crate::bots::models::CredentialInput {
                 label: "batch-send-only".into(),
                 expires: crate::bots::now() + 100,
-                conversations: [visible.clone()].into(),
+                conversations: Some([visible.clone()].into()),
                 operations: ["send".into()].into(),
             },
         )

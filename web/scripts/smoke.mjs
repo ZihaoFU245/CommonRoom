@@ -169,7 +169,11 @@ async function connect(cookie, botToken = null, directBot = false) {
     error = e;
   });
   await until(() => error || client.snapshot, "initial WebSocket snapshot");
-  if (error) throw error;
+  if (error)
+    throw new Error(
+      `WebSocket ${botToken ? "bot" : "browser"} connection failed`,
+      { cause: error },
+    );
   return client;
 }
 async function send(
@@ -1560,12 +1564,37 @@ try {
   const botAdmin = await connect(await login("alice"));
   await send(botAdmin, "/bot new helper", "support");
   await send(botAdmin, "/bot token new helper runner");
-  const botSecret = botAdmin.frames
+  const issuerSecret = botAdmin.frames
     .find((f) => f.id === botAdmin.serial)
     .text.split("\n")
     .at(-1);
-  assert.match(botSecret, /^bot_[a-f0-9]{64}$/);
-  assert.ok(!logs.includes(botSecret));
+  assert.match(issuerSecret, /^bot_[a-f0-9]{64}$/);
+  assert.ok(!logs.includes(issuerSecret));
+  const workerResponse = await fetch(`${base}/api/bot/v1/credentials`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${issuerSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      label: "runner-worker",
+      expires: Math.floor(Date.now() / 1000) + 3600,
+      conversations: null,
+      operations: [
+        "read",
+        "send",
+        "react",
+        "read_ack",
+        "activity",
+        "config",
+        "commands",
+        "profile",
+      ],
+    }),
+  });
+  assert.equal(workerResponse.status, 200);
+  const runner = validate("CredentialResponse", await workerResponse.json());
+  const botSecret = runner.token;
   const botFetch = async (
     path,
     body,
@@ -1575,7 +1604,7 @@ try {
     const response = await fetch(`${base}/api/bot/v1/${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${botSecret}`,
+        Authorization: `Bearer ${path === "credentials" ? issuerSecret : botSecret}`,
         ...(body ? { "Content-Type": "application/json" } : {}),
         ...(key ? { "Idempotency-Key": key } : {}),
       },
@@ -1596,6 +1625,9 @@ try {
           reactions: "Ok",
           credentials: "CredentialResponse",
           conversations: "ConversationResponse",
+          "media/config": "MediaConfig",
+          color: "Ok",
+          avatars: "Ok",
         }[endpoint],
         value,
       );
@@ -1610,6 +1642,15 @@ try {
   const conversationId = baseline.value.conversations[0].id;
   const history = () => botFetch(`history?conversation_id=${conversationId}`);
   await botFetch("schema");
+  assert.equal((await botFetch("media/config")).status, 200);
+  assert.equal((await botFetch("color", { color: "blue" })).status, 200);
+  assert.equal((await botFetch("avatars", { url: null })).status, 200);
+  for (const path of ["/api/me", "/api/media/config", "/ws"]) {
+    const response = await fetch(`${base}${path}`, {
+      headers: { Authorization: `Bearer ${botSecret}`, Origin: origin },
+    });
+    assert.equal(response.status, 401, path);
+  }
   for (const [method, endpoint] of [
     ["GET", "me"],
     ["GET", "history"],
@@ -1643,6 +1684,32 @@ try {
   });
   const scopedSnapshot = validate("Snapshot", await scopedResponse.json());
   assert.equal(scopedSnapshot.conversations[0].permissions.send, false);
+  const scopedApi = new BotApi({ url: base, token: scoped.value.token });
+  validate("MediaConfig", await scopedApi.request("media/config"));
+  await assert.rejects(
+    scopedApi.request("color", { body: { color: "blue" } }),
+    (error) => error.code === "forbidden",
+  );
+  const profileToken = await botFetch("credentials", {
+    label: "appearance",
+    expires: Math.floor(Date.now() / 1000) + 600,
+    conversations: [],
+    operations: ["profile"],
+  });
+  assert.equal(profileToken.status, 200);
+  const profileApi = new BotApi({ url: base, token: profileToken.value.token });
+  assert.deepEqual(
+    await profileApi.request("color", { body: { color: "blue" } }),
+    { ok: true },
+  );
+  assert.deepEqual(
+    await profileApi.request("avatars", { body: { url: null } }),
+    { ok: true },
+  );
+  await assert.rejects(
+    profileApi.request("media/config"),
+    (error) => error.code === "forbidden",
+  );
   const scopedSocket = await connect(null, scoped.value.token, true);
   assert.equal(
     scopedSocket.frames.find((f) => f.kind === "snapshot").credential.id,
@@ -1879,11 +1946,10 @@ try {
   );
   const botReconnected = await connect(null, botSecret, true);
   await send(offlineAdmin, "/bot token ls helper");
-  const credentialId = offlineAdmin.frames
-    .find((f) => f.id === offlineAdmin.serial)
-    .text.split("\n")
-    .find((line) => line.includes(" runner created="))
-    .split(" ")[0];
+  const credentialId = JSON.parse(
+    offlineAdmin.frames.find((f) => f.id === offlineAdmin.serial).text,
+  ).find((credential) => credential.label === "runner-worker").id;
+  assert.equal(credentialId, runner.id);
   await send(offlineAdmin, `/bot token rm helper ${credentialId}`);
   await until(
     () => botReconnected.ws.readyState === WebSocket.CLOSED,
@@ -1931,10 +1997,29 @@ try {
   await send(operator, "/room add bob #pressure", null);
   await send(operator, "/bot new helper #pressure", null);
   await send(operator, "/bot token new helper controls", null);
-  const controlToken = operator.frames
+  const controlIssuer = operator.frames
     .find((frame) => frame.id === operator.serial)
     .text.split("\n")
     .at(-1);
+  const controlCredential = await fetch(`${base}/api/bot/v1/credentials`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${controlIssuer}`,
+      "Content-Type": "application/json",
+      "X-Forwarded-Proto": "https",
+    },
+    body: JSON.stringify({
+      label: "controls-worker",
+      expires: Math.floor(Date.now() / 1000) + 3600,
+      conversations: null,
+      operations: ["read", "send", "activity"],
+    }),
+  });
+  assert.equal(controlCredential.status, 200);
+  const controlToken = validate(
+    "CredentialResponse",
+    await controlCredential.json(),
+  ).token;
   const controls = [
     await connect(null, controlToken),
     await connect(null, controlToken),
@@ -1942,7 +2027,7 @@ try {
   const pressureId = controls[0].snapshot.conversations.find(
     (item) => item.view === "pressure",
   ).id;
-  for (let n = 0; n < 31; n++) {
+  for (let n = 0; n < 30; n++) {
     const client = controls[n % 2];
     const start = client.frames.length;
     client.ws.send(
@@ -1964,7 +2049,8 @@ try {
     const result = client.frames
       .slice(start)
       .find((frame) => frame.kind === "config_ack" || frame.kind === "error");
-    if (n < 30) assert.equal(result.kind, "config_ack");
+    // Issuing the worker consumed one account input in this window.
+    if (n < 29) assert.equal(result.kind, "config_ack");
     else assert.equal(result.error.code, "rate_limited");
   }
   const chargedHttp = await fetch(`${base}/api/bot/v1/messages`, {

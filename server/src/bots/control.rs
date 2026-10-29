@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 // Browser-local controls, password/provisioning jobs and worker administration
 // remain on their own authenticated control paths, outside model command tools.
-fn supported_command(name: &str) -> bool {
+pub(crate) fn supported_command(name: &str) -> bool {
     matches!(
         name,
         "/user"

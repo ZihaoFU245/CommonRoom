@@ -288,9 +288,34 @@ outside or press Escape to close it.
 
 ## Bot management
 
-Lifecycle and credential subcommands require global admins, su or stdin. `/bot new name` defaults to the selected room; Console/stdin default to `@global`; private views require an explicit room or `@global`. Creation grants an explicit safe participant set, without the ordinary user bundle's settings/retraction privileges. `/bot ls [scope]` and `/bot info name [scope]` use the same scope rules. `/bot rm name @global` deletes the account and credentials; use /room kick to remove room participation.
+Lifecycle and credential subcommands require global admins, su or stdin.
 
-Credentials are account-wide: `/bot token new name label` shows a secret once, `/bot token ls name` lists IDs/labels/creation times, and `/bot token rm name id` revokes one. Token management requires x:bot.credentials and respects protected-su targets. Use /man bot or [Bots](bots.md) for the full contract. Configure workers using their advertised chat commands, such as `@helper /config get` and `@helper /config set key "value"`. The worker enforces its owner/admin policy; /bot does not launch agents.
+```text
+/bot ls [#room|@global]
+/bot new <bot name> [#room|@global]
+/bot info <bot name> [#room|@global]
+/bot owner <bot name> <user name>
+/bot rm <bot name> @global
+/bot token new <bot name> <label>
+/bot token ls <bot name>
+/bot token rm <credential id>
+/bot token rm <bot name> <credential id>
+```
+
+Scope defaults to the selected room; Console/stdin default to `@global`; private
+views require an explicit room or `@global`. Creation grants a safe participant
+set without settings/retraction privileges. Deletion removes the account, every
+issuer/worker credential and retry receipt; `/room kick` removes only membership.
+Tab completion offers registered bots for bot targets and accounts for a new owner.
+
+`token new` returns an issuer secret once. It can only obtain expiring worker
+tokens through `POST /api/bot/v1/credentials`. Issuance checks requested scopes and
+operations against current account permissions. `token ls` returns a JSON array with kind, ID, label,
+creation/expiry times and scopes; `token rm` revokes either kind. Token management
+requires `x:bot.credentials` and respects protected-su targets. Use `/man bot` or
+[Bots](bots.md) for the full contract. Workers expose configuration through their
+advertised chat commands, such as `@helper /config get`; they enforce owner/admin
+policy. `/bot` does not launch agents.
 
 ## Markdown messages
 
@@ -479,3 +504,9 @@ browser. When off, users with URL avatars show no avatar and make no image reque
 managed uploads remain visible. Enabling it lets external image hosts receive your
 IP address and serve images without the managed upload size limit. Turning it off
 immediately hides URL avatars across the current page.
+
+Bot credential dates render in the browser’s local timezone. `/bot token rm`
+completion shows the bot name, credential label and kind, and inserts its ID.
+The bot-qualified form remains available. Token IDs/labels are included in
+completion only for credentials the current viewer is authorized to manage;
+secrets and digests are never included. Explicit bot room scopes require `#`.

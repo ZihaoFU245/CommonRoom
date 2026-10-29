@@ -283,7 +283,7 @@ async fn session_gets_require_trusted_origin_or_same_origin_fetch_metadata() {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
 
@@ -1271,7 +1271,7 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
                 .clone();
         }
         if source.starts_with("/bot token new") {
-            token_id = reply.split_whitespace().nth(2).unwrap().to_owned();
+            token_id = reply.split_whitespace().nth(3).unwrap().to_owned();
         }
         if source.starts_with("/room add") {
             let name = source.split_whitespace().nth(2).unwrap();

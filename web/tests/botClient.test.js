@@ -367,3 +367,47 @@ test("long output recovery retains the entire original batch when the model chan
       "🙂".repeat(8100),
     );
   }));
+
+test("media/profile calls validate v1 payloads and return redirects without forwarding credentials", async () => {
+  const calls = [];
+  const api = new BotApi({
+    url: "https://chat.example.com/chat/",
+    token: "secret",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      assert.ok(url.pathname.startsWith("/chat/api/bot/v1/"));
+      assert.equal(options.redirect, "manual");
+      if (url.pathname.endsWith("/file"))
+        return new Response(null, {
+          status: 307,
+          headers: {
+            Location: "https://storage.example/signed?signature=secret",
+          },
+        });
+      if (url.pathname.endsWith("/media/config"))
+        return Response.json({ enabled: true, max_size: 26214400 });
+      return Response.json({ ok: true });
+    },
+  });
+  assert.equal((await api.request("media/config")).enabled, true);
+  await api.request("color", { body: { color: "blue" } });
+  await api.request("avatars", { body: { url: null } });
+  assert.equal(
+    await api.request("media/upload-id/file"),
+    "https://storage.example/signed?signature=secret",
+  );
+  assert.equal(calls.length, 4);
+  assert.equal(calls[3].options.headers.Authorization, "Bearer secret");
+  for (const path of [
+    "/api/me",
+    "../me",
+    "https://storage.example/file",
+    "../../../../api/media/id/file",
+  ])
+    await assert.rejects(api.request(path), /Bot requests must stay/);
+  await assert.rejects(
+    api.request("color", { body: { color: "invalid" } }),
+    /Invalid ColorRequest/,
+  );
+  assert.equal(calls.length, 4);
+});

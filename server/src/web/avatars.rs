@@ -1,3 +1,4 @@
+use super::media::Access;
 use super::*;
 use axum::{
     extract::{Path, State},
@@ -19,13 +20,12 @@ fn storage(app: &App) -> Result<Arc<crate::media::MediaStorage>, ApiError> {
 pub(crate) struct SetAvatar {
     url: Option<String>,
 }
-pub(crate) async fn set(
+pub(crate) async fn set_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Json(input): Json<SetAvatar>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
-    super::profiles::update(&app, headers, super::profiles::Update::Avatar(input.url)).await?;
+    super::profiles::update(&app, access, super::profiles::Update::Avatar(input.url)).await?;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
@@ -34,19 +34,18 @@ pub(crate) struct Upload {
     size: u64,
     upload_id: Option<String>,
 }
-pub(crate) async fn allocate(
+pub(crate) async fn allocate_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let worker = app.clone();
     let (storage, media) = tokio::spawn(async move {
         let _permit = permit;
-        let (identity, _) = super::media::native_context(&worker, headers).await?;
+        let (identity, _) = super::media::native_context(&worker, access).await?;
         let storage = storage(&worker)?;
         let ordering = worker.mutations.conversations(vec![]).await?;
         let pending = worker
@@ -94,18 +93,17 @@ pub(crate) async fn allocate(
         json!({"media_id":media.id,"upload":{"method":"PUT","url":url,"headers":{"Content-Type":"application/octet-stream"},"expires_in":300}}),
     ))
 }
-pub(crate) async fn complete(
+pub(crate) async fn complete_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
     let storage = storage(&app)?;
-    owner(&app, &headers, id.clone()).await?;
+    owner(&app, &access, id.clone()).await?;
     let object_lock = storage
         .lock_media(&id)
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    let mut media = owner(&app, &headers, id).await?;
+    let mut media = owner(&app, &access, id).await?;
     if !media.ready {
         tokio::time::timeout(
             std::time::Duration::from_secs(100),
@@ -123,7 +121,7 @@ pub(crate) async fn complete(
     let id = media.id.clone();
     super::profiles::update(
         &app,
-        headers,
+        access,
         super::profiles::Update::Complete(media, object_lock),
     )
     .await?;
@@ -131,46 +129,44 @@ pub(crate) async fn complete(
         json!({"ok":true,"media_id":id,"path":crate::engine::avatars::avatar_path(&id)}),
     ))
 }
-pub(crate) async fn info(
+pub(crate) async fn info_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin_or_bot(&app, &headers)?;
-    let media = readable(&app, &headers, id).await?;
+    let media = readable(&app, &access, id).await?;
     Ok(Json(
         json!({"size":media.size,"content_type":media.content_type,"filename":media.filename}),
     ))
 }
-pub(crate) async fn download(
+pub(crate) async fn download_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: Access,
     Path(id): Path<String>,
 ) -> Result<Redirect, ApiError> {
-    security::check_read_origin_or_bot(&app, &headers)?;
     let storage = storage(&app)?;
-    let avatar = readable(&app, &headers, id).await?;
+    let avatar = readable(&app, &access, id).await?;
     let url = storage
         .download_url(&avatar, false)
         .await
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign avatar URL."))?;
-    readable(&app, &headers, avatar.id).await?;
+    readable(&app, &access, avatar.id).await?;
     Ok(Redirect::temporary(&url))
 }
 
 async fn owner(
     app: &App,
-    headers: &HeaderMap,
+    access: &Access,
     id: String,
 ) -> Result<crate::engine::media::Media, ApiError> {
     let permit = app
         .io_permit()
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let app = app.clone();
-    let headers = headers.clone();
+    let access = access.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        let (identity, store) = super::media::native_context(&app, headers).await?;
+        let (identity, store) = super::media::native_context(&app, access).await?;
         let media = store.load(&id).await?.0;
         app.inspect_engine(move |engine, _| -> Result<_, ApiError> {
             super::media::verify_identity(&identity, engine)?;
@@ -189,18 +185,18 @@ async fn owner(
 }
 async fn readable(
     app: &App,
-    headers: &HeaderMap,
+    access: &Access,
     id: String,
 ) -> Result<crate::engine::media::Media, ApiError> {
     let permit = app
         .io_permit()
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let app = app.clone();
-    let headers = headers.clone();
+    let access = access.clone();
     tokio::spawn(async move {
         let _permit = permit;
         for _ in 0..2 {
-            let (identity, store) = super::media::native_context(&app, headers.clone()).await?;
+            let (identity, store) = super::media::native_context(&app, access.clone()).await?;
             let media = store
                 .load(&id)
                 .await
@@ -212,7 +208,11 @@ async fn readable(
                     move |engine, _| -> Result<_, ApiError> {
                         super::media::verify_identity(&identity, engine)?;
                         let visibility = engine
-                            .avatar_read_plan(&identity.user, &media)
+                            .avatar_read_plan_scoped(
+                                &identity.user,
+                                &media,
+                                identity.avatar_conversations(engine)?,
+                            )
                             .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?;
                         let ids = visibility.history_ids().map(str::to_owned).collect();
                         let stamp = engine.delivery_stamp(&identity.user, &ids, false)?;
@@ -234,7 +234,11 @@ async fn readable(
                         return Ok(None);
                     }
                     engine
-                        .avatar_read_plan(&identity.user, &media)
+                        .avatar_read_plan_scoped(
+                            &identity.user,
+                            &media,
+                            identity.avatar_conversations(engine)?,
+                        )
                         .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?;
                     if !visible {
                         return Err(error(StatusCode::NOT_FOUND, "Avatar not found."));
@@ -264,3 +268,58 @@ async fn readable(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "avatar_tests.rs"]
 mod tests;
+
+pub(crate) async fn set(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<SetAvatar>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    set_as(
+        State(app),
+        super::media::Access::Browser(headers),
+        Json(input),
+    )
+    .await
+}
+
+pub(crate) async fn allocate(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<Upload>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    allocate_as(
+        State(app),
+        super::media::Access::Browser(headers),
+        Json(input),
+    )
+    .await
+}
+
+pub(crate) async fn complete(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    complete_as(State(app), super::media::Access::Browser(headers), Path(id)).await
+}
+
+pub(crate) async fn info(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    info_as(State(app), super::media::Access::Browser(headers), Path(id)).await
+}
+
+pub(crate) async fn download(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Redirect, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    download_as(State(app), super::media::Access::Browser(headers), Path(id)).await
+}

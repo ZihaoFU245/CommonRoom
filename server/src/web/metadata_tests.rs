@@ -247,14 +247,9 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
             .await
             .is_err()
     );
-    command(
-        &app,
-        "alice",
-        None,
-        &format!("/bot token rm native {credential}"),
-    )
-    .await
-    .unwrap();
+    command(&app, "alice", None, &format!("/bot token rm {credential}"))
+        .await
+        .unwrap();
     assert!(app.engine_read().unwrap().bot_identity(secret).is_none());
     command(&app, "alice", None, "/bot rm native @global")
         .await

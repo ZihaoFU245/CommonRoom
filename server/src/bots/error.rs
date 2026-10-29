@@ -109,3 +109,22 @@ impl From<Error> for crate::engine::EngineError {
         }
     }
 }
+
+impl From<crate::web::ApiError> for Error {
+    fn from(error: crate::web::ApiError) -> Self {
+        let code = match error.0 {
+            StatusCode::UNAUTHORIZED => Code::Unauthorized,
+            StatusCode::FORBIDDEN => Code::Forbidden,
+            StatusCode::NOT_FOUND => Code::NotFound,
+            StatusCode::CONFLICT => Code::Conflict,
+            StatusCode::PAYLOAD_TOO_LARGE => Code::PayloadTooLarge,
+            StatusCode::TOO_MANY_REQUESTS => Code::RateLimited,
+            status if status.is_server_error() => Code::Unavailable,
+            _ => Code::InvalidRequest,
+        };
+        Self::new(
+            code,
+            error.1.0["error"].as_str().unwrap_or("Request failed."),
+        )
+    }
+}

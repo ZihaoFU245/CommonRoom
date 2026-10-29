@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { api, sendFrame, ApiError, isUnauthorized } from "../src/api/client.ts";
 
-test("HTTP client preserves base paths, cookies, cancellation and validates responses", async (t) => {
+function httpFixture(t) {
   const originalFetch = globalThis.fetch,
     originalDocument = globalThis.document;
   t.after(() => {
@@ -11,6 +11,10 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
     else globalThis.document = originalDocument;
   });
   globalThis.document = { baseURI: "https://example.com/commonroom/" };
+}
+
+test("HTTP client preserves base paths, cookies, cancellation and validates responses", async (t) => {
+  httpFixture(t);
   let request;
   globalThis.fetch = async (url, options) => {
     request = { url: String(url), options };
@@ -91,14 +95,7 @@ test("outbound frames retain the request ID and Unicode text", () => {
 });
 
 test("history color data is requested only with an explicit opt-in", async (t) => {
-  const originalFetch = globalThis.fetch,
-    originalDocument = globalThis.document;
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-    if (originalDocument === undefined) delete globalThis.document;
-    else globalThis.document = originalDocument;
-  });
-  globalThis.document = { baseURI: "https://example.com/commonroom/" };
+  httpFixture(t);
   const requests = [];
   globalThis.fetch = async (_url, options) => {
     requests.push(options);
@@ -117,4 +114,38 @@ test("history color data is requested only with an explicit opt-in", async (t) =
   assert.equal(requests[0].headers?.["X-Chat-Name-Colors"], undefined);
   assert.equal(requests[1].headers["X-Chat-Name-Colors"], "1");
   assert.equal(requests[2].headers?.["X-Chat-Name-Colors"], undefined);
+});
+
+test("command directory pagination preserves cancellation and rejects stuck cursors", async (t) => {
+  httpFixture(t);
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return Response.json(
+      url.searchParams.has("after")
+        ? { conversations: [{ conversation_id: "b", bots: [] }], next: null }
+        : { conversations: [{ conversation_id: "a", bots: [] }], next: "a" },
+    );
+  };
+  const controller = new AbortController();
+  assert.deepEqual(
+    (await api.botCommands(controller.signal)).conversations.map(
+      (entry) => entry.conversation_id,
+    ),
+    ["a", "b"],
+  );
+  assert.equal(
+    urls[1],
+    "https://example.com/commonroom/api/bot-commands?after=a",
+  );
+  globalThis.fetch = async () =>
+    Response.json({ conversations: [], next: "a" });
+  await assert.rejects(
+    api.botCommands(controller.signal),
+    /cursor did not advance/,
+  );
+  controller.abort();
+  await assert.rejects(api.botCommands(controller.signal), {
+    name: "AbortError",
+  });
 });

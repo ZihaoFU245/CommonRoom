@@ -1,6 +1,6 @@
 //! Native profile writes keep account ordering through committed publication.
+use super::media::Access;
 use super::*;
-use axum::http::HeaderMap;
 
 pub(super) enum Update {
     Avatar(Option<String>),
@@ -13,18 +13,14 @@ pub(super) enum Update {
         tokio::sync::OwnedMutexGuard<()>,
     ),
 }
-pub(super) async fn update(
-    app: &App,
-    headers: HeaderMap,
-    update: Update,
-) -> Result<bool, ApiError> {
+pub(super) async fn update(app: &App, access: Access, update: Update) -> Result<bool, ApiError> {
     let permit = app
         .io_permit()
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let app = app.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        let (identity, store) = super::media::native_context(&app, headers).await?;
+        let (identity, store) = super::media::native_context(&app, access).await?;
         let ordering = app
             .mutations
             .conversation(format!("account:{}", identity.account))
@@ -42,6 +38,12 @@ pub(super) async fn update(
                 let identity = identity.clone();
                 move |engine| -> Result<_, ApiError> {
                     super::media::verify_identity(&identity, engine)?;
+                    if let Update::Color {
+                        room: Some(room), ..
+                    } = &update
+                    {
+                        identity.permit_conversation(engine, room)?;
+                    }
                     Ok(match update {
                         Update::Avatar(value) => (
                             engine.prepare_avatar_set(&identity.user, value.as_deref())?,

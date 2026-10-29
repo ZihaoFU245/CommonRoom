@@ -1,6 +1,6 @@
 //! Bot lifecycle is a thin extension of the engine's ordinary account and grants.
 use super::*;
-use crate::bots::models::{Credential, Registration};
+use crate::bots::models::{Credential, CredentialKind, Registration};
 use authorization::{Action, Grant, Group, Scope, Subject};
 
 const DEFAULT_ACTIONS: &[Action] = &[
@@ -16,8 +16,72 @@ const DEFAULT_COMMANDS: &[&str] = &[
 ];
 
 impl Engine {
+    pub(super) fn bot_credential_hints(
+        &self,
+        viewer: &str,
+    ) -> Vec<crate::bots::models::CredentialHint> {
+        if self.require_bot_management(Some(viewer), None).is_err()
+            || self
+                .require_target_command(Some(viewer), &Scope::Server, "/bot")
+                .is_err()
+        {
+            return Vec::new();
+        }
+        self.data
+            .users
+            .iter()
+            .filter_map(|(name, account)| {
+                let registration = self.data.bots.get(&account.id)?;
+                self.account_target(Some(viewer), name, Action::BotCredentials)
+                    .ok()?;
+                Some((name, registration))
+            })
+            .flat_map(|(name, registration)| {
+                registration
+                    .tokens
+                    .iter()
+                    .map(|(id, token)| crate::bots::models::CredentialHint {
+                        id: id.clone(),
+                        bot: name.clone(),
+                        label: token.label.clone(),
+                        kind: token.kind,
+                    })
+            })
+            .collect()
+    }
+
     pub(crate) fn bot_credential(&self, account: &str, credential: &str) -> Option<&Credential> {
         self.data.bots.get(account)?.tokens.get(credential)
+    }
+
+    pub(super) fn bot_completion_names(&self, viewer: &str) -> Vec<String> {
+        if !(self.is_su(Some(viewer)) || self.has_group(Some(viewer), Group::Admin)) {
+            return Vec::new();
+        }
+        let global = self.require_bot_management(Some(viewer), None).is_ok()
+            && self
+                .require_target_command(Some(viewer), &Scope::Server, "/bot")
+                .is_ok();
+        self.data
+            .users
+            .iter()
+            .filter(|(name, account)| {
+                self.data.bots.contains_key(&account.id)
+                    && (global
+                        || self.data.rooms.iter().any(|(room_name, room)| {
+                            let scope = Scope::Room(room.id.clone());
+                            room.members.contains(*name)
+                                && self
+                                    .require_bot_management(Some(viewer), Some(room_name))
+                                    .is_ok()
+                                && self
+                                    .require_target_command(Some(viewer), &scope, "/bot")
+                                    .is_ok()
+                                && self.allows(Some(viewer), &scope, Action::Members)
+                        }))
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     pub(crate) fn bot_owner_id(&self, account: &str) -> Option<&str> {
@@ -72,6 +136,8 @@ impl Engine {
         Ok(())
     }
 
+    /// Legacy account credential lookup for bot administration and tests.
+    /// Browser authentication is session-only; operational workers use Context.
     pub fn bot_identity(&self, secret: &str) -> Option<String> {
         if secret.len() != 68 || !secret.starts_with("bot_") {
             return None;
@@ -104,6 +170,15 @@ impl Engine {
             _ => Err(
                 "Bot commands need a room or @global; specify the scope in private views.".into(),
             ),
+        }
+    }
+
+    fn bot_scope_label(&self, scope: &Scope) -> String {
+        let label = self.scope_label(scope);
+        if matches!(scope, Scope::Room(_)) {
+            format!("#{label}")
+        } else {
+            label
         }
     }
 
@@ -159,6 +234,26 @@ impl Engine {
         parts: &[&str],
     ) -> Result<(String, Option<MetadataChange>), EngineError> {
         self.require_bot_management(actor, view)?;
+        if let [_, "token", "rm", token_id] = parts {
+            self.require_target_command(actor, &Scope::Server, "/bot")?;
+            let mut owners = self.data.users.iter().filter(|(name, account)| {
+                self.data
+                    .bots
+                    .get(&account.id)
+                    .is_some_and(|bot| bot.tokens.contains_key(*token_id))
+                    && self
+                        .account_target(actor, name, Action::BotCredentials)
+                        .is_ok()
+            });
+            let name = owners
+                .next()
+                .map(|(name, _)| name.clone())
+                .ok_or("Credential not found.")?;
+            if owners.next().is_some() {
+                return Err("Credential ID is ambiguous; specify the bot name.".into());
+            }
+            return self.apply_bot_metadata(actor, view, &["/bot", "token", "rm", &name, token_id]);
+        }
         if let Some(result) = self.query_bot_command(actor, view, parts) {
             return result.map(|reply| (reply, None));
         }
@@ -240,11 +335,7 @@ impl Engine {
                         })
                         .map(|(name, _)| name.as_str())
                         .collect();
-                    Ok(format!(
-                        "Bot connections at {}: {}",
-                        self.scope_label(&scope),
-                        names.join(", ")
-                    ))
+                    Ok(names.join("\n"))
                 }
                 [_, "info", name] | [_, "info", name, _] => {
                     let scope = self.bot_scope(view, parts.get(3).copied())?;
@@ -280,7 +371,7 @@ impl Engine {
                         .join(", ");
                     Ok(format!(
                         "{name} ({id}) at {}\nOwner: {}\nDisabled: {}\nConnected: {}\nPermissions: {}\nCommands: {commands}",
-                        self.scope_label(&scope),
+                        self.bot_scope_label(&scope),
                         self.bot_owner(&id)
                             .unwrap_or_else(|| "administrators".into()),
                         !self.active(name),
@@ -292,19 +383,14 @@ impl Engine {
                     let id = self.registered_id(name)?;
                     self.account_target(actor, name, Action::BotCredentials)?;
                     self.require_target_command(actor, &Scope::Server, "/bot")?;
-                    let lines = self.data.bots[&id]
-                        .tokens
-                        .iter()
-                        .map(|(id, t)| format!("{id} {} created={}", t.label, t.created))
+                    let entries = self.data.bots[&id].tokens.iter().map(|(id,t)|
+                        serde_json::json!({"id":id,"label":t.label,"kind":t.kind,"created":t.created,
+                            "expires":t.expires,"conversations":t.conversations,"operations":t.operations}))
                         .collect::<Vec<_>>();
-                    Ok(format!(
-                        "Account-wide credentials for {name}:\n{}",
-                        lines.join("\n")
-                    ))
+                    serde_json::to_string(&entries).map_err(EngineError::from)
                 }
                 _ => Err(
-                    "Usage: /bot ls [room|@global] | info name [room|@global] | token ls name"
-                        .into(),
+                    "Usage: /bot ls [#room|@global] | info <bot name> [#room|@global] | token ls <bot name>".into(),
                 ),
             }
         })())
@@ -362,7 +448,7 @@ impl Engine {
                     room.members.insert((*name).into());
                 }
                 self.audit(actor, "/bot new", name);
-                Ok(format!("Created bot connection for {name} at {}. Read/send/reply/react and manuals granted; settings and deletion excluded. Issue an account-wide credential with /bot token new {name} LABEL.", self.scope_label(&scope)))
+                Ok(format!("Created bot connection for {name} at {}. Read/send/reply/react and manuals granted; settings and deletion excluded. Issue an issuer token with /bot token new {name} LABEL.", self.bot_scope_label(&scope)))
             }
             [_, "owner", name, owner] => {
                 let id = self.registered_id(name)?;
@@ -383,9 +469,9 @@ impl Engine {
                 if registration.tokens.values().any(|t| t.label == *label) { return Err("Credential label already exists.".into()); }
                 let token_id = uuid::Uuid::new_v4().to_string();
                 let secret = format!("bot_{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-                registration.tokens.insert(token_id.clone(), Credential { label: (*label).into(), digest: crate::bots::digest(&secret), created: now(), expires: None, conversations: None, operations: None });
+                registration.tokens.insert(token_id.clone(), Credential { kind: CredentialKind::Issuer, label: (*label).into(), digest: crate::bots::digest(&secret), created: now(), expires: None, conversations: None, operations: None });
                 self.audit(actor, "/bot token new", name);
-                Ok(format!("Account-wide credential {token_id} for {name}; save now, shown once:\n{secret}"))
+                Ok(format!("Bot issuer token {token_id} for {name}; save now, shown once:\n{secret}"))
             }
             [_, "token", "rm", name, token_id] => {
                 let id = self.registered_id(name)?;
@@ -393,9 +479,9 @@ impl Engine {
                 self.require_target_command(actor, &Scope::Server, "/bot")?;
                 self.data.bots.get_mut(&id).ok_or("Bot not found.")?.tokens.remove(*token_id).ok_or("Credential not found.")?;
                 self.audit(actor, "/bot token rm", name);
-                Ok(format!("Revoked account-wide credential {token_id} for {name}."))
+                Ok(format!("Revoked credential {token_id} for {name}."))
             }
-            _ => Err("Usage: /bot new name [room|@global] | ls [room|@global] | info name [room|@global] | owner name user | rm name @global | token new name label | token ls name | token rm name id".into()),
+            _ => Err("Usage: /bot ls [#room|@global] | new <bot name> [#room|@global] | info <bot name> [#room|@global] | owner <bot name> <user name> | rm <bot name> @global | token new <bot name> <label> | token ls <bot name> | token rm <credential id> | token rm <bot name> <credential id>".into()),
         }
     }
 }

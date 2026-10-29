@@ -670,47 +670,62 @@ const OWNERSHIP: &str = r#"# Room ownership
 
 const BOT: &str = r#"# /bot
 
-- Manage bot accounts, tokens and external runtime settings.
-- `[scope]` and `[key]` are optional.
+- Manage bot accounts and their issuer/worker credentials.
 
-## Accounts
+## Usage
 
-- `/bot new name [scope]` — create a bot with read/send/reply/react and manual access.
-- `/bot ls [scope]` — list bots; a room scope filters by membership.
-- `/bot info name [scope]` — show owner, status, connections and permissions.
-- `/bot owner name user` — assign the bot owner by stable account identity.
-- `/bot rm name @global` — delete the account and its tokens.
+```text
+/bot ls [#room|@global]
+/bot new <bot name> [#room|@global]
+/bot info <bot name> [#room|@global]
+/bot owner <bot name> <user name>
+/bot rm <bot name> @global
+/bot token new <bot name> <label>
+/bot token ls <bot name>
+/bot token rm <credential id>
+/bot token rm <bot name> <credential id>
+```
 
-- Scope defaults to the current room; Console/stdin use `@global`.
-- In private views, specify a room or `@global`.
-- Use `@global` explicitly to select global scope from a room.
+- `<...>` marks a required value; `[...]` marks an optional value.
 
-## Tokens
+## Subcommands
 
-- `/bot token new name label` — issue a token; save the secret shown once.
-- `/bot token ls name` — list token IDs and labels.
-- `/bot token rm name token-id` — revoke a token and disconnect its sockets.
+- `ls`: list registered bot names; a room scope filters by membership.
+- `new`: create a bot account with read/send/reply/react and manual access.
+- `info`: show stable identity, owner, status, connections and effective permissions.
+- `owner`: assign an active account as the bot's owner.
+- `rm`: delete the bot account, all its issuer and worker credentials, and retry receipts.
+- `token`: issue, inspect or revoke credentials; listing never reveals a token secret.
 
-- Tokens follow the account's current grants.
+## Credentials
 
-- Configure an online worker through its advertised chat commands, such as `@helper /config get` and `@helper /config set prompt "Help with Rust questions."`.
-- The worker validates settings and enforces its owner/admin policy.
+- `/bot token new` issues an issuer-only bot token, shown once. It can only call `POST /api/bot/v1/credentials` to obtain worker tokens.
+- Worker requests must explicitly specify expiry, operations and conversation scope. Expiry must be in the next 24 hours.
+- Issuance rejects capabilities the bot account cannot currently perform in the requested scope. Account permissions are also rechecked during use.
+- Use conversation ID arrays for scoped workers. Explicit `conversations:null` delegates the account's live scope and is required for native commands or conversation creation.
+- Workers cannot issue other tokens. Existing issuer tokens cannot read history, send messages, use media/profile endpoints or open sockets.
+- `token ls` returns a JSON array with credential type, ID, label, expiry and scopes; the browser displays dates in local time.
+- `token rm ID` revokes either type; the bot-qualified form also works. Tab completion shows bot names and labels while inserting IDs. Active sockets are disconnected.
+- Deleting a bot revokes every credential belonging to it. Ownership by itself does not authorize server bot management.
 
-## Permissions
+## Scope and permissions
 
-- Every operation needs `/bot` command access in its context and target.
-- Accounts/tokens: global admin, su or stdin; ordinary account/scope permissions also apply. Tokens require `x:bot.credentials`.
-
-- Use `/grant`, `/revoke`, `/room add`, `/room kick`, `/user disable`, `/user enable` and `/user rename` as for any user.
+- Scope defaults to the selected room; Console/stdin use `@global`. In private views, specify a room or `@global`.
+- Bot management requires global admin, su or stdin, plus `/bot` and the matching account/scope permissions. Token management requires `x:bot.credentials`.
+- Use ordinary `/grant`, `/revoke`, `/room add`, `/room kick`, `/user disable`, `/user enable` and `/user rename` commands to manage the bot's authority.
+- Configure a worker through its advertised mention commands, such as `@helper /config get`; the worker enforces its own owner/admin policy.
 
 ## Examples
 
 ```text
 /bot new helper #support
-/bot token new helper worker
-@helper /config set prompt "Help with Rust questions."
-@helper /config get
-```"#;
+/bot token new helper issuer
+/bot token ls helper
+/bot info helper #support
+/bot owner helper alice
+/bot rm helper @global
+```
+"#;
 
 const SYSTEM: &str = r#"# /system
 

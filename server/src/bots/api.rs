@@ -41,7 +41,28 @@ pub(super) fn routes() -> Router<App> {
                 .route("/read", post(read))
                 .route("/reactions", put(react))
                 .route("/ws", get(upgrade))
-                .route("/schema", get(schema)),
+                .route("/schema", get(schema))
+                .route("/media/config", get(super::media::media_config))
+                .route("/media/uploads", post(super::media::media_allocate))
+                .route(
+                    "/media/uploads/{id}/complete",
+                    post(super::media::media_complete),
+                )
+                .route(
+                    "/media/uploads/{id}/abandon",
+                    post(super::media::media_abandon),
+                )
+                .route("/media/{id}/info", get(super::media::media_info))
+                .route("/media/{id}/file", get(super::media::media_download))
+                .route("/avatars", post(super::media::avatar_set))
+                .route("/avatars/uploads", post(super::media::avatar_allocate))
+                .route(
+                    "/avatars/uploads/{id}/complete",
+                    post(super::media::avatar_complete),
+                )
+                .route("/avatars/{id}/info", get(super::media::avatar_info))
+                .route("/avatars/{id}/file", get(super::media::avatar_download))
+                .route("/color", post(super::media::color_set)),
         )
         .layer(axum::extract::DefaultBodyLimit::max(32768))
 }
@@ -271,13 +292,16 @@ async fn credential(
     let permit = app.io_permit().map_err(Error::storage)?;
     tokio::spawn(async move {
         let _permit = permit;
-        let context = Context::authenticate_async(&app, &headers).await?;
+        let context = Context::authenticate_issuer_async(&app, &headers).await?;
         let ordering = app.mutations.metadata().await;
         let (result, pending) = app
             .with_metadata(&ordering, {
                 let context = context.clone();
                 move |engine| {
-                    admit(engine, &context)?;
+                    context.issuer(engine)?;
+                    engine
+                        .admit_bot_account(&context.account)
+                        .map_err(|cause| Error::new(Code::RateLimited, cause))?;
                     engine.prepare_bot_credential(&context, input)
                 }
             })
@@ -285,7 +309,7 @@ async fn credential(
         let pending = pending.save().await?;
         let changes = app.changes.clone();
         app.with_metadata(&ordering, move |engine| -> Result<_, Error> {
-            let delivery = context.user(engine);
+            let delivery = context.issuer(engine);
             engine.publish_metadata(pending)?;
             let _ = changes.send(Change::Metadata(engine.metadata_change()));
             delivery?;

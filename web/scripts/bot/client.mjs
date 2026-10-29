@@ -37,13 +37,29 @@ export class BotApi {
       signal,
     } = {},
   ) {
-    const endpoint = path.split("?")[0];
+    const target = new URL(path, this.base);
+    if (
+      target.origin !== this.base.origin ||
+      !target.pathname.startsWith(this.base.pathname)
+    )
+      throw new Error("Bot requests must stay under /api/bot/v1/.");
+    const endpoint = path
+      .split("?")[0]
+      .replace(
+        /^(media|avatars)\/uploads\/[^/]+\/(complete|abandon)$/,
+        "$1/uploads/:id/$2",
+      )
+      .replace(/^(media|avatars)\/[^/]+\/(info|file)$/, "$1/:id/$2");
     const requests = {
       messages: "MessageRequest",
       read: "ReadRequest",
       reactions: "ReactionRequest",
       credentials: "CredentialRequest",
       conversations: "ConversationRequest",
+      "media/uploads": "MediaUploadRequest",
+      "avatars/uploads": "AvatarUploadRequest",
+      avatars: "AvatarRequest",
+      color: "ColorRequest",
     };
     const responses = {
       me: "Snapshot",
@@ -53,6 +69,16 @@ export class BotApi {
       reactions: "Ok",
       credentials: "CredentialResponse",
       conversations: "ConversationResponse",
+      "media/config": "MediaConfig",
+      "media/uploads": "UploadResponse",
+      "media/uploads/:id/complete": "MediaResponse",
+      "media/uploads/:id/abandon": "Ok",
+      "media/:id/info": "MediaInfo",
+      "avatars/uploads": "UploadResponse",
+      "avatars/uploads/:id/complete": "AvatarCompleteResponse",
+      "avatars/:id/info": "AvatarInfo",
+      avatars: "Ok",
+      color: "Ok",
     };
     if (body !== undefined) validate(requests[endpoint], body);
     if (endpoint === "messages") validate("IdempotencyKey", key);
@@ -64,8 +90,9 @@ export class BotApi {
       endpoint === "reactions";
     for (let attempt = 0; ; attempt++) {
       try {
-        const response = await this.fetch(new URL(path, this.base), {
+        const response = await this.fetch(target, {
           method,
+          redirect: "manual",
           headers: {
             Authorization: `Bearer ${this.token}`,
             ...(body ? { "Content-Type": "application/json" } : {}),
@@ -76,6 +103,22 @@ export class BotApi {
             ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
             : AbortSignal.timeout(15000),
         });
+        if (
+          response.status === 307 &&
+          /^(media|avatars)\/:id\/file$/.test(endpoint)
+        ) {
+          const location = response.headers.get("location");
+          if (!location) throw new Error("Missing media redirect URL.");
+          const url = new URL(location);
+          if (
+            !["http:", "https:"].includes(url.protocol) ||
+            url.username ||
+            url.password
+          )
+            throw new Error("Invalid media redirect URL.");
+          // Return the signed URL; callers fetch storage without this.token.
+          return url.href;
+        }
         let value;
         try {
           value = await response.json();
@@ -433,6 +476,7 @@ export class AgentClient {
                     JSON.stringify(
                       validate("ClientFrame", {
                         kind: "commands_response",
+                        expires_in: 300,
                         id: frame.id,
                         commands: [],
                       }),

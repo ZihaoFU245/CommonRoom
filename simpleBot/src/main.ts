@@ -1,10 +1,11 @@
-import { startupOptions, requireShellPermission } from "./startup.ts";
+import { requireShellPermission, startupOptions } from "./startup.ts";
 // Deno entrypoint. BOT_STORAGE selects the KV database; old JSON checkpoints
 // are ignored. CHAT_DATA relocates the default data directory. BOT_CONFIG still
 // selects the operator configuration file; BOT_TOKEN/CHAT_URL are process seeds.
 import { existsSync } from "node:fs";
+import { setInterval } from "node:timers";
 import { join } from "node:path";
-import { ConfigStore, redact, type ConfigKey } from "./config.ts";
+import { type ConfigKey, ConfigStore, redact } from "./config.ts";
 import { BotApi, BotApiError } from "./api.ts";
 import { BotSocket } from "./socket.ts";
 import { ModelClient } from "./model.ts";
@@ -28,15 +29,18 @@ async function main(): Promise<void> {
   // secret without writing it to disk, and the operator's stored setting is
   // never clobbered by the seed values.
   if (process.env.CHAT_URL) config.override("chat.url", process.env.CHAT_URL);
-  if (process.env.BOT_TOKEN)
+  if (process.env.BOT_TOKEN) {
     config.override("chat.token", process.env.BOT_TOKEN);
+  }
 
   const log = (level: LogLevel, message: string): void => {
     if (LEVELS[level] < LEVELS[config.get("log.level")]) return;
-    const line = `${new Date().toISOString().slice(11, 19)} ${level.toUpperCase().padEnd(5)} ${message}`;
-    if (level === "warn" || level === "error")
+    const line = `${new Date().toISOString().slice(11, 19)} ${level
+      .toUpperCase()
+      .padEnd(5)} ${message}`;
+    if (level === "warn" || level === "error") {
       process.stderr.write(`${line}\n`);
-    else process.stdout.write(`${line}\n`);
+    } else process.stdout.write(`${line}\n`);
   };
 
   const store = await Store.open(statePath);
@@ -99,8 +103,9 @@ async function main(): Promise<void> {
       transportChange = transportChange
         .then(async () => {
           // Let the command acknowledgement finish on the existing transport.
-          while (agent.busy)
+          while (agent.busy) {
             await new Promise((resolve) => setTimeout(resolve, 10));
+          }
           await agent.stop();
           socket.close();
           online = [];
@@ -161,8 +166,9 @@ async function main(): Promise<void> {
     if (
       config.get("chat.url") !== transportUrl ||
       config.get("chat.token") !== transportToken
-    )
+    ) {
       scheduleTransportChange();
+    }
   });
   connect();
 
@@ -226,7 +232,9 @@ async function main(): Promise<void> {
   log("info", `config     ${configPath}`);
   log(
     "info",
-    `transport  ${config.get("chat.url")} (token ${config.get("chat.token").length === 0 ? "unset" : "set"})`,
+    `transport  ${config.get("chat.url")} (token ${
+      config.get("chat.token").length === 0 ? "unset" : "set"
+    })`,
   );
   log(
     "info",
@@ -240,18 +248,25 @@ async function main(): Promise<void> {
       "chat.token is unset; set BOT_TOKEN or use the local config CLI",
     );
   }
-  if (config.created)
+  if (config.created) {
     log(
       "info",
       `created ${configPath} with defaults; edit it or use the local config CLI`,
     );
+  }
   log(
     "debug",
-    `effective settings (file ${existsSync(configPath) ? "present" : "absent, using defaults"}): ` +
+    `effective settings (file ${
+      existsSync(configPath) ? "present" : "absent, using defaults"
+    }): ` +
       Object.entries(config.all())
         .map(
           ([key, value]) =>
-            `${key}=${key === "prompt" ? "<configured>" : redact(key as ConfigKey, value)}`,
+            `${key}=${
+              key === "prompt"
+                ? "<configured>"
+                : redact(key as ConfigKey, value)
+            }`,
         )
         .join(" "),
   );
@@ -263,7 +278,9 @@ async function main(): Promise<void> {
       "info",
       `status syncs=${metrics.syncs} frames=${metrics.frames} sent=${metrics.sent} replays=${metrics.replayed} ` +
         `revisions=${metrics.revisions} edits=${metrics.edits} retractions=${metrics.retractions} ` +
-        `conversations=${agent.directory?.conversations.length ?? 0} reconnects=${reconnects}`,
+        `conversations=${
+          agent.directory?.conversations.length ?? 0
+        } reconnects=${reconnects}`,
     );
   }, 300_000).unref();
 
@@ -309,7 +326,9 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   console.error(
-    `startup failed: ${error instanceof Error ? error.message : "unknown error"}`,
+    `startup failed: ${
+      error instanceof Error ? error.message : "unknown error"
+    }`,
   );
   process.exitCode = 1;
 });

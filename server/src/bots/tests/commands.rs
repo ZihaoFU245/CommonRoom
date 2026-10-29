@@ -258,13 +258,8 @@ async fn native_commands_follow_bot_grants_and_recheck_scope_and_revocation() {
             .is_client_error()
         );
     }
-    let (_, scoped) = request(&app,Some(&token),"POST","/api/bot/v1/credentials",json!({"label":"scoped-commands","expires":crate::bots::now()+600,"conversations":[id],"operations":["read","commands"]})).await;
-    assert_eq!(
-        request(&app, scoped["token"].as_str(), "GET", &endpoint, json!({}))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
+    let (status, _) = request(&app,Some(&issuer(&app)),"POST","/api/bot/v1/credentials",json!({"label":"scoped-commands","expires":crate::bots::now()+600,"conversations":[id],"operations":["read","commands"]})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     app.engine()
         .unwrap()
         .execute(None, None, "/rm group helper admin")
@@ -1184,13 +1179,7 @@ async fn postgres_native_commands_write_independently_and_order_cancelled_public
             .execute(None, None, "/bot new worker #secret")
             .unwrap();
         engine.execute(None, None, "/grant worker su").unwrap();
-        let token = engine
-            .execute(None, None, "/bot token new worker independent")
-            .unwrap()
-            .lines()
-            .last()
-            .unwrap()
-            .to_owned();
+        let token = test_credentials(&mut engine, "worker", "independent").1;
         engine
             .execute(Some("helper"), Some("support"), "first source")
             .unwrap();

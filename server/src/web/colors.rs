@@ -17,15 +17,14 @@ pub(crate) struct SetColor {
     #[serde(default)]
     room: Option<String>,
 }
-pub(crate) async fn set(
+pub(crate) async fn set_as(
     State(app): State<App>,
-    headers: HeaderMap,
+    access: super::media::Access,
     Json(input): Json<SetColor>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_origin(&app, &headers)?;
     super::profiles::update(
         &app,
-        headers,
+        access,
         super::profiles::Update::Color {
             room: input.room,
             value: input.color,
@@ -33,4 +32,18 @@ pub(crate) async fn set(
     )
     .await?;
     Ok(Json(json!({"ok":true})))
+}
+
+pub(crate) async fn set(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<SetColor>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_origin(&app, &headers)?;
+    set_as(
+        State(app),
+        super::media::Access::Browser(headers),
+        Json(input),
+    )
+    .await
 }

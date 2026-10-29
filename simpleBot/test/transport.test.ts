@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BotApi, BotApiError, idempotencyKey } from "../src/api.ts";
-import { ModelClient, completionsUrl } from "../src/model.ts";
+import { completionsUrl, ModelClient } from "../src/model.ts";
 import { BotSocket, type SocketEvents } from "../src/socket.ts";
 import { parseServerFrame } from "../src/wire.ts";
 import { MockServer } from "./mock-server.ts";
@@ -21,7 +21,7 @@ const completion = {
   messages: [{ role: "user" as const, content: "synthetic prompt" }],
 };
 
-for (const stream of [true, false])
+for (const stream of [true, false]) {
   test(`native function calls round-trip with tool results (stream=${stream})`, async (t) => {
     const bodies: Record<string, unknown>[] = [];
     let executions = 0;
@@ -43,8 +43,8 @@ for (const stream of [true, false])
           return stream
             ? new Response(
                 [
-                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"run_server_command","arguments":"{\\\"command\\\":"}}]}}]}\n\n',
-                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\\"/whoami\\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"run_server_command","arguments":"{\\"command\\":"}}]}}]}\n\n',
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/whoami\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
                   "data: [DONE]\n\n",
                 ].join(""),
               )
@@ -98,6 +98,7 @@ for (const stream of [true, false])
     assert.equal(messages.at(-1)?.role, "tool");
     assert.equal(messages.at(-1)?.tool_call_id, "call-1");
   });
+}
 
 test("generic server commands retry with the same persisted key", async (t) => {
   let attempts = 0;
@@ -215,8 +216,9 @@ test("idempotency keys remain valid and distinct for long opaque IDs", () => {
 });
 
 test("model base URLs and explicit completion paths resolve correctly", () => {
-  for (const base of ["https://host/", "https://host/v1", "https://host/v1/"])
+  for (const base of ["https://host/", "https://host/v1", "https://host/v1/"]) {
     assert.equal(completionsUrl(base), "https://host/v1/chat/completions");
+  }
   assert.equal(
     completionsUrl("https://host/prefix/v1/chat/completions"),
     "https://host/prefix/v1/chat/completions",
@@ -239,8 +241,9 @@ test("streaming handles split UTF-8, CRLF, and the final event without a newline
       return new Response(
         new ReadableStream({
           start(controller) {
-            for (const byte of bytes)
+            for (const byte of bytes) {
               controller.enqueue(new Uint8Array([byte]));
+            }
             controller.close();
           },
         }),
@@ -338,11 +341,13 @@ for (const supported of [true, false]) {
     await Promise.resolve();
     const snapshot = new MockServer().snapshot();
     wire.receive(snapshot);
+    await Promise.resolve();
     socket.activity("conv-1", "working");
     socket.activity("conv-1", "idle");
     assert.equal(wire.sent.length, supported ? 3 : 1);
     snapshot.credential.operations = ["read", "send"];
     wire.receive(snapshot);
+    await Promise.resolve();
     socket.activity("conv-1", "working");
     assert.equal(wire.sent.length, supported ? 3 : 1);
     assert.deepEqual(wire.sent[0], { kind: "commands_ready" });
@@ -461,7 +466,7 @@ test("unpinned history conflicts retry a fresh page while pinned rescans fail im
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => {
     calls++;
-    if (calls === 1)
+    if (calls === 1) {
       return new Response(
         JSON.stringify({
           error: {
@@ -472,6 +477,7 @@ test("unpinned history conflicts retry a fresh page while pinned rescans fail im
         }),
         { status: 409 },
       );
+    }
     return new Response(
       JSON.stringify({
         conversation_id: "room",
@@ -526,7 +532,22 @@ for (const stream of [false, true]) {
       }));
       return stream
         ? new Response(
-            `data: ${JSON.stringify({ choices: [{ delta: rounds === 1 ? { tool_calls: calls.map((call, index) => ({ index, ...call })) } : { content: "done" }, finish_reason: rounds === 1 ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta:
+                    rounds === 1
+                      ? {
+                          tool_calls: calls.map((call, index) => ({
+                            index,
+                            ...call,
+                          })),
+                        }
+                      : { content: "done" },
+                  finish_reason: rounds === 1 ? "tool_calls" : "stop",
+                },
+              ],
+            })}\n\ndata: [DONE]\n\n`,
           )
         : Response.json({
             choices: [
@@ -699,4 +720,36 @@ test("the default agent loop supports more than sixteen sequential memory/tool s
   assert.equal(result, "done");
   assert.equal(executed, 20);
   assert.equal(rounds, 21);
+});
+
+test("command registration retries after shared account throttling and stops on close", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  t.after(() => { globalThis.WebSocket = original; });
+  const socket = new BotSocket({
+    url: "ws://localhost/", headers: {}, supportsActivity: async () => false,
+    log: () => {},
+    events: {
+      snapshot() {}, conversation() {}, presence() {}, activity() {},
+      commandsRequest() {}, socketError() {}, status() {}, lagged() {},
+      sync() {}, standby() {},
+    },
+  });
+  t.after(() => socket.close());
+  socket.open();
+  const wire = FakeWebSocket.latest;
+  wire.receive(new MockServer().snapshot());
+  assert.deepEqual(wire.sent, [{kind:"commands_ready"}]);
+  const throttled = {kind:"error",id:null,error:{code:"rate_limited",message:"Slow down",retryable:true}};
+  wire.receive(throttled);
+  wire.receive(throttled);
+  t.mock.timers.tick(9999);
+  assert.equal(wire.sent.length,1);
+  t.mock.timers.tick(1);
+  assert.deepEqual(wire.sent,[{kind:"commands_ready"},{kind:"commands_ready"}]);
+  wire.receive(throttled);
+  socket.close();
+  t.mock.timers.tick(10000);
+  assert.equal(wire.sent.length,2);
 });

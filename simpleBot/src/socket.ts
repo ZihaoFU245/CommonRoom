@@ -8,7 +8,9 @@ import type { ActivityState, ServerFrame } from "./wire.ts";
 import { parseServerFrame } from "./wire.ts";
 
 export interface SocketEvents {
-  snapshot(frame: Extract<ServerFrame, { kind: "snapshot" }>): void;
+  snapshot(
+    frame: Extract<ServerFrame, { kind: "snapshot" }>,
+  ): void | Promise<void>;
   conversation(conversationId: string, contentRevision: number): void;
   presence(online: string[]): void;
   activity(frame: Extract<ServerFrame, { kind: "activity" }>): void;
@@ -46,6 +48,7 @@ export class BotSocket {
   private activityScope: Set<string> | null = null;
   private activityAllowed = false;
   private commandsRegistered = false;
+  private commandsRetry: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: BotSocketOptions) {
     this.options = options;
@@ -63,6 +66,10 @@ export class BotSocket {
   close(): void {
     this.closed = true;
     this.generation++;
+    if (this.commandsRetry !== null) {
+      clearTimeout(this.commandsRetry);
+      this.commandsRetry = null;
+    }
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -88,8 +95,9 @@ export class BotSocket {
       !this.activityEnabled ||
       !this.activityAllowed ||
       (this.activityScope !== null && !this.activityScope.has(conversationId))
-    )
+    ) {
       return;
+    }
     this.send({ kind: "activity", conversation_id: conversationId, state });
   }
 
@@ -101,8 +109,9 @@ export class BotSocket {
       !this.activityAllowed ||
       !this.options.supportsPreview?.() ||
       (this.activityScope !== null && !this.activityScope.has(conversationId))
-    )
+    ) {
       return;
+    }
     this.send({
       kind: "activity",
       conversation_id: conversationId,
@@ -114,8 +123,14 @@ export class BotSocket {
   respondCommands(
     id: string,
     commands: import("./wire.ts").BotCommand[],
+    expiresIn = 300,
   ): void {
-    this.send({ kind: "commands_response", id, commands });
+    this.send({
+      kind: "commands_response",
+      id,
+      commands,
+      expires_in: expiresIn,
+    });
   }
   commandsChanged(): void {
     this.send({ kind: "commands_changed" });
@@ -141,6 +156,10 @@ export class BotSocket {
     this.activityEnabled = false;
     this.activityAllowed = false;
     this.commandsRegistered = false;
+    if (this.commandsRetry !== null) {
+      clearTimeout(this.commandsRetry);
+      this.commandsRetry = null;
+    }
     const generation = ++this.generation;
     let socket: WebSocket;
     try {
@@ -172,11 +191,12 @@ export class BotSocket {
         .then((supported) => {
           if (generation !== this.generation || this.closed) return;
           this.activityEnabled = supported;
-          if (!supported)
+          if (!supported) {
             this.options.log(
               "info",
               "server does not advertise activity support; activity signals disabled",
             );
+          }
         })
         .catch(() => {
           // Activity is advisory. A failed capability lookup must not stop chat.
@@ -197,11 +217,12 @@ export class BotSocket {
       if (generation !== this.generation) return;
       this.socket = null;
       // While standing by, only the first failure is worth reporting.
-      if (!this.standby)
+      if (!this.standby) {
         this.options.events.status(
           false,
           event.reason || `closed (${event.code})`,
         );
+      }
       this.retry();
     };
   }
@@ -246,13 +267,7 @@ export class BotSocket {
     }
     switch (frame.kind) {
       case "snapshot":
-        if (
-          !this.commandsRegistered &&
-          (frame.credential.operations === null ||
-            frame.credential.operations.includes("read"))
-        ) {
-          this.commandsRegistered = this.send({ kind: "commands_ready" });
-        }
+        this.options.log("debug", "socket baseline received");
         this.activityAllowed =
           frame.credential.operations === null ||
           frame.credential.operations.includes("activity");
@@ -261,7 +276,23 @@ export class BotSocket {
             .filter((c) => c.permissions.send)
             .map((c) => c.id),
         );
-        this.options.events.snapshot(frame);
+        // Start snapshot handling before advertising commands. The handler updates
+        // its directory synchronously; history catch-up continues asynchronously.
+        void Promise.resolve(this.options.events.snapshot(frame)).catch(
+          (error: unknown) =>
+            this.options.log("warn", `snapshot setup failed: ${String(error)}`),
+        );
+        if (
+          !this.commandsRegistered &&
+          (frame.credential.operations === null ||
+            frame.credential.operations.includes("read"))
+        ) {
+          this.commandsRegistered = this.send({ kind: "commands_ready" });
+          this.options.log(
+            "debug",
+            `command discovery registration sent=${this.commandsRegistered}`,
+          );
+        }
         return;
       case "conversation":
         this.options.events.conversation(
@@ -276,6 +307,7 @@ export class BotSocket {
         this.options.events.activity(frame);
         return;
       case "commands_request":
+        this.options.log("debug", "command catalogue requested");
         this.options.events.commandsRequest(frame);
         return;
       case "config_ack":
@@ -285,6 +317,24 @@ export class BotSocket {
         );
         return;
       case "error":
+        // Registration shares account admission with chat. A busy account must
+        // retry its idempotent registration rather than lose discovery forever.
+        if (
+          frame.error.code === "rate_limited" &&
+          this.commandsRetry === null
+        ) {
+          const generation = this.generation;
+          this.commandsRetry = setTimeout(() => {
+            this.commandsRetry = null;
+            if (
+              generation === this.generation &&
+              !this.closed &&
+              this.connected
+            ) {
+              this.commandsRegistered = this.send({ kind: "commands_ready" });
+            }
+          }, 10_000);
+        }
         if (frame.error.retryable) {
           this.options.events.sync();
         } else {

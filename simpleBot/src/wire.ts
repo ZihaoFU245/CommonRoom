@@ -119,12 +119,16 @@ export interface HistoryQuery {
 export interface CredentialRequest {
   label: string;
   expires: number;
-  conversations: string[];
+  conversations: string[] | null;
   operations: string[];
 }
 
 export type ConversationRequest =
-  { kind: "room"; name: string } | { kind: "direct"; username: string };
+  | { kind: "room"; name: string }
+  | {
+      kind: "direct";
+      username: string;
+    };
 
 /** Server → client frames. */
 export type ServerFrame =
@@ -148,7 +152,12 @@ export type ActivityState = "working" | "idle";
 /** Client → server frames accepted by the bot socket. */
 export type ClientFrame =
   | { kind: "commands_ready" }
-  | { kind: "commands_response"; id: string; commands: BotCommand[] }
+  | {
+      kind: "commands_response";
+      id: string;
+      commands: BotCommand[];
+      expires_in: number;
+    }
   | { kind: "commands_changed" }
   | {
       kind: "activity";
@@ -231,8 +240,9 @@ export function isSnapshot(value: unknown): value is Snapshot {
       strings(value.credential.conversations)
     ) ||
     !Array.isArray(value.conversations)
-  )
+  ) {
     return false;
+  }
   return value.conversations.every(
     (c: unknown) =>
       record(c) &&

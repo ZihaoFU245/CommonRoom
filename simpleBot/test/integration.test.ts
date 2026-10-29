@@ -1,19 +1,19 @@
 // Actual worker, Rust server, browser sessions and native model tools; temporary state only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BotApi } from "../src/api.ts";
 import { Store } from "../src/store.ts";
 import type { ChatMessage, FunctionTool } from "../src/model.ts";
 import {
-  isBotCommandDirectory,
-  parseFrame,
-  type Message,
   type BotActivity,
+  isBotCommandDirectory,
+  type Message,
+  parseFrame,
 } from "../../web/src/api/protocol.ts";
 import { botCommandSuggestions } from "../../web/src/features/conversation/botCommands.ts";
 const root = resolve(import.meta.dirname, "../..");
@@ -86,11 +86,12 @@ test(
             (job) =>
               !job.observed && !["queued", "running"].includes(job.status),
           );
-          if (state.wake === "job_results" && completed.length)
+          if (state.wake === "job_results" && completed.length) {
             last = {
               role: "tool",
               content: JSON.stringify({ jobs: completed }),
             };
+          }
         }
         let message: Record<string, unknown>;
         if (
@@ -130,7 +131,12 @@ test(
                   ],
                 }
               : {
-                  content: `**${result.error ? "Denied" : "Done"}** ${result.result ?? result.error ?? result.stdout ?? result.messages?.map((row) => row[3]).join("; ")}`,
+                  content: `**${result.error ? "Denied" : "Done"}** ${
+                    result.result ??
+                    result.error ??
+                    result.stdout ??
+                    result.messages?.map((row) => row[3]).join("; ")
+                  }`,
                 };
         } else {
           const text =
@@ -147,7 +153,7 @@ test(
           const runScript = text.includes("rerun execution script");
           const shellCommand = text.includes("run shell smoke command");
           const command = room
-            ? `/new room ${room}`
+            ? `/room new ${room}`
             : reaction
               ? `/react ${reaction} 👍`
               : "/whoami";
@@ -305,9 +311,16 @@ test(
             ? { tool_calls: calls.map((call, index) => ({ index, ...call })) }
             : message;
           response.end(
-            `data: ${JSON.stringify({ choices: [{ delta, finish_reason: calls ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta,
+                  finish_reason: calls ? "tool_calls" : "stop",
+                },
+              ],
+            })}\n\ndata: [DONE]\n\n`,
           );
-        } else
+        } else {
           response.end(
             JSON.stringify({
               choices: [
@@ -318,6 +331,7 @@ test(
               ],
             }),
           );
+        }
       });
     });
     try {
@@ -352,8 +366,16 @@ test(
         "/new user alice alice-long-password admin\n/new user bob bob-long-password user\n/new room support\n/add alice #support\n/add bob #support\n/bot new helper #support\n/bot token new helper worker\n",
       );
       await until(() => /bot_[a-f0-9]{64}/u.test(logs), "bot credential");
-      const token = logs.match(/bot_[a-f0-9]{64}/u)?.[0];
-      assert.ok(token);
+      const issuerToken = logs.match(/bot_[a-f0-9]{64}/u)?.[0];
+      assert.ok(issuerToken);
+      const issuerApi = new BotApi({ baseUrl: base, token: issuerToken });
+      const runtimeCredential = await issuerApi.issueCredential({
+        label: "runtime-worker",
+        expires: Math.floor(Date.now() / 1000) + 3600,
+        conversations: null,
+        operations: ["read", "send", "react", "activity", "config", "commands"],
+      });
+      const token = runtimeCredential.token;
       const api = new BotApi({ baseUrl: base, token });
       const baseline = await api.me();
       const conversation = baseline.conversations.find(
@@ -393,8 +415,9 @@ test(
           const frame = parseFrame(String(event.data));
           assert.ok(frame, "valid browser frame");
           if (frame.kind === "notice" || frame.kind === "error") {
-            if (typeof frame.id === "number")
+            if (typeof frame.id === "number") {
               client.replies.set(frame.id, frame);
+            }
           }
           if (frame.kind === "bot_commands") client.invalidations++;
           if (frame.kind === "activity") client.activities.push(frame);
@@ -404,8 +427,9 @@ test(
               : frame.kind === "snapshot"
                 ? frame.rooms.flatMap((room) => room.messages)
                 : [];
-          for (const message of messages)
+          for (const message of messages) {
             client.messages.set(message.id, message);
+          }
         };
         await until(() => socket.readyState === 1, "browser session");
         return client;
@@ -427,16 +451,17 @@ test(
         );
       }
       async function directory(client: BrowserClient) {
-        const response = await fetch(
-          new URL(`api/bot-commands?conversation_id=${conversationId}`, base),
-          {
-            headers: { Cookie: client.cookie, Origin: "http://localhost:5173" },
-          },
-        );
+        const response = await fetch(new URL("api/bot-commands", base), {
+          headers: { Cookie: client.cookie, Origin: "http://localhost:5173" },
+        });
         assert.equal(response.status, 200);
         const value: unknown = await response.json();
         assert.ok(isBotCommandDirectory(value));
-        return value.bots;
+        return (
+          value.conversations.find(
+            (entry) => entry.conversation_id === conversationId,
+          )?.bots ?? []
+        );
       }
       const configPath = join(dir, "config.json"),
         statePath = join(dir, "agent.kv");
@@ -447,6 +472,7 @@ test(
           "model.endpoint": `http://127.0.0.1:${address.port}/`,
           "model.name": "first",
           "chat.historyWindow": 6,
+          "log.level": "debug",
         }),
         { mode: 0o600 },
       );
@@ -480,10 +506,14 @@ test(
         bot.stderr?.on("data", (chunk: Buffer) => {
           botLogs += chunk.toString();
         });
-        await until(
-          () => botLogs.includes("authenticated as helper"),
-          "worker authentication",
-        );
+        try {
+          await until(
+            () => botLogs.includes("authenticated as helper"),
+            "worker authentication",
+          );
+        } catch (error) {
+          throw new Error(`${String(error)}\n${botLogs}`);
+        }
       }
       async function ownMessages() {
         return (
@@ -571,7 +601,7 @@ test(
           ),
         "public metrics exposes numeric diagnostics without private controls",
       );
-      const scoped = await api.issueCredential({
+      const scoped = await issuerApi.issueCredential({
         label: "demo-scoped",
         expires: Math.floor(Date.now() / 1000) + 600,
         conversations: [conversationId],
@@ -644,10 +674,14 @@ test(
         () => botLogs.split("socket connected").length >= 3,
         "transport setting reconnects",
       );
-      await until(
-        async () => (await directory(bob)).length === 1,
-        "catalogue restored after transport change",
-      );
+      try {
+        await until(
+          async () => (await directory(bob)).length === 1,
+          "catalogue restored after transport change",
+        );
+      } catch (error) {
+        throw new Error(`${String(error)}\n${botLogs}`);
+      }
       await say(bob, "@helper /whoami");
       await until(
         async () =>
@@ -670,11 +704,21 @@ test(
       await until(
         async () =>
           (await api.serverCommands(conversationId)).commands.some(
-            (command) => command.name === "/new",
+            (command) => command.name === "/grant",
           ),
         "bot admin command catalogue",
       );
-      const createdRoom = await api.createConversation({
+      const creationCredential = await issuerApi.issueCredential({
+        label: "conversation-creator",
+        expires: Math.floor(Date.now() / 1000) + 3600,
+        conversations: null,
+        operations: ["read", "create"],
+      });
+      const creationApi = new BotApi({
+        baseUrl: base,
+        token: creationCredential.token,
+      });
+      const createdRoom = await creationApi.createConversation({
         kind: "room",
         name: "typed-demo",
       });
@@ -683,13 +727,17 @@ test(
           (conversation) => conversation.id === createdRoom.conversation_id,
         ),
       );
-      const direct = await api.createConversation({
+      const direct = await creationApi.createConversation({
         kind: "direct",
         username: "bob",
       });
       assert.equal(
-        (await api.createConversation({ kind: "direct", username: "bob" }))
-          .conversation_id,
+        (
+          await creationApi.createConversation({
+            kind: "direct",
+            username: "bob",
+          })
+        ).conversation_id,
         direct.conversation_id,
       );
       await say(bob, "@helper create room model-room");
@@ -726,18 +774,21 @@ test(
             message.content.includes("concise explanations after reload"),
         ),
       );
-      for (const request of modelRequests)
-        for (const message of request.messages)
+      for (const request of modelRequests) {
+        for (const message of request.messages) {
           for (const secret of [
             "@helper /model",
             "/config set",
             "worker.status",
             "model.name",
-          ])
+          ]) {
             assert.ok(
               !message.content.includes(secret),
               `private administration stays out of model context: ${secret}`,
             );
+          }
+        }
+      }
       const input = [...bob.messages.values()].find(
         (m) => m.text === "@helper create room model-room",
       );
@@ -818,11 +869,15 @@ test(
       );
       const repliesBeforeSilence = (await ownMessages()).length;
       await say(bob, "@helper finish silently");
+      const silentInput = (await api.history({ conversation_id: conversationId })).messages.find(
+        (message) => message.text === "@helper finish silently",
+      );
+      assert.ok(silentInput);
       await until(
         async () =>
           Object.values((await Store.inspect(statePath)).tasks).some(
             (task) =>
-              task.status === "answered" && task.silentHash !== undefined,
+              task.input === silentInput.id && task.status === "answered" && task.silentHash !== undefined,
           ),
         "silent turn checkpointed",
       );
@@ -878,18 +933,22 @@ test(
         "ownership removal hides controls",
       );
       await say(bob, '@helper /config set model.name "stolen"');
+      const deniedInvocation = (await api.history({ conversation_id: conversationId })).messages.find(
+        (message) => message.text === '@helper /config set model.name "stolen"',
+      );
+      assert.ok(deniedInvocation);
       await until(
         async () =>
-          (await ownMessages()).filter((m) =>
-            m.text.includes("Only this bot's owner"),
-          ).length >= 2,
+          (await ownMessages()).some((message) =>
+            message.reply?.id === deniedInvocation.id && message.text.includes("Only this bot's owner"),
+          ),
         "former owner denied",
       );
       await say(alice, "/rm group helper admin", null);
       await until(
         async () =>
           !(await api.serverCommands(conversationId)).commands.some(
-            (c) => c.name === "/new",
+            (c) => c.name === "/grant",
           ),
         "grant removal updates model catalogue",
       );

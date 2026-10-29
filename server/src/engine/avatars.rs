@@ -54,16 +54,28 @@ impl AvatarPlan {
 
 impl Engine {
     pub(crate) fn avatar_plan(&self, viewer: &str, owner_id: &str) -> Option<AvatarPlan> {
+        self.avatar_plan_scoped(viewer, owner_id, None)
+    }
+    fn avatar_plan_scoped(
+        &self,
+        viewer: &str,
+        owner_id: &str,
+        conversations_scope: Option<&BTreeSet<String>>,
+    ) -> Option<AvatarPlan> {
         use authorization::{Action, Scope};
         if !self.active(viewer) {
             return None;
         }
         let owner = self.active_account_name(owner_id)?;
-        let mut known =
-            viewer == owner || self.allows(Some(viewer), &Scope::Server, Action::Directory);
+        let mut known = viewer == owner
+            || (conversations_scope.is_none()
+                && self.allows(Some(viewer), &Scope::Server, Action::Directory));
         let mut conversations = Vec::new();
         if !known {
             for room in self.data.rooms.values() {
+                if conversations_scope.is_some_and(|ids| !ids.contains(&room.id)) {
+                    continue;
+                }
                 let scope = Scope::Room(room.id.clone());
                 if self.allows(Some(viewer), &scope, Action::Read) {
                     known |= self.allows(Some(viewer), &scope, Action::Members)
@@ -72,6 +84,9 @@ impl Engine {
                 }
             }
             for (key, chat) in &self.data.private {
+                if conversations_scope.is_some_and(|ids| !ids.contains(&chat.id)) {
+                    continue;
+                }
                 let scope = self.private_scope(key);
                 if self.allows(Some(viewer), &scope, Action::Read) {
                     known |= private_peer(key, viewer) == Some(owner)
@@ -286,10 +301,19 @@ impl Engine {
         }
         Ok(media)
     }
+    #[cfg(test)]
     pub(crate) fn avatar_read_plan(
         &self,
         viewer: &str,
         media: &Media,
+    ) -> Result<AvatarPlan, EngineError> {
+        self.avatar_read_plan_scoped(viewer, media, None)
+    }
+    pub(crate) fn avatar_read_plan_scoped(
+        &self,
+        viewer: &str,
+        media: &Media,
+        conversations: Option<&BTreeSet<String>>,
     ) -> Result<AvatarPlan, EngineError> {
         let owner = self
             .bot_index
@@ -312,7 +336,7 @@ impl Engine {
         {
             return Err(EngineError::NotFound("Avatar not found.".into()));
         }
-        self.avatar_plan(viewer, &media.uploader)
+        self.avatar_plan_scoped(viewer, &media.uploader, conversations)
             .ok_or_else(|| EngineError::NotFound("Avatar not found.".into()))
     }
     #[cfg(test)]

@@ -1,7 +1,7 @@
 pub(crate) mod admission;
 pub(crate) mod auth;
-mod avatars;
-mod colors;
+pub(crate) mod avatars;
+pub(crate) mod colors;
 mod error;
 mod metadata_commands;
 mod profiles;
@@ -48,6 +48,7 @@ pub enum Change {
     Avatar(String),
     Conversation(String),
     BotCommands(String),
+    BotCatalogues(Arc<std::collections::BTreeSet<String>>),
 }
 
 impl Change {

@@ -1,5 +1,5 @@
 use super::commands::{Input, execute_input};
-use super::security::check_origin_or_bot;
+use super::security::check_origin;
 use super::*;
 use axum::{
     extract::{
@@ -23,7 +23,7 @@ pub(crate) async fn upgrade(
     mut headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    check_origin_or_bot(&app, &headers)?;
+    check_origin(&app, &headers)?;
     if options.colors.is_some_and(|value| value > 1) {
         return Err(error(StatusCode::BAD_REQUEST, "Invalid color preference."));
     }

@@ -125,6 +125,10 @@ pub struct Snapshot {
     pub policy_revision: u64,
     pub admin: bool,
     pub users: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bots: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bot_credentials: Vec<crate::bots::models::CredentialHint>,
     pub avatars: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,

@@ -2537,6 +2537,149 @@ await test("renaming an account reveals its cached avatar without a refresh", as
   );
 });
 
+await test("bot credential controls show local dates and insert IDs at wide and compact widths", async () => {
+  const credential = {
+    id: "11111111-2222-4333-8444-555555555555",
+    bot: "helper",
+    label: "production",
+    kind: "worker",
+  };
+  const command = {
+    name: "/bot",
+    usage: "/bot token rm <credential id>",
+    description: "Manage bots",
+  };
+  const pluginCommands = [];
+  for (const width of [1200, 320]) {
+    const input = { current: null };
+    const credentials = [
+      credential,
+      { ...credential, id: "other-credential", label: "secondary" },
+    ];
+    function Probe({ available = credentials }) {
+      const composer = useCommandComposer({
+        botCommands: pluginCommands,
+        selected: "@command",
+        direct: false,
+        peer: null,
+        state: { ...empty, bots: ["helper"], bot_credentials: available },
+        room: undefined,
+        input,
+        pending: false,
+        aliases: {},
+        serverCommands: [command],
+        availableCommands: [command],
+        send(event) {
+          event.preventDefault();
+        },
+      });
+      return h(
+        "section",
+        { style: { width: `${width}px`, maxWidth: "100%" } },
+        [
+          h(ConsoleOutput, {
+            entry: {
+              command: "/bot token ls helper",
+              result: JSON.stringify([
+                { ...credential, created: 1793283033, expires: null },
+              ]),
+              error: false,
+            },
+          }),
+          h(Composer, {
+            minimumComposerHeight: 40,
+            actualComposerHeight: 40,
+            hints: composer.hints,
+            activeHint: composer.activeHint,
+            replyTarget: null,
+            input,
+            consoleView: true,
+            draft: composer.draft,
+            pending: false,
+            canWrite: true,
+            startResize() {},
+            moveResize() {},
+            endResize() {},
+            resizeComposer() {},
+            acceptHint: composer.acceptHint,
+            cancelReply() {},
+            send(event) {
+              event.preventDefault();
+            },
+            edit: composer.edit,
+            keydown: composer.keydown,
+            selectCaret: composer.selectCaret,
+          }),
+        ],
+      );
+    }
+    render(h(Probe), tests);
+    await until(() => tests.textContent.includes("No expiry"));
+    const expectedDate = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "full",
+      timeStyle: "long",
+    }).format(new Date(1793283033000));
+    check(
+      tests.textContent.includes(expectedDate),
+      "credential creation uses a readable local date",
+    );
+    check(
+      !tests.textContent.includes("1793283033"),
+      "raw epoch seconds are not displayed",
+    );
+    const textarea = tests.querySelector("textarea");
+    textarea.focus();
+    textarea.value = "/bot token rm ";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await until(() => tests.querySelector('[role="option"] button'));
+    const hint = tests.querySelector('[role="option"] button');
+    check(
+      hint.textContent === "helper · production",
+      "suggestion identifies the bot and label",
+    );
+    check(
+      hint.title.includes("worker") && hint.title.includes(credential.id),
+      "suggestion describes type and ID",
+    );
+    hint.click();
+    await until(() => textarea.value === `/bot token rm ${credential.id} `);
+    textarea.value = "/bot token rm production";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await until(() => tests.querySelector('[role="option"] button'));
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(() => textarea.value === `/bot token rm ${credential.id} `);
+    check(
+      tests.querySelector("section").scrollWidth <=
+        tests.querySelector("section").clientWidth + 2,
+      "credential output does not overflow its container",
+    );
+    check(
+      tests.querySelector("section").getBoundingClientRect().width <= width + 1,
+      "controls fit their responsive container",
+    );
+    textarea.value = "/bot token rm ";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await until(() => tests.querySelectorAll('[role="option"]').length === 2);
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(() => textarea.value === `/bot token rm ${credential.id} `);
+    render(h(Probe, { available: [] }), tests);
+    await until(() => !tests.querySelector('[role="option"]'));
+    render(null, tests);
+  }
+});
+
 await test("Safari IME confirmation never sends or selects composer hints", async () => {
   const input = { current: null };
   let sent = 0;

@@ -54,6 +54,10 @@ impl Interests {
             super::Change::Conversation(id) | super::Change::BotCommands(id) => {
                 self.ids.as_ref().is_some_and(|ids| !ids.contains(id))
             }
+            super::Change::BotCatalogues(changed) => self
+                .ids
+                .as_ref()
+                .is_some_and(|ids| ids.is_disjoint(changed)),
             _ => false,
         }
     }
@@ -173,7 +177,11 @@ impl Events {
         }
         for change in changes {
             if matches!(change, Change::All | Change::Metadata(_))
-                || (all && !matches!(change, Change::BotCommands(_) | Change::Presence))
+                || (all
+                    && !matches!(
+                        change,
+                        Change::BotCommands(_) | Change::BotCatalogues(_) | Change::Presence
+                    ))
             {
                 continue;
             }

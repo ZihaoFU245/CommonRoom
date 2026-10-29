@@ -23,6 +23,19 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
                 )
                     .into_response(),
             )
+        } else if request.headers().contains_key(header::AUTHORIZATION)
+            && !request
+                .uri()
+                .path()
+                .starts_with(&format!("{}api/bot/", app.config.base_url))
+        {
+            Some(
+                super::error(
+                    StatusCode::UNAUTHORIZED,
+                    "Bearer credentials are accepted only under /api/bot/v1/.",
+                )
+                .into_response(),
+            )
         } else {
             let direct_bot = app.config.direct_bot_http
                 && request
@@ -145,21 +158,11 @@ pub(crate) fn client_ip(
         .ok_or(INVALID)
 }
 
-pub(crate) fn check_origin_or_bot(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
-    if headers.contains_key(header::AUTHORIZATION) {
-        super::auth::bearer(headers)
-            .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Bot bearer credential required."))
-            .map(|_| ())
-    } else {
-        check_origin(app, headers)
-    }
-}
-
 // Browsers generally omit Origin on same-origin GET fetches. Fetch Metadata
 // supplies that proof without trusting same-site sibling origins.
-pub(crate) fn check_read_origin_or_bot(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
-    if headers.contains_key(header::AUTHORIZATION) || headers.contains_key(header::ORIGIN) {
-        return check_origin_or_bot(app, headers);
+pub(crate) fn check_read_origin(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
+    if headers.contains_key(header::ORIGIN) {
+        return check_origin(app, headers);
     }
     if headers
         .get("sec-fetch-site")

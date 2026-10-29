@@ -1,7 +1,7 @@
 //! Stable credential context: hash once, recheck live metadata on every operation.
 use super::{
     error::{Code, Error},
-    models::Credential,
+    models::{Credential, CredentialKind},
 };
 use crate::{
     engine::Engine,
@@ -30,6 +30,19 @@ impl Context {
         Self::from_headers(&engine, headers)
     }
     pub(crate) async fn authenticate_async(app: &App, headers: &HeaderMap) -> Result<Self, Error> {
+        Self::authenticate_kind(app, headers, CredentialKind::Worker).await
+    }
+    pub(crate) async fn authenticate_issuer_async(
+        app: &App,
+        headers: &HeaderMap,
+    ) -> Result<Self, Error> {
+        Self::authenticate_kind(app, headers, CredentialKind::Issuer).await
+    }
+    async fn authenticate_kind(
+        app: &App,
+        headers: &HeaderMap,
+        kind: CredentialKind,
+    ) -> Result<Self, Error> {
         if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(Error::new(Code::Unavailable, "Server stopping."));
         }
@@ -44,7 +57,7 @@ impl Context {
         store.health().await.map_err(Error::from)?;
         app.inspect_engine({
             let context = context.clone();
-            move |engine, _| context.user(engine).map(|_| ())
+            move |engine, _| context.user_kind(engine, kind).map(|_| ())
         })
         .await?;
         Ok(context)
@@ -84,10 +97,29 @@ impl Context {
             credential: credential.clone(),
             digest,
         };
-        context.user(engine)?;
+        context.identity(engine)?;
         Ok(context)
     }
     pub fn user(&self, engine: &Engine) -> Result<String, Error> {
+        self.user_kind(engine, CredentialKind::Worker)
+    }
+    pub(crate) fn issuer(&self, engine: &Engine) -> Result<String, Error> {
+        self.user_kind(engine, CredentialKind::Issuer)
+    }
+    fn user_kind(&self, engine: &Engine, kind: CredentialKind) -> Result<String, Error> {
+        let user = self.identity(engine)?;
+        if self.metadata(engine)?.kind != kind {
+            return Err(Error::new(
+                Code::Forbidden,
+                match kind {
+                    CredentialKind::Worker => "Bot issuer tokens may only issue worker tokens.",
+                    CredentialKind::Issuer => "Only a bot issuer token may issue worker tokens.",
+                },
+            ));
+        }
+        Ok(user)
+    }
+    fn identity(&self, engine: &Engine) -> Result<String, Error> {
         let name = engine
             .active_account_name(&self.account)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Account unavailable."))?;
@@ -147,7 +179,7 @@ impl Context {
             v.permissions.reply &= v.permissions.send;
             v.permissions.react &= permits("react", &v.id);
         }
-        snapshot.credential = serde_json::json!({"id":self.credential,"expires":c.expires,"conversations":c.conversations,"operations":c.operations});
+        snapshot.credential = serde_json::json!({"kind":c.kind,"id":self.credential,"expires":c.expires,"conversations":c.conversations,"operations":c.operations});
         Ok(plan)
     }
 }

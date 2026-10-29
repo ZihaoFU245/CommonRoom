@@ -31,6 +31,21 @@ const commands = names.map((name) => ({
   description: "Command",
 }));
 const context = {
+  bots: ["helper", "worker"],
+  botCredentials: [
+    {
+      id: "credential-helper",
+      bot: "helper",
+      label: "production",
+      kind: "issuer",
+    },
+    {
+      id: "credential-worker",
+      bot: "worker",
+      label: "nightly",
+      kind: "worker",
+    },
+  ],
   aliases: ["/hi"],
   privateScopes: ["@private:alice:bob"],
   messages: [{ id: "message-1", reactions: { "🙂": ["bob"] } }],
@@ -53,7 +68,7 @@ test("command and argument matches are unlimited and navigation wraps in both di
 test("bot subcommands complete operations, account names and valid scopes", () => {
   assert.deepEqual(
     values("/bot "),
-    ["new", "ls", "info", "owner", "rm", "token"].map(
+    ["ls", "new", "info", "owner", "rm", "token"].map(
       (value) => `/bot ${value} `,
     ),
   );
@@ -68,9 +83,8 @@ test("bot subcommands complete operations, account names and valid scopes", () =
     "/bot rm ",
     "/bot token new ",
     "/bot token ls ",
-    "/bot token rm ",
   ]) {
-    assert.deepEqual(values(prefix), [prefix + "alice ", prefix + "bob "]);
+    assert.deepEqual(values(prefix), [prefix + "helper ", prefix + "worker "]);
   }
   for (const prefix of ["/bot new worker ", "/bot ls ", "/bot info bob "]) {
     assert.deepEqual(values(prefix), [prefix + "#team ", prefix + "@global "]);
@@ -323,4 +337,43 @@ test("user metadata completes color keys, palette values, resets and scopes", ()
     "/user set bob color blue @global ",
     "/user set bob color blue #team ",
   ]);
+});
+
+test("bot targets never fall back to the ordinary account directory", () => {
+  for (const draft of [
+    "/bot info ",
+    "/bot rm ",
+    "/bot token new ",
+    "/bot token ls ",
+    "/bot token rm ",
+  ]) {
+    assert.deepEqual(
+      suggestions(draft, commands, ["alice", "bob"], ["team"], {}).map(
+        (hint) => hint.value,
+      ),
+      [],
+    );
+  }
+});
+
+test("credential completion displays bot labels and inserts only credential IDs", () => {
+  const hints = suggestions("/bot token rm ", commands, [], [], context);
+  assert.deepEqual(
+    hints.map((hint) => hint.value),
+    ["/bot token rm credential-helper ", "/bot token rm credential-worker "],
+  );
+  assert.equal(hints[0].label, "helper · production");
+  assert.equal(hints[0].description, "issuer · credential-helper");
+  for (const prefix of ["helper", "production", "credential-h"])
+    assert.deepEqual(values(`/bot token rm ${prefix}`), [
+      "/bot token rm credential-helper ",
+    ]);
+  assert.deepEqual(values("/bot token rm helper "), [
+    "/bot token rm helper credential-helper ",
+  ]);
+  assert.deepEqual(values("/sudo /bot token rm nightly"), [
+    "/sudo /bot token rm credential-worker ",
+  ]);
+  assert.deepEqual(values("/bot token new helper "), []);
+  assert.deepEqual(values("/bot token ls helper "), []);
 });

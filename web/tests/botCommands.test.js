@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { botCommandSuggestions } from "../src/features/conversation/botCommands.ts";
 import { cursorSuggestions } from "../src/features/conversation/completion.ts";
-import { isBotCommandDirectory, parseFrame } from "../src/api/protocol.ts";
+import {
+  isBotCommandDirectory as validateDirectory,
+  parseFrame,
+} from "../src/api/protocol.ts";
+const isBotCommandDirectory = (conversation) =>
+  validateDirectory({ conversations: [conversation] });
 const bots = [
   {
     account_id: "bot-id",

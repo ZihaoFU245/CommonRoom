@@ -165,7 +165,7 @@ workspace features and target platforms. The local fresh RustSec run passed for
 284 packages against 1,380 advisories. Thirty inactive lockfile entries were
 excluded, including the unused SQLx MySQL/RSA dependency affected by
 RUSTSEC-2023-0071. No advisory is suppressed; enabling that dependency includes it
-automatically. See [Testing](testing.md) and `auto/audit.py` for scope and commands.
+automatically. See [Testing](testing.md) and `auto/audit.sh` for scope and commands.
 
 Final validation also includes 56 PostgreSQL contracts in disposable schemas,
 real-binary HEAD SQLite v19 → PostgreSQL v1 transfer with unchanged source bytes,

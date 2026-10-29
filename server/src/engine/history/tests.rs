@@ -743,15 +743,31 @@ fn blocked_snapshot_reads_release_engine_and_never_deliver_revoked_authority() {
             engine
                 .execute(Some("alice"), Some("lobby"), "/bot new helper")
                 .unwrap();
-            Some(
-                engine
-                    .execute(Some("alice"), None, "/bot token new helper snapshot")
-                    .unwrap()
-                    .lines()
-                    .last()
-                    .unwrap()
-                    .to_owned(),
-            )
+            let issuer = engine
+                .execute(Some("alice"), None, "/bot token new helper snapshot")
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap()
+                .to_owned();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {issuer}").parse().unwrap(),
+            );
+            let issuer = crate::bots::auth::Context::from_headers(&engine, &headers).unwrap();
+            let worker = engine
+                .issue_bot_credential(
+                    &issuer,
+                    crate::bots::models::CredentialInput {
+                        label: "snapshot-worker".into(),
+                        expires: crate::bots::now() + 600,
+                        conversations: None,
+                        operations: ["read".into()].into(),
+                    },
+                )
+                .unwrap();
+            Some(worker["token"].as_str().unwrap().to_owned())
         } else {
             None
         };

@@ -1,5 +1,6 @@
 import type { LocalOutput } from "../../api/protocol.ts";
 import { commandText } from "./console.ts";
+import { messageDate } from "./messages.ts";
 
 function longestBackticks(text: string): number {
   return (text.match(/`+/gu) ?? []).reduce(
@@ -174,6 +175,42 @@ export function outputMarkdown(
   try {
     const value: unknown = JSON.parse(result);
     if (value !== null && typeof value === "object") {
+      if (
+        command === "/bot" &&
+        parts[1] === "token" &&
+        parts[2] === "ls" &&
+        Array.isArray(value)
+      ) {
+        return `## Bot credentials\n\n${
+          value
+            .map((item: unknown) => {
+              if (!item || typeof item !== "object" || Array.isArray(item))
+                return "";
+              return Object.entries(item)
+                .map(([key, field]: [string, unknown]) => {
+                  const text =
+                    field === null
+                      ? key === "expires"
+                        ? "No expiry"
+                        : "Account-wide"
+                      : (key === "created" || key === "expires") &&
+                          typeof field === "number"
+                        ? messageDate(field).full
+                        : Array.isArray(field)
+                          ? field
+                              .map((entry: unknown) => String(entry))
+                              .join(", ")
+                          : typeof field === "string"
+                            ? field
+                            : JSON.stringify(field);
+                  return `- **${literal(key)}:** ${inlineCode(text)}`;
+                })
+                .join("\n");
+            })
+            .filter(Boolean)
+            .join("\n\n---\n\n") || "None."
+        }`;
+      }
       const metadataScope =
         parts[4] ??
         (/^(?:#|@global$)/u.test(parts[3] ?? "") ? parts[3] : undefined);
@@ -199,20 +236,26 @@ export function outputMarkdown(
   if (command === "/bot") {
     if (parts[1] === "info") {
       const [identity = "", ...rows] = result.split("\n");
-      return `## Bot details\n\n${literal(identity)}\n\n${details("Access and status", rows.join("\n"))}`;
-    }
-    if (parts[1] === "ls") {
-      const colon = result.indexOf(": ");
-      return colon < 0
-        ? literal(result)
-        : listing(
-            result.slice(0, colon),
-            result
+      const access = rows.filter(
+        (row) =>
+          row.startsWith("Permissions: ") || row.startsWith("Commands: "),
+      );
+      const status = rows.filter((row) => !access.includes(row));
+      return `## Bot details\n\n${literal(identity)}\n\n${details("Access and status", status.join("\n"))}\n\n${access
+        .map((row) => {
+          const colon = row.indexOf(": ");
+          return listing(
+            row.slice(0, colon),
+            row
               .slice(colon + 2)
               .split(", ")
               .join("\n"),
           );
+        })
+        .join("\n\n")}`;
     }
+    if (parts[1] === "ls")
+      return listing(`Bots ${scopeLabel(parts[2])}`, result);
     if (parts[1] === "token" && ["new", "ls"].includes(parts[2] ?? ""))
       return `## Bot credentials\n\n${codeBlock(result)}`;
   }

@@ -6,6 +6,7 @@ import type {
   TimelineEntry,
   Command,
   Hint,
+  BotCredentialHint,
 } from "../../api/protocol.ts";
 import { nameColors } from "../preferences/nameColors.ts";
 import { permissionNames } from "./completion.ts";
@@ -159,6 +160,8 @@ export function suggestions(
   users: string[],
   rooms: string[],
   context: {
+    bots?: string[];
+    botCredentials?: BotCredentialHint[];
     messages?: Message[];
     aliases?: string[];
     privateScopes?: string[];
@@ -323,13 +326,34 @@ export function suggestions(
   }
   if (name === "/bot") {
     const operation = parts[1];
-    if (position === 1) values = ["new", "ls", "info", "owner", "rm", "token"];
+    if (
+      operation === "token" &&
+      parts[2] === "rm" &&
+      (position === 3 || position === 4)
+    ) {
+      return (context.botCredentials ?? [])
+        .filter(
+          (credential) =>
+            (position === 3 || credential.bot === parts[3]) &&
+            [credential.id, credential.bot, credential.label].some((value) =>
+              value.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase()),
+            ),
+        )
+        .map((credential) => ({
+          label: `${credential.bot} · ${credential.label}`,
+          description: `${credential.kind} · ${credential.id}`,
+          value: [...parts.slice(0, -1), credential.id].join(" ") + " ",
+        }));
+    }
+    if (position === 1) values = ["ls", "new", "info", "owner", "rm", "token"];
     if (position === 2 && operation === "token") values = ["new", "ls", "rm"];
     if (
       (position === 2 && ["info", "owner", "rm"].includes(operation || "")) ||
-      (position === 3 && operation === "token")
+      (position === 3 &&
+        operation === "token" &&
+        ["new", "ls"].includes(parts[2] ?? ""))
     )
-      values = users;
+      values = context.bots ?? [];
     if (
       (position === 2 && operation === "ls") ||
       (position === 3 && ["new", "info"].includes(operation || ""))
@@ -423,7 +447,10 @@ export function suggestions(
         description: describe(spec),
         advance:
           (position === 1 && ["/user", "/room", "/bot"].includes(name)) ||
-          (name === "/bot" && position === 2 && parts[1] === "token"),
+          (name === "/bot" &&
+            position === 2 &&
+            (parts[1] === "token" ||
+              ["info", "owner", "rm"].includes(parts[1] ?? ""))),
         value: [...parts.slice(0, -1), value].join(" ") + " ",
       }));
   return [];

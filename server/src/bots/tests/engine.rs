@@ -816,3 +816,97 @@ fn prepared_bot_send_rechecks_revision_permissions_and_concurrent_receipts() {
         crate::bots::error::Code::Forbidden
     );
 }
+
+#[test]
+fn bot_target_completions_only_include_registered_visible_bots() {
+    let mut engine = fixture();
+    new_bot(&mut engine);
+    assert_eq!(engine.snapshot("admin").unwrap().bots, vec!["helper"]);
+    assert!(engine.snapshot("human").unwrap().bots.is_empty());
+    assert!(engine.snapshot("helper").unwrap().bots.is_empty());
+    engine.execute(None, None, "/user disable helper").unwrap();
+    assert_eq!(engine.snapshot("admin").unwrap().bots, vec!["helper"]);
+    engine
+        .execute(None, None, "/bot rm helper @global")
+        .unwrap();
+    assert!(engine.snapshot("admin").unwrap().bots.is_empty());
+}
+
+#[test]
+fn bot_room_scopes_require_hash_and_display_it() {
+    let mut e = fixture();
+    new_bot(&mut e);
+    let before = e.data.clone();
+    for command in [
+        "/bot ls support",
+        "/bot info helper support",
+        "/bot new rejected support",
+    ] {
+        assert!(
+            e.execute(Some("admin"), None, command)
+                .unwrap_err()
+                .to_string()
+                .contains("#name")
+        );
+        assert!(e.data == before);
+    }
+    assert!(
+        e.execute(Some("admin"), None, "/bot ls #support")
+            .unwrap()
+            .contains("helper")
+    );
+    assert!(
+        e.execute(Some("admin"), None, "/bot info helper #support")
+            .unwrap()
+            .contains("at #support")
+    );
+    assert!(
+        e.execute(Some("admin"), None, "/bot new second #support")
+            .unwrap()
+            .contains("at #support")
+    );
+}
+
+#[test]
+fn credential_hints_and_id_only_revocation_follow_management_authority() {
+    let mut e = fixture();
+    new_bot(&mut e);
+    e.provision("manager", "hash".into(), true, false).unwrap();
+    let secret = token(&mut e, "helper", "production");
+    let manager = e.data.users["manager"].id.clone();
+    let human = e.data.users["human"].id.clone();
+    assert!(e.metadata_change().targets(&manager));
+    assert!(!e.metadata_change().targets(&human));
+    let hints = e.snapshot("manager").unwrap().bot_credentials;
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].bot, "helper");
+    assert_eq!(hints[0].label, "production");
+    let id = hints[0].id.clone();
+    let serialized = serde_json::to_string(&hints).unwrap();
+    assert!(!serialized.contains(&secret));
+    assert!(!serialized.contains(&crate::bots::digest(&secret)));
+    assert!(e.snapshot("human").unwrap().bot_credentials.is_empty());
+    assert!(
+        e.execute(Some("human"), None, &format!("/bot token rm {id}"))
+            .is_err()
+    );
+    assert!(e.bot_identity(&secret).is_some());
+    e.execute(None, None, "/rename helper renamed").unwrap();
+    assert!(e.metadata_change().targets(&manager));
+    assert_eq!(
+        e.snapshot("manager").unwrap().bot_credentials[0].bot,
+        "renamed"
+    );
+    e.execute(None, None, "/grant renamed su").unwrap();
+    assert!(e.snapshot("manager").unwrap().bot_credentials.is_empty());
+    assert!(
+        e.execute(Some("manager"), None, &format!("/bot token rm {id}"))
+            .is_err()
+    );
+    e.execute(None, None, "/revoke renamed su").unwrap();
+    e.execute(Some("manager"), None, &format!("/bot token rm {id}"))
+        .unwrap();
+    assert!(e.metadata_change().targets(&manager));
+    assert!(e.snapshot("manager").unwrap().bot_credentials.is_empty());
+    assert!(e.bot_identity(&secret).is_none());
+}

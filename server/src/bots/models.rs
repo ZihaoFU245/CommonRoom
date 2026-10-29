@@ -78,8 +78,24 @@ pub struct Registration {
     #[serde(default)]
     pub owner_id: Option<String>,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialKind {
+    Issuer,
+    Worker,
+}
+
+#[derive(Clone, Serialize)]
+pub struct CredentialHint {
+    pub id: String,
+    pub bot: String,
+    pub label: String,
+    pub kind: CredentialKind,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Credential {
+    pub kind: CredentialKind,
     pub label: String,
     pub digest: String,
     pub created: u64,
@@ -116,6 +132,12 @@ pub(crate) fn validate(data: &crate::engine::Data) -> Result<(), String> {
                 || token.operations.as_ref().is_some_and(|ops| {
                     ops.is_empty() || ops.iter().any(|op| !OPERATIONS.contains(&op.as_str()))
                 })
+                || match token.kind {
+                    CredentialKind::Issuer => {
+                        token.conversations.is_some() || token.operations.is_some()
+                    }
+                    CredentialKind::Worker => token.expires.is_none() || token.operations.is_none(),
+                }
                 || token.digest.len() != 64
                 || !token.digest.bytes().all(|b| b.is_ascii_hexdigit())
                 || !digests.insert(&token.digest)
@@ -171,11 +193,29 @@ impl Index {
 pub(crate) struct CredentialInput {
     pub label: String,
     pub expires: u64,
-    pub conversations: std::collections::BTreeSet<String>,
+    #[serde(deserialize_with = "required_scope")]
+    pub conversations: Option<std::collections::BTreeSet<String>>,
     pub operations: std::collections::BTreeSet<String>,
 }
+// Serde normally treats a missing Option as None; this adapter requires the key
+// while still accepting an explicit null for account-wide delegation.
+fn required_scope<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<std::collections::BTreeSet<String>>, D::Error> {
+    Option::deserialize(deserializer)
+}
+
 pub(crate) const OPERATIONS: &[&str] = &[
-    "read", "send", "react", "read_ack", "activity", "config", "commands",
+    "read",
+    "send",
+    "react",
+    "read_ack",
+    "activity",
+    "config",
+    "commands",
+    "media_upload",
+    "profile",
+    "create",
 ];
 #[derive(Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]

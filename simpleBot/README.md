@@ -1,6 +1,6 @@
 # simpleBot — a Bot API v1 reference worker
 
-A TypeScript worker for CommonRoom's Bot API v1, running on Deno 2.5+ with
+A TypeScript worker for CommonRoom's Bot API v1, running on Deno 2.9.8+ with
 native Deno KV persistence. No application dependencies, build step, or agent
 framework are required. Deno KV currently needs `--unstable-kv`, enabled by the
 worker tasks. The repository's Node/TypeScript tools are used for source checks.
@@ -110,11 +110,24 @@ Global admin, su, or the stdin console:
 ```text
 /new room support
 /bot new helper #support
-/bot token new helper worker
+/bot token new helper issuer
 ```
 
-The token is shown once. Keep that secret aside; it is the **provisioning**
-credential.
+The token is shown once. Keep it with a trusted supervisor: this **issuer**
+credential can only obtain worker tokens through `POST /api/bot/v1/credentials`.
+Request a worker before starting SimpleBot:
+
+```sh
+curl "${CHAT_URL%/}/api/bot/v1/credentials" \
+  -H "Authorization: Bearer $BOT_ISSUER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"label\":\"simplebot-worker\",\"expires\":$(($(date +%s)+3600)),\"conversations\":null,\"operations\":[\"read\",\"send\",\"react\",\"activity\",\"config\",\"commands\"]}"
+```
+
+Set `BOT_TOKEN` to the response's `token`. Worker expiry is mandatory and at most
+24 hours ahead. The account must already have the requested permissions. Use a
+unique label or revoke the old worker before replacing it; the eight-credential
+limit includes issuers and workers.
 
 Optional, and needed only if you want the bot to start conversations on its own:
 
@@ -354,11 +367,12 @@ and version refusal, cross-account refusal, activity signals, and the
   unread badge for the whole account. It is off by default, needs
   `chat.acknowledgeReads`, and needs `read_ack` on the worker credential. Leave
   `read_ack` out of worker tokens.
-- **Account-wide tokens**: `POST /credentials` and
-  `POST /conversations` require an account-wide provisioning credential, so a
-  restricted worker token cannot issue credentials or create conversations. Use
-  the provisioning token with `curl` for those, or give the worker an
-  account-wide token if it genuinely needs that authority.
+- **Issuer and worker roles**: only an issuer can call `POST /credentials`.
+  Worker tokens cannot mint more tokens. Native commands need an account-wide
+  worker (`conversations:null`) with `commands`; conversation creation via
+  `POST /conversations` needs an account-wide worker with `create`. Account
+  grants remain mandatory. Plugin catalogues advertise a 120-second cache
+  lifetime through v1 `commands_response.expires_in`.
 - **Retries are safe for delivery, not for effects.** A chat receipt means the
   message is deduplicated; your own tool calls, writes and payments are not.
   `taskId(slot)`-style stable ids (`conversation:message:slot`) are the hook for

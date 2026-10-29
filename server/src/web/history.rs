@@ -1,4 +1,4 @@
-use super::security::{check_origin_or_bot, check_read_origin_or_bot};
+use super::security::{check_origin, check_read_origin};
 use super::*;
 use axum::{
     extract::{Query, State},
@@ -20,7 +20,7 @@ pub(crate) async fn history(
     headers: HeaderMap,
     Query(input): Query<HistoryQuery>,
 ) -> Result<Json<crate::engine::History>, ApiError> {
-    check_read_origin_or_bot(&app, &headers)?;
+    check_read_origin(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
@@ -99,7 +99,7 @@ pub(crate) async fn read(
     headers: HeaderMap,
     Json(input): Json<Read>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    check_origin_or_bot(&app, &headers)?;
+    check_origin(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;

@@ -2,7 +2,7 @@
 
 ## Setup
 
-Use Rust 1.89+ (edition 2024), Node 22.18+ with native TypeScript stripping, pnpm, and RTK. The optional SimpleBot worker and its tests also require Deno 2.5+ with native KV enabled. Install the web dependencies from the committed lockfile:
+Use Rust 1.89+ (edition 2024), Node 22.18+ with native TypeScript stripping, pnpm, and RTK. The optional SimpleBot worker and its tests also require Deno 2.9.8+ with native KV enabled. Install the web dependencies from the committed lockfile:
 
 ```sh
 rtk pnpm --dir web install --frozen-lockfile
@@ -201,7 +201,7 @@ Node/Deno development and bot-worker requirements remain separate.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep all SQL, schemas, connection/session and COPY mechanics in the independent SQLite/PostgreSQL modules under `engine/database/`. Shared `engine/storage/` coordinates typed operations and committed publication; `engine/history/` owns shared caches. Avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
-- Preserve compatibility with existing HEAD-schema `data/`. Published schema changes need a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). SQLite startup supports fresh/HEAD v19 only. PostgreSQL is unused and unpublished: modify its independent current v1 schema directly, without historical WIP upgrades. Unsupported schema versions are rejected unchanged. Always maintain a read-only HEAD SQLite v19 → current PostgreSQL v1 transfer; PostgreSQL changes must not force a SQLite migration.
+- Preserve compatibility with existing HEAD-schema `data/`. Published schema changes need a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). SQLite startup supports fresh/HEAD v20 and an atomic v19-to-v20 credential upgrade. PostgreSQL is unused and unpublished: modify its independent current v1 schema directly, without historical WIP upgrades. Unsupported schema versions are rejected unchanged. Always maintain a read-only HEAD SQLite → current PostgreSQL transfer; PostgreSQL changes must not force a SQLite migration.
 - Use `cargo fmt` and the web Prettier scripts. Update the relevant guides when paths, commands, protocol, configuration, or deployment behavior changes.
 
 ## Adding a feature
@@ -221,6 +221,9 @@ Start with [Agent development](agent-development.md). The reference worker is
 development dependencies. It is independent of the browser UI. Extend its handler
 with model/tool calls while preserving its outbox and cursor ordering. Keep the published v1 schema, worker and contract tests aligned.
 Keep `/api/bot/v1/` as the sole bot API namespace; no alternative version is planned.
+Browser identity resolution must remain session-only. Expose machine capabilities
+through explicit v1 adapters and shared services, never by enabling bearer
+authentication in browser handlers.
 
 The debug WebSocket proxy disconnects paired streams when either peer ends its
 TCP stream, avoiding late writes during navigation/logout. Transport failures

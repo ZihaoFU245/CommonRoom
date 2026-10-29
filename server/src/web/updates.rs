@@ -103,6 +103,8 @@ pub(crate) async fn browser_with_interests_async(
                     let presence = !bot && changes.contains(&Change::Presence);
                     let mut ids = BTreeSet::new();
                     let mut plans = Vec::new();
+                    let mut catalogue = None;
+                    let mut catalogue_position = 0;
                     let refreshed = interests
                         .refresh_needed(baseline)
                         .then(|| {
@@ -120,29 +122,35 @@ pub(crate) async fn browser_with_interests_async(
                         plans.push(Plan::Baseline);
                     }
                     for change in &changes {
+                        let missing_catalogue = catalogue.is_none();
                         match change {
                             Change::Presence if !bot => plans
                                 .push(Plan::Ready(engine.presence_frame(&user).to_string().into())),
                             Change::BotCommands(id) if !bot => {
-                                if engine.bot_target(&user, id, Action::Read).is_ok() {
-                                    ids.insert(id.clone());
-                                    plans.push(Plan::Ready(
-                                serde_json::json!({"kind":"bot_commands","conversation_id":id})
-                                    .to_string()
-                                    .into(),
-                            ));
+                                if catalogue.is_none()
+                                    && engine.bot_target(&user, id, Action::Read).is_ok()
+                                {
+                                    catalogue = Some(id.clone());
+                                }
+                            }
+                            Change::BotCatalogues(changed) if !bot => {
+                                if catalogue.is_none() {
+                                    catalogue = changed
+                                        .iter()
+                                        .find(|id| {
+                                            engine.bot_target(&user, id, Action::Read).is_ok()
+                                        })
+                                        .cloned();
                                 }
                             }
                             Change::Metadata(notice) if !bot => {
-                                for id in notice.catalogues() {
-                                    if engine.bot_target(&user, id, Action::Read).is_ok() {
-                                        ids.insert(id.clone());
-                                        plans.push(Plan::Ready(
-                                    serde_json::json!({"kind":"bot_commands","conversation_id":id})
-                                        .to_string()
-                                        .into(),
-                                ));
-                                    }
+                                if catalogue.is_none() {
+                                    catalogue = notice
+                                        .catalogues()
+                                        .find(|id| {
+                                            engine.bot_target(&user, id, Action::Read).is_ok()
+                                        })
+                                        .cloned();
                                 }
                             }
                             _ if baseline => {}
@@ -179,6 +187,22 @@ pub(crate) async fn browser_with_interests_async(
                             }
                             _ => {}
                         }
+                        if missing_catalogue && catalogue.is_some() {
+                            catalogue_position = plans.len();
+                        }
+                    }
+                    // Every browser fetches the complete paginated directory. One
+                    // authorized invalidation represents this whole catalogue batch.
+                    if let Some(id) = catalogue {
+                        ids.insert(id.clone());
+                        plans.insert(
+                            catalogue_position,
+                            Plan::Ready(
+                                serde_json::json!({"kind":"bot_commands","conversation_id":id})
+                                    .to_string()
+                                    .into(),
+                            ),
+                        );
                     }
                     let stamp = engine.delivery_stamp(&user, &ids, presence)?;
                     Ok((
@@ -483,6 +507,9 @@ mod tests {
             false,
             &[
                 Change::Conversation(visible.clone()),
+                Change::BotCatalogues(std::sync::Arc::new(
+                    [visible.clone(), hidden.clone()].into(),
+                )),
                 Change::BotCommands(visible.clone()),
                 Change::Conversation(hidden.clone()),
                 Change::Read("other".into()),

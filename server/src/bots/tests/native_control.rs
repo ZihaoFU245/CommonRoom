@@ -28,6 +28,7 @@ async fn contract(engine: Engine, db: crate::engine::database::Connection, postg
             &app,
             &context,
             Some(Control::Response {
+                expires_in: 120,
                 id: query["id"].as_str().unwrap().into(),
                 commands: vec![],
             }),
@@ -52,7 +53,12 @@ async fn contract(engine: Engine, db: crate::engine::database::Connection, postg
             json!({"kind":"direct","username":"admin"}),
         ),
     ] {
-        let result = request(&app, Some(&token), "POST", path, input).await;
+        let credential = if path.ends_with("/credentials") {
+            issuer(&app)
+        } else {
+            token.clone()
+        };
+        let result = request(&app, Some(&credential), "POST", path, input).await;
         assert_eq!(result.0, StatusCode::SERVICE_UNAVAILABLE, "{result:?}");
         let engine = app.engine_read().unwrap();
         assert!(engine.data == before);
@@ -65,7 +71,7 @@ async fn contract(engine: Engine, db: crate::engine::database::Connection, postg
         "DROP TRIGGER reject_native_control; DROP TRIGGER reject_native_control_insert;"
     })
     .unwrap();
-    let issued = request(&app, Some(&token), "POST", "/api/bot/v1/credentials", json!({"label":"native","expires":crate::bots::now()+300,"conversations":[id],"operations":["read"]})).await;
+    let issued = request(&app, Some(&issuer(&app)), "POST", "/api/bot/v1/credentials", json!({"label":"native","expires":crate::bots::now()+300,"conversations":[id],"operations":["read"]})).await;
     assert_eq!(issued.0, StatusCode::OK, "{issued:?}");
     let restricted = issued.1["token"].as_str().unwrap();
     assert_eq!(
@@ -193,7 +199,7 @@ async fn postgres_bot_source_read_releases_engine_and_rechecks_revocation() {
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
 async fn postgres_cancelled_bot_credential_commits_before_queued_disable() {
     let fixture = crate::engine::database::tests::PostgresFixture::new();
-    let (app, token) = fixture_with_engine(Engine::open_postgres(&fixture.url).unwrap());
+    let (app, _token) = fixture_with_engine(Engine::open_postgres(&fixture.url).unwrap());
     let id = conversation(&app);
     let blocker = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
     let hold = blocker.unchecked_transaction().unwrap();
@@ -204,7 +210,7 @@ async fn postgres_cancelled_bot_credential_commits_before_queued_disable() {
     let changing = tokio::spawn({
         let app = app.clone();
         async move {
-            request(&app, Some(&token), "POST", "/api/bot/v1/credentials", json!({"label":"cancelled","expires":crate::bots::now()+300,"conversations":[id],"operations":["read"]})).await
+            request(&app, Some(&issuer(&app)), "POST", "/api/bot/v1/credentials", json!({"label":"cancelled","expires":crate::bots::now()+300,"conversations":[id],"operations":["read"]})).await
         }
     });
     let inspect = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();

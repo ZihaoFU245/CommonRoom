@@ -1,43 +1,29 @@
 import { ApiError } from "../../api/client.ts";
-import type { BotCommands } from "../../api/protocol.ts";
+import type { BotCommandDirectory, BotCommands } from "../../api/protocol.ts";
 
+export const BOT_COMMAND_REFRESH_MS = 120_000;
 interface Entry {
   members: string;
-  version: number;
   bots: BotCommands[];
-  bytes: number;
-}
-interface Retry {
-  members: string;
-  version: number;
-  after: number;
-  failures: number;
 }
 interface Request {
-  id: string;
-  members: string;
-  version: number;
+  key: string;
   controller: AbortController;
 }
 
-/** Session-local metadata: four background reads, 32 conversations, 512 KiB. */
+/** One session-local directory request covers every readable conversation. */
 export class BotCommandCache {
   private readonly entries = new Map<string, Entry>();
-  private readonly requests = new Map<string, Request>();
-  private readonly queue: Request[] = [];
-  private readonly retries = new Map<string, Retry>();
-  private running = 0;
+  private request: Request | undefined;
+  private completedKey: string | undefined;
+  private nextRefresh = 0;
+  private retryAfter = 0;
+  private failures = 0;
   private stopped = false;
-  private readonly fetch: (
-    id: string,
-    signal: AbortSignal,
-  ) => Promise<{ conversation_id: string; bots: BotCommands[] }>;
+  private readonly fetch: (signal: AbortSignal) => Promise<BotCommandDirectory>;
   private readonly changed: () => void;
   constructor(
-    fetch: (
-      id: string,
-      signal: AbortSignal,
-    ) => Promise<{ conversation_id: string; bots: BotCommands[] }>,
+    fetch: (signal: AbortSignal) => Promise<BotCommandDirectory>,
     changed: () => void,
   ) {
     this.fetch = fetch;
@@ -45,153 +31,74 @@ export class BotCommandCache {
   }
   get(id: string, members: string): BotCommands[] | undefined {
     const entry = this.entries.get(id);
-    if (entry?.members !== members) return undefined;
-    this.entries.delete(id);
-    this.entries.set(id, entry);
-    return entry.bots;
-  }
-  retain(ids: Set<string>) {
-    for (const id of this.entries.keys())
-      if (!ids.has(id)) this.entries.delete(id);
-    for (const id of this.retries.keys())
-      if (!ids.has(id)) this.retries.delete(id);
-    for (const [id, request] of this.requests)
-      if (!ids.has(id)) {
-        request.controller.abort();
-        this.requests.delete(id);
-      }
+    return entry?.members === members ? entry.bots : undefined;
   }
   refresh(
-    id: string,
-    members: string,
-    version: number,
-    force = false,
-    priority = false,
+    conversations: ReadonlyMap<string, string>,
+    versions: ReadonlyMap<string, number>,
   ) {
     if (this.stopped) return;
-    const retry = this.retries.get(id);
-    // Failed/offline discovery must rest even if snapshots or focus events repeat.
-    // A changed membership or an explicit catalogue notification can retry at once.
-    const entry = this.entries.get(id);
-    if (!force && entry?.members === members && entry.version === version)
-      return;
+    for (const [id, entry] of this.entries)
+      if (conversations.get(id) !== entry.members) this.entries.delete(id);
+    const scope = [...conversations].sort(([a], [b]) => a.localeCompare(b));
+    const key = JSON.stringify(
+      scope.map(([id, members]) => [id, members, versions.get(id) ?? 0]),
+    );
     if (
-      retry?.members === members &&
-      Date.now() < retry.after &&
-      retry.version === version
+      this.request?.key === key ||
+      (this.completedKey === key && Date.now() < this.nextRefresh) ||
+      Date.now() < this.retryAfter
     )
       return;
-    const previous = this.requests.get(id);
-    if (previous?.members === members && previous.version === version) {
-      const queued = this.queue.indexOf(previous);
-      if (priority && queued > 0) {
-        this.queue.splice(queued, 1);
-        this.queue.unshift(previous);
-      }
-      return;
-    }
-    previous?.controller.abort();
-    for (let index = this.queue.length - 1; index >= 0; index--) {
-      if (this.queue[index]?.controller.signal.aborted)
-        this.queue.splice(index, 1);
-    }
-    const request = { id, members, version, controller: new AbortController() };
-    this.requests.set(id, request);
-    if (priority) this.queue.unshift(request);
-    else this.queue.push(request);
-    this.pump();
+    this.request?.controller.abort();
+    const request = { key, controller: new AbortController() };
+    this.request = request;
+    this.fetch(request.controller.signal)
+      .then((result) => {
+        if (
+          this.stopped ||
+          request.controller.signal.aborted ||
+          this.request !== request
+        )
+          return;
+        this.entries.clear();
+        for (const { conversation_id: id, bots } of result.conversations) {
+          const members = conversations.get(id);
+          if (members !== undefined) this.entries.set(id, { members, bots });
+        }
+        this.completedKey = key;
+        this.nextRefresh = Date.now() + BOT_COMMAND_REFRESH_MS;
+        this.retryAfter = 0;
+        this.failures = 0;
+        this.changed();
+      })
+      .catch((error: unknown) => {
+        if (
+          this.stopped ||
+          request.controller.signal.aborted ||
+          this.request !== request
+        )
+          return;
+        this.failures++;
+        this.retryAfter =
+          Date.now() +
+          Math.min(30_000 * 2 ** Math.min(this.failures - 1, 4), 300_000);
+        if (
+          error instanceof ApiError &&
+          [401, 403, 404].includes(error.status)
+        ) {
+          this.entries.clear();
+          this.changed();
+        }
+      })
+      .finally(() => {
+        if (this.request === request) this.request = undefined;
+      });
   }
   stop() {
     this.stopped = true;
-    for (const request of this.requests.values()) request.controller.abort();
-    this.requests.clear();
-    this.queue.length = 0;
+    this.request?.controller.abort();
+    this.request = undefined;
     this.entries.clear();
-    this.retries.clear();
-  }
-  private pump() {
-    while (!this.stopped && this.running < 4 && this.queue.length) {
-      const request = this.queue.shift();
-      if (!request || request.controller.signal.aborted) continue;
-      this.running++;
-      this.fetch(request.id, request.controller.signal)
-        .then((result) => {
-          if (
-            this.stopped ||
-            request.controller.signal.aborted ||
-            this.requests.get(request.id) !== request ||
-            result.conversation_id !== request.id
-          )
-            return;
-          this.retries.delete(request.id);
-          this.retries.set(request.id, {
-            members: request.members,
-            version: request.version,
-            after: Date.now() + (result.bots.length ? 60_000 : 300_000),
-            failures: 0,
-          });
-          while (this.retries.size > 32) {
-            const oldest = this.retries.keys().next().value;
-            if (oldest === undefined) break;
-            this.retries.delete(oldest);
-          }
-          this.entries.delete(request.id);
-          this.entries.set(request.id, {
-            members: request.members,
-            version: request.version,
-            bots: result.bots,
-            bytes: new TextEncoder().encode(JSON.stringify(result)).length,
-          });
-          let bytes = [...this.entries.values()].reduce(
-            (sum, entry) => sum + entry.bytes,
-            0,
-          );
-          while (this.entries.size > 32 || bytes > 512 * 1024) {
-            const oldest = this.entries.keys().next().value;
-            if (oldest === undefined) break;
-            bytes -= this.entries.get(oldest)?.bytes ?? 0;
-            this.entries.delete(oldest);
-          }
-          this.changed();
-        })
-        .catch((error: unknown) => {
-          if (
-            this.stopped ||
-            request.controller.signal.aborted ||
-            this.requests.get(request.id) !== request
-          )
-            return;
-          const previous = this.retries.get(request.id);
-          const failures = (previous?.failures ?? 0) + 1;
-          this.retries.delete(request.id);
-          this.retries.set(request.id, {
-            members: request.members,
-            version: request.version,
-            after:
-              Date.now() +
-              Math.min(30_000 * 2 ** Math.min(failures - 1, 4), 300_000),
-            failures,
-          });
-          while (this.retries.size > 32) {
-            const oldest = this.retries.keys().next().value;
-            if (oldest === undefined) break;
-            this.retries.delete(oldest);
-          }
-          // Network failures preserve suggestions. Authoritative access denials do not.
-          if (
-            error instanceof ApiError &&
-            [401, 403, 404].includes(error.status)
-          ) {
-            this.entries.delete(request.id);
-            this.changed();
-          }
-        })
-        .finally(() => {
-          if (this.requests.get(request.id) === request)
-            this.requests.delete(request.id);
-          this.running--;
-          this.pump();
-        });
-    }
   }
 }

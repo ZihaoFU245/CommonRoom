@@ -13,7 +13,7 @@ checkpoints; `contract.mjs` validates actual payloads against the published
 schema. This separation makes transport behavior reusable without an agent
 framework. Node 22.18+ and the project's locked development dependencies suffice.
 
-Provision `/bot new helper #support` and `/bot token new helper worker`, then
+Provision `/bot new helper #support` and `/bot token new helper issuer`, then
 use the operator credential to issue a restricted expiring worker token through
 `POST /api/bot/v1/credentials`, then inject that secret as `BOT_TOKEN`. Never put it in code, URLs or logs.
 
@@ -144,3 +144,20 @@ Missing policy metadata keeps the legacy live-read behavior. Model preparation
 still overlaps catalogue, history and workspace reads. Working activity begins
 before validation/preparation; ordinary streamed answer text can appear as a
 provisional draft while final messages retain durable outbox publication.
+
+## Media and profile calls
+
+Use the v1 media/avatar/color counterparts documented in [Bots](bots.md#media-and-profiles-v1-extension).
+Bearer tokens cannot authenticate browser `/api/*` endpoints or `/ws`. These
+additional capabilities accept expiring workers with explicit scopes or account-wide
+scope (`conversations:null`); issuer tokens cannot call them. For worker media
+uploads, issue `read`, `send`, `media_upload` and the target conversation IDs;
+for downloads, `read` and the attachment conversation suffice. Explicit `profile`
+authorizes own avatar/global color changes; room color changes additionally need
+that room in scope. Account grants, quotas and ownership checks still apply.
+The reference `BotApi.request` validates the added JSON payloads and responses.
+Use `{method:"POST"}` without a body for completion/abandon requests. A file
+request such as `api.request("media/ID/file")` returns the signed redirect URL;
+fetch that URL separately without the bot Authorization header. PUT upload bytes
+to the supplied storage URL with only its supplied upload headers. Do not store
+signed URLs in messages; use the canonical `path` returned by completion.

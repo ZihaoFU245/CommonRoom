@@ -1,4 +1,4 @@
-use super::security::{check_origin, check_read_origin_or_bot, client_ip};
+use super::security::{check_origin, check_read_origin, client_ip};
 use super::*;
 use crate::engine::{EngineError, valid_name, verify_password};
 use axum::{
@@ -131,7 +131,7 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 pub(crate) fn identity(engine: &Engine, config: &Config, headers: &HeaderMap) -> Option<String> {
     if headers.contains_key(header::AUTHORIZATION) {
-        engine.bot_identity(bearer(headers)?)
+        None // Machine credentials are accepted only by explicit Bot API handlers.
     } else {
         engine.session(token(config, headers)?)
     }
@@ -363,7 +363,7 @@ pub(crate) async fn logout(
     })?
 }
 pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
-    check_read_origin_or_bot(&app, &headers)?;
+    check_read_origin(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
@@ -396,7 +396,7 @@ pub(crate) async fn session_status(
     State(app): State<App>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    check_read_origin_or_bot(&app, &headers)?;
+    check_read_origin(&app, &headers)?;
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;

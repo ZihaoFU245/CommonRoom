@@ -159,6 +159,29 @@ fn populate(e: &mut Engine) -> crate::bots::models::MessageInput {
     ))
     .unwrap();
     e.execute(None, Some("lobby"), "/bot new helper").unwrap();
+    let issuer = e
+        .execute(None, None, "/bot token new helper transfer-issuer")
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_owned();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {issuer}").parse().unwrap(),
+    );
+    let context = crate::bots::auth::Context::from_headers(e, &headers).unwrap();
+    e.issue_bot_credential(
+        &context,
+        crate::bots::models::CredentialInput {
+            label: "transfer-worker".into(),
+            expires: crate::bots::now() + 600,
+            conversations: Some([e.data.rooms["lobby"].id.clone()].into()),
+            operations: ["read".into(), "send".into()].into(),
+        },
+    )
+    .unwrap();
     let request = crate::bots::models::MessageInput {
         conversation_id: e.data.rooms["lobby"].id.clone(),
         text: "bot answer".into(),
@@ -198,7 +221,7 @@ fn populate(e: &mut Engine) -> crate::bots::models::MessageInput {
 #[test]
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
 fn postgres_sqlite_migration_preserves_every_table_and_retries() {
-    assert_eq!(SQLITE_SCHEMA_VERSION, 19);
+    assert_eq!(SQLITE_SCHEMA_VERSION, 20);
     assert_eq!(POSTGRES_SCHEMA_VERSION, 1);
     let fixture = PostgresFixture::new();
     let source = tempfile::tempdir().unwrap();
@@ -295,7 +318,7 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
     let path = source.path().join("chat.sqlite");
     assert!(Engine::migrate_sqlite(&path, "invalid-target").is_err());
     assert!(!path.exists());
-    for version in [18, 20] {
+    for version in [18, 19, 21] {
         let db = Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE IF NOT EXISTS marker(value TEXT);")
             .unwrap();
@@ -306,7 +329,7 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
         assert!(
             Engine::migrate_sqlite(&path, "invalid-target")
                 .unwrap_err()
-                .contains("v19")
+                .contains("v20")
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
