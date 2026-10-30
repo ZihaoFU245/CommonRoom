@@ -1,8 +1,8 @@
 # Bot API v1
 
 V1 is the chat transport for external agents under `/api/bot/v1/`.
-This refactor changes the v1 contract; update workers and checkpoints together
-with the server. The published schema and live contract tests define the API.
+The [JSON Schema](bot-v1.schema.json) and live contract tests define the API.
+Workers must use the documented credential kinds and checkpoint format.
 There are no unversioned bot routes. Native server command execution is provided
 through the authenticated v1 `/commands` endpoint.
 
@@ -105,7 +105,6 @@ without a forwarded protocol header requires explicit `direct_bot_http` opt-in
 (default false) and a private/loopback trusted peer. Forwarded requests must
 indicate HTTPS, including when direct mode is enabled. A browser Origin is
 unnecessary. See [Deployment](deployment.md#explicit-direct-bot-http).
-
 
 | Method and endpoint                                                | Payload / result                                                                                                      |
 | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
@@ -349,8 +348,9 @@ closes affected sockets. Reconnect with backoff and check credentials on 401.
 
 Configuration belongs to each worker. Use its advertised mention commands, such
 as `@helper /config get` or `@helper /config set key "value"`; the worker
-validates values and enforces its own owner/admin policy. `/bot config` and the
-`config_ready`, `config_request` and `config_response` socket RPC are removed.
+validates values and enforces its own owner/admin policy. `/bot config` is not a
+server command. The socket RPC frames `config_ready`, `config_request` and
+`config_response` are unsupported.
 The `config` credential operation remains the gate for verified source context
 used by private worker commands. Legacy `r:bot.config` / `w:bot.config` grants
 remain readable in saved policies for compatibility but expose no remote RPC.

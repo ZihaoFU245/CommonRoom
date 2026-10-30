@@ -149,8 +149,7 @@ async fn native_media<T: Send + 'static>(
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let app = app.clone();
     let access = access.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
         let (media, attached) = store
             .load(&id)
@@ -196,8 +195,7 @@ async fn mutate(app: &App, access: &Access, mutation: MediaMutation) -> Result<(
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let app = app.clone();
     let access = access.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
         let ordering = app.mutations.conversations(vec![]).await?;
         let id = match &mutation {
@@ -256,8 +254,7 @@ async fn reserve(
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let app = app.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let id = app
             .inspect_engine({
                 let identity = identity.clone();
@@ -334,8 +331,7 @@ pub(crate) async fn config_as(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
         store.health().await?;
         let enabled = app.media.is_some();
@@ -360,8 +356,7 @@ pub(crate) async fn allocate_as(
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     let worker = app.clone();
-    let (storage, identity, input) = tokio::spawn(async move {
-        let _permit = permit;
+    let (storage, identity, input) = super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&worker, access).await?;
         let storage = storage(&worker)?;
         let input = worker
@@ -580,8 +575,7 @@ where
 {
     let permit = app.io_permit()?;
     let app = app.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let store = app
             .inspect_engine(|engine, _| Ok::<_, crate::engine::EngineError>(engine.media_store()))
             .await

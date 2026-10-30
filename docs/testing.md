@@ -4,8 +4,9 @@
 
 The ordinary Rust suite runs SQLite without an external database. PostgreSQL
 contracts are opt-in ignored tests that create/drop unique schemas in an explicitly
-selected test database. Use a disposable PostgreSQL 18 container, not a production
-database. Run them serially because database ownership is deliberately exclusive:
+selected test database. Use an isolated PostgreSQL 18 test database, never a production database.
+The example below uses a disposable container; the local server in
+[PostgreSQL](postgresql.md#local-development-server) is another option. Run them serially because database ownership is deliberately exclusive:
 
 ```sh
 container run -d --name chat-postgres-test --memory 1G --cpus 2 \
@@ -64,8 +65,8 @@ independently with native keyboard-accessible disclosure controls.
 `auto/test-postgres.py` requires the target's default schema to be empty. It
 provisions a temporary SQLite server through the real stdin console, verifies HTTP
 login, runs the binary's transfer command, then checks PostgreSQL HTTP sessions,
-password login, restart and graceful shutdown twice. It leaves the migrated test
-tables in PostgreSQL for container removal; use a fresh container to repeat it.
+password login, restart and graceful shutdown twice. It leaves migrated tables in the target database; repeat it with a fresh empty
+database or remove the disposable container.
 It also verifies that a rejected second process cannot rewrite saved configuration
 for either backend, a URL alone cannot select PostgreSQL, and missing/empty URLs
 cannot silently fall back to SQLite after PostgreSQL is selected in configuration.
@@ -80,13 +81,15 @@ From the repository root:
 rtk proxy ./auto/check.sh
 ```
 
-This runs Rust formatting, Clippy with warnings as errors, Rust tests, integration-harness syntax, TypeScript
+This runs Rust formatting, Clippy with warnings as errors, Rust tests, generated
+command-reference verification, integration-harness syntax, TypeScript
 checks, type-aware ESLint, web formatting, and web tests. The optional
 `simpleBot/` demo has separate checks below; the release workflow does not require
 Deno. Dependencies must be installed first. To run individual checks:
 
 ```sh
 rtk cargo fmt --all --check
+rtk proxy python3 auto/command-reference.py --check
 rtk cargo test --locked
 rtk cargo clippy --all-targets --locked -- -D warnings
 rtk pnpm --dir web typecheck
@@ -112,7 +115,7 @@ the unused RSA entry has RUSTSEC-2023-0071, with no fixed version. These entries
 are excluded only while absent from the resolved graph; enabling them makes the
 audit include them automatically. Do not claim the entire raw lockfile is clean.
 
-Review regressions cover an HTTP future aborted inside COMMIT, one forced owner
+Storage lifecycle regressions cover an HTTP future aborted inside COMMIT, one forced owner
 probe per append, configurable PostgreSQL pool limits, batched media acknowledgement
 rollback on both backends, and cleanup recount when an empty target receives a
 message during the count. Publication recovery tests force a committed mismatch,
@@ -360,11 +363,11 @@ either global sudo grant is revoked.
 
 ## Persistence benchmark
 
-Run `rtk proxy python3 auto/benchmark-storage.py` to compare committed HEAD and
-current code against identical isolated fixtures. It prints send/reaction p50/p95,
-separate snapshot/serialization timings, WAL bytes, changed-row counts, and isolated
-process peak RSS. It uses temporary databases, never `data/`. See
-[Storage benchmarks](storage-benchmarks.md) for methodology and recorded results.
+Run `rtk cargo test --release --locked mutation_persistence_benchmark -- --ignored --nocapture`
+against isolated fixtures. It prints send/reaction p50/p95, separate snapshot and
+serialization timings, WAL bytes and changed-row counts. It uses temporary
+databases, never `data/`. See [Storage benchmarks](storage-benchmarks.md) for
+methodology and measurement limits.
 Targeted-write tests reject unrelated payload/policy updates and inject failures at
 message insertion/eviction, counter/revision changes, reaction insertion, and new
 private-conversation creation; disk state, cache, sequences and revisions must all
@@ -469,7 +472,7 @@ bounds. Browser checks exercise this with the virtualized conversation list.
 payloads in both socket directions. `web/tests/botClient.test.js` covers bounded
 retries, multipage recovery, duplicate signals, original outbox payload/key reuse,
 account mismatch and expired/corrupt checkpoints. These run with the normal web
-suite. V1 is the sole bot API namespace. Its refactored credential, revision and shared
+suite. V1 is the sole bot API namespace. Its credential, revision and shared
 unread rules are tested with the worker; update the schema and consumers together. Rebuild both binaries before running the real
 integration suite.
 
@@ -737,8 +740,8 @@ backoff, exponential rests, empty results and immediate notification refresh.
 Object-command regressions cover scoped user lists, complete bulk metadata reads,
 privacy, protected accounts, media inheritance/quotas, renames, room deletion,
 read-only execution and failed-write rollback. Bulk grant/revoke tests exercise original-policy authorization, owners, protected su accounts, and the last active
-administrator. Legacy upgrade fixtures are removed; unversioned databases and
-versions 1–18 and representative future versions are tested for unchanged rejection. Upload hint tests
+administrator. Startup tests require unchanged rejection of unversioned databases,
+versions 1–18 and representative unsupported future versions. Upload hint tests
 cover bounds/header injection, signing, replacement metadata and browser headers.
 
 Command-output regressions cover full subcommand paths, permission-filtered help,
@@ -770,7 +773,6 @@ case-insensitive k/m/g sizes, checked overflow, config serialization, and
 readable metadata lists. Explicit bare room scopes are rejected across command
 families; completion, manuals and integration fixtures use `#room`.
 
-
 Cleanup regressions require explicit scopes in every view, exercise peer/pair and
 bulk private targets, reject missing chats without creation, preserve private
 scope privacy, enforce command/action/age checks during preview and execution,
@@ -799,7 +801,7 @@ Password reset uses the explicit `password` selector throughout console/web test
 including authority rechecks after hashing, session revocation and UI redaction.
 Global metadata entries have no hints; room entries retain inheritance/local hints.
 
-## Static-review regressions
+## Metadata projection and query plans
 
 `engine/tests/review.rs` covers room-only metadata projection, explicit global
 group grants and batch audit, membership invitation authority, uniform attachment
@@ -832,7 +834,6 @@ default-off external URLs and live authorization on cached avatar bytes. Browser
 should position/zoom a rectangular image, confirm, and inspect chat/sidebar/account
 at desktop and compact widths. Check URL failures leave no blank avatar space.
 
-
 ## Chrome 114 compatibility
 
 The production build targets Chrome 114 explicitly. `requestAbort.test.js` runs
@@ -847,13 +848,7 @@ document previews, and request cancellation/timeouts. Also verify service-worker
 activation and CSS `:has`, `color-mix`, and dynamic viewport units. Keep the installed
 browser and working data folder untouched. No benchmarks are required.
 
-Chrome 114.0.5735.133 was verified against the production bundle on 2026-10-22
-using isolated temporary accounts and a `/commonroom/` HTTPS base path. Login,
-history, WebSocket messages, reload, settings, Markdown/LaTeX, streamed document
-preview, cancellation/deadlines, avatar canvas/WebP encoding and worker activation
-passed at desktop 1440×1000 and compact 390×844 with no page errors. Storage was disabled; S3 transfers were not part of
-this browser compatibility smoke. Unit tests cover the shared request path used
-by avatar/media uploads and completion.
+## Authentication and ingress
 
 Login hardening regressions cover bounded tracking and expiry, pending reservations,
 late completion across window rollover, account limits across rotating IPs, repeated
@@ -862,22 +857,18 @@ busy-worker refunds. Configuration tests reject unknown top-level and nested key
 without rewriting files and preserve unchanged formatting/mtime. Production ingress
 tests require security headers on accepted, untrusted-peer and insecure requests.
 
-On 2026-10-22, an isolated Chrome profile against the real Vite `web/` UI and
-updated backend passed invalid-password and rate-limit display, login/socket
-startup, room selection, Unicode message send, reload persistence, 390×844
-layout without horizontal overflow, twelve successful logins, and logout. No
-uncaught browser exceptions occurred. The five existing `test:browser` scenarios
-also passed. The full HTTP/WebSocket smoke harness passed against rebuilt debug
-and release binaries. Browser checks used temporary accounts/data with media
-storage disabled.
+Browser checks should cover invalid-password and rate-limit errors, login/socket
+startup, room selection, Unicode sends, reload persistence, compact layouts and
+logout, using temporary accounts and data.
+
+## Admission, cache reuse and notifications
 
 Backend admission regressions cover socket eviction and pool isolation, stable
 account HTTP limits, cancelled-request worker ownership, typed bot 429 responses,
 shared transport shutdown and exponential login backoff across rotating IPs.
-Large Rust suites live under `server/src/{engine,web,bots}/tests/`; private module
-access and test-only compilation are preserved. Obsolete whole-store save helpers
-and pointer-alias assertions were removed; persistence tests use captured deltas.
-Concurrent same-key bot sends now deterministically replay the committed receipt;
+Rust suites live in `tests/` directories beside their owning modules; private
+module access and test-only compilation are preserved. Persistence tests use
+captured deltas. Concurrent same-key bot sends deterministically replay the committed receipt;
 unrelated stale preparations and revoked permissions still fail.
 
 Media regressions verify one-second failed-probe backoff and recovery without
@@ -891,7 +882,7 @@ suffix/subdomain/userinfo lookalikes and hiding previously allowed stored URLs
 after policy changes. Direct bot ingress tests cover explicit opt-in, private
 trust validation, default denial and rejection of forwarded HTTP even with opt-in.
 
-Backend review regressions cover digest-based session lookup, bounded durable
+Authentication and storage regressions cover digest-based session lookup, bounded durable
 authentication events, retained-row counters, typed retryable storage errors,
 duplicate cookies across headers, and idempotent avatar broadcasts. Incremental
 unreads are compared to an exact SQL oracle across global sequence gaps, cursor
@@ -919,7 +910,6 @@ while reads wait, and every stale frame is discarded. Media smoke warms a recipi
 routing cache before silently reserving a private upload, then verifies that the
 first private message still arrives without a baseline broadcast.
 
-
 Metadata notification regressions compare changed viewers against independent cold
 snapshots across room/account lifecycle and policy changes, cover old and new access,
 and verify outsiders perform no history reads or baseline work. Transport tests union
@@ -927,7 +917,6 @@ coalesced audiences and retain bot command catalogue invalidations during forced
 recovery. Bot credential API tests assert committed notifications. The real socket
 harness checks hidden room creation, grants, revocation and regrant while an unrelated
 viewer receives no baseline.
-
 
 ## Name color synchronization
 
@@ -983,13 +972,14 @@ Room-only color tests verify grant rejection at global/account/private scopes, n
 root-to-room authority inheritance, ordinary-admin revocation, cross-room and
 cross-account isolation, bulk/protected-target atomicity, non-color metadata denial,
 owner transfer, restart/rename/regrant behavior and failed-write rollback.
-HEAD-only startup tests reject v17/v18 and all other unsupported schemas unchanged. HTTP tests reject set/reset/no-op room writes after
+SQLite startup tests reject unsupported schemas unchanged and verify the supported
+v19-to-v20 credential upgrade atomically. HTTP tests reject set/reset/no-op room writes after
 revocation without metadata/version changes or notifications, while root writes remain
 available without global grants. Browser coverage keeps root settings available and
 filters room choices using own/any grants, including live revocation fallback.
 Completion covers the color key, full palette, @unset, bulk selectors and scopes.
 
-## Server database refactor regressions
+## Storage integrity and crash recovery
 
 `engine/tests/storage.rs` checks database integrity, foreign keys, retained-row
 counts and independently reconstructed account references after deterministic mixed
@@ -1038,7 +1028,7 @@ Async snapshot-cache coverage cancels an active builder while another caller is
 waiting, requires the waiter to fill the same entry, and verifies subsequent
 callers reuse its shared buffer. Existing blocked-reader, credential-revocation,
 partial-baseline and batch notification tests run through the native async
-snapshot path; production synchronous plan wrappers have been removed.
+snapshot path.
 
 Native application mutation tests block a PostgreSQL append at its sequence counter
 and require an unrelated HTTP reaction and read acknowledgement to finish. They
@@ -1087,12 +1077,13 @@ private-directory/quota atomicity, credential/permission rechecks, published
 abandon protection and confirmed cleanup/staging grace. A PostgreSQL quota-lock
 contract checks independent accounts, cancellation and queued revocation. A SQLite
 WAL contract proves ordinary media reads use readers while command-scoped reads
-retain uncommitted transaction visibility. Latest WIP verification and outstanding
-real-binary/media checks are recorded in `database-refactor.md`.
+retain uncommitted transaction visibility. Run `auto/test-postgres.py` for the
+real-binary database lifecycle and `web/scripts/media-smoke.mjs` for local RustFS
+integration, using their isolated fixtures.
 
-PostgreSQL review regressions also cover cached read-health checks, actual
+PostgreSQL contracts also cover cached read-health checks, actual
 advisory-lock loss, single-statement page/unread SQL against the oracle, account
-index query plans, rejection of old WIP schema markers, and rebuilding an empty
+index query plans, rejection of unsupported schema markers, and rebuilding an empty
 retention table past the runtime statement deadline after restore. SQLite
 covers rejected COMMIT rollback without dispatcher poisoning. Shared tests verify
 uploader-bound media updates, stale metadata CAS rejection, startup upload grace,
@@ -1123,7 +1114,6 @@ expired credentials, explicit global profile delegation, room color scopes and
 avatar visibility restricted to the worker's conversations despite global
 account-directory grants. Account-wide and browser-session coverage is retained.
 
-
 Issuer/worker regressions cover issuer-only exchange, mandatory worker expiry,
 issuance-time account permission checks, worker delegation denial and deletion of
 all bot credentials. SQLite v19-to-v20 tests cover exact scope preservation,
@@ -1134,7 +1124,7 @@ invalidation and stale-response rejection. Server discovery tests cover catalogu
 expiry, refresh scheduling, per-runtime byte/count limits and aggregate response
 privacy after membership revocation.
 
-Bot discovery review regressions retain registration/catalogues after failed async
+Bot discovery regressions retain registration/catalogues after failed async
 verification, allow corrected responses to reuse a rejected request, and preserve
 legacy v1 responses with a default 300-second lifetime. Hook tests replay changing
 conversation/version maps without postponing initial or periodic refresh timers;
@@ -1152,3 +1142,23 @@ but insert IDs; both ID-only and bot-qualified revocation remain supported.
 Snapshots expose only credential IDs and labels the viewer may manage, never
 secrets/digests. Tests cover ordinary accounts, protected su targets, rename and
 revocation audience refreshes, and native SQLite/PostgreSQL ID-only revocation.
+
+## HTTP resilience and request context
+
+`web/socket/tests.rs` runs a real browser WebSocket through the production HTTP listener.
+A reversible stored-message decode failure must preserve the socket, recover via a
+timed baseline without another broadcast, and still close after session revocation.
+`web/http_server.rs` verifies slow headers expire and release connection capacity,
+including socket-peer `ConnectInfo` propagation. Mutation ordering regressions cover
+cancelled conversation acquisitions and non-poisoning contended reader panics.
+Media admission tests verify that a saturated storage semaphore waits for capacity,
+resumes when a slot opens, and returns unavailable after the two-second deadline.
+
+Request-context coverage also checks request-principal reuse across detached jobs,
+revocation after capture, engine/header isolation, a single lookup for unchanged
+global message actions, and quote-scrubbing races while an action waits for its
+conversation lock. Profile-only template reuse is compared with cold authorized
+snapshots, including bulk writes and subsequent membership revocation. Manual
+`bounded_page_lookup_benchmark` and `inspection_scheduling_benchmark` tests report
+bounded-cache and contention dispatch timings without brittle timing assertions.
+Command catalogue changes must pass `rtk proxy python3 auto/command-reference.py --check`.

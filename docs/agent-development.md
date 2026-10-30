@@ -63,7 +63,7 @@ content with their own durable state, and cancel/update affected tasks. It can a
 fire for sends; it is not a classified change event. Commit the worker's changes
 before returning; failed callbacks leave the saved revision unchanged. The default
 reference handler consumes new mentions only. A null unread entry defers that
-conversation without resetting its checkpoint. Checkpoint format is now version 2;
+conversation without resetting its checkpoint. Checkpoint format is version 2;
 old checkpoints require deliberate reconciliation before replacement.
 
 ## Produce reliable output

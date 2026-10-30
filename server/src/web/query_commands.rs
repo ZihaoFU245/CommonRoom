@@ -22,19 +22,7 @@ pub(super) fn supports(input: &str) -> Result<bool, EngineError> {
     if elevated.is_some() && matches!(input.split_whitespace().next(), Some("/clear" | "/logout")) {
         return Ok(true);
     }
-    let routed = crate::commands::route(input);
-    let parts = routed.split_whitespace().collect::<Vec<_>>();
-    Ok(match parts.as_slice() {
-        ["/user", "ls" | "get", ..] | ["/room", "ls"] => true,
-        ["/bot", "ls" | "info", ..] | ["/bot", "token", "ls", ..] => true,
-        ["/clean", ..] => parts.last() == Some(&"--dry-run"),
-        [
-            "/system" | "/permissions" | "/debug" | "/help" | "/man" | "/whoami" | "/console"
-            | "/ls" | "/members" | "/history",
-            ..,
-        ] => true,
-        _ => false,
-    })
+    Ok(crate::commands::execution(input) == crate::commands::Execution::Read)
 }
 fn prepare(
     engine: &Engine,

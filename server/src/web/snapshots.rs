@@ -41,15 +41,15 @@ impl SnapshotCache {
             return value.clone();
         }
         self.misses += 1;
-        self.entries.retain(|old, (_, size)| {
+        // Recency and entries have the same keys. Remove stale profile frames
+        // and their accounting in one pass over the bounded recency queue.
+        self.order.retain(|old| {
             let keep = old.0 != key.0 || old.1 != key.1 || old.4 != key.4;
-            if !keep {
-                self.bytes = self.bytes.saturating_sub(*size);
+            if !keep && let Some((_, size)) = self.entries.remove(old) {
+                self.bytes = self.bytes.saturating_sub(size);
             }
             keep
         });
-        self.order
-            .retain(|old| old.0 != key.0 || old.1 != key.1 || old.4 != key.4);
         let value = Arc::new(OnceCell::new());
         self.entries.insert(key.clone(), (value.clone(), 0));
         self.order.push_back(key.clone());

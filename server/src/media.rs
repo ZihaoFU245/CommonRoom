@@ -70,9 +70,10 @@ impl MediaStorage {
         lock.try_lock_owned()
             .map_err(|_| "This attachment is busy; retry shortly.".into())
     }
-    fn work(&self) -> Result<tokio::sync::SemaphorePermit<'_>, StorageError> {
-        self.jobs
-            .try_acquire()
+    async fn work(&self) -> Result<tokio::sync::SemaphorePermit<'_>, StorageError> {
+        tokio::time::timeout(Duration::from_secs(2), self.jobs.acquire())
+            .await
+            .map_err(|_| StorageError::Unavailable("Media storage busy; retry shortly."))?
             .map_err(|_| StorageError::Unavailable("Media storage busy; retry shortly."))
     }
     pub fn from_config(
@@ -173,7 +174,7 @@ impl MediaStorage {
         {
             return result.clone();
         }
-        let _job = self.work().map_err(|e| e.message().to_string())?;
+        let _job = self.work().await.map_err(|e| e.message().to_string())?;
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             self.bucket.head_object("uploads/.availability"),
@@ -225,7 +226,7 @@ impl MediaStorage {
         if media.size == 0 {
             return Err(Invalid("Invalid upload size."));
         }
-        let _job = self.work()?;
+        let _job = self.work().await?;
         let start = std::time::Instant::now();
         let source = format!("uploads/{}", media.id);
         let destination = media.final_key();
@@ -370,7 +371,7 @@ impl MediaStorage {
             .map(s3::serde_types::ObjectIdentifier::new)
             .collect::<Vec<_>>();
         let result = {
-            let _job = self.work().map_err(|e| e.message().to_string())?;
+            let _job = self.work().await.map_err(|e| e.message().to_string())?;
             self.bucket.delete_objects(objects).await
         };
         match result {
@@ -402,7 +403,7 @@ impl MediaStorage {
         }
     }
     pub async fn delete(&self, key: &str) -> Result<(), String> {
-        let _job = self.work().map_err(|e| e.message().to_string())?;
+        let _job = self.work().await.map_err(|e| e.message().to_string())?;
         let response = self.bucket.delete_object(key).await.map_err(|cause| {
             tracing::warn!(key, error = %cause, "S3 deletion failed");
             "Storage deletion failed."
@@ -601,18 +602,27 @@ pub(crate) mod tests {
         assert_eq!(media.hints["content-type"], "text/html");
         server.await.unwrap();
     }
-    #[test]
-    fn object_locks_and_storage_capacity_are_independent_and_bounded() {
+    #[tokio::test]
+    async fn object_locks_and_storage_capacity_are_independent_and_bounded() {
         let storage = test_storage("http://127.0.0.1:1");
         let first = storage.lock_media("first").unwrap();
         assert!(storage.lock_media("first").is_err());
         assert!(storage.lock_media("second").is_ok());
-        let permits: Vec<_> = (0..8).map(|_| storage.work().unwrap()).collect();
-        assert!(storage.work().is_err());
+        let permits = storage.jobs.acquire_many(8).await.unwrap();
+        let waiting = tokio::spawn({
+            let storage = storage.clone();
+            async move { storage.work().await.map(|_| ()) }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
         drop(permits);
+        waiting.await.unwrap().unwrap();
+        let occupied = storage.jobs.acquire_many(8).await.unwrap();
+        assert!(storage.work().await.is_err());
+        drop(occupied);
         drop(first);
         assert!(storage.lock_media("first").is_ok());
-        assert!(storage.work().is_ok());
+        assert!(storage.work().await.is_ok());
         assert!(storage.locks.lock().unwrap().len() <= 1);
     }
     #[tokio::test]

@@ -32,6 +32,11 @@ Passwords are masked. Enter sends, Shift+Enter adds a line, and Tab completes.
 /user reset who password new-password
 ```
 
+`/user disable` revokes sessions, removes room memberships and room-scoped
+roles/grants, and transfers owned rooms to su (the console principal). Global
+roles and grants remain stored but cannot be used while disabled. `/user enable`
+allows login again; it does not restore previous room access or ownership.
+
 Omitted scope uses the selected room; Console/stdin use `@global`.
 In private views, specify a room or `@global` for user lists/metadata. `#support` names a room explicitly. `/user ls` lists its members using `r:member.list`;
 global listing requires `r:account.list`. `/user rename robert` renames yourself.
@@ -162,7 +167,8 @@ limits also belong in metadata through `history.clean_min_age`. See `/man permis
 
 `/system` and its subcommands require a global `/system` command grant (included
 for su). Use `/grant alice @global /system` to delegate read access. Stdin and authorized `/sudo`
-are supported. `/configs` is removed in favor of `/system configs`.
+are supported. Configuration inspection uses `/system configs`; `/configs` is
+not executable.
 `/system metrics --txt` returns the complete report in one plain text Markdown
 code block for sharing. Configuration is a Markdown JSON block; default metrics use Markdown tables and show
 cache hit rates, misses/evictions, shard occupancy, unread/snapshot results,
@@ -198,7 +204,7 @@ including aliases and sudo, ask for browser confirmation; stdin acts directly.
 
 Private conversations appear after exchanging messages. Start one with
 `/tell USER MESSAGE`; ordinary text in that private view sends to the peer.
-Opening a conversation loads a 100-message page; scroll to load older/newer pages. Each browser conversation has a sliding 1,000-message cache and only visible rows are mounted. `/history 1000 1099` prints messages whose global sequences are in that inclusive range, without fetching earlier messages. Use `/history #study` to read the latest 100 messages from another authorized room without selecting it. Explicit room names require `#`. `/history` reads the latest 100 messages in the current conversation, including a selected private chat. Ranges apply only to the current conversation. A wide range returns at most 100 messages; continue after the last printed sequence. The former count/user syntax is removed.
+Opening a conversation loads a 100-message page; scroll to load older/newer pages. Each browser conversation has a sliding 1,000-message cache and only visible rows are mounted. `/history 1000 1099` prints messages whose global sequences are in that inclusive range, without fetching earlier messages. Use `/history #study` to read the latest 100 messages from another authorized room without selecting it. Explicit room names require `#`. `/history` reads the latest 100 messages in the current conversation, including a selected private chat. Ranges apply only to the current conversation. A wide range returns at most 100 messages; continue after the last printed sequence.
 
 Messages stay left-aligned, with local dates and times. Consecutive messages
 from the same sender group within five minutes; commands break the group.
@@ -402,7 +408,6 @@ and `@SimpleBot /reload` to validate and load file edits. `prompt` configures
 personality and user preferences as a separate user message; the system prompt
 remains fixed in code. These are worker controls; `/bot` remains server management.
 
-
 SimpleBot optionally supports autonomous group participation. An owner/admin can
 use `@SimpleBot /config set autonomous "true"` to consider unmentioned room
 messages in fixed three-second batches. Mentions can accelerate a batch; model continuations
@@ -512,3 +517,8 @@ completion shows the bot name, credential label and kind, and inserts its ID.
 The bot-qualified form remains available. Token IDs/labels are included in
 completion only for credentials the current viewer is authorized to manage;
 secrets and digests are never included. Explicit bot room scopes require `#`.
+
+The [generated command reference](command-reference.md) uses the same catalogue as
+`/help` and `/man` usage. Regenerate it with
+`rtk proxy python3 auto/command-reference.py`; `--check` verifies it without writing
+or opening chat data. `auto/check.sh` checks it before packaging.

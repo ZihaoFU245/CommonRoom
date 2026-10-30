@@ -26,8 +26,7 @@ pub(crate) async fn history(
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
     // Detach accepted work from request cancellation so admission remains held
     // until both metadata checks and the native async read have finished.
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let range = crate::engine::HistoryRange {
             start: input.start,
             end: input.end,
@@ -56,10 +55,6 @@ pub(crate) async fn history(
             .page_checked_async(&id, revision, range, &input.view)
             .await
             .map_err(crate::engine::EngineError::from)
-            .map_err(ApiError::from)?;
-        store
-            .ensure_available_async()
-            .await
             .map_err(ApiError::from)?;
         app.inspect_engine(move |engine, config| -> Result<_, ApiError> {
             let current = super::auth::identity(engine, config, &headers)
@@ -103,8 +98,7 @@ pub(crate) async fn read(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let id = app
             .inspect_engine({
                 let headers = headers.clone();

@@ -70,9 +70,10 @@ queries, global edits/retractions and cleanup also use native owned plans. Brows
 fallback errors validate in memory; sudo local controls use the read-only query
 path. Startup retention/media cleanup and shutdown checkpoints await native
 storage. Accepted I/O and password-only login jobs drain through publication before
-checkpointing. The stdin reader owns no database reference. Legacy synchronous
-executors and explicit command sessions compile only in tests; synchronous SQLx
-utilities remain for bootstrap/offline transfer and final pool draining. Backend
+checkpointing. The stdin reader owns no database reference. Test-only command
+adapters bridge to native preparation, persistence and publication; explicit
+command sessions are test-only. Synchronous SQLx utilities handle bootstrap,
+offline transfer and final pool draining. Backend
 switching preserves single-process ownership and wire contracts. See
 [PostgreSQL](postgresql.md) for runtime and offline transfer details. SQLite/WAL and
 portable-folder details below apply to the SQLite backend.
@@ -111,7 +112,8 @@ Domain modules extend that coordinator rather than creating separate copies of a
 | Module | Responsibility |
 | --- | --- |
 | `models.rs` | Persisted data and serialized snapshot/history types |
-| `storage.rs` and `storage/` | Database lifetime and metadata commit coordination; focused bootstrap/schema, entity, message, cursor, account, receipt, auth, retention and maintenance modules |
+| `database/` | SQLx pools, typed database operations, backend SQL/schemas and offline transfer |
+| `storage.rs` and `storage/` | Database lifetime and committed-state coordination for bootstrap, entities, cursors, accounts, media, receipts, authentication and maintenance |
 | `history.rs` and `history/` | Typed pooled database reads and statistics; focused keyset pagination, immutable pages, bounded caches and batched unread projections |
 | `authorization.rs` and `authorization/` | Policy types, predefined bundles and compiled index; `access.rs` owns access checks/delegation, `commands.rs` owns policy inspection/mutations |
 | `objects.rs` | Object command listing, scoped account metadata, bulk metadata selection and validation |
@@ -124,7 +126,7 @@ Domain modules extend that coordinator rather than creating separate copies of a
 | `notices.rs` | Committed metadata audiences using stable principals, resolved keys and old/new access |
 | `snapshot.rs` | Owned browser/bot plans; history loading, unread collection and snapshot assembly |
 | `presence.rs` | Connection counts and shared active-directory/frame projections |
-| `dispatch.rs` | Input validation, command routing, and rollback on rejected/failed mutations |
+| `dispatch.rs` | Input validation, read-command planning, scoped command context and test adapters to native mutation plans |
 | `helpers.rs` | Password hashing, names, timestamps, mention scanning, and private-pair keys |
 | `tests/` | Engine regression tests using isolated storage |
 
@@ -140,22 +142,30 @@ rehashing credentials. Read/reaction preflight reads release the engine lock and
 recheck conversation revisions before committing. `bots/engine.rs` is an engine extension for typed chat
 operations using stable conversation IDs. Browser and bot adapters share message
 insertion, reply quotes, action authorization and reaction mutation in
-`engine/messages.rs`, transaction completion/rollback in `engine/dispatch.rs`,
-and cursor persistence in `engine/queries.rs`. The bot adapter owns v1-specific
-validation, retry receipts and error projection. SQL remains in the engine's
-storage/history modules.
+`engine/messages.rs`. Owned write plans in `engine/command_write.rs` and typed
+backend operations coordinate durable message changes; read acknowledgements use
+owned cursor plans. The bot adapter owns v1-specific
+validation, retry receipts and error projection. SQL belongs to the independent backend modules under `engine/database/`.
 HTTP writes and compact notification/discovery sockets are separate from browser
 commands/snapshots. Workers configure their own settings through advertised chat
 commands and enforce their own owner/admin policy. Registrations and receipts use
 stable ordinary account IDs. `web/scripts/bot/` is a reference worker with its own
 checkpoint/outbox, not a server-side agent runtime.
 
-
 `commands.rs` outside the engine owns help/completion metadata and the shared account-provisioning syntax used by stdin and web password jobs. `manual.rs` provides read-only command and grant-system manuals. The domain dispatcher executes commands; the registry does not authorize them.
 
-`web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` routes commands and configuration output; `credential_commands.rs` handles password/provisioning in the existing blocking command worker. Password hashes are rechecked when committing after a background job. All SQLite access belongs in the engine storage/history modules.
+`web/mod.rs` owns route construction and `App`. Its child modules separate proxy/origin security, authentication, history/read HTTP handlers, and WebSocket transport. `web/commands.rs` routes commands and configuration output; `credential_commands.rs` hashes passwords on blocking workers, then commits through native credential plans. Identity and verification material are rechecked before commit. Backend SQL belongs in `engine/database/`.
 
-One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes short memory mutations. Native browser message/history mutations, bot sends/reactions and read acknowledgements release it for SQLx I/O, keeping a per-conversation permit through publication. Different conversations share the metadata fence and can write concurrently. Administrative plans acquire the fence exclusively through native commit/publication. Short memory phases run on blocking workers; all live database reads and writes await SQLx outside engine guards. Legacy synchronous execution/lock helpers exist only in tests. HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until accepted async or blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for native database I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and four independent read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
+HTTP admission and browser/bot authentication share a typed principal lifecycle.
+Request-local reuse saves the admission capture without granting authority:
+health and final live credential checks still run. `admission::spawn_io` carries
+that context and the accepted job's permits through cancellation. One command
+execution classifier is shared by adapters, and the public command reference is
+generated from the same catalogue used by help/manual output. Test administrative
+execution and avatar setters bridge to production pending operations rather than
+implementing an independent metadata persistence path.
+
+One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes short memory mutations. Native browser message/history mutations, bot sends/reactions and read acknowledgements release it for SQLx I/O, keeping a per-conversation permit through publication. Different conversations share the metadata fence and can write concurrently. Administrative plans acquire the fence exclusively through native commit/publication. Short memory phases try the engine guard on the async task and use blocking workers on contention; live database reads and writes await SQLx outside engine guards. Synchronous command adapters and lock helpers are test-only. HTTP work admission is capped at 64 jobs and eight requests/commands per stable account. Account leases survive cancellation until accepted async or blocking work ends. Login uses a separate two-worker password pool and one blocking job per admitted request; its bounded IP/account failure windows expire incrementally rather than scanning all tracked clients. Never hold an engine guard across `.await`. HTTP history captures authorized resource identity/revision, releases the engine guard for native database I/O, then rechecks session, access and identity before returning a coherent revisioned page. SQLite WAL has one writer and a pool of two to four read-only connections. The standard OS RwLock does not promise a particular scheduling/fairness policy. Changes are broadcast after successful persistence; read-only commands do not rewrite state. Account deletion commits message/session changes and cursor cleanup together. In-memory rollback/cursor updates must retain this atomic behavior.
 
 ## Web ownership
 
@@ -202,7 +212,6 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes sho
 - `markdown-frame.html` is a single generated static resource with an inline bootstrap compiled from `markdownFrame.ts`. Vite exposes its content-versioned URL, and Nginx serves it with a dedicated CSP and immutable caching. It has no bundle/font/CSS subrequests. Each selected preview is an iframe with only `sandbox="allow-scripts"`; same-origin access, forms, popups and top navigation remain disabled. A one-shot parent message supplies the source; the frame applies a leading CSP again before executing the HTML. It reports bounded heights via source-checked messages and ResizeObserver, without polling. Frames unmount outside the virtual window; remounts use the browser's cached shell and restart the selected preview. No hidden frame pool or persistent game state is kept.
 - The frame allows inline CSS/JavaScript and data images/media/fonts, but blocks fetches, external resources, nested frames, base URLs and form actions. The app's leading `frame-src 'self'` meta policy also applies without Nginx; the frame carries its own leading CSP meta. Production headers add frame-ancestor restrictions and preserve a strict script/style policy on the main app. Full HTML code remains untrusted and never runs with the chat's origin.
 
-
 Server snapshots are authoritative for membership, scoped permissions and commands, peer directories, and messages. The legacy wire `admin` flag is informational; UI controls use effective grants. Browser storage contains presentation/notification preferences, browser-local command aliases, and a bounded cache of downloaded immutable media bytes. Stable event callbacks and memoized message lists keep draft edits from sorting and rendering the transcript again. Keep pure helpers independent of browser APIs where possible.
 
 ## Scaling and extension
@@ -220,11 +229,11 @@ The server creates cache pages lazily: at most 1,000 cached message entries per 
 
 Committed native appends refresh cached tails after publication; edits/reactions rebuild affected immutable pages, carry unaffected pages and retain valid unread entries. Covered bounded history intervals reuse shared page slices. Metadata/deletion revisions keep conservative invalidation. Failed commits never refresh caches.
 
-History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback captures resolved keys, omits message bodies, and uses explicit mutations instead of whole-state comparison. Persistence keys are selected explicitly, without pointer identity; every metadata write requires a captured baseline and there is no full-rewrite fallback. Read commands share one fast path across browser, stdin and sudo. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in SQLite, so evicting a cache page never deletes disk history.
+History uses indexes for stable message IDs, authors, timestamps, global maintenance sequence and conversation IDs. Frequent mutations use a small transient working set and targeted transactions; administrative rollback captures resolved keys, omits message bodies, and uses explicit mutations instead of whole-state comparison. Persistence keys are selected explicitly, without pointer identity; every metadata write requires a captured baseline and there is no full-rewrite fallback. Read commands share one fast path across browser, stdin and sudo. Account rename/deletion uses a reverse name index and 100-row batches inside one transaction; rename revises only conversations with matching message/reaction references. Cleanup/retraction and retention pruning execute in the selected database, so evicting a cache page never deletes disk history.
 
 New sends/replies/reactions broadcast a `conversation` update only to authorized readers of that conversation. New private directories and policy changes use a full snapshot. Presence changes send only the authorized online directory, and extra tabs do not broadcast unchanged presence. Snapshot tails are globally capped at 1,000 messages/4 MiB serialized payload and at most 50 per conversation; the client independently bounds tail memory. Lagged subscribers receive a baseline snapshot. Full snapshots and uncached unread calculations still have costs proportional to authorized conversations/retained sequence ranges.
 
-History uses stable sequence cursors, not deep OFFSET pagination. Requesting a range near sequence 1,000 reads that page directly without reading the first 999 messages. `around` probes at most half a page backwards before reading the page. Browsing beyond a 1,000-entry window evicts the opposite end; returning to it reloads only that page. The old all-history HTTP/UI path and all-history startup loader are removed. See [Data](data.md) and [Protocol](protocol.md).
+History uses stable sequence cursors, not deep OFFSET pagination. Requesting a range near sequence 1,000 reads that page directly without reading the first 999 messages. `around` probes at most half a page backwards before reading the page. Browsing beyond a 1,000-entry window evicts the opposite end; returning to it reloads only that page. See [Data](data.md) and [Protocol](protocol.md).
 
 This release is a single-process service. An OS lock enforces one local data-folder owner for either backend; a session advisory lock additionally enforces one PostgreSQL database owner. Ownership precedes configuration normalization. Horizontal scaling still requires shared metadata/presence coordination and cross-process event delivery. A reverse proxy/load balancer currently supplies TLS and routes to that single process.
 
@@ -292,7 +301,7 @@ operations. `historyLookahead.ts` predicts a bounded paging margin from scrollin
 velocity and measured HTTP latency. Composer sizing shares one animation-frame
 measurement and reuses computed styles until layout/font changes.
 
-## Media uploads (draft)
+## Media uploads
 
 `web/media.rs` owns browser upload/config/completion/download HTTP adapters and
 background cleanup orchestration. `engine/media.rs` owns scoped authorization,
@@ -325,7 +334,6 @@ wire payloads; `commandMarkdown.ts` tokenizes full Markdown with HTML and images
 disabled. The renderer creates Preact nodes and safe links directly, without
 HTML insertion, attachment loading or message-preview preferences. `/help` and
 manual usage derive complete invocations from the same server command catalogue.
-
 
 `engine/cleanup.rs` resolves explicit cleanup scopes, authorizes every target,
 and prepares counts before scheduling history deletion. Read-only previews use
@@ -404,7 +412,8 @@ avatar writes perform no persistence or broadcast.
 
 Metadata and content use separate invalidation domains. Administrative commits,
 identity changes, avatar-host policy changes and recovery advance the metadata
-epoch. Browser/bot metadata templates hold only authorized directories/access and
+epoch. Profile-only commits advance delivery epochs and refresh bounded cached
+avatar values while preserving compiled authority templates. Browser/bot metadata templates hold only authorized directories/access and
 owned query descriptors, never retained history. They share a 128-profile/32 MiB
 conservative allocation budget; oversized templates are rebuilt rather than cached.
 Ordinary sends, reactions, cleanup, sessions, presence and read acknowledgements
@@ -444,8 +453,8 @@ profile invalidations. A bounded, independent per-account avatar mutation budget
 limits actual changes while preserving idempotent replay.
 
 Browser and bot sockets render coalesced notifications in batches of at most eight
-per blocking worker. Browser capture authenticates once and owns conversation,
-unread and avatar plans; SQLite reads and serialization run after releasing the
+per notification worker. Browser capture authenticates once and owns conversation,
+unread and avatar plans; database reads and serialization run after releasing the
 engine guard. Final delivery checks the live identity, metadata epoch, viewer read
 revision, relevant conversation revisions and presence when needed. Bot compact
 notifications share one credential/scope check and guard per batch; full baselines
@@ -461,23 +470,22 @@ Read acknowledgements coalesce per viewer, and full baselines subsume content up
 while preserving presence and discovery. Heartbeat rename accounting runs in its
 blocking worker. All locks are released before socket sends.
 
-
 Metadata commits derive notification audiences from resolved entity keys and old/new
 compiled authorization. Newly authorized and revoked viewers both receive baselines;
 unrelated viewers skip metadata workers before authentication or history I/O.
 Bot credential/registration changes refresh the bot and owners, with compact command
 catalogue invalidations for other current readers. Coalescing unions account and
 catalogue audiences, including catalogue invalidations alongside forced recovery.
-Directory identity changes target authorized directory viewers. Su-only generic avatar
-metadata changes conservatively invalidate all profiles; self-service avatar APIs
-continue to use compact profile events. The global policy revision is a version of
+Directory identity changes target authorized directory viewers. Profile-only metadata commits preserve authority templates and patch bounded
+cached avatar projections. Self-service avatar APIs use compact profile events.
+Identity, membership and policy changes invalidate authority templates. The global policy revision is a version of
 captured authority, not a promise that unrelated clients receive every server mutation.
 
-Database refactoring keeps the existing JSON/table layout in SQLite schema v20. Borrowed persistence
+SQLite uses schema v20. Borrowed persistence
 projections serialize metadata without cloning policy/bot maps or constructing
-empty-history domain objects. One owned working message supplies browser and bot
-mutations; clearing command state is constant work rather than a scan of every
-conversation. Message actions resolve stable IDs through the existing conversation
+empty-history domain objects. Owned pending messages supply browser and bot mutations. Production and test
+command adapters use the same prepare/commit/publication operations; there is no
+working-message scratch state or duplicate message/history mutation executor. Message actions resolve stable IDs through the existing conversation
 index; reactions carry one membership delta and edits capture only prior attachment
 IDs. Postcommit metadata invalidation is shared, while the outer command
 receipt transaction still encloses nested savepoints and reloads on failure.

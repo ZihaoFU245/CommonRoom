@@ -46,41 +46,38 @@ impl Context {
         if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(Error::new(Code::Unavailable, "Server stopping."));
         }
-        let (context, store) = app
-            .inspect_engine({
-                let headers = headers.clone();
-                move |engine, _| -> Result<_, Error> {
-                    Ok((Self::from_headers(engine, &headers)?, engine.auth_store()))
-                }
-            })
-            .await?;
-        store.health().await.map_err(Error::from)?;
-        app.inspect_engine({
-            let context = context.clone();
-            move |engine, _| context.user_kind(engine, kind).map(|_| ())
-        })
-        .await?;
-        Ok(context)
+        let cached = crate::web::admission::resolved(app, headers).and_then(|resolved| {
+            match resolved.principal {
+                crate::web::principal::Principal::Bot(context) => Some((context, resolved.store)),
+                _ => None,
+            }
+        });
+        let headers = headers.clone();
+        crate::web::principal::authenticate(
+            app,
+            cached,
+            move |engine| Self::from_headers(engine, &headers),
+            move |context, engine| context.user_kind(engine, kind).map(|_| ()),
+        )
+        .await
+        .map(|(context, ())| context)
     }
     pub(crate) async fn verify_async(&self, app: &App) -> Result<String, Error> {
         if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(Error::new(Code::Unavailable, "Server stopping."));
         }
-        let store = app
-            .inspect_engine({
-                let context = self.clone();
-                move |engine, _| -> Result<_, Error> {
-                    context.user(engine)?;
-                    Ok(engine.auth_store())
-                }
-            })
-            .await?;
-        store.health().await.map_err(Error::from)?;
-        app.inspect_engine({
-            let context = self.clone();
-            move |engine, _| context.user(engine)
-        })
+        let context = self.clone();
+        crate::web::principal::authenticate(
+            app,
+            None,
+            move |engine| {
+                context.user(engine)?;
+                Ok(context)
+            },
+            Self::user,
+        )
         .await
+        .map(|(_, user)| user)
     }
     pub(crate) fn from_headers(engine: &Engine, headers: &HeaderMap) -> Result<Self, Error> {
         let secret = auth::bearer(headers)

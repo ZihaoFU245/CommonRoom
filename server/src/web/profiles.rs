@@ -18,8 +18,7 @@ pub(super) async fn update(app: &App, access: Access, update: Update) -> Result<
         .io_permit()
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let app = app.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let (identity, store) = super::media::native_context(&app, access).await?;
         let ordering = app
             .mutations

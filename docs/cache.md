@@ -48,7 +48,7 @@ memory. Neither configured budget is a total RSS cap.
 
 All subcommands require a global `/system` command grant (included for su).
 Use `/grant alice @global /system` to delegate read access. Stdin and authorized
-`/sudo /system ...` are supported. Action grants alone do not enable commands. Old `/configs` execution is removed. Its persisted
+`/sudo /system ...` are supported. Action grants alone do not enable commands. `/configs` is not executable. Its persisted
 permission name remains readable for existing HEAD data, without authorizing any
 new system command. Outputs are Markdown; configuration is fenced JSON and
 metrics use headings, summary rates and tables. Add `--txt` to return the complete
@@ -59,8 +59,8 @@ console and bot responses retain the complete Markdown report.
 
 Bot command receipts retain the system authority used to issue a report. Both
 replay and receipt lookup recheck that authority, so revoked command/sudo access cannot
-retrieve an earlier report. This is an additive internal receipt-JSON field.
-Cache changes require no schema migration. SQLite HEAD is v20 (with the v19
+retrieve an earlier report. The authority marker is stored in the receipt JSON.
+SQLite HEAD is v20 (with the v19
 credential upgrade); PostgreSQL remains at its independent v1 schema.
 
 `/system configs` shows configuration only. `/system metrics` reports cumulative
@@ -105,3 +105,10 @@ timing, profiling, tracing of message bodies, or per-user metric maps are added.
 Collection uses integer counters while cache locks are already held and the
 existing relaxed pool counters. Reports allocate/format only on command demand.
 There is no periodic metrics task or automatic metrics logging.
+
+Profile-only changes preserve authority templates and patch their cached avatar
+values within the existing profile/byte budget. Serialized baselines still receive
+a new delivery epoch, and their final authorization checks remain mandatory.
+Policy, identity and membership changes invalidate authority templates normally.
+See [Storage benchmarks](storage-benchmarks.md) for cache and engine-inspection
+measurement procedures and work-count assertions.

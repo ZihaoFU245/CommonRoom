@@ -16,6 +16,20 @@ pub(crate) struct Identity {
     pub(crate) config: Arc<crate::config::Config>,
 }
 impl Identity {
+    pub(crate) fn capture(
+        engine: &Engine,
+        config: Arc<Config>,
+        headers: HeaderMap,
+    ) -> Option<Self> {
+        let user = identity(engine, &config, &headers)?;
+        let account = engine.active_account_id(&user)?.to_owned();
+        Some(Self {
+            headers,
+            user,
+            account,
+            config,
+        })
+    }
     pub(crate) fn verify(&self, engine: &Engine) -> Result<(), EngineError> {
         if identity(engine, &self.config, &self.headers).as_deref() != Some(&self.user)
             || engine.active_account_id(&self.user) != Some(self.account.as_str())
@@ -85,42 +99,30 @@ pub(crate) async fn authenticated_identity(
             "Server is shutting down.",
         ));
     }
-    let (identity, store) = app
-        .inspect_engine({
-            let headers = headers.clone();
-            let config = app.config.clone();
-            move |engine, _| -> Result<_, ApiError> {
-                let user = identity(engine, &config, &headers).ok_or_else(|| {
-                    error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
-                })?;
-                let account = engine
-                    .active_account_id(&user)
-                    .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Account unavailable."))?
-                    .to_owned();
-                Ok((
-                    Identity {
-                        headers,
-                        user,
-                        account,
-                        config,
-                    },
-                    engine.auth_store(),
-                ))
-            }
-        })
-        .await?;
-    store.health().await?;
-    app.inspect_engine({
-        let identity = identity.clone();
-        move |engine, _| {
+    let cached =
+        super::admission::resolved(app, headers).and_then(|resolved| match resolved.principal {
+            super::principal::Principal::Browser(identity) => Some((identity, resolved.store)),
+            _ => None,
+        });
+    let headers = headers.clone();
+    let config = app.config.clone();
+    super::principal::authenticate(
+        app,
+        cached,
+        move |engine| {
+            Identity::capture(engine, config, headers)
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+        },
+        |identity, engine| {
             identity
                 .verify(engine)
                 .map_err(|_| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
-        }
-    })
-    .await?;
-    Ok(identity)
+        },
+    )
+    .await
+    .map(|(identity, ())| identity)
 }
+
 pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let value = values.next()?.to_str().ok()?;
@@ -170,8 +172,7 @@ pub(crate) async fn login(
         .map_err(|_| login_state_unavailable())?
         .admit(ip, &input.username, std::time::Instant::now())
         .map_err(|message| error(StatusCode::TOO_MANY_REQUESTS, message))?;
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let result = login_inner(&app, &headers, &input, ip).await;
         // Pending attempts count until completion, so concurrent requests cannot
         // overshoot a limit. Cancelled HTTP futures still finish this bookkeeping.
@@ -314,8 +315,7 @@ pub(crate) async fn logout(
     let permit = app
         .io_permit()
         .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         if let Some(token) = token(&app.config, &headers).map(str::to_owned) {
             let ordering = app.mutations.metadata().await;
             let (user, pending) = app
@@ -367,8 +367,7 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let value = super::snapshots::value_async(&app, &headers, false)
             .await
             .map_err(|cause| match cause {
@@ -400,8 +399,7 @@ pub(crate) async fn session_status(
     let permit = app
         .io_permit()
         .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let _identity = authenticated_identity(&app, &headers).await?;
         Ok(Json(json!({"ok":true})))
     })

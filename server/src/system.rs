@@ -86,13 +86,17 @@ fn ratio(hits: u64, misses: u64) -> String {
     let percent = (u128::from(hits) * 10_000 + total / 2) / total;
     format!("{}.{:02}%", percent / 100, percent % 100)
 }
-fn section(text: &mut String, title: &str, value: &Value) {
-    text.push_str(&format!(
-        "\n\n## {title}\n\n| Metric | Value |\n| --- | ---: |"
-    ));
-    rows(text, "", value);
+fn section(text: &mut String, title: &str, value: &Value, plain: bool) {
+    if plain {
+        text.push_str(&format!("\n\n{title}\n"));
+    } else {
+        text.push_str(&format!(
+            "\n\n## {title}\n\n| Metric | Value |\n| --- | ---: |"
+        ));
+    }
+    rows(text, "", value, plain);
 }
-fn rows(text: &mut String, prefix: &str, value: &Value) {
+fn rows(text: &mut String, prefix: &str, value: &Value, plain: bool) {
     match value {
         Value::Object(values) => {
             for (key, value) in values {
@@ -104,15 +108,23 @@ fn rows(text: &mut String, prefix: &str, value: &Value) {
                         format!("{prefix}.{key}")
                     },
                     value,
+                    plain,
                 );
             }
         }
         Value::Array(values) => {
             for (index, value) in values.iter().enumerate() {
-                rows(text, &format!("{prefix}[{index}]"), value);
+                rows(text, &format!("{prefix}[{index}]"), value, plain);
             }
         }
         Value::Null => {}
+        value if plain => text.push_str(&format!(
+            "\n{prefix}: {}",
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        )),
         value => text.push_str(&format!(
             "\n| `{prefix}` | {} |",
             value
@@ -123,79 +135,39 @@ fn rows(text: &mut String, prefix: &str, value: &Value) {
     }
 }
 fn render_metrics(cache: &Value, pools: &Value, snapshots: &Value, runtime: &Value) -> String {
+    render_report(cache, pools, snapshots, runtime, false)
+}
+fn render_report(
+    cache: &Value,
+    pools: &Value,
+    snapshots: &Value,
+    runtime: &Value,
+    plain: bool,
+) -> String {
+    let heading = if plain { "" } else { "# " };
+    let emphasis = if plain { "" } else { "**" };
     let mut text = format!(
-        "# System metrics\n\nCumulative totals since server startup (uptime: {} seconds). Counters are approximate concurrent observations. Cache bytes are accounting budgets, not total process memory.\n\n- History page hit rate: **{}**. Coalesced waiters count as hits.\n- Unread cache hit rate: **{}**. Full/incremental counts describe database calculations after misses.\n- Snapshot reuse rate: **{}**. Reuse includes callers sharing an in-progress build.",
+        "{heading}System metrics\n\nCumulative totals since server startup (uptime: {} seconds). Counters are approximate concurrent observations. Cache bytes are accounting budgets, not total process memory.\n\n- History page hit rate: {emphasis}{}{emphasis}. Coalesced waiters count as hits.\n- Unread cache hit rate: {emphasis}{}{emphasis}. Full/incremental counts describe database calculations after misses.\n- Snapshot reuse rate: {emphasis}{}{emphasis}. Reuse includes callers sharing an in-progress build.",
         number(cache, "uptime_seconds"),
         ratio(number(cache, "hits"), number(cache, "misses")),
         ratio(number(cache, "unread_hits"), number(cache, "unread_misses")),
         ratio(number(snapshots, "hits"), number(snapshots, "misses"))
     );
-    section(&mut text, "History and unread caches", cache);
-    section(&mut text, "Snapshot cache", snapshots);
-    section(&mut text, "Database pools", pools);
+    section(&mut text, "History and unread caches", cache, plain);
+    section(&mut text, "Snapshot cache", snapshots, plain);
+    section(&mut text, "Database pools", pools, plain);
     text.push_str("\n\nPool acquisition timing includes checkout health checks and connection creation. Cancelled acquisitions are excluded from completed-attempt totals.");
-    section(&mut text, "Server admission", runtime);
+    section(&mut text, "Server admission", runtime, plain);
     text
 }
 
 fn render_metrics_text(cache: &Value, pools: &Value, snapshots: &Value, runtime: &Value) -> String {
-    // Use the same complete report as the table view, with plain headings and key/value rows.
-    let report = render_metrics(cache, pools, snapshots, runtime);
-    let lines = report
-        .lines()
-        .filter_map(|line| {
-            if line == "| Metric | Value |" || line == "| --- | ---: |" {
-                None
-            } else if let Some(row) = line
-                .strip_prefix("| ")
-                .and_then(|row| row.strip_suffix(" |"))
-            {
-                Some(row.replace('`', "").replace(" | ", ": "))
-            } else {
-                Some(line.trim_start_matches('#').trim_start().replace("**", ""))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("```text\n{lines}\n```")
+    format!(
+        "```text\n{}\n```",
+        render_report(cache, pools, snapshots, runtime, true)
+    )
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    #[test]
-    fn metrics_render_markdown_and_handle_empty_and_large_counters() {
-        assert_eq!(ratio(4752, 848), "84.86%");
-        assert_eq!(ratio(0, 0), "n/a (no lookups)");
-        assert_eq!(ratio(u64::MAX, u64::MAX), "50.00%");
-        let text = render_metrics(
-            &json!({"hits":4752,"misses":848,"uptime_seconds":12}),
-            &json!({"readers":{"open":2}}),
-            &json!({"hits":0,"misses":0}),
-            &json!({}),
-        );
-        assert!(text.starts_with("# System metrics"));
-        assert!(text.contains("**84.86%**"));
-        assert!(text.contains("| `readers.open` | 2 |"));
-        let plain = render_metrics_text(
-            &json!({"hits":4752,"misses":848,"uptime_seconds":12}),
-            &json!({"readers":{"open":2}}),
-            &json!({"hits":0,"misses":0}),
-            &json!({"io_jobs_available":64}),
-        );
-        assert!(plain.starts_with("```text\nSystem metrics"));
-        assert!(plain.ends_with("\n```"));
-        assert!(plain.contains("readers.open: 2"));
-        assert!(plain.contains("io_jobs_available: 64"));
-        assert!(plain.contains("84.86%"));
-        assert!(!plain.contains('|'));
-        assert_eq!(
-            Command::parse("/system metrics --txt").unwrap(),
-            Command::MetricsText
-        );
-        assert!(Command::parse("/system configs --txt").is_err());
-        assert!(Command::parse("/system metrics extra").is_err());
-        assert!(Command::parse("/configs").is_err());
-    }
-}
+mod tests;

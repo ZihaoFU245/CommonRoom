@@ -88,8 +88,7 @@ bot sends/reactions and read acknowledgements use conversation permits plus
 `App::with_conversation` for short owned preparation/publication. They await storage
 outside the engine guard while sharing a metadata fence. Administrative plans
 acquire that fence exclusively and await native writes outside the engine guard.
-The old synchronous command executors and storage write adapters compile only in
-tests. Bootstrap/offline transfer and final pool draining retain the persistent
+Test-only command adapters bridge to production native writes and publication. Bootstrap/offline transfer and final pool draining retain the persistent
 storage runtime; live queries and mutations await SQLx directly. Bulk history cleanup
 counts outside conversation permits, then acquires matching conversation locks
 before the shared metadata fence. Recheck every target revision and the full target
@@ -161,6 +160,32 @@ require a user account. Startup retention/media cleanup and shutdown checkpointi
 also await native storage. Shutdown stops new admission, drains both general I/O
 and password-only jobs through publication, then checkpoints without an engine
 guard. The synchronous engine lock helpers are test-only.
+
+## Server operation conventions
+
+Server command adapters share `commands::Execution`; scoped validation remains in
+the domain handlers. Run `rtk proxy python3 auto/command-reference.py --check`
+alongside the server-only checks, and regenerate without `--check` after changing
+the catalogue. The export mode does not initialize or open chat data.
+
+HTTP admission captures a typed principal for request-local reuse. Accepted
+`admission::spawn_io` jobs inherit it and retain their permits after cancellation.
+Reuse must match engine, config and headers and must still perform native health
+and final live credential checks. Browser socket heartbeats and transient activity
+check ownership independently; commands recheck ownership in their native read or
+commit operations. Pongs do no credential work.
+
+Profile-only commits retain authority templates and update bounded cached avatar
+values. They still advance delivery epochs. The profile-only classification
+excludes identity, disabled state, session, credential, membership and policy
+changes; those retain their operation-specific invalidation rules.
+
+Test command adapters and bot send/reaction helpers prepare owned native writes,
+bridge their async persistence once, and publish the committed result. They have no
+working-message scratch state or separate message/history mutation dispatcher.
+Synthetic console-authored seed messages remain test-only and use native pending
+message persistence. Cache tests assert native carry-forward behavior and retain
+independent SQL-oracle and stale-revision checks.
 
 ## Browser compatibility
 

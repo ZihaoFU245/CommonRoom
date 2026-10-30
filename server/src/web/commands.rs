@@ -35,11 +35,9 @@ pub(crate) async fn execute_input(
     let inner = sudo_command(&input.text)
         .map_err(String::from)?
         .unwrap_or(&input.text);
-    if inner.split_whitespace().next() == Some("/clean")
-        && inner.split_whitespace().last() != Some("--dry-run")
-    {
-        return super::admission::spawn(async move {
-            let _permit = permit;
+    let execution = crate::commands::execution(inner);
+    if execution == crate::commands::Execution::Cleanup {
+        return super::admission::spawn_io(permit, async move {
             super::cleanup_commands::execute(&app, headers, user, input)
                 .await
                 .map_err(String::from)
@@ -47,14 +45,8 @@ pub(crate) async fn execute_input(
         .await
         .map_err(|_| "Command worker unavailable.")?;
     }
-    if !inner.trim_start().starts_with('/')
-        || matches!(
-            inner.split_whitespace().next(),
-            Some("/tell" | "/reply" | "/edit" | "/react" | "/retract")
-        )
-    {
-        return super::admission::spawn(async move {
-            let _permit = permit;
+    if execution == crate::commands::Execution::Message {
+        return super::admission::spawn_io(permit, async move {
             execute_message(&app, headers, user, input)
                 .await
                 .map_err(String::from)
@@ -63,8 +55,7 @@ pub(crate) async fn execute_input(
         .map_err(|_| "Command worker unavailable.")?;
     }
     if super::query_commands::supports(&input.text).map_err(String::from)? {
-        return super::admission::spawn(async move {
-            let _permit = permit;
+        return super::admission::spawn_io(permit, async move {
             super::query_commands::execute(&app, headers, user, input)
                 .await
                 .map_err(String::from)
@@ -73,8 +64,7 @@ pub(crate) async fn execute_input(
         .map_err(|_| "Command worker unavailable.")?;
     }
     if let Some(request) = credentials::parse(&input).map_err(String::from)? {
-        return super::admission::spawn(async move {
-            let _permit = permit;
+        return super::admission::spawn_io(permit, async move {
             credentials::execute(&app, headers, user, request)
                 .await
                 .map_err(String::from)
@@ -87,8 +77,7 @@ pub(crate) async fn execute_input(
             .map_err(String::from)?
             .unwrap_or(&input.text),
     ) {
-        return super::admission::spawn(async move {
-            let _permit = permit;
+        return super::admission::spawn_io(permit, async move {
             super::metadata_commands::execute(&app, headers, user, input)
                 .await
                 .map_err(String::from)
@@ -96,8 +85,7 @@ pub(crate) async fn execute_input(
         .await
         .map_err(|_| "Command worker unavailable.")?;
     }
-    super::admission::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let (_, reply) = capture(&app, headers, user.clone(), &input, {
             let view = input.room.clone();
             move |engine, text| engine.reject_command(Some(&user), view.as_deref(), text)
@@ -186,10 +174,10 @@ async fn execute_message(
     user: String,
     input: Input,
 ) -> Result<(String, Option<Change>), EngineError> {
-    let (identity, plan) = capture(app, headers, user.clone(), &input, {
+    let (identity, (captured_revision, plan)) = capture(app, headers, user.clone(), &input, {
         let view = input.room.clone();
         move |engine, text| {
-            if matches!(
+            let plan = if matches!(
                 text.split_whitespace().next(),
                 Some("/reply" | "/edit" | "/react" | "/retract")
             ) {
@@ -200,7 +188,8 @@ async fn execute_message(
                 engine
                     .browser_message_conversation(&user, view.as_deref(), text)
                     .map(MessagePlan::Append)
-            }
+            }?;
+            Ok((engine.revision, plan))
         }
     })
     .await?;
@@ -208,16 +197,20 @@ async fn execute_message(
         .admission
         .http(identity.account.clone())
         .map_err(EngineError::Unavailable)?;
+    let mut resolved_original = None;
     let id = match &plan {
         MessagePlan::Append(id) => id.clone(),
         MessagePlan::Action(plan) => match &plan.conversation {
             Some(id) => id.clone(),
-            None => plan
-                .history
-                .locate_async(&plan.action.id)
-                .await?
-                .map(|(id, _)| id)
-                .ok_or("Message not found in this conversation.")?,
+            None => {
+                let (id, message) = plan
+                    .history
+                    .locate_async(&plan.action.id)
+                    .await?
+                    .ok_or("Message not found in this conversation.")?;
+                resolved_original = Some(message);
+                id
+            }
         },
     };
     let ordering = app.mutations.conversation(id.clone()).await?;
@@ -263,30 +256,35 @@ async fn execute_message(
             .await?
         }
         MessagePlan::Action(plan) => {
-            app.with_conversation(&ordering, {
-                let identity = identity.clone();
-                let action = plan.action.clone();
-                let input = input.clone();
-                let id = id.clone();
-                move |engine| -> Result<_, EngineError> {
-                    phase(engine, &identity, &input, |engine, _| {
-                        engine.authorize_browser_action(
-                            &identity.user,
-                            input.room.as_deref(),
-                            &action,
-                            &id,
-                        )
-                    })
-                }
-            })
-            .await?;
-            let original = plan
-                .history
-                .locate_async(&plan.action.id)
-                .await?
-                .filter(|(conversation, _)| conversation == &id)
-                .map(|(_, message)| message)
-                .ok_or("Message not found in this conversation (it may have expired).")?;
+            let unchanged = app
+                .with_conversation(&ordering, {
+                    let identity = identity.clone();
+                    let action = plan.action.clone();
+                    let input = input.clone();
+                    let id = id.clone();
+                    move |engine| -> Result<_, EngineError> {
+                        phase(engine, &identity, &input, |engine, _| {
+                            engine.authorize_browser_action(
+                                &identity.user,
+                                input.room.as_deref(),
+                                &action,
+                                &id,
+                            )?;
+                            Ok(engine.revision == captured_revision)
+                        })
+                    }
+                })
+                .await?;
+            let original = match resolved_original.filter(|_| unchanged) {
+                Some(original) => original,
+                None => plan
+                    .history
+                    .locate_async(&plan.action.id)
+                    .await?
+                    .filter(|(conversation, _)| conversation == &id)
+                    .map(|(_, message)| message)
+                    .ok_or("Message not found in this conversation (it may have expired).")?,
+            };
             app.with_conversation(&ordering, {
                 let identity = identity.clone();
                 move |engine| -> Result<_, EngineError> {
@@ -334,13 +332,24 @@ async fn execute_message(
     let Some(pending) = pending else {
         return Ok((reply, None));
     };
+    commit_write(app, &ordering, identity, media_input, pending, reply).await
+}
+
+async fn commit_write(
+    app: &App,
+    ordering: &mutations::ConversationPermit,
+    identity: auth::Identity,
+    media_input: Input,
+    pending: PreparedWrite,
+    reply: String,
+) -> Result<(String, Option<Change>), EngineError> {
     let pending = match pending {
         PreparedWrite::Message(pending) => *pending,
         PreparedWrite::History(pending) => {
             pending.save().await?;
             let changes = app.changes.clone();
             return app
-                .with_conversation(&ordering, move |engine| -> Result<_, EngineError> {
+                .with_conversation(ordering, move |engine| -> Result<_, EngineError> {
                     let effect = engine.publish_history(pending)?;
                     if let Some(change) = Change::command(effect) {
                         let _ = changes.send(change);
@@ -355,7 +364,7 @@ async fn execute_message(
     let pending = if media.is_empty() {
         pending
     } else {
-        app.with_conversation(&ordering, {
+        app.with_conversation(ordering, {
             let identity = identity.clone();
             move |engine| -> Result<_, EngineError> {
                 phase(engine, &identity, &media_input, |engine, _| {
@@ -368,7 +377,7 @@ async fn execute_message(
     };
     let commit = pending.save(None).await?;
     let changes = app.changes.clone();
-    app.with_conversation(&ordering, move |engine| -> Result<_, EngineError> {
+    app.with_conversation(ordering, move |engine| -> Result<_, EngineError> {
         let id = pending.conversation.clone();
         let created = pending.creates_conversation();
         engine.publish_message(pending, commit)?;

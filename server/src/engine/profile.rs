@@ -36,7 +36,7 @@ impl PendingProfile {
     }
 }
 impl Engine {
-    fn profile_key(
+    pub(super) fn profile_key(
         &self,
         user: &str,
         scope: &str,
@@ -151,11 +151,12 @@ impl Engine {
         let Some(after) = pending.after else {
             return Ok(false);
         };
-        self.data.users.insert(pending.user, after);
+        let name = pending.user;
+        self.data.users.insert(name.clone(), after);
         if pending.colors {
             self.advance_colors();
         }
-        self.finish_metadata_commit(MetadataNotice::all());
+        self.finish_profile_commit(MetadataNotice::all(), vec![name]);
         Ok(true)
     }
 }

@@ -91,27 +91,7 @@ impl PendingMetadata {
     }
 }
 pub(crate) fn native_metadata_command(input: &str) -> bool {
-    let routed = crate::commands::route(input);
-    let parts = routed.split_whitespace().collect::<Vec<_>>();
-    matches!(
-        parts.as_slice(),
-        [
-            "/enable"
-                | "/disable"
-                | "/grant"
-                | "/revoke"
-                | "/add"
-                | "/kick"
-                | "/join"
-                | "/leave"
-                | "/owner",
-            ..
-        ] | ["/new", "room", ..]
-            | ["/rm", "room" | "group" | "user", ..]
-            | ["/user", "set" | "reset", ..]
-            | ["/rename", ..]
-            | ["/bot", ..]
-    )
+    crate::commands::execution(input) == crate::commands::Execution::Metadata
 }
 impl Engine {
     pub(crate) fn prepare_metadata(
@@ -286,6 +266,7 @@ impl Engine {
                 "Committed metadata state changed; recovery required, retry shortly.".into(),
             ));
         }
+        let profiles = pending.before.profile_changes(&pending.after);
         // Metadata publication never allocates or overwrites the append counter.
         let sequence = self.data.next_sequence;
         pending.after.restore(&mut self.data);
@@ -319,14 +300,14 @@ impl Engine {
                 positions.retain(|view, _| !pending.removed_cursors.contains(view));
             }
         }
-        #[cfg(test)]
-        {
-            self.working = None;
-        }
+
         self.authorization = pending.authorization;
         self.bot_index = crate::bots::models::Index::build(&self.data);
         self.advance_colors();
-        self.finish_metadata_commit(pending.notice);
+        match profiles {
+            Some(names) => self.finish_profile_commit(pending.notice, names),
+            None => self.finish_metadata_commit(pending.notice),
+        }
         Ok(())
     }
 }

@@ -39,31 +39,4 @@ impl Engine {
         self.store.db.save_metadata_blocking(&batch)?;
         Ok(())
     }
-    /// Account deletion and its cursor cleanup must commit atomically.
-    pub(in crate::engine) fn store_account_deletion(
-        &mut self,
-        name: &str,
-        removed: &BTreeSet<String>,
-        before: &MetadataChange,
-    ) -> Result<(), EngineError> {
-        let mut batch = MetadataWrite {
-            operations: vec![MetadataOp::RewriteAccount {
-                old: name.into(),
-                new: None,
-            }],
-        };
-        write_delta_view(&mut batch, &self.data, before.view())?;
-        batch
-            .operations
-            .push(MetadataOp::RemoveAccountCursors { user: name.into() });
-        for key in removed {
-            batch
-                .operations
-                .push(MetadataOp::RemoveConversationCursors {
-                    conversation: key.clone(),
-                });
-        }
-        self.store.db.save_metadata_blocking(&batch)?;
-        Ok(())
-    }
 }

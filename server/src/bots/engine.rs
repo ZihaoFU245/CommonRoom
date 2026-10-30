@@ -564,27 +564,14 @@ impl Engine {
         {
             return Err(Error::new(Code::Forbidden, "Reaction permission denied."));
         }
-        // Load only the affected row, then share mutation/rollback with browser toggles.
-        self.working = Some(messages::WorkingMessage {
-            reaction: None,
-            conversation: id.into(),
-            message: original,
-        });
-        let change = self
-            .capture_message_change(Some(user), &target.view, Some(&message_id), true)
-            .ok_or_else(|| Error::storage("Missing reaction rollback"))?;
-        self.changed_conversation = None;
-        let result = self
-            .update_reaction(&target.scope, user, &message_id, reaction, Some(active))
-            .map_err(|error| match error {
-                messages::ReactionError::Limit => {
-                    Error::new(Code::InvalidRequest, "At most 32 reactions per message.")
-                }
-                messages::ReactionError::NotFound => Error::storage(error),
-            });
-        let result = self.finish_message_change(change, result, None, Error::storage);
-        self.clear_working_messages();
-        result
+        let Some(pending) = self.prepare_reaction(user, id, original, reaction, active)? else {
+            return Ok(false);
+        };
+        let commit = database::block_on_storage(pending.save(None))
+            .map_err(Error::storage)?
+            .map_err(|error| Error::from(EngineError::from(error)))?;
+        self.publish_message(pending, commit)?;
+        Ok(true)
     }
     pub(in crate::engine) fn validate_bot_send(
         &self,
@@ -784,44 +771,26 @@ impl Engine {
                 "Conversation changed; retry send.",
             ));
         }
-        self.changed_conversation = None;
-        let digest = prepared.digest;
-        let reply = prepared.reply;
-        let text = input.text.trim();
-        let change = self
-            .capture_message_change(Some(user), &target.view, None, false)
-            .ok_or_else(|| Error::storage("Missing mutation context"))?;
-        let result: Result<_, EngineError> = (|| {
-            self.append_text(Some(user), &target.view, text, input.markdown, reply)?;
-            let message = self
-                .working_message(&input.conversation_id)
-                .cloned()
-                .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?;
-            Ok(message)
-        })();
-        let receipt = result.as_ref().ok().and_then(|_| {
-            key.map(|key| database::MessageReceipt {
-                account_id: &account_id,
-                key,
-                digest: &digest,
-                created: now(),
-            })
-        });
-        let result = self
-            .finish_message_change(change, result, receipt, std::convert::identity)
-            .and_then(|mut message| {
-                message.sequence = self
-                    .working_message(&input.conversation_id)
-                    .ok_or_else(|| EngineError::Internal("Missing committed message.".into()))?
-                    .sequence;
-                Ok(SendResult {
-                    message,
-                    replayed: false,
-                })
-            })
-            .map_err(Error::from);
-        self.clear_working_messages();
-        result
+        let mut pending = self.prepare_append(user, input)?;
+        pending.message.reply = prepared.reply;
+        let media = database::block_on_storage(pending.media_records())
+            .map_err(Error::storage)?
+            .map_err(|error| Error::from(EngineError::from(error)))?;
+        self.validate_append_media(&pending, &media)?;
+        let receipt = key.map(|key| (key, prepared.digest.as_str()));
+        let commit = database::block_on_storage(pending.save(receipt))
+            .map_err(Error::storage)?
+            .map_err(|error| match error {
+                database::Error::ReceiptConflict => Error::new(
+                    Code::IdempotencyConflict,
+                    "Key already used for another message.",
+                ),
+                database::Error::ReceiptCapacity => {
+                    Error::new(Code::IdempotencyCapacity, "Wait for receipts to expire.")
+                }
+                error => Error::from(EngineError::from(error)),
+            })?;
+        self.publish_message(pending, commit).map_err(Error::from)
     }
     #[cfg(test)]
     pub fn send_literal(&mut self, user: &str, view: &str, text: &str) -> Result<Message, Error> {

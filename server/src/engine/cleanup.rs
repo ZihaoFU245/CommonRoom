@@ -194,13 +194,6 @@ impl Engine {
             targets: targets.into_iter().map(|scope| (scope, 0, 0)).collect(),
         })
     }
-    #[cfg(test)]
-    fn cleanup_plan(&self, context: &CommandContext<'_>) -> Result<CleanupPlan, EngineError> {
-        let mut plan = self.resolve_cleanup_plan(context)?;
-        let totals = self.cleanup_counts(&plan.ids(), plan.cutoff)?;
-        plan.set_counts(totals);
-        Ok(plan)
-    }
     pub(crate) fn prepare_browser_cleanup(
         &self,
         user: &str,
@@ -222,13 +215,9 @@ impl Engine {
             actor,
             command: "/clean",
             room: view.filter(|v| !v.starts_with('@')),
-            #[cfg(test)]
-            input,
             parts: &parts,
             view,
             scope: self.command_scope(actor, view)?,
-            #[cfg(test)]
-            markdown: false,
             author: actor.unwrap_or("console"),
         };
         self.resolve_cleanup_plan(&context)
@@ -268,42 +257,6 @@ impl Engine {
             cleanups,
         )
         .map(Some)
-    }
-    #[cfg(test)]
-    pub(super) fn apply_cleanup(
-        &mut self,
-        context: &CommandContext<'_>,
-    ) -> Result<String, EngineError> {
-        let plan = self.cleanup_plan(context)?;
-        let report = plan.report();
-        if plan.preview {
-            return Ok(report);
-        }
-        for (target, count, _) in &plan.targets {
-            if *count == 0 {
-                continue;
-            }
-            let id = match target {
-                Scope::Room(id) | Scope::Private(id) => id,
-                _ => return Err("Invalid cleanup scope.".into()),
-            };
-            self.store.pending_cleanups.push((id.clone(), plan.cutoff));
-            if let Some(room) = self.data.rooms.values_mut().find(|room| &room.id == id) {
-                room.revision = room.revision.wrapping_add(1);
-            }
-            if let Some(chat) = self.data.private.values_mut().find(|chat| &chat.id == id) {
-                chat.revision = chat.revision.wrapping_add(1);
-            }
-        }
-        if self.store.pending_cleanups.is_empty() {
-            return Ok(report);
-        }
-        self.audit(
-            context.actor,
-            "/clean",
-            &format!("{} {}", plan.age, plan.scope),
-        );
-        Ok(report)
     }
 }
 

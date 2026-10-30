@@ -387,7 +387,6 @@ impl Engine {
         self.revision = revision;
         self.changed_conversation = changed;
         self.store.read_positions = cursors;
-        self.clear_working_messages();
         self.recovery_failed = false;
         Ok(())
     }

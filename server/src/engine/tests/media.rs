@@ -284,7 +284,7 @@ fn media_can_be_the_first_private_message() {
     let id = e
         .resolve_media_conversation("alice", "@direct:bob")
         .unwrap();
-    assert!(e.working.is_none());
+
     let media = ready(&e, "alice", &id);
     e.execute(Some("alice"), None, &format!("/tell bob {}", link(&media)))
         .unwrap();

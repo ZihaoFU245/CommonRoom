@@ -116,8 +116,9 @@ Sends/replies insert one message, prune beyond the configured per-conversation r
 
 Startup loads metadata and read positions only. Bodies and reactions are loaded in pages of at most 100. SQLite has one writer and two to four readers using WAL; concurrent history reads do not hold the engine writer lock. Cache eviction has no persistence effect. Server pages default to 1,000 entries per conversation, 10,000 total, and 32 MiB of conservative payload accounting. `database.history_cache` tunes the global message and byte budgets on either backend; SQLite page caches and response copies are additional memory. PostgreSQL sizes message/reaction payloads before fetching a bounded page prefix; a single oversized imported message remains allowed for pagination progress. See [PostgreSQL](postgresql.md#runtime-and-backups) for pool, cache and diagnostic settings.
 
-Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning remain transactional and may process many disk rows, but no longer clone all history in memory. Administrative rollback retains only resolved entity keys, excluding transient message bodies. Creation and rename include destination keys so rollback also removes tentative inserts. Cleanup counting batches authorized IDs against
-the existing timestamp expression index; this requires no schema change. The old v6 measurements in [Storage benchmarks](storage-benchmarks.md) are historical and do not establish current throughput.
+Account rename/deletion reads only indexed references in batches of at most 100 message records inside the atomic transaction with session/cursor changes. Cleanup and retention pruning are transactional and may process many disk rows without cloning all history in memory. Administrative rollback retains only resolved entity keys, excluding transient message bodies. Creation and rename include destination keys so rollback also removes tentative inserts. Cleanup counting batches authorized IDs against
+the timestamp expression index. See [Storage benchmarks](storage-benchmarks.md)
+for reproducible measurement procedures and their limits.
 
 Message JSON may include a boolean `markdown` field. Missing fields default to
 false, preserving plain-text rendering for existing messages. This additive JSON
@@ -285,9 +286,9 @@ reaction map; edit rollback coordinates retain only the previous attachment IDs.
 Changed reference sets insert/delete only their differences. Startup and failed
 command recovery share authoritative metadata/cursor loaders.
 
-Metadata mutation now requires su at execution time. Global admin group bundles
+Metadata mutation requires su at execution time. Global admin group bundles
 provide only metadata read access; stored direct write flags cannot override the
-su check. No metadata rows or existing values are rewritten for this policy change.
+su check. This authorization check does not rewrite stored metadata values.
 
 `history.clean_min_age` is a typed cleanup limit: `0` disables cleanup, `-1`
 is unrestricted, and positive values store minimum message age in seconds.

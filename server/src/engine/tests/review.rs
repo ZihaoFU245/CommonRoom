@@ -1,5 +1,5 @@
 use super::*;
-use authorization::{Action, Group, Scope};
+use authorization::{Action, Group};
 use tests::{engine, room_messages};
 
 #[test]
@@ -200,20 +200,8 @@ fn bulk_metadata_validates_key_caps_before_mutating_any_account() {
             .collect(),
     );
     let before = e.data.clone();
-    let parts = ["/user", "set", "@all", "label", "test", "#lobby"];
-    let context = CommandContext {
-        actor: None,
-        command: "/user",
-        room: None,
-        input: "",
-        parts: &parts,
-        view: None,
-        scope: Scope::Server,
-        markdown: false,
-        author: "console",
-    };
     assert!(
-        e.apply_objects(&context)
+        e.execute(None, None, "/user set @all label test #lobby")
             .unwrap_err()
             .contains("32 metadata keys")
     );
@@ -221,16 +209,15 @@ fn bulk_metadata_validates_key_caps_before_mutating_any_account() {
 }
 
 #[test]
-fn scoped_snapshots_exclude_working_messages_and_unrelated_maps() {
+fn scoped_snapshots_exclude_pending_messages_and_unrelated_maps() {
     let mut e = engine();
     e.execute(Some("bob"), Some("lobby"), "cached body")
         .unwrap();
-    let message = room_messages(&e, "lobby")[0].clone();
-    e.working = Some(messages::WorkingMessage {
-        reaction: None,
-        conversation: e.data.rooms["lobby"].id.clone(),
-        message,
-    });
+    let pending = e
+        .prepare_browser_message("bob", Some("lobby"), "owned pending body", false)
+        .unwrap();
+    assert_eq!(pending.message.text, "owned pending body");
+    assert_eq!(room_messages(&e, "lobby").len(), 1);
     let change = MetadataChange::keyed(
         &e.data,
         changes::DirtyKeys {

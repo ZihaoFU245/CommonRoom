@@ -275,6 +275,22 @@ impl Engine {
 }
 
 impl Engine {
+    /// Profile values change the delivery epoch but leave compiled visibility
+    /// and command directories valid. Patch bounded cached avatar values once.
+    pub(super) fn finish_profile_commit(&mut self, notice: MetadataNotice, names: Vec<String>) {
+        let profiles = names
+            .into_iter()
+            .map(|name| {
+                let value = self
+                    .avatar_directory_for(&[name.as_str()].into())
+                    .remove(&name);
+                (name, value)
+            })
+            .collect();
+        self.read_model.refresh_profiles(&profiles);
+        self.revision = self.revision.wrapping_add(1);
+        self.record_metadata(notice);
+    }
     /// Publish metadata invalidation only after the owning savepoint succeeds.
     /// An outer command receipt can still roll it back and reload authoritative state.
     pub(super) fn finish_metadata_commit(&mut self, notice: MetadataNotice) {

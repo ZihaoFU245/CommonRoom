@@ -222,7 +222,7 @@ The server rechecks session, command, action and target identity after asynchron
 password work. Revocation cannot erase content already delivered to a client.
 
 The server operator and `su` remain fully trusted. Messages and sessions remain in
-the server database; this change is access control, not end-to-end encryption.
+the server database. Messages are not end-to-end encrypted.
 
 Account rename preserves stable account and private conversation IDs and all scoped grants. Sessions, memberships, message display authors, reply authors, recipients, reactions, mention metadata, private keys and read cursors move to the new name atomically. Historical message text and audit records retain their original contents. Own rename is included in user/admin groups; any-account rename requires explicit delegation or su.
 
@@ -236,7 +236,7 @@ delegate `x:room.rename` and `/user rename` when absent.
 
 ## Bot connections
 
-Bots are ordinary accounts, without a bot/human flag. /bot lifecycle and credential management additionally require global admin or su membership (or stdin); room admin and a direct /bot grant alone are insufficient for those operations. Worker configuration uses mention commands and the worker's verified owner/admin policy. Legacy bot.config grants remain parseable for saved-policy compatibility but no longer expose remote configuration. The global admin bundle includes x:bot.credentials for account-wide credential management. Existing protected-su account checks apply even while targets are disabled.
+Bots are ordinary accounts, without a bot/human flag. /bot lifecycle and credential management additionally require global admin or su membership (or stdin); room admin and a direct /bot grant alone are insufficient for those operations. Worker configuration uses mention commands and the worker's verified owner/admin policy. Legacy bot.config grants remain parseable for saved-policy compatibility and do not authorize remote configuration. The global admin bundle includes x:bot.credentials for account-wide credential management. Existing protected-su account checks apply even while targets are disabled.
 
 New room bots receive explicit direct grants rather than the user bundle: discover/read/member-list/join/send/react and /help, /man, /whoami, /user ls, /history, /room join, /reply, /react. Settings, message retraction/cleanup, private creation and administrative commands are excluded. Explicit @global creation applies these grants globally and requires the creator to hold each corresponding permission/command there. Ordinary admins with only room access cannot delegate global content access.
 
@@ -294,7 +294,6 @@ actor's own media allowance. Allocation, completion and newly added message
 references recheck current media/read/send rights. Downloads require current read
 rights and an unexpired retained reference, independently of upload grants.
 See [Media uploads](media-uploads.md).
-
 
 User metadata writes are reserved for su (including stdin and authorized sudo).
 Global admins receive `r:account.metadata` only. Room policy management permits

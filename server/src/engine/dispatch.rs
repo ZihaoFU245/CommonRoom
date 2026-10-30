@@ -26,13 +26,9 @@ pub(super) struct CommandContext<'a> {
     pub(super) actor: Option<&'a str>,
     pub(super) command: &'a str,
     pub(super) room: Option<&'a str>,
-    #[cfg(test)]
-    pub(super) input: &'a str,
     pub(super) parts: &'a [&'a str],
     pub(super) view: Option<&'a str>,
     pub(super) scope: authorization::Scope,
-    #[cfg(test)]
-    pub(super) markdown: bool,
     pub(super) author: &'a str,
 }
 impl Engine {
@@ -58,43 +54,7 @@ impl Engine {
         }
         let routed = commands::route(input);
         let parts: Vec<_> = routed.split_whitespace().collect();
-        if parts.first() == Some(&"/clean") && parts.last() != Some(&"--dry-run") {
-            return None;
-        }
-        if !matches!(
-            parts.first().copied(),
-            Some(
-                "/user"
-                    | "/clean"
-                    | "/room"
-                    | "/permissions"
-                    | "/debug"
-                    | "/help"
-                    | "/man"
-                    | "/whoami"
-                    | "/console"
-                    | "/ls"
-                    | "/members"
-                    | "/history"
-                    | "/bot"
-            )
-        ) {
-            return None;
-        }
-        if matches!(command, "/user" | "/room")
-            && !matches!(
-                parts.as_slice(),
-                ["/user", "ls" | "get", ..] | ["/room", "ls"]
-            )
-        {
-            return None;
-        }
-        if command == "/bot"
-            && !matches!(
-                parts.as_slice(),
-                ["/bot", "ls" | "info", ..] | ["/bot", "token", "ls", ..]
-            )
-        {
+        if commands::execution(input) != commands::Execution::Read || command == "/system" {
             return None;
         }
         Some((|| {
@@ -107,13 +67,9 @@ impl Engine {
                 command,
                 actor,
                 room: view.filter(|v| !v.starts_with('@')),
-                #[cfg(test)]
-                input,
                 parts: &parts,
                 view,
                 scope: self.command_scope(actor, view)?,
-                #[cfg(test)]
-                markdown: false,
                 author: actor.unwrap_or("console"),
             };
             if command == "/bot" {
@@ -157,72 +113,7 @@ impl Engine {
             return Err(EngineError::Forbidden("Account unavailable.".into()));
         }
         self.changed_conversation = None;
-        let result = self.execute_inner(actor, room, input, markdown);
-        self.clear_working_messages();
-        result
-    }
-    #[cfg(test)]
-    pub(super) fn clear_working_messages(&mut self) {
-        self.working = None;
-        self.store.pending_deletes.clear();
-        self.store.pending_cleanups.clear();
-    }
-    #[cfg(test)]
-    fn load_command_message(
-        &mut self,
-        actor: Option<&str>,
-        view: Option<&str>,
-        parts: &[&str],
-    ) -> Result<(), EngineError> {
-        if !matches!(
-            parts.first().copied(),
-            Some("/react" | "/reply" | "/retract" | "/edit")
-        ) {
-            return Ok(());
-        }
-        let Some(message_id) = parts.get(1) else {
-            return Ok(());
-        };
-        self.require_command(actor, view, parts[0])?;
-        let scope = self.command_scope(actor, view)?;
-        let Some((id, message)) = self.history_store().locate(message_id)? else {
-            return Ok(());
-        };
-        if let Some(name) = view.filter(|v| !v.starts_with('@')) {
-            let target = self.room_scope(name)?;
-            self.require(actor, &target, authorization::Action::Read)?;
-            if target == authorization::Scope::Room(id.clone()) {
-                self.working = Some(messages::WorkingMessage {
-                    reaction: None,
-                    conversation: id,
-                    message,
-                });
-            }
-            return Ok(());
-        }
-        let target_view = self.bot_index.conversations.get(&id);
-        if let Some(key) = target_view.and_then(|view| view.strip_prefix("@private:")) {
-            let target = self.private_scope(key);
-            if self.allows(actor, &target, authorization::Action::Read)
-                && !matches!(&scope,authorization::Scope::Private(selected) if *selected!=id)
-            {
-                self.working = Some(messages::WorkingMessage {
-                    reaction: None,
-                    conversation: id,
-                    message,
-                });
-            }
-        } else if self.is_su(actor)
-            && scope == authorization::Scope::Server
-            && target_view.is_some()
-        {
-            self.working = Some(messages::WorkingMessage {
-                reaction: None,
-                conversation: id,
-                message,
-            });
-        }
-        Ok(())
+        self.execute_inner(actor, room, input, markdown)
     }
     #[cfg(test)]
     fn execute_inner(
@@ -240,125 +131,142 @@ impl Engine {
         if let Some(result) = self.read_command(actor, room, input) {
             return result;
         }
-        let command = input.split_whitespace().next().unwrap_or("");
         commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
-        let routed = commands::route(input);
-        let parts: Vec<_> = routed.split_whitespace().collect();
-        self.load_command_message(actor, room, &parts)?;
-        if parts.first() == Some(&"/bot") {
-            return self.bot_command(actor, room, &parts);
-        }
-        if parts.first() == Some(&"/rename") {
-            self.require_command(actor, room, command)?;
-            let (name, new_name) = match parts.as_slice() {
-                [_, "room", name, new_name] => {
-                    return self.rename_room(actor, name, new_name, command);
+        if native_metadata_command(input) {
+            let (reply, pending) = match self.prepare_metadata(actor, room, input)? {
+                MetadataPreparation::Ready(reply, pending) => {
+                    (reply, pending.map(|pending| *pending))
                 }
-                [_, "user", name, new_name] => (*name, *new_name),
-                [_, new_name] => (
-                    actor.ok_or_else(|| {
-                        EngineError::Invalid(format!("Usage: {}", commands::RENAME_USAGE))
-                    })?,
-                    *new_name,
-                ),
-                [_, name, new_name] => (*name, *new_name),
-                _ => {
-                    return Err(EngineError::Invalid(format!(
-                        "Usage: {}",
-                        commands::RENAME_USAGE
-                    )));
+                MetadataPreparation::Rename(read) => {
+                    let references = database::block_on_storage(read.read())??;
+                    let (reply, pending) = self.prepare_referenced_rename(actor, references)?;
+                    (reply, Some(pending))
                 }
             };
-            return self.rename_user(actor, name, new_name, command);
-        }
-        if parts.first() == Some(&"/rm") && parts.get(1) == Some(&"user") {
-            require_len(&parts, 3, "/user delete who")?;
-            self.require_command(actor, room, command)?;
-            let scope =
-                self.account_target(actor, parts[2], authorization::Action::DeleteAccount)?;
-            self.require_target_command(actor, &scope, command)?;
-            return self.delete_user(actor, parts[2]);
-        }
-        if let Some(change) = self.message_change(actor, room, &parts, input) {
-            let result = self.apply(actor, room, input, markdown);
-            return self.finish_message_change(change, result, None, std::convert::identity);
-        }
-        if matches!(parts.first().copied(), Some("/retract" | "/clean")) {
-            let revision = self.revision;
-            let changed = self.changed_conversation.clone();
-            let result = self.apply(actor, room, input, markdown).and_then(|reply| {
-                self.save_history_maintenance()?;
-                Ok(reply)
-            });
-            if result.is_err() {
-                self.restore_command_state(revision, changed)
-                    .map_err(EngineError::unavailable)?;
+            if let Some(pending) = pending {
+                let pending = database::block_on_storage(pending.save())??;
+                self.publish_metadata(pending)?;
             }
-            return result;
+            return Ok(reply);
         }
-        if parts.first() == Some(&"/user") {
-            // The metadata handler resolves the exact account keys, validates
-            // the entire selection, and owns its atomic commit/rollback.
-            return self.apply(actor, room, input, markdown);
-        }
-        let before = self.command_metadata_change(room, &parts);
-        self.metadata_dirty = false;
-        let result = self.apply(actor, room, input, markdown);
-        match result {
-            Ok(reply) => {
-                if !self.metadata_dirty {
-                    return Ok(reply);
-                }
-                if self.data.policy.assignments != before.policy.assignments
-                    || self.data.policy.grants != before.policy.grants
-                    || self.data.policy.media_revocations != before.policy.media_revocations
-                {
-                    self.data.policy.revision = before.policy.revision.wrapping_add(1);
-                }
-                let removed_rooms = before.removed_rooms(&self.data);
-                if let Err(e) =
-                    self.save_metadata(&removed_rooms, changes::Baseline::Captured(&before))
-                {
-                    before.restore(&mut self.data);
-                    return Err(e);
-                }
-                Ok(reply)
+        let command = input.split_whitespace().next().unwrap_or("");
+        if matches!(command, "/reply" | "/edit" | "/react" | "/retract") {
+            let plan = self.action_plan(actor, room, input)?;
+            let (id, original) =
+                database::block_on_storage(plan.history.locate_async(&plan.action.id))??
+                    .ok_or("Message not found in this conversation.")?;
+            if plan.action.is_retraction() {
+                let pending = self.prepare_retraction(actor, room, &plan.action, &id, &original)?;
+                database::block_on_storage(pending.save())??;
+                self.publish_history(pending)?;
+                return Ok("Message deleted.".into());
             }
-            Err(e) => {
-                before.restore(&mut self.data);
-                Err(e)
+            let (pending, reply) =
+                self.prepare_action(actor, room, plan.action, &id, original, markdown)?;
+            if let Some(pending) = pending {
+                self.commit_fixture_message(pending)?;
             }
+            return Ok(reply);
         }
+        if command == "/clean" {
+            let mut plan = self.prepare_cleanup(actor, room, input)?;
+            database::block_on_storage(plan.count())??;
+            if let Some(pending) = self.prepare_cleanup_write(actor, &plan)? {
+                database::block_on_storage(pending.save())??;
+                self.publish_history(pending)?;
+            }
+            return Ok(plan.report());
+        }
+        if !input.trim_start().starts_with('/') || command == "/tell" {
+            let pending = if let Some(user) = actor {
+                self.prepare_browser_message(user, room, input, markdown)?
+            } else {
+                if command == "/tell" {
+                    return Err("Private messages require a user account.".into());
+                }
+                self.prepare_console_fixture(room, input, markdown)?
+            };
+            let reply = if command == "/tell" {
+                format!(
+                    "Private message sent to {}.",
+                    pending
+                        .message
+                        .to
+                        .as_deref()
+                        .ok_or("Private message has no recipient.")?
+                )
+            } else {
+                String::new()
+            };
+            self.commit_fixture_message(pending)?;
+            return Ok(reply);
+        }
+        self.reject_command(actor, room, input)
     }
+    /// Synchronous fixtures bridge to the same native message transaction and
+    /// publication used by browser/console adapters; they own no parallel writes.
     #[cfg(test)]
-    fn apply_text(
-        &mut self,
-        actor: Option<&str>,
+    fn commit_fixture_message(&mut self, pending: PendingMessage) -> Result<(), EngineError> {
+        let media =
+            database::block_on_storage(pending.media_records())?.map_err(EngineError::from)?;
+        self.validate_append_media(&pending, &media)?;
+        let commit = database::block_on_storage(pending.save(None))??;
+        self.publish_message(pending, commit)?;
+        Ok(())
+    }
+    // Some old fixtures seed a synthetic console-authored room message. Real
+    // stdin has no selected room and never exposes this test-only constructor.
+    #[cfg(test)]
+    fn prepare_console_fixture(
+        &self,
         room: Option<&str>,
         input: &str,
         markdown: bool,
-    ) -> Result<String, EngineError> {
-        if input.chars().count() > crate::limits::MAX_MESSAGE_CHARS {
-            return Err("Messages support at most 4000 characters.".into());
-        }
-        let room = room.ok_or("Select a room first.")?;
-        if let Some(key) = room.strip_prefix("@private:") {
-            self.require(actor, &self.private_scope(key), authorization::Action::Send)?;
+    ) -> Result<PendingMessage, EngineError> {
+        crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
+        let view = room.ok_or("Select a room first.")?;
+        let (scope, revision) = if let Some(key) = view.strip_prefix("@private:") {
+            let chat = self
+                .data
+                .private
+                .get(key)
+                .ok_or("Private conversation not found.")?;
+            (
+                authorization::Scope::Private(chat.id.clone()),
+                chat.revision,
+            )
         } else {
-            self.require(actor, &self.room_scope(room)?, authorization::Action::Send)?;
+            let room = self.data.rooms.get(view).ok_or("Room not found.")?;
+            (authorization::Scope::Room(room.id.clone()), room.revision)
+        };
+        let mut message = self.message(None, None, input, markdown)?;
+        if let Some(key) = view.strip_prefix("@private:") {
+            if let authorization::Scope::Private(id) = &scope {
+                message.private_id.clone_from(id);
+            }
+            message
+                .mentions
+                .retain(|name| key.split(':').any(|part| part == name));
+        } else {
+            message
+                .mentions
+                .retain(|name| self.data.rooms[view].members.contains(name));
         }
-        self.append_text(actor, room, input, markdown, None)?;
-        Ok(String::new())
+        self.pending_message_at(
+            "console",
+            view,
+            scope,
+            revision,
+            message,
+            message_write::PendingMutation::Append,
+        )
     }
-
     pub(super) fn apply_metadata(
         &mut self,
         actor: Option<&str>,
         room: Option<&str>,
         input: &str,
     ) -> Result<String, EngineError> {
-        #[cfg(test)]
-        let markdown = false;
         let input = input.trim();
         crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
         if actor.is_some_and(|name| !self.active(name)) {
@@ -400,12 +308,8 @@ impl Engine {
             command,
             actor,
             room,
-            #[cfg(test)]
-            input,
             parts: handler_parts,
             author,
-            #[cfg(test)]
-            markdown,
             scope,
             view,
         };
@@ -418,251 +322,6 @@ impl Engine {
                 self.apply_rooms(&context)
             }
             _ => Err("Unknown command. Try /help.".into()),
-        }
-    }
-    #[cfg(test)]
-    pub(super) fn apply(
-        &mut self,
-        actor: Option<&str>,
-        room: Option<&str>,
-        input: &str,
-        markdown: bool,
-    ) -> Result<String, EngineError> {
-        let input = input.trim();
-        crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
-        if actor.is_some_and(|name| !self.active(name)) {
-            return Err(EngineError::Forbidden("Account unavailable.".into()));
-        }
-        let author = actor.unwrap_or("console");
-        let command = input.split_whitespace().next().unwrap_or("");
-        let routed = commands::route(input);
-        let parts: Vec<&str> = routed.split_whitespace().collect();
-        if !input.starts_with('/') {
-            return self.apply_text(actor, room, input, markdown);
-        }
-        self.require_command(actor, room, command)?;
-        let view = room;
-        let scope = self.command_scope(actor, room)?;
-        let room = room.filter(|name| !name.starts_with('@'));
-        let subcommand = parts.get(1).copied();
-        let routed_parts;
-        let handler_parts = if matches!(parts[0], "/new" | "/rm") {
-            match (parts[0], subcommand) {
-                ("/new", Some("room")) | ("/rm", Some("room")) => {}
-                ("/rm", Some("group")) if (4..=5).contains(&parts.len()) => {}
-                _ => {
-                    return Err(EngineError::Invalid(format!(
-                        "Usage: {}",
-                        if parts[0] == "/new" {
-                            commands::NEW_USAGE
-                        } else {
-                            commands::RM_USAGE
-                        }
-                    )));
-                }
-            }
-            routed_parts = std::iter::once(parts[0])
-                .chain(parts.iter().skip(2).copied())
-                .collect::<Vec<_>>();
-            &routed_parts
-        } else {
-            &parts
-        };
-        let context = CommandContext {
-            command,
-            actor,
-            room,
-            #[cfg(test)]
-            input,
-            parts: handler_parts,
-            author,
-            #[cfg(test)]
-            markdown,
-            scope,
-            view,
-        };
-        match parts[0] {
-            "/user" | "/room" => self.apply_objects(&context),
-            "/enable" | "/disable" => self.apply_accounts(&context),
-            "/grant" | "/revoke" | "/permissions" => self.apply_policy(&context),
-            "/rm" if subcommand == Some("group") => self.apply_policy(&context),
-            "/new" | "/add" | "/kick" | "/join" | "/leave" | "/rm" | "/owner" => {
-                self.apply_rooms(&context)
-            }
-            "/react" | "/reply" | "/retract" | "/edit" | "/clean" | "/tell" => {
-                self.apply_messages(&context)
-            }
-            "/debug" | "/help" | "/man" | "/whoami" | "/console" | "/ls" | "/members"
-            | "/history" => self.apply_queries(&context),
-            "/reset" => Err("Account provisioning is console-only.".into()),
-            _ => Err("Unknown command. Try /help.".into()),
-        }
-    }
-}
-
-// A mutation owns its target coordinates and only the prior attachment IDs for edits.
-// Message bodies live only in Engine::working, outside metadata rollback snapshots.
-#[cfg(test)]
-pub(super) struct MessageChange {
-    pub(super) key: String,
-    pub(super) private: bool,
-    pub(super) mutation: MessageMutation,
-    pub(super) sequence: u64,
-    pub(super) revision: Option<u64>,
-}
-#[cfg(test)]
-pub(super) enum MessageMutation {
-    Append,
-    Edit {
-        attachments: BTreeSet<String>,
-        actor: String,
-    },
-    Reaction,
-}
-#[cfg(test)]
-impl MessageChange {
-    pub(super) fn new_conversation(&self) -> bool {
-        self.revision.is_none()
-    }
-}
-#[cfg(test)]
-impl Engine {
-    pub(super) fn message_change(
-        &self,
-        actor: Option<&str>,
-        view: Option<&str>,
-        parts: &[&str],
-        input: &str,
-    ) -> Option<MessageChange> {
-        let command = *parts.first()?;
-        let reaction = command == "/react";
-        if input.trim_start().starts_with('/')
-            && !matches!(command, "/tell" | "/reply" | "/react" | "/edit")
-        {
-            return None;
-        }
-        let (private, key) = if command == "/tell" {
-            (true, private_key(actor?, parts.get(1)?))
-        } else if let Some(room) = view.filter(|v| !v.starts_with('@')) {
-            (false, room.to_owned())
-        } else if command == "/edit"
-            && let Some(name) = self.message_action_room(
-                actor,
-                None,
-                &self.command_scope(actor, view).ok()?,
-                parts.get(1)?,
-            )
-        {
-            (false, name)
-        } else if !input.trim_start().starts_with('/') {
-            (true, view?.strip_prefix("@private:")?.to_owned())
-        } else {
-            let id = parts.get(1)?;
-            let scope = self.command_scope(actor, view).ok()?;
-            let row = self.working.as_ref().filter(|row| row.message.id == *id)?;
-            let key = self
-                .bot_index
-                .conversations
-                .get(&row.conversation)?
-                .strip_prefix("@private:")?;
-            if !self.allows(actor, &self.private_scope(key), authorization::Action::Read)
-                || matches!(&scope, authorization::Scope::Private(id) if *id != row.conversation)
-            {
-                return None;
-            }
-            let key = key.to_owned();
-            (true, key)
-        };
-        let view = if private {
-            format!("@private:{key}")
-        } else {
-            key
-        };
-        self.capture_message_change(
-            actor,
-            &view,
-            if reaction || command == "/edit" {
-                parts.get(1).copied()
-            } else {
-                None
-            },
-            reaction,
-        )
-    }
-    pub(super) fn capture_message_change(
-        &self,
-        actor: Option<&str>,
-        view: &str,
-        message_id: Option<&str>,
-        reaction: bool,
-    ) -> Option<MessageChange> {
-        let private = view.starts_with("@private:");
-        let key = view.strip_prefix("@private:").unwrap_or(view).to_owned();
-        let conversation = if private {
-            self.data.private.get(&key).map(|c| (&c.id, c.revision))
-        } else {
-            self.data.rooms.get(&key).map(|r| (&r.id, r.revision))
-        };
-        let mutation = if let Some(message_id) = message_id {
-            let message = self
-                .working_message(conversation?.0)
-                .filter(|m| m.id == message_id)?;
-            if reaction {
-                MessageMutation::Reaction
-            } else {
-                MessageMutation::Edit {
-                    attachments: media::media_references(&message.text),
-                    actor: self.principal_id(actor)?.into(),
-                }
-            }
-        } else {
-            MessageMutation::Append
-        };
-        Some(MessageChange {
-            key,
-            private,
-            mutation,
-            sequence: self.data.next_sequence,
-            revision: conversation.map(|(_, r)| r),
-        })
-    }
-    pub(super) fn finish_message_change<T, E>(
-        &mut self,
-        change: MessageChange,
-        result: Result<T, E>,
-        receipt: Option<database::MessageReceipt<'_>>,
-        storage_error: impl FnOnce(EngineError) -> E,
-    ) -> Result<T, E> {
-        let result = result.and_then(|value| {
-            self.save_message_change_with_receipt(&change, receipt)
-                .map_err(storage_error)?;
-            Ok(value)
-        });
-        if result.is_err() {
-            self.restore_message_change(change);
-        }
-        result
-    }
-    pub(super) fn restore_message_change(&mut self, change: MessageChange) {
-        self.data.next_sequence = change.sequence;
-        self.working = None;
-        if change.private && change.revision.is_none() {
-            self.data.private.remove(&change.key);
-            return;
-        }
-        let revision = if change.private {
-            self.data
-                .private
-                .get_mut(&change.key)
-                .map(|c| &mut c.revision)
-        } else {
-            self.data
-                .rooms
-                .get_mut(&change.key)
-                .map(|r| &mut r.revision)
-        };
-        if let (Some(revision), Some(previous)) = (revision, change.revision) {
-            *revision = previous;
         }
     }
 }

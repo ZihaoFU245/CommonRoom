@@ -1419,7 +1419,7 @@ fn current_schema_restart_preserves_policy_sessions_and_cursors_without_writes()
         e.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_state_write BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'startup must not rewrite state'); END;").unwrap();
     }
     let e = Engine::open(&path).unwrap();
-    assert!(e.working.is_none());
+
     assert_eq!(e.history_store().stats().unwrap()["messages"], 0);
     assert_eq!(e.store.db.lock().unwrap().total_changes(), 0);
     assert!(e.data == previous);

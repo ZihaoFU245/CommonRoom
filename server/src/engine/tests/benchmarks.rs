@@ -127,7 +127,9 @@ async fn snapshot_fanout_shares_cold_reads_and_encoded_content() {
         }
     }
     engine.history_store().reset_after_recovery().unwrap();
-    for expected_misses in [30, 1] {
+    // Native append publication refreshes the one changed tail in memory;
+    // subsequent fan-out needs no new SQL page fill.
+    for expected_misses in [30, 0] {
         let before = engine.history_store().stats().unwrap()["misses"]
             .as_u64()
             .unwrap();

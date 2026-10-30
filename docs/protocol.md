@@ -281,7 +281,7 @@ Current 401 responses cancel retry; stale checks cannot log out a replacement
 socket. Returning online or focusing a closed connection retries immediately,
 without overlapping a socket that is already connecting.
 
-## Media uploads (draft)
+## Media uploads
 
 All paths use `base_url`; requests use existing cookies and browser origin checks.
 Allocation/completion/publication require `w:media.upload` plus read/send rights.
@@ -364,7 +364,6 @@ signed `x-amz-meta-client-*` headers in the upload ticket. Clients send every re
 header and never attach chat credentials. Final CopyObject replaces metadata with
 these validated hints. All hints remain untrusted and have no authorization or
 MIME/size/retention effects. Unicode hint values must be percent encoded.
-
 
 `/clean age scope [--dry-run]` requires an explicit room/private/global scope.
 Preview runs under the read-only command path, with identical authorization and
@@ -463,13 +462,11 @@ budget per stable account per ten seconds; unchanged values and repeated complet
 of the current avatar do not spend it. Exhaustion returns retryable 429. Other
 accounts keep independent capacity. Upload allocation retains its existing quotas.
 
-
 Metadata changes send a baseline to affected viewers, including newly authorized and
 revoked viewers. Unrelated clients may retain an older `policy_revision`; it describes
 their last captured snapshot and is not a global notification sequence. Permission
 checks always use current server authority. Bot credential changes can also emit
 compact `bot_commands` invalidations for readable conversations without a baseline.
-
 
 Browser plugin command discovery uses `GET /api/bot-commands` with session auth.
 It returns `{conversations:[{conversation_id,bots}]}` for accessible conversations,
@@ -484,3 +481,10 @@ under global `/bot`, account credential and protected-su checks. `kind` is
 `issuer` or `worker`; secrets and digests are omitted. Credential metadata changes
 refresh authorized managers in addition to bot/owner audiences. Omitted fields
 remain compatible with older servers.
+
+Transient browser socket update failures preserve the connection and schedule an
+authorized baseline retry on the next one-second maintenance tick. Presence and
+command catalogue invalidations remain pending across recovery. Revoked/expired
+credentials still close the connection; failed command admission returns a
+correlated error so the client can retry. Connection, header and HTTP response
+limits are documented in [Deployment](deployment.md#http-resource-limits).

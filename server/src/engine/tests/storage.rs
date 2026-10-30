@@ -2,7 +2,6 @@
 use super::*;
 
 fn assert_invariants(e: &Engine) {
-    assert!(e.working.is_none());
     let db = e.store.db.lock().unwrap();
     assert_eq!(
         db.query_row::<String, _, _>("PRAGMA integrity_check", [], |r| r.get(0))
@@ -155,7 +154,6 @@ fn attachment_free_inserts_edits_and_identity_rewrites_do_not_read_media_referen
     e.execute(Some("alice"), None, "/user rename alicia")
         .unwrap();
     assert_eq!(room_messages(&e, "lobby")[0].from, "alicia");
-    assert!(e.working.is_none());
 }
 
 #[test]
@@ -183,7 +181,7 @@ fn competing_writer_failure_rolls_back_and_next_mutation_recovers() {
     ));
     assert!(e.data == before);
     assert_eq!(e.revision, revision);
-    assert!(e.working.is_none());
+
     transaction.rollback().unwrap();
     e.execute(None, Some("room"), "recovered").unwrap();
     assert_eq!(room_messages(&e, "room").len(), 2);

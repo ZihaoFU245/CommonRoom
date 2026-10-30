@@ -35,7 +35,16 @@ impl Engine {
         crate::commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;
         let command = input.split_whitespace().next().unwrap_or("");
         self.require_command(actor, view, command)?;
-        if command == "/reset" {
+        if command == "/new" || command == "/rm" {
+            Err(EngineError::Invalid(format!(
+                "Usage: {}",
+                if command == "/new" {
+                    crate::commands::NEW_USAGE
+                } else {
+                    crate::commands::RM_USAGE
+                }
+            )))
+        } else if command == "/reset" {
             Err("Account provisioning is console-only.".into())
         } else {
             Err("Unknown command. Try /help.".into())

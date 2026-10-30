@@ -726,8 +726,8 @@ references. Do not copy `data/` while the server is running.
 
 ## External agent workers
 
-Bot bearer tokens no longer authenticate browser `/api/*` routes or `/ws`. Move
-workers using media, avatar or color APIs to their `/api/bot/v1/` counterparts
+Browser `/api/*` routes and `/ws` require sessions and reject bearer headers.
+Workers use the media, avatar and color APIs under `/api/bot/v1/`
 listed in [Bots](bots.md#media-and-profiles-v1-extension). Message Markdown keeps
 canonical browser media paths; machine retrieval uses the bot file endpoint.
 
@@ -805,3 +805,14 @@ managed image uploads do not need an external host allowance.
 Deploy the rebuilt web bundle with backend changes that introduce compact avatar
 profile frames. Existing open tabs obtain the new client when reloaded; normal
 HTTP resynchronization continues to return the full current avatar directory.
+
+## HTTP resource limits
+
+The server admits at most 512 active HTTP connections and gives each HTTP/1
+header block 15 seconds to arrive, even if bytes keep trickling in. Requests have
+a 120-second response deadline, leaving room for the 100-second media completion
+deadline. Accepted durable writes still finish commit/publication after a request
+times out. Upgraded WebSockets use their existing separate socket caps, heartbeat
+and idle deadlines. The listener serves HTTP/1.1; TLS/HTTP/2 termination belongs at
+the reverse proxy. Configure proxy header/body deadlines too, since the proxy can
+buffer a slow client before forwarding its request to chat.

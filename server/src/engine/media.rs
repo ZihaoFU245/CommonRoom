@@ -194,24 +194,6 @@ impl Engine {
             Err(EngineError::NotFound("Conversation not found.".into()))
         }
     }
-    #[cfg(test)]
-    pub(super) fn authorize_media_text(
-        &self,
-        actor: Option<&str>,
-        scope: &Scope,
-        text: &str,
-        previous: &str,
-    ) -> Result<(), EngineError> {
-        let previous = media_references(previous);
-        for id in media_references(text).difference(&previous) {
-            let user = actor.ok_or("Media uploads require an account.")?;
-            self.require(Some(user), scope, Action::Read)?;
-            self.require(Some(user), scope, Action::Send)?;
-            let (media, referenced) = self.stored_media_with_reference(id)?;
-            self.authorize_media_record(user, scope, &media, referenced)?;
-        }
-        Ok(())
-    }
 
     pub(in crate::engine) fn authorize_media_record(
         &self,

@@ -446,3 +446,119 @@ async fn postgres_cancelled_elevated_writes_publish_before_queued_revocation() {
         assert!(notices.try_recv().is_err());
     }
 }
+
+#[tokio::test]
+async fn global_message_actions_reuse_the_lookup_when_the_revision_is_unchanged() {
+    let app = setup(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    let (message, history) = {
+        let engine = app.engine_read().unwrap();
+        (
+            engine.history("alice", "secret").unwrap().messages[0]
+                .id
+                .clone(),
+            engine.history_store().clone(),
+        )
+    };
+    let before = history.stats().unwrap()["pools"]["operations"]["history_reads"]["succeeded"]
+        .as_u64()
+        .unwrap();
+    command(&app, None, &format!("/sudo /edit {message} replaced once"))
+        .await
+        .unwrap();
+    let after = history.stats().unwrap()["pools"]["operations"]["history_reads"]["succeeded"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        after - before,
+        1,
+        "one message lookup, without a second database read"
+    );
+    assert_eq!(
+        app.engine_read()
+            .unwrap()
+            .history("alice", "secret")
+            .unwrap()
+            .messages[0]
+            .text,
+        "replaced once"
+    );
+}
+
+#[tokio::test]
+async fn queued_global_edit_refreshes_a_reply_scrubbed_after_the_early_lookup() {
+    let app = setup(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    let (quoted, source, history, id) = {
+        let mut engine = app.engine().unwrap();
+        let quoted = engine.history("alice", "secret").unwrap().messages[0]
+            .id
+            .clone();
+        engine
+            .execute(
+                Some("alice"),
+                Some("secret"),
+                &format!("/reply {quoted} original reply"),
+            )
+            .unwrap();
+        let page = engine.history("alice", "secret").unwrap();
+        (
+            quoted,
+            page.messages[1].id.clone(),
+            engine.history_store().clone(),
+            engine.data.rooms["secret"].id.clone(),
+        )
+    };
+    let ordering = app.mutations.conversation(id.clone()).await.unwrap();
+    let before = history.stats().unwrap()["pools"]["operations"]["history_reads"]["succeeded"]
+        .as_u64()
+        .unwrap();
+    let queued = tokio::spawn({
+        let app = app.clone();
+        let source = source.clone();
+        async move {
+            command(
+                &app,
+                None,
+                &format!("/sudo /edit {source} replacement reply"),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while history.stats().unwrap()["pools"]["operations"]["history_reads"]["succeeded"]
+            .as_u64()
+            .unwrap()
+            == before
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!queued.is_finished());
+    let original = history.locate_async(&quoted).await.unwrap().unwrap().1;
+    let _audit = app.mutations.audit.lock().await;
+    let pending = app
+        .with_conversation(&ordering, move |engine| {
+            let plan = engine.action_plan(None, None, &format!("/retract {quoted}"))?;
+            engine.prepare_retraction(None, None, &plan.action, &id, &original)
+        })
+        .await
+        .unwrap();
+    pending.save().await.unwrap();
+    app.with_conversation(&ordering, move |engine| engine.publish_history(pending))
+        .await
+        .unwrap();
+    drop(ordering);
+    queued.await.unwrap().unwrap();
+    let page = app
+        .engine_read()
+        .unwrap()
+        .history("alice", "secret")
+        .unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].text, "replacement reply");
+    assert!(
+        page.messages[0].reply.is_none(),
+        "an early cached lookup must not resurrect a deleted quote"
+    );
+}

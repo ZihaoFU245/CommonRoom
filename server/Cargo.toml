@@ -25,9 +25,12 @@ axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+# Disabled MySQL/RSA lockfile entries are excluded by auto/audit.sh; keep defaults off.
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "sqlite", "postgres", "json"] }
 futures-util = "0.3"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "timeout"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server", "http1", "service", "tokio"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
@@ -37,5 +40,6 @@ url = "2"
 rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls"] }
 
 [dev-dependencies]
+tokio-tungstenite = "0.29"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

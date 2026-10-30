@@ -196,26 +196,6 @@ impl Engine {
         Ok(id)
     }
 
-    #[cfg(test)]
-    pub(super) fn bot_command(
-        &mut self,
-        actor: Option<&str>,
-        view: Option<&str>,
-        parts: &[&str],
-    ) -> Result<String, EngineError> {
-        self.require_bot_management(actor, view)?;
-        // Deletion already owns the transaction for account/history/cursor cleanup.
-        if let [_, "rm", name, "@global"] = parts {
-            self.registered_id(name)?;
-            self.require_target_command(actor, &Scope::Server, "/bot")?;
-            return self.delete_user(actor, name);
-        }
-        let (reply, before) = self.apply_bot_metadata(actor, view, parts)?;
-        if let Some(before) = before {
-            self.commit_account_metadata(before)?;
-        }
-        Ok(reply)
-    }
     pub(super) fn require_bot_management(
         &self,
         actor: Option<&str>,

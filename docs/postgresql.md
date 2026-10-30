@@ -229,7 +229,7 @@ change the configured user/room/retention ceilings.
 
 For PostgreSQL backups use PostgreSQL's `pg_dump`/`pg_restore` or managed physical
 backup tooling, alongside local configuration/worker backups and the object store.
-Copying `CHAT_DATA` alone no longer backs up chat accounts/history. Stop chat for a
+Copying `CHAT_DATA` alone does not back up PostgreSQL chat accounts/history. Stop chat for a
 consistent application/database/object-store backup, or coordinate equivalent
 snapshots. See [Data](data.md) for the SQLite procedure and [Testing](testing.md)
 for isolated PostgreSQL tests.

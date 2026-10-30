@@ -44,6 +44,48 @@ impl<'a> From<&'a Data> for DataView<'a> {
     }
 }
 impl MetadataChange {
+    /// Profile-only deltas cannot change identity, sessions, rooms, credentials or
+    /// policy. Audit additions are deliberately excluded from authority comparison.
+    pub(super) fn profile_changes(&self, after: &Self) -> Option<Vec<String>> {
+        if self.rooms != after.rooms
+            || self.private != after.private
+            || self.sessions != after.sessions
+            || self.bots != after.bots
+            || self.policy.revision != after.policy.revision
+            || self.policy.assignments != after.policy.assignments
+            || self.policy.grants != after.policy.grants
+            || self.policy.media_revocations != after.policy.media_revocations
+        {
+            return None;
+        }
+        let before_users = self.users.as_ref()?;
+        let after_users = after.users.as_ref()?;
+        if before_users.len() != after_users.len() {
+            return None;
+        }
+        fn without_profiles(account: &Account) -> Account {
+            let mut account = account.clone();
+            for (scope, entries) in &mut account.metadata {
+                entries.remove(colors::COLOR_KEY);
+                if scope == "@global" {
+                    entries.remove("avatar");
+                }
+            }
+            account.metadata.retain(|_, entries| !entries.is_empty());
+            account
+        }
+        let mut names = Vec::new();
+        for (name, before) in before_users {
+            let after = after_users.get(name)?;
+            if before != after {
+                if without_profiles(before) != without_profiles(after) {
+                    return None;
+                }
+                names.push(name.clone());
+            }
+        }
+        Some(names)
+    }
     pub(super) fn capture_current(&self, data: &Data) -> Result<Self, EngineError> {
         let keys = self
             .keys

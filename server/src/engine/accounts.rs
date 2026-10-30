@@ -59,7 +59,7 @@ impl Engine {
                 "Storage unavailable; rename was not applied.".into(),
             ));
         }
-        self.working = None;
+
         self.store.read_positions.remove(new_name);
         if let Some(positions) = self.store.read_positions.remove(name) {
             self.store.read_positions.insert(new_name.into(), positions);
@@ -614,52 +614,6 @@ impl Engine {
             engine.apply_provision(actor, name, hash, admin, reset)
         })
     }
-    #[cfg(test)]
-    pub(super) fn delete_user(
-        &mut self,
-        actor: Option<&str>,
-        name: &str,
-    ) -> Result<String, EngineError> {
-        let AccountDeletion {
-            before: previous,
-            deleted_id,
-            removed,
-            reply,
-        } = self.apply_account_deletion(actor, name)?;
-        // Commit account/session/history cleanup and read positions together.
-        // Only update the in-memory cursor cache after the transaction succeeds.
-        let authorization = match authorization::CompiledPolicy::compile(&self.data) {
-            Ok(policy) => policy,
-            Err(error) => {
-                previous.restore(&mut self.data);
-                return Err(EngineError::unavailable(error));
-            }
-        };
-        let notice = MetadataNotice::between(
-            &self.data,
-            previous.view(),
-            &self.authorization,
-            &authorization,
-        );
-        let result = self.store_account_deletion(name, &removed, &previous);
-        if let Err(error) = result {
-            previous.restore(&mut self.data);
-            tracing::error!(error = %error, "Account deletion failed");
-            return Err(EngineError::Unavailable(
-                "Storage unavailable; account deletion was not applied.".into(),
-            ));
-        }
-        self.authorization = authorization;
-        self.read_revisions.remove(&deleted_id);
-        self.store.read_positions.remove(name);
-        for positions in self.store.read_positions.values_mut() {
-            positions.retain(|view, _| !removed.contains(view));
-        }
-        self.bot_index = crate::bots::models::Index::build(&self.data);
-        self.advance_colors();
-        self.finish_metadata_commit(notice);
-        Ok(reply)
-    }
     fn apply_account_deletion(
         &mut self,
         actor: Option<&str>,
@@ -819,7 +773,10 @@ impl Engine {
                     .get_mut(parts[1])
                     .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                     .disabled = false;
-                Ok(format!("Enabled {}.", parts[1]))
+                Ok(format!(
+                    "Enabled {}. Previous room access and ownership are not restored.",
+                    parts[1]
+                ))
             }
             "/disable" => {
                 require_len(parts, 2, "/user disable who")?;
@@ -871,7 +828,10 @@ impl Engine {
                 for scope in recovered {
                     self.add_owner_grants("console".into(), scope);
                 }
-                Ok(format!("Disabled {}.", parts[1]))
+                Ok(format!(
+                    "Disabled {}. Sessions revoked; room memberships and room-scoped roles/grants removed; owned rooms transferred to su. Enabling does not restore room access or ownership.",
+                    parts[1]
+                ))
             }
             _ => Err("Unknown command.".into()),
         }

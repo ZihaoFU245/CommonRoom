@@ -4,6 +4,7 @@ pub(crate) mod avatars;
 pub(crate) mod colors;
 mod error;
 mod metadata_commands;
+pub(crate) mod principal;
 mod profiles;
 mod query_commands;
 pub(crate) use error::ApiError;
@@ -11,6 +12,7 @@ mod bot_commands;
 mod cleanup_commands;
 pub(crate) mod commands;
 pub(crate) mod history;
+pub(crate) mod http_server;
 pub(crate) mod login_limits;
 pub(crate) mod media;
 pub(crate) mod mutations;
@@ -284,6 +286,11 @@ pub fn router(app: App) -> Router {
     };
     routes
         .layer(axum::extract::DefaultBodyLimit::max(4096))
+        // Leave room for the media completion deadline (100 seconds).
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(120),
+        ))
         .layer(middleware::from_fn_with_state(app.clone(), admission::http))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(

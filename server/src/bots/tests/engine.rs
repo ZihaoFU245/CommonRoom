@@ -459,7 +459,6 @@ fn mixed_browser_and_bot_sends_preserve_quotes_retention_and_shared_cursors() {
             .code,
         Code::MessageGone
     );
-    assert!(e.working.is_none());
 }
 
 #[test]
@@ -550,7 +549,6 @@ fn browser_toggles_and_bot_desired_reactions_share_limits_and_failure_rollback()
     let page = e.history("helper", "support").unwrap();
     assert_eq!(page.messages[0].reactions.len(), 32);
     assert!(page.messages[0].reactions["r0"].contains("helper"));
-    assert!(e.working.is_none());
 }
 #[test]
 fn stable_targets_cannot_follow_recreated_names_and_receipts_survive_restart_and_rename() {

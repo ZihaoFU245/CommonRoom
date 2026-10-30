@@ -69,6 +69,51 @@ pub fn route(input: &str) -> String {
     }
 }
 
+/// Storage/transport routing only. Domain handlers remain the authority for
+/// argument validation and scoped permissions. All adapters share this classifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Execution {
+    Read,
+    Metadata,
+    Message,
+    Cleanup,
+    Credential,
+    Unknown,
+}
+pub(crate) fn execution(input: &str) -> Execution {
+    if !input.trim_start().starts_with('/') {
+        return Execution::Message;
+    }
+    let routed = route(input);
+    let parts: Vec<_> = routed.split_whitespace().collect();
+    match parts.as_slice() {
+        ["/user", "ls" | "get", ..]
+        | ["/room", "ls"]
+        | ["/bot", "ls" | "info", ..]
+        | ["/bot", "token", "ls", ..]
+        | [
+            "/system" | "/permissions" | "/debug" | "/help" | "/man" | "/whoami" | "/console"
+            | "/ls" | "/members" | "/history",
+            ..,
+        ] => Execution::Read,
+        ["/clean", ..] if parts.last() == Some(&"--dry-run") => Execution::Read,
+        ["/clean", ..] => Execution::Cleanup,
+        ["/tell" | "/reply" | "/edit" | "/react" | "/retract", ..] => Execution::Message,
+        ["/passwd" | "/reset", ..] | ["/new", "user", ..] => Execution::Credential,
+        [
+            "/enable" | "/disable" | "/grant" | "/revoke" | "/add" | "/kick" | "/join" | "/leave"
+            | "/owner",
+            ..,
+        ]
+        | ["/new", "room", ..]
+        | ["/rm", "room" | "group" | "user", ..]
+        | ["/user", "set" | "reset", ..]
+        | ["/rename", ..]
+        | ["/bot", ..] => Execution::Metadata,
+        _ => Execution::Unknown,
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct Command {
     pub name: &'static str,
@@ -379,8 +424,12 @@ fn form_description(command: &Command, usage: &str) -> &'static str {
         ("/user", ["rename", ..]) => "Rename yourself or an authorized account",
         ("/user", ["new", ..]) => "Create an account; the default group is user",
         ("/user", ["delete", ..]) => "Delete an account and its private conversations",
-        ("/user", ["disable", ..]) => "Disable an account and revoke its sessions",
-        ("/user", ["enable", ..]) => "Enable an account",
+        ("/user", ["disable", ..]) => {
+            "Disable an account, revoke sessions and room access, and transfer owned rooms to su"
+        }
+        ("/user", ["enable", ..]) => {
+            "Enable login without restoring previous room access or ownership"
+        }
         ("/user", ["passwd", ..]) => "Change your password and sign out other sessions",
         ("/user", ["reset", ..]) => {
             "Reset scoped metadata; color uses ownership/room grants, other keys require su; or reset a password"

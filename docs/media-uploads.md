@@ -174,8 +174,8 @@ remains reserved until storage deletion succeeds. The default limit is 25 **MiB*
 | `CHAT_S3_SESSION_TOKEN` | Optional temporary credential session token |
 
 Storage is disabled when neither `s3` nor `CHAT_S3_ENDPOINT` is configured.
-The earlier draft's `CHAT_MEDIA_*` connection variables have been replaced by
-`CHAT_S3_*`. Endpoint environment overrides are process-local, not persisted.
+S3 connection settings use the `CHAT_S3_*` variables above. Endpoint environment
+overrides are process-local, not persisted.
 Endpoints must be origins with no credentials/path/query/fragment. Production's
 public endpoint requires HTTPS and must differ from the chat application origin.
 Both endpoints must reach the same bucket. Preserve signed Host/path/query through
@@ -344,8 +344,9 @@ reachability, while S3 still enforces actual PUT permissions and size constraint
 
 Media holds the shared API admission permit only during blocking auth/SQL work.
 S3 uses eight independent outbound slots; completion and cleanup lock only the
-same media ID. Saturation or duplicate completion returns 503 promptly, leaving
-other chat operations available. Storage failures return 503; invalid sizes or
+same media ID. A request waits up to two seconds for an outbound slot; continued saturation
+returns 503. Duplicate completion returns 503 while its object is locked.
+Other chat operations remain available. Storage failures return 503; invalid sizes or
 missing staging objects return 400. Zero sizes are rejected in the transport too.
 Completion has a 100-second server budget below the browser's 120-second deadline.
 It uses three S3 calls: staging HEAD, copy, then bounded range GET verifying the
@@ -363,10 +364,9 @@ interval when shorter), so a startup backlog does not wait another day. It batch
 keys with DeleteObjects, checks every returned key/error, and falls back to
 individual deletion for unsupported batch APIs (405/501). A failed or incomplete
 delete retains the row and quota. Final/staging retry timestamps prevent failed
-objects monopolizing subsequent batches. V15 adds partial due-set/tombstone
-indexes, a covering quota index, staging retry state, and reference-removal
-tracking. Mutable SQL columns are authoritative over legacy JSON state copies.
-
+objects monopolizing subsequent batches. The schema includes partial
+due-set/tombstone indexes, a covering quota index, staging retry state and
+reference-removal tracking. Mutable SQL columns are authoritative over legacy JSON state copies.
 
 Single PUT/copy uploads have a conservative portable 5,000,000,000-byte ceiling;
 provider/ingress limits may be lower. A PUT URL must be used within five minutes;

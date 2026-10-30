@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+python3 auto/command-reference.py --check
 node --check web/scripts/smoke.mjs
 node --check web/scripts/media-smoke.mjs
 sh -n auto/start-s3.sh

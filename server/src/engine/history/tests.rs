@@ -192,14 +192,26 @@ fn bounded_ranges_reuse_shared_pages_and_report_miss_causes() {
         )
         .unwrap();
     assert_eq!(store.stats().unwrap()["events"]["range_misses"], 1);
+    let previous_revision = engine.data.rooms["lobby"].revision;
     engine
         .execute(
             Some("alice"),
             Some("lobby"),
-            "legacy publication invalidates",
+            "native publication carries the tail",
         )
         .unwrap();
     engine.history("bob", "lobby").unwrap();
+    assert_eq!(store.stats().unwrap()["events"]["revision_misses"], 0);
+    // A stale caller still takes the revision-miss path and is rejected by SQL.
+    assert!(matches!(
+        store.page_checked(
+            &engine.data.rooms["lobby"].id,
+            previous_revision,
+            HistoryRange::default(),
+            "lobby"
+        ),
+        Err(HistoryError::Changed)
+    ));
     assert_eq!(store.stats().unwrap()["events"]["revision_misses"], 1);
     let before = store.stats().unwrap();
     store.reset_after_recovery().unwrap();
@@ -967,12 +979,17 @@ fn incremental_unreads_match_sql_after_gaps_cursors_retention_and_mutations() {
             .execute(Some("alice"), Some("lobby"), &command)
             .unwrap();
         check(&engine);
-        assert!(
-            engine.history_store().stats().unwrap()["unread_full"]
-                .as_u64()
-                .unwrap()
-                > before
-        );
+        let after = engine.history_store().stats().unwrap()["unread_full"]
+            .as_u64()
+            .unwrap();
+        if command.starts_with("/user rename") {
+            assert!(after > before);
+        } else {
+            assert_eq!(
+                after, before,
+                "native edits/reactions carry exact unread state"
+            );
+        }
     }
     engine
         .execute(Some("alicia"), None, "/user rename alice")
@@ -1303,7 +1320,7 @@ fn pages_are_independent_bounded_and_revision_checked() {
             .execute(Some("alice"), Some("lobby"), &format!("message {index}"))
             .unwrap();
     }
-    assert!(engine.working.is_none());
+
     let range = HistoryRange {
         start: Some(1000),
         end: Some(1099),
@@ -1527,4 +1544,36 @@ fn history_owners_keep_pool_and_folder_ownership_until_the_last_handle_drops() {
     assert!(Engine::open(&path).is_err());
     drop(history);
     assert!(Engine::open(&path).is_ok());
+}
+
+#[test]
+#[ignore = "manual bounded-cache lookup benchmark"]
+fn bounded_page_lookup_benchmark() {
+    use std::{hint::black_box, time::Instant};
+    let mut cache = Cache::default();
+    for index in 0..256 / CACHE_SHARDS {
+        cache.insert(CachedPage {
+            conversation: format!("conversation-{index:03}"),
+            revision: 1,
+            range: HistoryRange::default(),
+            messages: MessagePage::new(vec![], vec![]),
+            bytes: 0,
+            before: false,
+            after: false,
+        });
+    }
+    let key = format!("conversation-{:03}", 256 / CACHE_SHARDS - 1);
+    let start = Instant::now();
+    for _ in 0..100_000 {
+        let page = cache
+            .pages
+            .iter()
+            .find(|page| page.conversation == *black_box(&key) && page.revision == 1);
+        assert!(black_box(page).is_some());
+    }
+    println!(
+        "bounded cache: {} pages per shard, {} ns per worst-position lookup",
+        cache.pages.len(),
+        start.elapsed().as_nanos() / 100_000
+    );
 }

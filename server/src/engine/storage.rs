@@ -9,8 +9,6 @@ mod cursors;
 mod entities;
 #[cfg(test)]
 mod maintenance;
-#[cfg(test)]
-mod messages;
 mod migration;
 #[cfg(test)]
 mod receipts;
@@ -37,10 +35,6 @@ pub(super) struct Store {
     history: std::sync::Arc<super::history::HistoryStore>,
     pub(super) db: database::Handle,
     pub(super) read_positions: BTreeMap<String, BTreeMap<String, u64>>,
-    #[cfg(test)]
-    pub(super) pending_deletes: Vec<(String, u64)>,
-    #[cfg(test)]
-    pub(super) pending_cleanups: Vec<(String, u64)>,
 }
 
 #[cfg(test)]
@@ -94,10 +88,6 @@ impl Engine {
                     conversation: format!("room:{room}"),
                 });
         }
-        batch.operations.push(MetadataOp::HistoryChanges {
-            deletes: &self.store.pending_deletes,
-            cleanups: &self.store.pending_cleanups,
-        });
         self.store.db.save_metadata_blocking(&batch)?;
         drop(batch);
         for room in rooms {

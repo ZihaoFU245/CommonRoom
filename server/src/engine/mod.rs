@@ -26,6 +26,7 @@ pub use error::EngineError;
 mod read_position;
 mod session_write;
 pub(crate) use read_position::CursorWrite;
+pub(crate) use session_write::AuthStore;
 mod history;
 mod history_write;
 pub(crate) mod media;
@@ -89,8 +90,6 @@ pub struct Engine {
     data: Data,
     #[cfg(test)]
     pub(crate) data: Data,
-    #[cfg(test)]
-    working: Option<messages::WorkingMessage>,
     pub revision: u64,
     color_revision: u64,
     committed_colors: colors::ColorDirectory,
@@ -155,10 +154,7 @@ impl Engine {
         self.store.read_positions = positions;
         self.metadata_dirty = false;
         self.changed_conversation = None;
-        #[cfg(test)]
-        {
-            self.working = None;
-        }
+
         self.read_clock = self.read_clock.wrapping_add(1);
         self.read_revisions.clear();
         self.revision = self.revision.wrapping_add(1);

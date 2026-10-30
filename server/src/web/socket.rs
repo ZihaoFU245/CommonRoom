@@ -104,6 +104,26 @@ impl Presence {
         let current = super::auth::authenticated_identity(&self.app, headers)
             .await?
             .user;
+        self.refresh(current).await
+    }
+    async fn authenticate_command(&mut self, headers: &HeaderMap) -> Result<String, ApiError> {
+        let config = self.app.config.clone();
+        let headers = headers.clone();
+        let current = self
+            .app
+            .inspect_engine(move |engine, _| {
+                super::auth::Identity::capture(engine, config, headers)
+                    .map(|identity| identity.user)
+                    .ok_or_else(|| {
+                        error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                    })
+            })
+            .await?;
+        // Commands check owner health in their own read/commit path. Heartbeats
+        // and transient activity retain independent native health checks.
+        self.refresh(current).await
+    }
+    async fn refresh(&mut self, current: String) -> Result<String, ApiError> {
         if current != self.user {
             let app = self.app.clone();
             let old = self.user.clone();
@@ -133,6 +153,88 @@ impl Drop for Presence {
         });
     }
 }
+
+async fn authorize_activity(
+    app: &App,
+    headers: &HeaderMap,
+    old: String,
+    id: String,
+) -> Result<(String, bool), ApiError> {
+    let config = app.config.clone();
+    let captured_headers = headers.clone();
+    let (identity, allowed) = super::principal::authenticate(
+        app,
+        None,
+        move |engine| {
+            super::auth::Identity::capture(engine, config, captured_headers)
+                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))
+        },
+        move |identity, engine| {
+            identity
+                .verify(engine)
+                .map_err(|_| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))?;
+            Ok::<_, ApiError>(
+                engine
+                    .bot_target(
+                        &identity.user,
+                        &id,
+                        crate::engine::authorization::Action::Read,
+                    )
+                    .is_ok(),
+            )
+        },
+    )
+    .await?;
+    let current = identity.user;
+    if old != current {
+        let state = app.clone();
+        let current = current.clone();
+        tokio::task::spawn_blocking(move || state.update_presence(Some(&old), Some(&current)))
+            .await
+            .map_err(|error| ApiError::from(crate::engine::EngineError::unavailable(error)))?
+            .map_err(|error| ApiError::from(crate::engine::EngineError::Unavailable(error)))?;
+    }
+    Ok::<_, ApiError>((current, allowed))
+}
+
+// Durable content is recovered with a baseline. Discovery and presence are
+// independent of that baseline, so retain one coalesced invalidation for each.
+#[derive(Default)]
+struct Recovery {
+    pending: bool,
+    catalogue: Option<Change>,
+    presence: bool,
+}
+impl Recovery {
+    fn schedule(&mut self, changes: &[Change]) {
+        self.pending = true;
+        self.presence |= changes.contains(&Change::Presence);
+        for change in changes {
+            if matches!(change, Change::BotCommands(_) | Change::BotCatalogues(_))
+                || matches!(change, Change::Metadata(notice) if notice.has_catalogues())
+            {
+                self.catalogue = Some(change.clone());
+            }
+        }
+    }
+    fn take(&mut self) -> Option<Vec<Change>> {
+        if !std::mem::take(&mut self.pending) {
+            return None;
+        }
+        let mut changes = vec![Change::All];
+        changes.extend(self.catalogue.take());
+        if std::mem::take(&mut self.presence) {
+            changes.push(Change::Presence);
+        }
+        Some(changes)
+    }
+}
+fn retryable(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::CONFLICT | StatusCode::SERVICE_UNAVAILABLE | StatusCode::INTERNAL_SERVER_ERROR
+    )
+}
 pub(crate) async fn connection(
     app: App,
     headers: HeaderMap,
@@ -140,7 +242,8 @@ pub(crate) async fn connection(
     mut socket: WebSocket,
 ) {
     let bot = super::auth::bearer(&headers).is_some();
-    let mut events = crate::web::transport::Events::new(&app, false);
+    let mut events = crate::web::transport::Events::new(&app, true);
+    let mut recovery = Recovery::default();
     let presence_app = app.clone();
     let presence_user = user.clone();
     if !matches!(
@@ -166,28 +269,33 @@ pub(crate) async fn connection(
     let mut interests = crate::web::transport::Interests::default();
 
     loop {
-        match events.next(&mut socket).await {
-            crate::web::transport::Event::Maintenance => {}
-            crate::web::transport::Event::Heartbeat(alive) => {
-                if !alive {
-                    break;
-                }
-                if presence.authenticate(&headers).await.is_err() {
-                    break;
-                }
-                if !send(&mut socket, Message::Ping(Vec::new().into())).await {
-                    break;
-                }
-            }
-            crate::web::transport::Event::Change(change) => {
-                let change = match change {
-                    Ok(change) => change,
-                    Err(broadcast::error::RecvError::Lagged(_)) => Change::All,
-                    Err(_) => break,
+        let event = events.next(&mut socket).await;
+        match event {
+            crate::web::transport::Event::Maintenance | crate::web::transport::Event::Change(_) => {
+                let mut changes = match event {
+                    crate::web::transport::Event::Maintenance => {
+                        let Some(changes) = recovery.take() else {
+                            continue;
+                        };
+                        changes
+                    }
+                    crate::web::transport::Event::Change(change) => {
+                        let change = match change {
+                            Ok(change) => change,
+                            Err(broadcast::error::RecvError::Lagged(_)) => Change::All,
+                            Err(_) => break,
+                        };
+                        events.take_batch(change)
+                    }
+                    _ => continue,
                 };
-                let mut changes = events.take_batch(change);
                 if changes.contains(&Change::Shutdown) {
                     break;
+                }
+                // Full recovery retries even if no further broadcast arrives.
+                if recovery.pending {
+                    recovery.schedule(&changes);
+                    continue;
                 }
                 changes.retain(|change| {
                     !interests.excludes(change) && !matches!(change, Change::Read(name) | Change::Account(name) if name != &user)
@@ -204,6 +312,7 @@ pub(crate) async fn connection(
                 let read_headers = headers.clone();
                 let old = user.clone();
                 let mut routed = std::mem::take(&mut interests);
+                let retry_changes = changes.clone();
                 let result = tokio::spawn(async move {
                     let (current, frames) = super::updates::browser_with_interests_async(
                         &read_app,
@@ -225,8 +334,24 @@ pub(crate) async fn connection(
                     Ok::<_, crate::engine::EngineError>((current, frames, routed))
                 })
                 .await;
-                let Ok(Ok((current, frames, routed))) = result else {
-                    break;
+                let (current, frames, routed) = match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(crate::engine::EngineError::Forbidden(_))) => break,
+                    Ok(Err(
+                        cause @ (crate::engine::EngineError::Conflict(_)
+                        | crate::engine::EngineError::Unavailable(_)
+                        | crate::engine::EngineError::Internal(_)),
+                    )) => {
+                        tracing::warn!(code = cause.code(), "Socket update deferred");
+                        recovery.schedule(&retry_changes);
+                        continue;
+                    }
+                    Ok(Err(_)) => break,
+                    Err(cause) => {
+                        tracing::warn!(%cause, "Socket update worker failed");
+                        recovery.schedule(&retry_changes);
+                        continue;
+                    }
                 };
                 interests = routed;
                 user = current;
@@ -242,6 +367,23 @@ pub(crate) async fn connection(
                     break;
                 }
             }
+            crate::web::transport::Event::Heartbeat(alive) => {
+                if !alive {
+                    break;
+                }
+                match presence.authenticate(&headers).await {
+                    Ok(current) => user = current,
+                    Err(cause) if retryable(cause.0) => {
+                        recovery.schedule(&[]);
+                        tracing::warn!(status = %cause.0, "Socket heartbeat authentication deferred");
+                    }
+                    Err(_) => break,
+                }
+                if !send(&mut socket, Message::Ping(Vec::new().into())).await {
+                    break;
+                }
+            }
+
             crate::web::transport::Event::Activity(activity) => {
                 let Ok(activity) = activity else {
                     continue;
@@ -257,43 +399,14 @@ pub(crate) async fn connection(
                 if interests.excludes(&Change::Conversation(id.clone())) {
                     continue;
                 }
-                let validated = async {
-                    let identity = super::auth::authenticated_identity(&app, &headers).await?;
-                    let current = identity.user.clone();
-                    let allowed = app
-                        .inspect_engine(move |engine, _| {
-                            identity.verify(engine)?;
-                            Ok::<_, crate::engine::EngineError>(
-                                engine
-                                    .bot_target(
-                                        &identity.user,
-                                        &id,
-                                        crate::engine::authorization::Action::Read,
-                                    )
-                                    .is_ok(),
-                            )
-                        })
-                        .await
-                        .map_err(ApiError::from)?;
-                    if old != current {
-                        let state = app.clone();
-                        let current = current.clone();
-                        tokio::task::spawn_blocking(move || {
-                            state.update_presence(Some(&old), Some(&current))
-                        })
-                        .await
-                        .map_err(|error| {
-                            ApiError::from(crate::engine::EngineError::unavailable(error))
-                        })?
-                        .map_err(|error| {
-                            ApiError::from(crate::engine::EngineError::Unavailable(error))
-                        })?;
+                let validated = authorize_activity(&app, &headers, old, id).await;
+                let (current, allowed) = match validated {
+                    Ok(value) => value,
+                    Err(cause) if retryable(cause.0) => {
+                        tracing::warn!(status = %cause.0, "Socket activity skipped");
+                        continue;
                     }
-                    Ok::<_, ApiError>((current, allowed))
-                }
-                .await;
-                let Ok((current, allowed)) = validated else {
-                    break;
+                    Err(_) => break,
                 };
                 user = current;
                 presence.user.clone_from(&user);
@@ -305,8 +418,29 @@ pub(crate) async fn connection(
                 let Some(Ok(message)) = incoming else {
                     break;
                 };
-                user = match presence.authenticate(&headers).await {
+                if matches!(message, Message::Close(_) | Message::Binary(_)) {
+                    break;
+                }
+                if !matches!(message, Message::Text(_)) {
+                    continue;
+                }
+                user = match presence.authenticate_command(&headers).await {
                     Ok(user) => user,
+                    Err(cause) if retryable(cause.0) => {
+                        recovery.schedule(&[]);
+                        // Do not discard a command whose acknowledgement the
+                        // caller is awaiting. Report its normal retryable error.
+                        if let Message::Text(raw) = &message {
+                            let id = serde_json::from_str::<Input>(raw)
+                                .map(|input| input.id)
+                                .unwrap_or(0);
+                            let reply = json!({"kind":"error","id":id,"text":"Storage unavailable; retry shortly."});
+                            if !send(&mut socket, Message::Text(reply.to_string().into())).await {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     Err(_) => break,
                 };
                 match message {
@@ -352,3 +486,6 @@ pub(crate) async fn connection(
     }
     let _ = send(&mut socket, Message::Close(None)).await;
 }
+
+#[cfg(test)]
+mod tests;

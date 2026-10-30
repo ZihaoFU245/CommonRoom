@@ -464,7 +464,11 @@ async fn sudo_authorizes_web_special_commands_without_changing_the_caller() {
             true,
             Some("Account target password reset."),
         ),
-        ("/sudo /user enable target", true, Some("Enabled target.")),
+        (
+            "/sudo /user enable target",
+            true,
+            Some("Enabled target. Previous room access and ownership are not restored."),
+        ),
         (
             "/sudo /user new created long-created-password admin",
             true,

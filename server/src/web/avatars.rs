@@ -43,8 +43,7 @@ pub(crate) async fn allocate_as(
         .io_permit()
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let worker = app.clone();
-    let (storage, media) = tokio::spawn(async move {
-        let _permit = permit;
+    let (storage, media) = super::admission::spawn_io(permit, async move {
         let (identity, _) = super::media::native_context(&worker, access).await?;
         let storage = storage(&worker)?;
         let ordering = worker.mutations.conversations(vec![]).await?;
@@ -164,8 +163,7 @@ async fn owner(
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let app = app.clone();
     let access = access.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         let (identity, store) = super::media::native_context(&app, access).await?;
         let media = store.load(&id).await?.0;
         app.inspect_engine(move |engine, _| -> Result<_, ApiError> {
@@ -193,8 +191,7 @@ async fn readable(
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     let app = app.clone();
     let access = access.clone();
-    tokio::spawn(async move {
-        let _permit = permit;
+    super::admission::spawn_io(permit, async move {
         for _ in 0..2 {
             let (identity, store) = super::media::native_context(&app, access.clone()).await?;
             let media = store
