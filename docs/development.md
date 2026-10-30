@@ -41,10 +41,27 @@ It defaults to SQLite with no S3 operations. Debug data and its generated
 
 ```sh
 rtk proxy ./auto/debug.sh
+rtk proxy ./auto/debug.sh --network 100.101.102.103
+rtk proxy ./auto/debug.sh --network devbox.example.ts.net
 rtk proxy ./auto/debug.sh --with-s3
 rtk proxy ./auto/debug.sh --with-postgres
 rtk proxy ./auto/debug.sh --with-s3 --with-postgres
 ```
+
+`--network HOST` binds the UI preview to `0.0.0.0:5173` and allows
+`http://HOST:5173` as a browser origin. Use this machine's LAN/Tailscale IPv4
+address or hostname, without a scheme or port, then open the printed URL on the
+other device. Hostnames are also allowed through Vite's host check. The Rust API
+stays on loopback behind the preview's API/WebSocket proxy. Without the flag,
+the preview listens only on loopback. Allow TCP port 5173 through the host firewall
+and any Tailscale access rules as needed.
+
+Remote debug uses plain HTTP; browser features requiring a secure context, such
+as service workers, are unavailable. The debug preview supplies the configured
+origin for API GETs to that host when browsers omit both Origin and Fetch Metadata.
+Explicit origin/metadata headers still pass through for backend validation.
+`--with-s3` still uses a loopback public storage URL, so remote media needs a
+separately reachable storage setup.
 
 Start dependencies in separate terminals before enabling them:
 

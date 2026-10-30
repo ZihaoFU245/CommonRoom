@@ -129,7 +129,8 @@ The ignored `snapshot_fanout_shares_cold_reads_and_encoded_content` fixture chec
 See [Storage benchmarks](storage-benchmarks.md#shared-snapshot-fan-out).
 `auto/debug.sh` runs the existing debug binary and previews `web/dist-debug/`
 at http://127.0.0.1:5173 with API/WebSocket proxying; it does not rebuild. It defaults
-to SQLite/no S3, with opt-in `--with-s3` and `--with-postgres` flags. See
+to SQLite/no S3, with opt-in `--with-s3` and `--with-postgres` flags.
+`--network HOST` enables access through a LAN/Tailscale address. See
 [Development](development.md) for the generated per-run config and data folder.
 
 `auto/clean.sh` removes server/UI build artifacts, Vite caches, and

@@ -127,14 +127,16 @@ for (const mode of ["debug", "release"]) {
   );
 }
 
-for (const { withS3, custom, offline } of [
+for (const { withS3, custom, offline, network } of [
   { withS3: false, custom: false, offline: false },
   { withS3: true, custom: false, offline: false },
   { withS3: true, custom: true, offline: false },
   { withS3: true, custom: false, offline: true },
+  { withS3: false, network: "100.101.102.103" },
+  { withS3: false, network: "devbox.example.ts.net" },
 ]) {
   test(
-    `debug leaves S3 startup to the caller (S3=${withS3}, overrides=${custom}, offline=${offline})`,
+    `debug leaves S3 startup to the caller (S3=${withS3}, overrides=${custom}, offline=${offline}, network=${network})`,
     { skip: process.platform === "win32" },
     (t) => {
       const { root } = fixture(t);
@@ -163,6 +165,7 @@ fs.writeFileSync('debug-env.json',JSON.stringify({s3:Object.fromEntries(Object.e
         join(root, "bin/node"),
         `#!${process.execPath}
 const fs=require('node:fs');
+fs.writeFileSync('preview-env.json',JSON.stringify({args:process.argv.slice(2),origin:process.env.CHAT_DEBUG_ORIGIN,host:process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS}));
 const timer=setInterval(()=>{if(fs.existsSync('debug-env.json')){clearInterval(timer);process.exit(0);}},10);
 setTimeout(()=>process.exit(1),3000).unref();
 `,
@@ -187,7 +190,11 @@ setTimeout(()=>process.exit(1),3000).unref();
         });
       const result = spawnSync(
         "sh",
-        [join(root, "auto/debug.sh"), ...(withS3 ? ["--with-s3"] : [])],
+        [
+          join(root, "auto/debug.sh"),
+          ...(withS3 ? ["--with-s3"] : []),
+          ...(network ? ["--network", network] : []),
+        ],
         {
           cwd: tmpdir(),
           env,
@@ -207,6 +214,22 @@ setTimeout(()=>process.exit(1),3000).unref();
         assert.equal(existsSync(join(root, "debug-env.json")), false);
         return;
       }
+      const config = JSON.parse(
+        readFileSync(join(root, "data/config.json"), "utf8"),
+      );
+      const preview = JSON.parse(
+        readFileSync(join(root, "preview-env.json"), "utf8"),
+      );
+      const origin = `http://${network ?? "127.0.0.1"}:5173`;
+      assert.equal(preview.origin, origin);
+      assert.equal(preview.host, network ?? "");
+      assert.equal(
+        preview.args[preview.args.indexOf("--host") + 1],
+        network ? "0.0.0.0" : "127.0.0.1",
+      );
+      assert.ok(config.origins.includes(origin));
+      assert.ok(config.origins.includes("http://localhost:5173"));
+      assert.match(result.stdout, new RegExp(origin.replaceAll(".", "\\.")));
       const captured = JSON.parse(
         readFileSync(join(root, "debug-env.json"), "utf8"),
       );
@@ -248,4 +271,26 @@ setTimeout(()=>process.exit(1),3000).unref();
       assert.equal(existsSync(join(root, "s3-was-started")), false);
     },
   );
+}
+
+for (const args of [
+  ["--network"],
+  ["--network", "http://devbox"],
+  ["--network", "devbox:5173"],
+  ["--network", "0.0.0.0"],
+  ["--network", 'bad"host'],
+  ["--network", "--with-s3"],
+]) {
+  test(`debug rejects invalid network arguments: ${JSON.stringify(args)}`, (t) => {
+    const { root } = fixture(t);
+    copyFileSync(
+      new URL("../../auto/debug.sh", import.meta.url),
+      join(root, "auto/debug.sh"),
+    );
+    const result = spawnSync("sh", [join(root, "auto/debug.sh"), ...args], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(existsSync(join(root, "data")), false);
+  });
 }

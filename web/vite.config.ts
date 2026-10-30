@@ -34,6 +34,29 @@ export function configureWebSocketProxy(proxy: HttpProxy.ProxyServer): void {
   });
 }
 
+// Remote plain HTTP lacks Fetch Metadata, and same-origin GETs omit Origin.
+// The explicitly configured debug proxy supplies it for its own host only.
+export function debugReadOrigin(origin: string | undefined): Plugin {
+  return {
+    name: "debug-read-origin",
+    configurePreviewServer(server) {
+      if (!origin) return;
+      const host = new URL(origin).host;
+      server.middlewares.use((request, _response, next) => {
+        if (
+          request.method === "GET" &&
+          request.url?.startsWith("/api/") &&
+          request.headers.host === host &&
+          request.headers.origin === undefined &&
+          request.headers["sec-fetch-site"] === undefined
+        )
+          request.headers.origin = origin;
+        next();
+      });
+    },
+  };
+}
+
 // Expose the emitted module URL so failed imports can be retried with a fresh
 // URL. Browsers cache rejected module loads; importing the same URL cannot retry.
 function markdownRendererUrl(): Plugin {
@@ -237,6 +260,7 @@ export default defineConfig({
   },
   plugins: [
     preact(),
+    debugReadOrigin(process.env.CHAT_DEBUG_ORIGIN),
     documentPolicy(),
     markdownRendererUrl(),
     markdownFrame(),

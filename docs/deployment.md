@@ -63,7 +63,8 @@ rtk cargo build --release --locked
 Debug builds (`rtk proxy ./auto/build.sh debug`) produce `target/debug/chat` and
 `web/dist-debug/`. `rtk proxy ./auto/debug.sh` serves the Vite preview on
 `127.0.0.1:5173`, proxies `/api` and `/ws` to `127.0.0.1:3000`, and stops both
-processes together. Debug builds are not for deployment.
+processes together. For LAN/Tailscale device debugging, use `--network HOST`; see
+[Development](development.md). Debug builds are not for deployment.
 
 The binary and UI can ship independently when their protocol versions match; a release
 build pairs them. Static files come from Nginx, so the server does not need Node or
