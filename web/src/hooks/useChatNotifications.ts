@@ -1,30 +1,30 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { useAccountPreference } from "./useAccountPreference.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { toggleMentionNotifications } from "../features/preferences/notifications.ts";
 
 export function useChatNotifications(
   append: (command: string, result: string, error: boolean) => string,
 ) {
-  const [notifications, setNotifications] = useState(() => {
+  const [desired, setDesired] = useAccountPreference("notifications", () => {
     try {
-      return (
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted" &&
-        localStorage.getItem("commonroom-notifications") === "on"
-      );
+      return String(localStorage.getItem("commonroom-notifications") === "on");
     } catch {
-      return false;
+      return "false";
     }
   });
+  const [permission, setPermission] = useState(
+    () =>
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted",
+  );
+  const notifications = desired === "true" && permission;
   const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
   const notificationRequest = useRef(false);
   useEffect(() => {
-    const checkPermission = () => {
-      if (window.Notification?.permission !== "granted") {
-        notificationsRef.current = false;
-        setNotifications(false);
-      }
-    };
+    const checkPermission = () =>
+      setPermission(window.Notification?.permission === "granted");
     window.addEventListener("focus", checkPermission);
     return () => window.removeEventListener("focus", checkPermission);
   }, []);
@@ -37,22 +37,14 @@ export function useChatNotifications(
         window.Notification,
         window.isSecureContext,
       );
+      setPermission(window.Notification?.permission === "granted");
+      setDesired(String(enabled));
       notificationsRef.current = enabled;
-      setNotifications(enabled);
-      try {
-        localStorage.setItem(
-          "commonroom-notifications",
-          enabled ? "on" : "off",
-        );
-      } catch {
-        // The toggle still works for this session without browser storage.
-      }
     } catch (error) {
       append("Notifications", errorMessage(error), true);
     } finally {
       notificationRequest.current = false;
     }
   }
-
   return { notifications, notificationsRef, toggleNotifications };
 }

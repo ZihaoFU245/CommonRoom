@@ -1,32 +1,13 @@
-import { useEffect, useState } from "preact/hooks";
-const key = "commonroom-external-avatars";
-function read(): boolean {
-  try {
-    return localStorage.getItem(key) === "true";
-  } catch {
-    return false;
-  }
-}
+import { useAccountPreference } from "./useAccountPreference.ts";
 export function useExternalAvatars(): [boolean, (enabled: boolean) => void] {
-  const [enabled, setEnabled] = useState(read);
-  useEffect(() => {
-    const update = () => setEnabled(read());
-    window.addEventListener("storage", update);
-    window.addEventListener(key, update);
-    return () => {
-      window.removeEventListener("storage", update);
-      window.removeEventListener(key, update);
-    };
-  }, []);
-  return [
-    enabled,
-    (value) => {
-      try {
-        localStorage.setItem(key, String(value));
-      } catch {
-        /* Keep the safe default if storage is disabled. */
-      }
-      window.dispatchEvent(new Event(key));
-    },
-  ];
+  const [value, set] = useAccountPreference("external_avatars", () => {
+    try {
+      return String(
+        localStorage.getItem("commonroom-external-avatars") === "true",
+      );
+    } catch {
+      return "false";
+    }
+  });
+  return [value === "true", (enabled) => set(String(enabled))];
 }

@@ -1,45 +1,50 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
+import { useAccountPreference } from "./useAccountPreference.ts";
 import { applyAppearance } from "../features/preferences/appearance.ts";
 import { defaultSeeds } from "../features/preferences/palette.ts";
 import {
   defaultTheme,
   loadSeeds,
   loadTheme,
-  saveSeeds,
-  saveTheme,
+  themeSetting,
   type Seeds,
   type Theme,
 } from "../features/preferences/settings.ts";
 
 export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(() => {
+  const [local] = useState(() => {
     try {
-      return loadTheme(localStorage);
+      return { theme: loadTheme(localStorage), seeds: loadSeeds(localStorage) };
     } catch {
-      return defaultTheme;
+      return { theme: defaultTheme, seeds: defaultSeeds };
     }
   });
-  const [seeds, setSeeds] = useState<Seeds>(() => {
-    try {
-      return loadSeeds(localStorage);
-    } catch {
-      return { ...defaultSeeds };
-    }
-  });
+  const [choice, setChoice] = useAccountPreference("theme", local.theme);
+  const [base, setBase] = useAccountPreference(
+    "palette.base",
+    local.seeds.base,
+  );
+  const [accent, setAccent] = useAccountPreference(
+    "palette.accent",
+    local.seeds.accent,
+  );
+  const theme = themeSetting(choice);
   useEffect(() => {
     const system = window.matchMedia("(prefers-color-scheme: dark)");
-    const sync = () => applyAppearance(theme, system.matches, seeds);
+    const sync = () => applyAppearance(theme, system.matches, { base, accent });
     sync();
-    try {
-      saveTheme(localStorage, theme);
-      saveSeeds(localStorage, seeds);
-    } catch {
-      /* Preferences also work without storage. */
-    }
-    /* A custom palette carries its own polarity, so the system cannot change it. */
     if (theme !== "system") return;
     system.addEventListener("change", sync);
     return () => system.removeEventListener("change", sync);
-  }, [theme, seeds]);
-  return { theme, setTheme, seeds, setSeeds };
+  }, [theme, base, accent]);
+  const seeds = useMemo(() => ({ base, accent }), [base, accent]);
+  return {
+    theme,
+    setTheme: (value: Theme) => setChoice(value),
+    seeds,
+    setSeeds: (value: Seeds) => {
+      setBase(value.base);
+      setAccent(value.accent);
+    },
+  };
 }

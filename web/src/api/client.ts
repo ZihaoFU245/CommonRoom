@@ -1,3 +1,4 @@
+import type { PreferenceState } from "../features/preferences/account.ts";
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { responseJson } from "./responseJson.ts";
 import { requestAbort } from "./requestAbort.ts";
@@ -84,7 +85,36 @@ async function request<T>(
   }
 }
 
+function isPreferences(value: unknown): value is PreferenceState {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("values" in value) ||
+    !("sync" in value)
+  )
+    return false;
+  const sync = value.sync;
+  return (
+    typeof value.values === "object" &&
+    value.values !== null &&
+    !Array.isArray(value.values) &&
+    Object.values(value.values).every(
+      (item: unknown) => typeof item === "string",
+    ) &&
+    typeof sync === "object" &&
+    sync !== null &&
+    "instance" in sync &&
+    typeof sync.instance === "string" &&
+    "revision" in sync &&
+    typeof sync.revision === "number" &&
+    Number.isSafeInteger(sync.revision) &&
+    sync.revision >= 0
+  );
+}
+
 export const api = {
+  preferences: (values: Record<string, string | null>, initialize: boolean) =>
+    request("preferences", isPreferences, { values, initialize }),
   setAvatar: (url: string | null) => request("avatars", isOk, { url }),
   allocateAvatar: (size: number, signal: AbortSignal, uploadId: string) =>
     request(

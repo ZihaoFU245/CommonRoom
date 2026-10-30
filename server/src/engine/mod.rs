@@ -44,6 +44,7 @@ mod message_write;
 pub(crate) use message_write::PendingMessage;
 mod messages;
 mod metadata_write;
+pub(crate) mod preferences;
 pub(crate) use metadata_write::{MetadataPreparation, native_metadata_command};
 mod models;
 mod notices;

@@ -298,6 +298,34 @@ Private cleanup uses the global root. Role defaults are never persisted, so role
 revocation and ownership transfer cannot leave stale unlimited values behind.
 Su and authorized sudo bypass cleanup permissions and metadata limits.
 
+## User preferences
+
+Account-wide settings use `metadata["@global"]["preferences.<key>"]` string
+values in the existing account JSON. No SQL layout or schema version changes are
+required: SQLite remains v20 and unpublished PostgreSQL remains v1. Existing
+accounts begin with these keys absent. Absent values remain unset until a device
+logs in; that login atomically fills each missing key from its local settings,
+including validated defaults. Later logins pull established server values.
+Concurrent initializations never overwrite an already-set value.
+
+Recognized keys are `theme`, `palette.base`, `palette.accent`, `font.chat`,
+`font.ui`, `markdown`, `latex`, `name_colors`, `message_bars`,
+`message_bar_opacity`, `name_borders`, `allow_html`, `external_avatars`, and
+`notifications`. Boolean values are `true`/`false`; custom palette seeds are
+six-digit hex colors; theme is `system`, `light`, `dark`, or `custom`. Chat fonts
+range from 14–24, UI fonts from 12–18, and bar opacity from 0–100. These fixed,
+validated keys have a separate bound from the existing 32 other keys per scope.
+Room overrides are rejected. Only the viewer's preferences appear in browser
+snapshots; they do not enter other users' profile directories or bot snapshots.
+
+Users can patch or unset their own preferences through the dedicated browser API.
+General metadata commands cannot set or reset `preferences.*`, including for su
+and the console. Whole-root metadata resets preserve these keys. Only the
+authenticated account itself can use the preferences API. Unsetting removes the key;
+the next login can seed it again. Normal updates preserve other keys and commit
+before notifying that account's connected devices. Browser notification permission,
+command aliases, navigation state and transient drafts remain device-local.
+
 ## Name colors
 
 The optional `color` metadata key names one of 16 fixed palette colors. `@global` holds the

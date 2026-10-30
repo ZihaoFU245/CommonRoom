@@ -77,7 +77,7 @@ export function FormattingSettings({
         <span>Show name colors</span>
       </label>
       <p id="name-colors-preference-description" class="account-summary">
-        Show each person's chosen name color. Saved on this device.
+        Show each person's chosen name color. Synced across your devices.
       </p>
       {nameColors && (
         <div class="name-color-controls">
@@ -101,7 +101,8 @@ export function FormattingSettings({
         <span>Show message color bars</span>
       </label>
       <p id="message-bars-preference-description" class="account-summary">
-        Mark each message with its author's name color. Saved on this device.
+        Mark each message with its author's name color. Synced across your
+        devices.
       </p>
       {messageBars && (
         <div class="font-setting message-bar-opacity-setting">
@@ -121,8 +122,8 @@ export function FormattingSettings({
             }
           />
           <p id="message-bar-opacity-description" class="account-summary">
-            Fade the message bar without changing names or reply quotes. Saved
-            on this device.
+            Fade the message bar without changing names or reply quotes. Synced
+            across your devices.
           </p>
         </div>
       )}
@@ -136,7 +137,7 @@ export function FormattingSettings({
         <span>Show name borders</span>
       </label>
       <p id="name-borders-preference-description" class="account-summary">
-        Frame author names in a rounded badge. Saved on this device.
+        Frame author names in a rounded badge. Synced across your devices.
       </p>
     </div>
   );

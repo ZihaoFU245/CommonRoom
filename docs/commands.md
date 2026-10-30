@@ -251,10 +251,10 @@ is an ordinary room message visible to all authorized readers.
 
 Settings opens Account with `/user rename` and `/user passwd` forms. Appearance controls
 light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
-(12–18px); preferences stay in this browser. Reset restores defaults. Theme
+(12–18px); preferences sync across devices through the account metadata root. Reset restores defaults. Theme
 applies before rendering, and palette text contrast is at least 4.5:1.
 Preferences provides Enable Markdown (the same sending preference as
-`/markdown on|off`) and Enable LaTeX math. Both are saved in this browser.
+`/markdown on|off`) and Enable LaTeX math. Both sync across devices.
 The Markdown checkbox affects future messages; each stored message retains
 its existing format. The LaTeX checkbox immediately changes how Markdown
 messages are displayed, including history, without changing plain-text messages.
@@ -480,11 +480,14 @@ metadata limit. Bulk cleanup authorizes every target and its limit before deleti
 
 `/user reset bob media.max_size #support` removes that room override and restores
 inheritance. `/user reset bob @all #support` clears every override in that room
-branch; `/user reset bob @all @global` clears only the global root. Other branches
+branch; `/user reset bob @all @global` clears the global root except for
+user-owned `preferences.*` values. Other branches
 remain unchanged. `@all` may also select users, as in
 `/user reset @all @all #support`. Metadata resets are su-only, use the same scope
 and bulk selection rules as `/user set`, and prune empty branches. Account-wide
-quota reset defaults to `@global` even from a room.
+quota reset defaults to `@global` even from a room. Explicit `preferences.*`
+set/reset commands are rejected for every actor, including su and the console;
+only the signed-in user can change their preferences through Settings.
 
 Password reset uses `/user reset bob password new-password`; it targets one
 account, accepts no scope, and retains `x:account.password.reset` authorization.

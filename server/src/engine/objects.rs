@@ -414,6 +414,13 @@ impl Engine {
         &self,
         context: &dispatch::CommandContext<'_>,
     ) -> Result<Option<AccountMetadataPlan>, EngineError> {
+        if let ["/user", "set" | "reset", _, key, ..] = context.parts
+            && key.starts_with(super::preferences::PREFIX)
+        {
+            return Err(EngineError::Forbidden(
+                "Preferences can only be changed through your own account settings.".into(),
+            ));
+        }
         if let ["/user", "set", who, key, value, rest @ ..] = context.parts {
             if *key != super::colors::COLOR_KEY && !self.is_su(context.actor) {
                 return Err(EngineError::Forbidden(
@@ -448,8 +455,7 @@ impl Engine {
                 }
                 if value != "@unset"
                     && let Some(entries) = self.data.users[name].metadata.get(&scope_key)
-                    && entries.len() >= 32
-                    && !entries.contains_key(*key)
+                    && super::preferences::metadata_full(entries, key)
                 {
                     return Err("At most 32 metadata keys per scope.".into());
                 }
@@ -520,7 +526,13 @@ impl Engine {
             for account in accounts.values_mut() {
                 let metadata = &mut account.metadata;
                 if *key == "@all" {
-                    metadata.remove(&scope_key);
+                    if scope_key == "@global" {
+                        if let Some(entries) = metadata.get_mut(&scope_key) {
+                            entries.retain(|key, _| key.starts_with(super::preferences::PREFIX));
+                        }
+                    } else {
+                        metadata.remove(&scope_key);
+                    }
                 } else if let Some(entries) = metadata.get_mut(&scope_key) {
                     entries.remove(*key);
                 }
@@ -590,6 +602,14 @@ impl Engine {
         }
         if key == super::colors::COLOR_KEY && matches!(scope, Scope::Private(_)) {
             return Err("color applies at @global or in a room.".into());
+        }
+        if let Some(preference) = key.strip_prefix(super::preferences::PREFIX) {
+            if *scope != Scope::Server {
+                return Err("Preferences are account-wide; use @global.".into());
+            }
+            if value != "@unset" {
+                super::preferences::validate(preference, value)?;
+            }
         }
         if value == "@unset" {
             return Ok(value.into());

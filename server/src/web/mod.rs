@@ -4,6 +4,7 @@ pub(crate) mod avatars;
 pub(crate) mod colors;
 mod error;
 mod metadata_commands;
+mod preferences;
 pub(crate) mod principal;
 mod profiles;
 mod query_commands;
@@ -276,6 +277,7 @@ pub fn router(app: App) -> Router {
         .route("/api/history", get(history::history))
         .route("/api/read", post(history::read))
         .route("/api/color", post(colors::set))
+        .route("/api/preferences", post(preferences::set))
         .route("/api/bot-commands", get(bot_commands::get))
         .route("/api/health", get(|| async { Json(json!({ "ok": true })) }))
         .route("/ws", get(socket::upgrade));

@@ -1,53 +1,37 @@
-import { useState } from "preact/hooks";
-import { useEvent } from "./useEvent.ts";
 import { useFonts } from "./useFonts.ts";
-import {
-  loadMarkdownHtml,
-  saveMarkdownHtml,
-} from "../features/preferences/security.ts";
+import { useAccountPreference } from "./useAccountPreference.ts";
 import {
   loadLatex,
+  loadNameColors,
   loadMessageBars,
   loadMessageBarOpacity,
-  loadNameColors,
   loadNameBorders,
-  saveLatex,
-  saveMessageBars,
-  saveMessageBarOpacity,
-  saveNameColors,
-  saveNameBorders,
 } from "../features/preferences/formatting.ts";
+import { loadMarkdownHtml } from "../features/preferences/security.ts";
 
-function usePreference<T>(load: () => T, save: (value: T) => void) {
-  const [value, setValue] = useState(load);
-  const change = useEvent((next: T) => {
-    setValue(next);
-    save(next);
-  });
-  return [value, change] as const;
+function useBoolean(key: string, load: () => boolean) {
+  const [value, set] = useAccountPreference(key, () => String(load()));
+  return [value === "true", (next: boolean) => set(String(next))] as const;
 }
 export function useChatPreferences() {
   const [fonts, setFonts] = useFonts();
-  const [latex, setLatex] = usePreference(loadLatex, saveLatex);
-  const [showNameColors, setShowNameColors] = usePreference(
+  const [latex, setLatex] = useBoolean("latex", loadLatex);
+  const [showNameColors, setShowNameColors] = useBoolean(
+    "name_colors",
     loadNameColors,
-    saveNameColors,
   );
-  const [messageBars, setMessageBars] = usePreference(
+  const [messageBars, setMessageBars] = useBoolean(
+    "message_bars",
     loadMessageBars,
-    saveMessageBars,
   );
-  const [messageBarOpacity, setMessageBarOpacity] = usePreference(
-    loadMessageBarOpacity,
-    saveMessageBarOpacity,
-  );
-  const [nameBorders, setNameBorders] = usePreference(
+  const [nameBorders, setNameBorders] = useBoolean(
+    "name_borders",
     loadNameBorders,
-    saveNameBorders,
   );
-  const [allowHtml, setAllowHtml] = usePreference(
-    loadMarkdownHtml,
-    saveMarkdownHtml,
+  const [allowHtml, setAllowHtml] = useBoolean("allow_html", loadMarkdownHtml);
+  const [opacity, setOpacity] = useAccountPreference(
+    "message_bar_opacity",
+    () => String(loadMessageBarOpacity()),
   );
   return {
     fonts,
@@ -58,8 +42,8 @@ export function useChatPreferences() {
     setShowNameColors,
     messageBars,
     setMessageBars,
-    messageBarOpacity,
-    setMessageBarOpacity,
+    messageBarOpacity: Number(opacity),
+    setMessageBarOpacity: (value: number) => setOpacity(String(value)),
     nameBorders,
     setNameBorders,
     allowHtml,

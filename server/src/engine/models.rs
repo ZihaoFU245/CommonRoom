@@ -111,6 +111,7 @@ pub struct SyncVersion {
 }
 #[derive(Clone, Serialize)]
 pub struct Snapshot {
+    pub preferences: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub color_version: String,
     pub sync: SyncVersion,

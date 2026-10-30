@@ -182,7 +182,7 @@ impl Engine {
             && self.data.users[user]
                 .metadata
                 .get(key)
-                .is_some_and(|entries| entries.len() >= 32 && !entries.contains_key(COLOR_KEY))
+                .is_some_and(|entries| super::preferences::metadata_full(entries, COLOR_KEY))
         {
             return Err("At most 32 metadata keys per scope.".into());
         }

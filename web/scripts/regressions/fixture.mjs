@@ -1,3 +1,14 @@
+import { AppearanceSettings } from "../../src/components/settings/AppearanceSettings.tsx";
+import {
+  connectPreferences,
+  disconnectPreferences,
+  receivePreferences,
+  preferenceValue,
+  flushPreferences,
+} from "../../src/features/preferences/account.ts";
+import { useChatPreferences } from "../../src/hooks/useChatPreferences.ts";
+import { useTheme } from "../../src/hooks/useTheme.ts";
+import { useExternalAvatars } from "../../src/hooks/useExternalAvatars.ts";
 import { h, render } from "preact";
 import { useHistory } from "../../src/hooks/useHistory.ts";
 import { useSettingsMotion } from "../../src/hooks/useSettingsMotion.ts";
@@ -1392,6 +1403,134 @@ for (const width of [1100, 360]) {
   });
 }
 
+await test("partial palette input stays local and cannot block other settings from syncing", async () => {
+  let state = { values: {}, sync: { instance: "preferences", revision: 0 } };
+  await connectPreferences("browser-palette-test", async (patch) => {
+    state = {
+      values: { ...state.values, ...patch },
+      sync: { instance: "preferences", revision: state.sync.revision + 1 },
+    };
+    return state;
+  });
+  function AppearanceProbe() {
+    const appearance = useTheme();
+    const { fonts, setFonts } = useChatPreferences();
+    return h(AppearanceSettings, {
+      ...appearance,
+      fonts,
+      onChange: setFonts,
+      onThemeChange: appearance.setTheme,
+      onSeedsChange: appearance.setSeeds,
+    });
+  }
+  try {
+    render(h(AppearanceProbe), tests);
+    tests.querySelector('[value="custom"]').click();
+    await until(() => tests.querySelector("#palette-base"));
+    const original = state.values["palette.base"];
+    const input = tests.querySelector("#palette-base");
+    input.focus();
+    input.value = "#12";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const font = tests.querySelector("#chat-font-size");
+    font.value = "22";
+    font.dispatchEvent(new Event("input", { bubbles: true }));
+    await until(() => tests.querySelector("#chat-font-size").value === "22");
+    await flushPreferences();
+    check(
+      state.values["palette.base"] === original,
+      "incomplete color never reaches cloud settings",
+    );
+    check(
+      state.values["font.chat"] === "22",
+      "incomplete color cannot reject unrelated font changes",
+    );
+    input.value = "#123abc";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPreferences();
+    check(state.values["palette.base"] === "#123abc", "valid full color syncs");
+    input.value = "#abc";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(30);
+    input.blur();
+    await flushPreferences();
+    check(
+      state.values["palette.base"] === "#aabbcc",
+      "short color expands before syncing on blur",
+    );
+  } finally {
+    render(null, tests);
+    disconnectPreferences();
+    applyAppearance("light", false, defaultSeeds);
+    document.documentElement.style.removeProperty("--chat-font-size");
+    document.documentElement.style.removeProperty("--ui-font-size");
+  }
+});
+
+await test("account preferences update rendered controls and appearance across devices", async () => {
+  let state = { values: {}, sync: { instance: "preferences", revision: 0 } };
+  await connectPreferences("browser-preferences-test", async (patch) => {
+    state = {
+      values: { ...state.values, ...patch },
+      sync: { instance: "preferences", revision: state.sync.revision + 1 },
+    };
+    return state;
+  });
+  const view = probe(() => ({
+    chat: useChatPreferences(),
+    appearance: useTheme(),
+    external: useExternalAvatars(),
+  }));
+  try {
+    view.update();
+    await sleep(80);
+    state = {
+      values: {
+        ...state.values,
+        theme: "dark",
+        "font.chat": "23",
+        name_colors: "true",
+        message_bars: "true",
+        allow_html: "true",
+        external_avatars: "true",
+      },
+      sync: { instance: "preferences", revision: state.sync.revision + 1 },
+    };
+    receivePreferences(state);
+    await until(
+      () =>
+        view.current.chat.fonts.chat === 23 &&
+        view.current.chat.showNameColors &&
+        view.current.chat.messageBars &&
+        view.current.chat.allowHtml &&
+        view.current.external[0] &&
+        view.current.appearance.theme === "dark",
+    );
+    await until(
+      () =>
+        document.documentElement.dataset.theme === "dark" &&
+        document.documentElement.style.getPropertyValue("--chat-font-size") ===
+          "23px",
+    );
+    view.current.chat.setMessageBars(false);
+    await flushPreferences();
+    check(
+      state.values.message_bars === "false",
+      "local control patches cloud settings",
+    );
+    check(
+      state.values.theme === "dark" && state.values.allow_html === "true",
+      "patch preserves settings received from the other device",
+    );
+  } finally {
+    view.close();
+    disconnectPreferences();
+    applyAppearance("light", false, defaultSeeds);
+    document.documentElement.style.removeProperty("--chat-font-size");
+    document.documentElement.style.removeProperty("--ui-font-size");
+  }
+});
+
 await test("chat colors update for newly disclosed live and paged authors and reset in place", async () => {
   const OriginalSocket = window.WebSocket;
   let socket;
@@ -1405,6 +1544,20 @@ await test("chat colors update for newly disclosed live and paged authors and re
     localStorage.getItem(key),
   );
   for (const key of preferenceKeys) localStorage.removeItem(key);
+  let preferenceState = {
+    values: {},
+    sync: { instance: "preferences", revision: 0 },
+  };
+  await connectPreferences("browser-color-test", async (patch) => {
+    preferenceState = {
+      values: { ...preferenceState.values, ...patch },
+      sync: {
+        instance: "preferences",
+        revision: preferenceState.sync.revision + 1,
+      },
+    };
+    return preferenceState;
+  });
   const requests = [];
   function wire(value, enabled) {
     const copy = structuredClone(value);
@@ -1709,8 +1862,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
         "opacity does not fade the reply quote bar",
       );
       check(
-        localStorage.getItem("commonroom-message-bar-opacity") ===
-          String(value),
+        preferenceValue("message_bar_opacity", "") === String(value),
         "opacity preference is saved",
       );
       check(
@@ -1863,6 +2015,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
     render(null, tests);
     window.WebSocket = OriginalSocket;
     applyAppearance("light", false, defaultSeeds);
+    disconnectPreferences();
     preferenceKeys.forEach((key, i) => {
       const value = savedPreferences[i];
       if (value === null) localStorage.removeItem(key);

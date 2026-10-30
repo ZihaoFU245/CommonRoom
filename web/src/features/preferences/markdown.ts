@@ -3,7 +3,7 @@ import type { Command } from "../../api/protocol.ts";
 export const markdownCommand: Command = {
   name: "/markdown",
   usage: "/markdown on|off",
-  description: "Format future messages with Markdown in this browser",
+  description: "Format future messages with Markdown",
   requirements: "",
   section: "General",
   admin: false,
@@ -37,7 +37,7 @@ export const markdownManual = `# /markdown
 - Scrolling may restart a preview, but its versioned frame shell is cached.
 - Links allow HTTP, HTTPS and mailto.
 
-- The /markdown sending preference stays in this browser.
+- The /markdown sending preference syncs across your devices.
 - Each sent message keeps its own format, including after refresh; /markdown on|off does not change earlier messages.`;
 const key = "commonroom.markdown";
 export function loadMarkdown(): boolean {

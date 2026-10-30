@@ -148,7 +148,8 @@ const USER: &str = r#"
 - `/user set bob color blue #support` sets an override; `/user reset bob color #support` restores root inheritance. Bulk color writes require authority for every target.
 - Other metadata writes, media limits and whole-scope resets remain su-only.
 - `/user reset bob media.max_size #support` removes one override and restores inheritance.
-- `/user reset bob @all #support` clears only that room branch; `@global` clears only the root.
+- `/user reset bob @all #support` clears only that room branch; `@global` clears root metadata while preserving user-owned preferences.
+- `preferences.*` keys are root-only and editable only through the signed-in user's own Settings. Su, sudo and console metadata commands cannot set or reset them.
 - `/user reset @all @all #support` resets every selected member's room branch.
 - Empty branches are pruned; unrelated scopes and credentials remain unchanged.
 - `/user reset bob password new-password` resets credentials using existing password-reset permissions.

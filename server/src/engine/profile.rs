@@ -62,7 +62,7 @@ impl Engine {
         let mut after = account.clone();
         let metadata = after.metadata.entry(scope.into()).or_default();
         if let Some(value) = value {
-            if metadata.len() >= 32 && !metadata.contains_key(key) {
+            if super::preferences::metadata_full(metadata, key) {
                 return Err("At most 32 metadata keys per scope.".into());
             }
             metadata.insert(key.into(), value.into());

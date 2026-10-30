@@ -299,6 +299,7 @@ impl Engine {
         let visible = self.visible_conversations(name, &scope_rights);
         let directory = self.snapshot_directory(name, &scope_rights);
         let snapshot = Snapshot {
+            preferences: self.preferences(name),
             color_version: String::new(),
             sync: SyncVersion {
                 instance: self.instance.clone(),

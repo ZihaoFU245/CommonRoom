@@ -191,7 +191,7 @@ and verify that previously stored blank messages remain readable and replyable.
 
 Rust tests cover configuration validation, proxy trust, verified client-IP login throttling and spoofed/malformed forwarding headers, account permissions and deletion, room membership, private visibility, password/session behavior, retained history, reactions/replies/mentions, schema rejection, restart/move persistence, and failed-write rollback.
 
-Web helper tests cover the shared request lifecycle (success, rejection, mismatched acknowledgements, send failure, disconnect and account promises), captured confirmations, private command routing, browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Composer tests cover clipboard images (first image wins, non-image pastes fall through, unnamed screenshots get a typed filename) and the attach availability rule shared by the picker and pasted images. Markdown tests cover browser-local HTML opt-in persistence, mixed HTML/Markdown, literal code, malformed markup and blocking active content, arbitrary attributes, unsafe links and images. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
+Web helper tests cover the shared request lifecycle (success, rejection, mismatched acknowledgements, send failure, disconnect and account promises), captured confirmations, private command routing, browser-local aliases, local command ordering, redaction, suggestions, Unicode mentions, notifications, browser timezones and daylight saving, fonts/storage failures, unread visibility, retention, and resynchronization races. Composer tests cover clipboard images (first image wins, non-image pastes fall through, unnamed screenshots get a typed filename) and the attach availability rule shared by the picker and pasted images. Markdown tests cover legacy HTML preference import, mixed HTML/Markdown, literal code, malformed markup and blocking active content, arbitrary attributes, unsafe links and images. Protocol/client tests exercise malformed nested JSON, frame variants, base-path URLs, credentials, abort signals, and API errors.
 
 Build tests verify that both modes skip checks and that release packaging
 contains the `dist/` directory with its files. Rust tests also verify that a poisoned engine
@@ -919,6 +919,21 @@ recovery. Bot credential API tests assert committed notifications. The real sock
 harness checks hidden room creation, grants, revocation and regrant while an unrelated
 viewer receives no baseline.
 
+## Account preference synchronization
+
+`web/preferences_tests.rs` verifies per-key initialization, simultaneous logins,
+patch preservation, unsetting/reseeding, own-account authorization, private snapshot
+projection and notice audiences, rejected writes, rollback, restart persistence,
+the separate metadata allowance, and rejection of privileged preference writes.
+Whole-root resets must preserve preferences; users retain self-service unset access.
+A real WebSocket test requires both connected
+devices to receive initialization and later patches without logging in again.
+`accountPreferences.test.js` exercises legacy imports, subsequent-device pulls,
+stale response rejection, concurrent local/remote changes, failed-write retry,
+account isolation, and unavailable browser storage. Browser regressions verify
+that remote settings update mounted controls, font CSS and appearance, and that
+partial palette drafts cannot block unrelated preference saves.
+
 ## Name color synchronization
 
 Profile-budget HTTP tests require invalid palette, missing room, denied permission
@@ -944,7 +959,7 @@ of display projections from saved room settings, metadata changes without messag
 revision changes, and stale in-flight history responses after a color reset.
 
 Name colors, author borders and message side bars default off independently and
-persist only explicit opt-ins. Browser regressions verify the original reply quote
+sync their boolean preferences across devices. Browser regressions verify the original reply quote
 bar remains when add-ons are off, Preferences loads the color picker only after
 enabling display, socket/history color requests opt in explicitly, and disabling
 display stops color requests. HTTP/live baseline tests cover default omission and

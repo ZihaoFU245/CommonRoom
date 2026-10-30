@@ -87,6 +87,7 @@ export interface Access {
   commands: Command[];
 }
 export interface Snapshot {
+  preferences?: Record<string, string>;
   color_version?: string;
   /** Client-only supplemental history colors; snapshots do not send this field. */
   name_colors?: MessageColors | undefined;
@@ -321,6 +322,7 @@ const messageColors = (v: unknown): v is MessageColors =>
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
   v.kind === "snapshot" &&
+  (v.preferences === undefined || colorMap(v.preferences)) &&
   snapshotBudget(v) &&
   (v.color_version === undefined || typeof v.color_version === "string") &&
   (v.name_colors === undefined || messageColors(v.name_colors)) &&

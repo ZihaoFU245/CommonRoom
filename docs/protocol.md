@@ -10,6 +10,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
+| `POST /api/preferences` | `{values:{key:string|null},initialize?:boolean}` | `{values,sync}`; validated own-account settings; initialization fills only absent keys, normal updates patch/unset; private metadata notice after commit |
 | `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
 | `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
@@ -131,7 +132,7 @@ the viewer, its visible members and names disclosed by its included messages.
 Clients resolve a name as room override, then global color, then the default ink color.
 Private conversations use global colors only. Older servers may omit either map.
 
-Name color display is a browser-local opt-in, off by default. HTTP clients request
+Name color display is an account preference, off by default. HTTP clients request
 color projections with `X-Chat-Name-Colors: 1` on `/api/me` and `/api/history`;
 browser sockets opt in with `/ws?colors=1`. Without this opt-in, snapshots omit
 `colors`/`color_version` and room color maps, and conversation/history responses
@@ -383,7 +384,9 @@ request. Su/authorized sudo bypass command/action and cleanup-limit checks;
 ordinary execution and previews use the same per-target metadata resolution.
 
 `/user reset who key|@all [scope]` removes explicit metadata overrides in one
-selected scope, atomically across bulk targets. It does not change credentials.
+selected scope, atomically across bulk targets. Whole-root resets preserve
+`preferences.*`; explicit preference set/reset commands are rejected even for su
+and the console. It does not change credentials.
 `/user reset who password new-password` is the explicit password-reset form,
 using the existing asynchronous hashing, authority recheck and session revocation.
 
@@ -393,7 +396,7 @@ Snapshots include `avatars`, a username-to-image-URL map for visible identities.
 Older servers may omit it. Only the global `avatar` metadata key is projected;
 other metadata remains private. External URLs require HTTPS, no credentials or
 controls, and at most 2048 bytes. Clients load external URLs only after the viewer
-enables Load external avatars in Security (browser-local, default off), with no
+enables Load external avatars in Security (synced account preference, default off), with no
 referrer. External bytes and pixels are not bounded by the server; opting in
 permits requests to external hosts. Missing/failed images reserve no layout space;
 a previously loaded frame stays visible while a replacement loads.
@@ -488,3 +491,27 @@ command catalogue invalidations remain pending across recovery. Revoked/expired
 credentials still close the connection; failed command admission returns a
 correlated error so the client can retry. Connection, header and HTTP response
 limits are documented in [Deployment](deployment.md#http-resource-limits).
+
+## Account preference synchronization
+
+Browser snapshots include `preferences`, a string map of the viewer's explicit
+`@global` `preferences.*` metadata, with the prefix removed. Empty maps are valid;
+older servers may omit the field. Preference keys and value ranges are listed in
+[Data](data.md#user-preferences). The dedicated POST rejects unknown fields, keys,
+invalid values and attempts to choose another account or scope. Preferences are
+root-only and writable only through the authenticated account's self-service API;
+su, sudo and console metadata commands cannot override or explicitly reset them.
+Whole-root metadata resets preserve preferences. Origin and browser-session
+checks apply. `null` removes a key; with `initialize:true`, existing values are
+preserved and null entries leave missing keys unset.
+
+Login imports local settings with `initialize:true` before mounting account
+controls, then reloads the authoritative snapshot with the chosen name-color
+projection. Per-key updates are coalesced, serialized and published only after
+commit. The same-account metadata audience triggers updated snapshots on all
+connected devices. Responses carry the ordinary snapshot `sync` stamp so a late
+HTTP response cannot replace newer settings from a socket baseline. Failed writes
+remain pending for retry with visible feedback; optimistic values do not overwrite
+unrelated settings received from another device. Logout clears the active settings
+session and ignores its late responses. Browser notification permission is never
+requested by a remote settings update and never written back as an account choice.

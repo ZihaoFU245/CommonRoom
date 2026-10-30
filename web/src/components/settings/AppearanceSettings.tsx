@@ -1,4 +1,5 @@
 import type { SettingsProps } from "./types.ts";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { defaultSeeds, parseHex } from "../../features/preferences/palette.ts";
 import {
   defaultFonts,
@@ -24,7 +25,20 @@ function SeedField({
   value: string;
   onChange: (value: string) => void;
 }) {
-  const parsed = parseHex(value);
+  const [draft, setDraft] = useState(value);
+  const submitted = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (submitted.current !== value) setDraft(value);
+    submitted.current = undefined;
+  }, [value]);
+  const parsed = parseHex(draft);
+  function commit(input: string) {
+    const color = parseHex(input);
+    if (color !== null) {
+      submitted.current = color;
+      onChange(color);
+    }
+  }
   return (
     <div class="palette-seed">
       <label for={id}>{label}</label>
@@ -33,7 +47,10 @@ function SeedField({
         type="color"
         aria-label={`${label} color picker`}
         value={parsed ?? defaultSeeds.base}
-        onInput={(event) => onChange(event.currentTarget.value)}
+        onInput={(event) => {
+          setDraft(event.currentTarget.value);
+          commit(event.currentTarget.value);
+        }}
       />
       <input
         id={id}
@@ -42,9 +59,14 @@ function SeedField({
         spellcheck={false}
         autoComplete="off"
         maxLength={7}
-        value={value}
+        value={draft}
         aria-invalid={parsed === null}
-        onInput={(event) => onChange(event.currentTarget.value)}
+        onInput={(event) => {
+          const input = event.currentTarget.value;
+          setDraft(input);
+          if (/^#?[a-f\d]{6}$/iu.test(input)) commit(input);
+        }}
+        onBlur={(event) => commit(event.currentTarget.value)}
       />
     </div>
   );

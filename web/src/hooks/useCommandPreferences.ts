@@ -1,8 +1,7 @@
+import { useAccountPreference } from "./useAccountPreference.ts";
 import { useState } from "preact/hooks";
 import {
   loadMarkdown,
-  setMarkdown,
-  saveMarkdown,
   markdownManual,
 } from "../features/preferences/markdown.ts";
 import {
@@ -15,9 +14,12 @@ import {
 export function useCommandPreferences(
   append: (command: string, result: string, error?: boolean) => string,
 ) {
-  const [markdown, updateMarkdown] = useState(loadMarkdown);
+  const [markdownValue, updateMarkdown] = useAccountPreference("markdown", () =>
+    String(loadMarkdown()),
+  );
+  const markdown = markdownValue === "true";
   function changeMarkdown(enabled: boolean) {
-    updateMarkdown(saveMarkdown(enabled));
+    updateMarkdown(String(enabled));
   }
   const [aliases, setAliases] = useState(loadAliases);
   function saveAliasMapping(name: string, target: string) {
@@ -40,8 +42,11 @@ export function useCommandPreferences(
     }
     if (text.split(/\s+/u)[0] === "/markdown") {
       try {
-        const enabled = setMarkdown(text.replace(/\s+/gu, " "));
-        updateMarkdown(enabled);
+        const normalized = text.replace(/\s+/gu, " ");
+        if (!/^\/markdown (on|off)$/u.test(normalized))
+          throw new Error("Usage: /markdown on|off");
+        const enabled = normalized === "/markdown on";
+        updateMarkdown(String(enabled));
         append(text, `Markdown ${enabled ? "on" : "off"} for future messages.`);
       } catch (error: unknown) {
         append(

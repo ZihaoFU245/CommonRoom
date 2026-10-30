@@ -1,3 +1,4 @@
+import { usePreferenceSync } from "../hooks/usePreferenceSync.ts";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
 import { useCommands } from "../hooks/useCommands.ts";
@@ -189,6 +190,7 @@ export function Chat({
     },
     showNameColors,
   );
+  const preferenceSyncError = usePreferenceSync(state);
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
     () =>
@@ -573,6 +575,7 @@ export function Chat({
             status={status}
           />
           <div class="history-notices" ref={historyNotices}>
+            {preferenceSyncError && <p role="status">{preferenceSyncError}</p>}
             {(showJumpToUnread || showJumpToBottom) && (
               <div class="unread-bar" key={selected}>
                 <button

@@ -1,3 +1,4 @@
+import { disconnectPreferences } from "./features/preferences/account.ts";
 import { loadInitialAccount } from "./api/bootstrap.ts";
 import mediaWorkerUrl from "virtual:media-worker-url";
 import { render } from "preact";
@@ -50,7 +51,10 @@ function App() {
   return account ? (
     <Chat
       initial={account}
-      onLogout={() => setAccount(null)}
+      onLogout={() => {
+        disconnectPreferences();
+        setAccount(null);
+      }}
       appearance={appearance}
     />
   ) : (
