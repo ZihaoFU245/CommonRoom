@@ -1,3 +1,4 @@
+import { DisplayName } from "./DisplayName.tsx";
 import { OnlineUsers } from "./OnlineUsers.tsx";
 export function ChatHeader({
   consoleView,
@@ -21,11 +22,17 @@ export function ChatHeader({
       <div class="room-title">
         <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
         <h1>
-          {consoleView
-            ? "Command"
-            : direct
-              ? peer || "Private messages"
-              : selected}
+          {consoleView ? (
+            "Command"
+          ) : direct ? (
+            peer ? (
+              <DisplayName name={peer} />
+            ) : (
+              "Private messages"
+            )
+          ) : (
+            selected
+          )}
         </h1>
       </div>
       <div class="header-actions">

@@ -1,3 +1,5 @@
+import { resolveDisplayNames } from "../features/preferences/displayNames.ts";
+import { DisplayNamesContext } from "./DisplayName.tsx";
 import { usePreferenceSync } from "../hooks/usePreferenceSync.ts";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
@@ -289,6 +291,7 @@ export function Chat({
     historyReady,
     renderLedger,
     nameColors,
+    messageDisplayNames,
     messages,
     historyError,
     lookahead,
@@ -309,6 +312,25 @@ export function Chat({
     virtualTimeline,
     atBottom,
     showNameColors,
+  );
+  const viewDisplayNames = useMemo(
+    () =>
+      resolveDisplayNames(
+        { ...state.display_names, ...room?.display_names },
+        state.display_name_version,
+        messageDisplayNames,
+        room?.message_display_names ??
+          (direct ? state.message_display_names : undefined),
+      ),
+    [
+      state.display_names,
+      room?.display_names,
+      state.display_name_version,
+      messageDisplayNames,
+      room?.message_display_names,
+      direct,
+      state.message_display_names,
+    ],
   );
   const viewColors = showNameColors
     ? resolvedColors(
@@ -564,107 +586,113 @@ export function Chat({
             }}
           />
         )}
-        <main class="conversation">
-          <ChatHeader
-            consoleView={consoleView}
-            direct={direct}
-            peer={peer}
-            selected={selected}
-            online={state.online}
-            username={state.username}
-            status={status}
-          />
-          <div class="history-notices" ref={historyNotices}>
-            {preferenceSyncError && <p role="status">{preferenceSyncError}</p>}
-            {(showJumpToUnread || showJumpToBottom) && (
-              <div class="unread-bar" key={selected}>
-                <button
-                  onClick={showJumpToUnread ? jumpToUnread : jumpToBottom}
-                >
-                  {showJumpToUnread ? "Jump to unread ↓" : "Jump to bottom ↓"}
-                </button>
+        <DisplayNamesContext.Provider value={viewDisplayNames}>
+          <main class="conversation">
+            <ChatHeader
+              consoleView={consoleView}
+              direct={direct}
+              peer={peer}
+              selected={selected}
+              online={state.online}
+              username={state.username}
+              status={status}
+            />
+            <div class="history-notices" ref={historyNotices}>
+              {preferenceSyncError && (
+                <p role="status">{preferenceSyncError}</p>
+              )}
+              {(showJumpToUnread || showJumpToBottom) && (
+                <div class="unread-bar" key={selected}>
+                  <button
+                    onClick={showJumpToUnread ? jumpToUnread : jumpToBottom}
+                  >
+                    {showJumpToUnread ? "Jump to unread ↓" : "Jump to bottom ↓"}
+                  </button>
+                </div>
+              )}
+            </div>
+            {historyError && (
+              <div class="history-error" role="alert">
+                {historyError}
+                <button onClick={() => retryHistory()}>Retry history</button>
               </div>
             )}
-          </div>
-          {historyError && (
-            <div class="history-error" role="alert">
-              {historyError}
-              <button onClick={() => retryHistory()}>Retry history</button>
-            </div>
-          )}
-          <MessageList
-            messageBars={messageBars}
-            avatars={state.avatars}
-            motionScope={
-              state.private_access[selected]?.id ??
-              state.rooms.find((room) => room.name === selected)?.id ??
-              selected
-            }
-            revision={unread?.revision ?? 0}
-            historyReady={historyReady}
-            atBottom={atBottom}
-            debug={commands.debug}
-            allowHtml={allowHtml}
-            latex={latex}
-            permissions={commands.permissions}
-            commands={commands.serverCommands}
-            entries={entries}
-            username={state.username}
-            pending={pending}
-            unreadBoundary={unreadBoundary}
-            onReact={handleReact}
-            onEdit={handleEdit}
-            onReply={handleReply}
-            onDelete={handleDelete}
-            loadSequence={handleLoadSequence}
-            virtualTimeline={virtualTimeline}
-            historyElement={historyElement}
-            end={end}
-            onScroll={handleScroll}
-          />
-          <BotProgress
-            activities={botActivities.filter(
-              (item) =>
-                item.conversation_id ===
-                (room?.id ?? state.private_access[selected]?.id),
-            )}
-          />
-          <OutgoingPane
-            items={commands.outgoing}
-            selected={selected}
-            draft={commands.draft}
-            restore={commands.restoreOutgoing}
-          />
-          <Composer
-            mediaUpload={commands.mediaUpload}
-            canWrite={commands.permissions.includes("w:message.create")}
-            minimumComposerHeight={minimumComposerHeight}
-            actualComposerHeight={actualComposerHeight}
-            hints={hints}
-            activeHint={activeHint}
-            replyTarget={replyTarget}
-            input={input}
-            consoleView={consoleView}
-            draft={draft}
-            pending={pending}
-            startResize={startResize}
-            moveResize={moveResize}
-            endResize={endResize}
-            resizeComposer={resizeComposer}
-            acceptHint={acceptHint}
-            cancelReply={() => setReplyTarget(null)}
-            send={send}
-            edit={edit}
-            keydown={keydown}
-            selectCaret={selectCaret}
-          />
-        </main>
+            <MessageList
+              messageBars={messageBars}
+              avatars={state.avatars}
+              motionScope={
+                state.private_access[selected]?.id ??
+                state.rooms.find((room) => room.name === selected)?.id ??
+                selected
+              }
+              revision={unread?.revision ?? 0}
+              historyReady={historyReady}
+              atBottom={atBottom}
+              debug={commands.debug}
+              allowHtml={allowHtml}
+              latex={latex}
+              permissions={commands.permissions}
+              commands={commands.serverCommands}
+              entries={entries}
+              username={state.username}
+              pending={pending}
+              unreadBoundary={unreadBoundary}
+              onReact={handleReact}
+              onEdit={handleEdit}
+              onReply={handleReply}
+              onDelete={handleDelete}
+              loadSequence={handleLoadSequence}
+              virtualTimeline={virtualTimeline}
+              historyElement={historyElement}
+              end={end}
+              onScroll={handleScroll}
+            />
+            <BotProgress
+              activities={botActivities.filter(
+                (item) =>
+                  item.conversation_id ===
+                  (room?.id ?? state.private_access[selected]?.id),
+              )}
+            />
+            <OutgoingPane
+              items={commands.outgoing}
+              selected={selected}
+              draft={commands.draft}
+              restore={commands.restoreOutgoing}
+            />
+            <Composer
+              mediaUpload={commands.mediaUpload}
+              canWrite={commands.permissions.includes("w:message.create")}
+              minimumComposerHeight={minimumComposerHeight}
+              actualComposerHeight={actualComposerHeight}
+              hints={hints}
+              activeHint={activeHint}
+              replyTarget={replyTarget}
+              input={input}
+              consoleView={consoleView}
+              draft={draft}
+              pending={pending}
+              startResize={startResize}
+              moveResize={moveResize}
+              endResize={endResize}
+              resizeComposer={resizeComposer}
+              acceptHint={acceptHint}
+              cancelReply={() => setReplyTarget(null)}
+              send={send}
+              edit={edit}
+              keydown={keydown}
+              selectCaret={selectCaret}
+            />
+          </main>
+        </DisplayNamesContext.Provider>
       </div>
     </div>
   );
   return (
     <NameColorContext.Provider value={colors.current}>
-      {view}
+      <DisplayNamesContext.Provider value={state.display_names ?? {}}>
+        {view}
+      </DisplayNamesContext.Provider>
     </NameColorContext.Provider>
   );
 }

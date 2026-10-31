@@ -18,7 +18,7 @@ const hooks = registerHooks({
         format: "module",
         shortCircuit: true,
         source:
-          "export const useRef=(value)=>({current:value});export const useEffect=()=>{};",
+          "export const useRef=(value)=>({current:value});export const useEffect=()=>{};export const useContext=()=>({});",
       };
     if (url === "test:composition-guard")
       return {
@@ -26,7 +26,7 @@ const hooks = registerHooks({
         shortCircuit: true,
         source: "export const useCompositionGuard=()=>({});",
       };
-    if (url.endsWith("/components/Composer.tsx"))
+    if (url.endsWith(".tsx"))
       return {
         format: "module",
         shortCircuit: true,

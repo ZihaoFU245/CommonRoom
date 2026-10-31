@@ -69,6 +69,7 @@ pub struct Session {
 }
 #[derive(Clone, Serialize)]
 pub struct RoomView {
+    pub display_names: BTreeMap<String, String>,
     pub id: String,
     pub owner: String,
     pub permissions: Vec<String>,
@@ -91,6 +92,8 @@ pub struct Unread {
 #[derive(Serialize)]
 pub struct History {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_display_names: Option<super::display_names::MessageDisplayNames>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name_colors: Option<super::colors::MessageColors>,
     pub view: String,
     pub messages: super::history::MessagePage,
@@ -111,6 +114,8 @@ pub struct SyncVersion {
 }
 #[derive(Clone, Serialize)]
 pub struct Snapshot {
+    pub display_name_version: String,
+    pub display_names: BTreeMap<String, String>,
     pub preferences: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub color_version: String,

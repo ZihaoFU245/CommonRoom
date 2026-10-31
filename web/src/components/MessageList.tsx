@@ -1,3 +1,4 @@
+import { DisplayName } from "./DisplayName.tsx";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useHtmlGates } from "../hooks/useHtmlGates.ts";
 import { useReplyJump } from "../hooks/useReplyJump.ts";
@@ -237,7 +238,8 @@ export const MessageList = memo(function MessageList({
         >
           {announcements.map((message) => (
             <p key={message.id}>
-              {message.from}: {Array.from(message.text).slice(0, 2000).join("")}
+              <DisplayName name={message.from} />:{" "}
+              {Array.from(message.text).slice(0, 2000).join("")}
             </p>
           ))}
         </div>

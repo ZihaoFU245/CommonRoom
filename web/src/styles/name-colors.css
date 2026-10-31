@@ -113,6 +113,36 @@
 .name-scope-option[aria-selected="true"] > svg {
   visibility: visible;
 }
+/* AutoAnimate retains exiting popups at a fixed size; their contents must not
+   create transient scrollbars while that size and transform settle. */
+[data-name-popup][inert] {
+  overflow: hidden;
+}
+.account-displayname-field .name-color-control {
+  width: 42%;
+  flex-shrink: 0;
+}
+.account-displayname-field .name-color-toggle {
+  padding: 9px;
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--ink);
+}
+.account-displayname-field .name-scope-option {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+}
+.account-displayname-field .name-scope-option:hover,
+.account-displayname-field .name-scope-option:focus,
+.account-displayname-field .name-scope-option[aria-selected="true"] {
+  background: var(--wash);
+}
+.account-displayname-field button:focus:not(:focus-visible),
+.account-displayname-field .name-scope-option:focus {
+  outline: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .name-color-chevron {
     transition: none;

@@ -198,7 +198,8 @@ impl ReadModel {
                     .map(|(name, url)| (name.len() + url.len()) * 2 + 128)
                     .sum::<usize>(),
             )
-            .saturating_add(plan.colors.bytes());
+            .saturating_add(plan.colors.bytes())
+            .saturating_add(plan.display_names.bytes());
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(
                 (id, false),

@@ -350,6 +350,10 @@ Account metadata uses a two-level override tree implemented with ordered maps:
 prefers a room entry, then its global entry, then a known media configuration
 default. Cleanup limits instead fall back to live admin/owner/user role defaults.
 Only explicit values are stored. `media.user_quota` is root-only.
+`engine/display_names.rs` owns optional global/room display names, self-service
+validation and the public name projections. Usernames remain protocol identities;
+browser display-name contexts render labels with username tooltips. Paged and live
+message profiles carry versioned names for already-disclosed authors.
 Reserved `preferences.*` keys are global-only, validated against a fixed key set,
 and separate from the 32-key allowance for other metadata. Login atomically fills
 missing preference keys from that device; existing server values win. The

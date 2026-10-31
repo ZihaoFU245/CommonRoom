@@ -194,7 +194,18 @@ impl Engine {
                 let scope =
                     self.object_scope(context.actor, context.view, rest.first().copied())?;
                 self.require_target_command(context.actor, &scope, "/user")?;
-                Ok(self.scope_users(context.actor, &scope)?.join("\n"))
+                Ok(self
+                    .scope_users(context.actor, &scope)?
+                    .iter()
+                    .map(|name| {
+                        format!(
+                            "{name}({})",
+                            self.metadata_value(name, &scope, "displayname")
+                                .unwrap_or(name)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
             }
             ["/user", "get", who, rest @ ..] if rest.len() <= 2 => {
                 let (key, scope) = match rest {
@@ -422,7 +433,9 @@ impl Engine {
             ));
         }
         if let ["/user", "set", who, key, value, rest @ ..] = context.parts {
-            if *key != super::colors::COLOR_KEY && !self.is_su(context.actor) {
+            if !matches!(*key, super::colors::COLOR_KEY | "displayname")
+                && !self.is_su(context.actor)
+            {
                 return Err(EngineError::Forbidden(
                     "Only su can change user metadata.".into(),
                 ));
@@ -450,6 +463,8 @@ impl Engine {
             for name in &targets {
                 if *key == super::colors::COLOR_KEY {
                     self.color_metadata_access(context.actor, name, &scope)?;
+                } else if *key == "displayname" {
+                    self.display_name_access(context.actor, name, &scope)?;
                 } else {
                     self.metadata_access(context.actor, name, &scope, true)?;
                 }
@@ -484,7 +499,9 @@ impl Engine {
             }));
         }
         if let ["/user", "reset", who, key, rest @ ..] = context.parts {
-            if *key != super::colors::COLOR_KEY && !self.is_su(context.actor) {
+            if !matches!(*key, super::colors::COLOR_KEY | "displayname")
+                && !self.is_su(context.actor)
+            {
                 return Err(EngineError::Forbidden(
                     "Only su can change user metadata.".into(),
                 ));
@@ -514,6 +531,8 @@ impl Engine {
             for name in &targets {
                 if *key == super::colors::COLOR_KEY {
                     self.color_metadata_access(context.actor, name, &scope)?;
+                } else if *key == "displayname" {
+                    self.display_name_access(context.actor, name, &scope)?;
                 } else {
                     self.metadata_access(context.actor, name, &scope, true)?;
                 }
@@ -596,6 +615,14 @@ impl Engine {
             && !["media.max_size", "media.max_age", "media.user_quota"].contains(&key)
         {
             return Err("Unknown media metadata key.".into());
+        }
+        if key == "displayname" {
+            if matches!(scope, Scope::Private(_)) {
+                return Err("Display names apply at @global or in a room.".into());
+            }
+            if value != "@unset" {
+                self.validate_display_name(value)?;
+            }
         }
         if key == "media.user_quota" && *scope != Scope::Server {
             return Err("media.user_quota is account-wide; use @global.".into());

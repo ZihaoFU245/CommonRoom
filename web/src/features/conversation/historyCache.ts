@@ -1,3 +1,4 @@
+import { mergeDisplayNames } from "../preferences/displayNames.ts";
 import { mergeMessageColors } from "../preferences/nameColors.ts";
 import type {
   History,
@@ -66,9 +67,15 @@ export class HistoryCache {
     const previous = this.entries.get(page.view);
     const size =
       previous?.page.messages === page.messages &&
-      previous.page.name_colors === page.name_colors
+      previous.page.name_colors === page.name_colors &&
+      previous.page.message_display_names === page.message_display_names
         ? previous.bytes
         : bytes(page.messages) +
+          Object.entries(page.message_display_names?.values ?? {}).reduce(
+            (total, [name, value]) =>
+              total + 128 + 2 * (name.length + (value?.length ?? 0)),
+            0,
+          ) +
           Object.entries(page.name_colors?.values ?? {}).reduce(
             (total, [name, color]) =>
               total + 128 + 2 * (name.length + (color?.length ?? 0)),
@@ -158,6 +165,11 @@ export function mergePage(
   return {
     ...current,
     messages,
+    message_display_names: mergeDisplayNames(
+      current.message_display_names,
+      page.message_display_names,
+      messages,
+    ),
     name_colors: mergeMessageColors(
       current.name_colors,
       page.name_colors,
@@ -222,6 +234,11 @@ export function boundSnapshot(
     .sort((a, b) => a.sequence - b.sequence);
   return {
     ...snapshot,
+    message_display_names: mergeDisplayNames(
+      undefined,
+      snapshot.message_display_names,
+      directMessages,
+    ),
     name_colors: mergeMessageColors(
       undefined,
       snapshot.name_colors,
@@ -234,6 +251,11 @@ export function boundSnapshot(
         : {
             ...room,
             messages,
+            message_display_names: mergeDisplayNames(
+              undefined,
+              room.message_display_names,
+              messages,
+            ),
             name_colors: mergeMessageColors(
               undefined,
               room.name_colors,
@@ -252,6 +274,8 @@ export function applyConversation(
     messages: Message[];
     unread: Snapshot["unread"][string];
     name_colors?: MessageColors | undefined;
+    message_display_names?:
+      import("../../api/protocol.ts").MessageDisplayNames | undefined;
   },
 ): Snapshot | null {
   const room = previous.rooms.find(
@@ -267,6 +291,13 @@ export function applyConversation(
   return boundSnapshot(
     {
       ...previous,
+      message_display_names: direct
+        ? mergeDisplayNames(
+            previous.message_display_names,
+            update.message_display_names,
+            [...previous.direct, ...update.messages],
+          )
+        : previous.message_display_names,
       name_colors: direct
         ? mergeMessageColors(previous.name_colors, update.name_colors, [
             ...previous.direct,
@@ -279,6 +310,7 @@ export function applyConversation(
               ? {
                   ...item,
                   messages: update.messages,
+                  message_display_names: update.message_display_names,
                   name_colors: update.name_colors,
                 }
               : item,

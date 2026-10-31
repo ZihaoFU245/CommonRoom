@@ -1,3 +1,4 @@
+import { DisplayName } from "./DisplayName.tsx";
 import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
@@ -155,7 +156,9 @@ export function Composer({
       {replyTarget && (
         <div class="reply-composer">
           <div>
-            <strong>Reply to {replyTarget.from}</strong>
+            <strong>
+              Reply to <DisplayName name={replyTarget.from} />
+            </strong>
             <p dir="auto">
               {Array.from(replyTarget.text).slice(0, 160).join("")}
             </p>

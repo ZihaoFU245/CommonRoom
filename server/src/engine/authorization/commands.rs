@@ -290,6 +290,13 @@ impl Engine {
                 {
                     return Err("Color grants require a room scope.".into());
                 }
+                if matches!(
+                    parts[3],
+                    "w:account.displayname.own" | "w:account.displayname.any"
+                ) && !matches!(scope, Scope::Room(_))
+                {
+                    return Err("Display name grants require a room scope.".into());
+                }
                 if !matches!(scope, Scope::Room(_)) && !self.is_su(actor) {
                     return Err(EngineError::Forbidden(
                         "Only su can change @global, account or private grants.".into(),
@@ -298,7 +305,10 @@ impl Engine {
                 if !self.is_su(actor) {
                     let mut own = self.effective(actor, &scope);
                     let mut ceiling = member_rights();
-                    ceiling.add(rights(&[Action::ColorOwn], &[]));
+                    ceiling.add(rights(&[Action::ColorOwn, Action::DisplayNameOwn], &[]));
+                    if own.has(Action::DisplayNameAny) {
+                        own.add(rights(&[Action::DisplayNameOwn], &[]));
+                    }
                     if own.has(Action::ColorAny) {
                         own.add(rights(&[Action::ColorOwn], &[]));
                     }

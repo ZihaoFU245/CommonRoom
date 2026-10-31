@@ -392,7 +392,7 @@ impl Engine {
         }
         Ok(())
     }
-    /// Seed the revocable own-color capability only on first admission, never
+    /// Seed the revocable own-profile capabilities only on first admission, never
     /// when reassigning a group or adding an already-present member.
     pub(in crate::engine) fn add_member_color_grant(&mut self, id: String, scope: Scope) {
         if !matches!(scope, Scope::Room(_)) {
@@ -402,7 +402,11 @@ impl Engine {
             owner: false,
             subject: Subject::Account(id),
             scope,
-            permissions: [Action::ColorOwn.name().to_owned()].into(),
+            permissions: [
+                Action::ColorOwn.name().to_owned(),
+                Action::DisplayNameOwn.name().to_owned(),
+            ]
+            .into(),
         });
         self.metadata_dirty = true;
     }
@@ -411,6 +415,7 @@ impl Engine {
         let rights = manager_rights();
         let mut permissions: BTreeSet<_> = rights.names().into_iter().collect();
         permissions.insert(Action::ColorAny.name().to_owned());
+        permissions.insert(Action::DisplayNameAny.name().to_owned());
         permissions.extend(
             COMMANDS
                 .iter()

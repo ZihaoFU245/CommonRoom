@@ -154,6 +154,15 @@ impl MetadataNotice {
             }
             // Generic su metadata edits may affect historical-author profiles.
             // The public avatar API emits its narrower profile event instead.
+            fn display_names(account: &Account) -> Vec<(&String, &String)> {
+                account
+                    .metadata
+                    .iter()
+                    .filter_map(|(scope, entries)| Some((scope, entries.get("displayname")?)))
+                    .collect()
+            }
+            notice.all |= previous.map(display_names).unwrap_or_default()
+                != current.map(display_names).unwrap_or_default();
             notice.all |= previous.and_then(avatar) != current.and_then(avatar)
                 || previous.map(colors).unwrap_or_default()
                     != current.map(colors).unwrap_or_default();

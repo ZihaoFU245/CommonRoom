@@ -337,7 +337,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
 pub fn requirements(command: &str) -> &'static str {
     match command {
         "/user" => {
-            "Account/member listing, account lifecycle or metadata permissions on the target; color writes follow root ownership or room color.own/any grants; other metadata writes are su-only; metadata values never grant access"
+            "Account/member listing, account lifecycle or metadata permissions on the target; color/displayname writes follow root ownership or their room own/any grants; other metadata writes are su-only; metadata values never grant access"
         }
         "/room" => "Room discovery, creation or management permissions on the target room",
         "/sudo" => "x:command.sudo and /sudo at @global; temporary superuser authority",

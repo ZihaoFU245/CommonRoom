@@ -84,6 +84,7 @@ impl Engine {
             .history_store()
             .page_checked(&id, revision, range, view)
             .map_err(EngineError::from)?;
+        page.message_display_names = Some(self.message_display_names(&id, &page.messages));
         if colors {
             page.name_colors = Some(self.message_colors(&id, &page.messages));
         }
@@ -230,6 +231,8 @@ impl Engine {
         };
         Ok(Some(super::snapshot::ConversationPlan {
             user: user.into(),
+            display_names: self.display_name_directory(),
+            display_name_version: self.display_name_version(),
             colors: if name_colors {
                 self.conversation_color_directory(&id)
             } else {
@@ -278,6 +281,7 @@ impl Engine {
     ) -> Option<super::snapshot::SnapshotPlan> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         if let Some(mut plan) = self.read_model.browser(&account.id) {
+            plan.snapshot.display_name_version = self.display_name_version();
             for job in &mut plan.jobs {
                 (job.revision, job.read) = self.conversation_position(name, &job.id)?;
             }
@@ -299,6 +303,8 @@ impl Engine {
         let visible = self.visible_conversations(name, &scope_rights);
         let directory = self.snapshot_directory(name, &scope_rights);
         let snapshot = Snapshot {
+            display_name_version: self.display_name_version(),
+            display_names: BTreeMap::new(),
             preferences: self.preferences(name),
             color_version: String::new(),
             sync: SyncVersion {
@@ -348,6 +354,7 @@ impl Engine {
             jobs: visible.jobs,
             history: self.history_store().clone(),
             avatars: directory.avatars,
+            display_names: self.display_name_directory(),
             colors: Default::default(),
         };
         self.read_model.remember_browser(account.id.clone(), &plan);
@@ -400,6 +407,7 @@ impl Engine {
                 direct: false,
             });
             visible.rooms.push(RoomView {
+                display_names: BTreeMap::new(),
                 id: room.id.clone(),
                 name: view.clone(),
                 owner: self.room_owner_name(&room.owner_id).into(),
@@ -445,6 +453,7 @@ impl Engine {
                 );
             } else {
                 visible.rooms.push(RoomView {
+                    display_names: BTreeMap::new(),
                     id: chat.id.clone(),
                     name: view,
                     owner: "participants".into(),

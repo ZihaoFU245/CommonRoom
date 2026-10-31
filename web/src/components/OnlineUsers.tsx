@@ -1,10 +1,13 @@
+import { DisplayName } from "./DisplayName.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useNameColor } from "./NameColorContext.ts";
 
 function OnlineName({ name, self }: { name: string; self: boolean }) {
   return (
     <span>
-      <b data-name-color={useNameColor(name)}>{name}</b>
+      <b data-name-color={useNameColor(name)}>
+        <DisplayName name={name} />
+      </b>
       {self ? " (you)" : ""}
     </span>
   );

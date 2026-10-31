@@ -34,6 +34,8 @@ actions! {
     RetractAny => "w:message.retract.any",
     CreateRoom => "w:room.create",
     Direct => "w:private.create",
+    DisplayNameAny => "w:account.displayname.any",
+    DisplayNameOwn => "w:account.displayname.own",
     RenameOwn => "w:account.rename.own",
     RenameAny => "x:account.rename.any",
     ColorOwn => "w:account.color.own",
@@ -286,7 +288,10 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
     if group == Group::Su {
         let mut r = rights(Action::ALL, COMMANDS);
         if !matches!(scope, Scope::Room(_)) {
-            r.actions &= !(Action::ColorOwn.bit() | Action::ColorAny.bit());
+            r.actions &= !(Action::ColorOwn.bit()
+                | Action::ColorAny.bit()
+                | Action::DisplayNameOwn.bit()
+                | Action::DisplayNameAny.bit());
         }
         return r;
     }
@@ -398,15 +403,26 @@ impl CompiledPolicy {
             .and_then(|scopes| scopes.get(&Scope::Server))
             .copied()
             .unwrap_or_default();
-        // Color capabilities never inherit from a global scope.
-        r.actions &= !(Action::ColorOwn.bit() | Action::ColorAny.bit());
+        // Room profile capabilities never inherit from a global scope.
+        r.actions &= !(Action::ColorOwn.bit()
+            | Action::ColorAny.bit()
+            | Action::DisplayNameOwn.bit()
+            | Action::DisplayNameAny.bit());
         if matches!(scope, Scope::Room(_))
             && self
                 .groups
                 .get(id)
                 .is_some_and(|groups| groups.contains(&Group::Su))
         {
-            r.add(rights(&[Action::ColorOwn, Action::ColorAny], &[]));
+            r.add(rights(
+                &[
+                    Action::ColorOwn,
+                    Action::ColorAny,
+                    Action::DisplayNameOwn,
+                    Action::DisplayNameAny,
+                ],
+                &[],
+            ));
         }
         if scope != &Scope::Server {
             r.add(
@@ -444,7 +460,10 @@ impl CompiledPolicy {
             r.actions &= !Action::MediaUpload.bit();
         }
         if !matches!(scope, Scope::Room(_)) {
-            r.actions &= !(Action::ColorOwn.bit() | Action::ColorAny.bit());
+            r.actions &= !(Action::ColorOwn.bit()
+                | Action::ColorAny.bit()
+                | Action::DisplayNameOwn.bit()
+                | Action::DisplayNameAny.bit());
         }
         r
     }
