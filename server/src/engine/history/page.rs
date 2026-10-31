@@ -219,6 +219,7 @@ impl HistoryStore {
                     let page = cache.pages.remove(index).ok_or("History cache changed.")?;
                     let result = History {
                         name_colors: None,
+                        message_display_names: None,
                         view: view.into(),
                         revision,
                         messages,
@@ -282,6 +283,7 @@ impl HistoryStore {
                 .map_err(EngineError::from)?;
             let result = History {
                 name_colors: None,
+                message_display_names: None,
                 view: view.into(),
                 revision,
                 messages: MessagePage::new(page.messages, page.sizes),

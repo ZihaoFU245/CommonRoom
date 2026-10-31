@@ -42,6 +42,7 @@ mod message_action;
 pub(crate) use message_action::BrowserActionPlan;
 mod message_write;
 pub(crate) use message_write::PendingMessage;
+mod display_names;
 mod messages;
 mod metadata_write;
 pub(crate) mod preferences;

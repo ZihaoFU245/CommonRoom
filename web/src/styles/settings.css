@@ -373,6 +373,13 @@
   background: var(--field);
   color: var(--ink);
 }
+.account-displayname-field {
+  display: flex;
+  gap: 8px;
+}
+.account-displayname-field input {
+  flex: 1;
+}
 .account-form button {
   align-self: flex-start;
   padding: 8px 12px;
@@ -400,6 +407,66 @@
 .account-setting-detail p {
   margin: 4px 0 0;
   color: var(--muted);
+}
+.displayname-setting-row {
+  align-items: flex-start;
+}
+.displayname-setting-detail {
+  flex: 1;
+}
+.displayname-records {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+.displayname-records td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.displayname-records td:first-child {
+  padding-left: 0;
+}
+.displayname-records td:last-child {
+  padding-right: 0;
+}
+.displayname-records tr:last-child td {
+  border-bottom: 0;
+}
+.displayname-record-name {
+  width: 46%;
+}
+.displayname-record-scope > span {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: var(--wash);
+  color: var(--muted);
+  font-size: 0.85714rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.displayname-record-action {
+  width: 64px;
+  text-align: right;
+}
+.displayname-record-remove {
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: var(--muted);
+  transition:
+    background var(--control-motion-duration) var(--control-motion-easing),
+    color var(--control-motion-duration) var(--control-motion-easing);
+}
+.displayname-record-remove:hover:not(:disabled) {
+  background: var(--wash);
+  color: var(--ink);
 }
 .account-setting-action {
   flex-shrink: 0;

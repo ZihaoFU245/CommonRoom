@@ -115,6 +115,8 @@ function isPreferences(value: unknown): value is PreferenceState {
 export const api = {
   preferences: (values: Record<string, string | null>, initialize: boolean) =>
     request("preferences", isPreferences, { values, initialize }),
+  setDisplayName: (value: string | null, room?: string) =>
+    request("displayname", isOk, { value, room }),
   setAvatar: (url: string | null) => request("avatars", isOk, { url }),
   allocateAvatar: (size: number, signal: AbortSignal, uploadId: string) =>
     request(

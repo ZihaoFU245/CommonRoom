@@ -1,3 +1,4 @@
+import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
 import type { Snapshot } from "../api/protocol.ts";
 import { Brand } from "./Brand.tsx";
@@ -68,7 +69,7 @@ export function Sidebar({
                   </span>
                   <Avatar url={state.avatars?.[name]} name={name} />
                 </span>
-                {name}
+                <DisplayName name={name} />
                 <UnreadBadge
                   count={state.unread[`@direct:${name}`]?.count ?? 0}
                 />
@@ -82,7 +83,9 @@ export function Sidebar({
         <div class="profile">
           <Avatar url={state.avatars?.[state.username]} name={state.username} />
           <div class="profile-name">
-            <strong>{state.username}</strong>
+            <strong>
+              <DisplayName name={state.username} />
+            </strong>
             <small>
               {state.groups.includes("su")
                 ? "su"

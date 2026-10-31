@@ -68,6 +68,7 @@ pub(crate) async fn history(
                     "History changed; retry the current page.",
                 ));
             }
+            page.message_display_names = Some(engine.message_display_names(&id, &page.messages));
             if super::colors::enabled(&headers) {
                 page.name_colors = Some(engine.message_colors(&id, &page.messages));
             }

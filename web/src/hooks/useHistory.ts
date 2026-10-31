@@ -151,6 +151,9 @@ export function useHistory(
             );
           if (
             currentState.current.unread[view]?.revision === page.revision &&
+            (!page.message_display_names ||
+              page.message_display_names.version ===
+                currentState.current.display_name_version) &&
             (!nameColors ||
               !page.name_colors ||
               page.name_colors.version === currentState.current.color_version)
@@ -179,6 +182,9 @@ export function useHistory(
       if (
         !page ||
         currentState.current.unread[view]?.revision !== page.revision ||
+        (page.message_display_names &&
+          page.message_display_names.version !==
+            currentState.current.display_name_version) ||
         (nameColors &&
           page.name_colors &&
           page.name_colors.version !== currentState.current.color_version)
@@ -255,6 +261,12 @@ export function useHistory(
     [tail],
   );
   function colorsReady(page: CachedHistory): boolean {
+    if (
+      state.display_name_version !== undefined &&
+      page.message_display_names?.version !== state.display_name_version &&
+      !page.messages.every((message) => tailIds.has(message.id))
+    )
+      return false;
     return (
       !nameColors ||
       state.color_version === undefined ||
@@ -346,6 +358,7 @@ export function useHistory(
     state.private_access,
     state.policy_revision,
     state.color_version,
+    state.display_name_version,
     nameColors,
     retry,
     target,
@@ -372,6 +385,7 @@ export function useHistory(
     historyReady,
     messages,
     nameColors: visible?.name_colors,
+    messageDisplayNames: visible?.message_display_names,
     historyError,
     loading,
     refreshing: loading && target === undefined && visible !== null,

@@ -143,7 +143,8 @@ const USER: &str = r#"
 - Custom values inherit only where global account read authority allows inspection.
 - Room deletion prunes its branch from every account atomically.
 - Read your own metadata freely; other accounts require r:account.metadata (global/account) or room policy-management authority.
-- Color is the exception: your root default needs no color grant; room own-color changes need `w:account.color.own`, and members' room colors need `w:account.color.any`. Owners receive color.any.
+- Color and displayname are exceptions. Display names follow root ownership or room `w:account.displayname.own`/`w:account.displayname.any` grants, just like color. Settings defaults to Everywhere and offers authorized room scopes; unset falls back to the username. `/user ls` shows username(displayname).
+- For color: your root default needs no color grant; room own-color changes need `w:account.color.own`, and members' room colors need `w:account.color.any`. Owners receive color.any.
 - Both color grants are room-only. First admission adds a direct color.own grant; revoke it to prevent further self-edits without changing the root default. Existing room overrides remain until set/reset by an authorized writer.
 - `/user set bob color blue #support` sets an override; `/user reset bob color #support` restores root inheritance. Bulk color writes require authority for every target.
 - Other metadata writes, media limits and whole-scope resets remain su-only.

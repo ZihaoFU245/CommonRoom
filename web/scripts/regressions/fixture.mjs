@@ -3109,6 +3109,610 @@ for (const failure of [
   });
 }
 
+await test("closing scope menus hide scrollbars throughout their exit animation", async () => {
+  const { ScopePicker } =
+    await import("../../src/components/settings/ScopePicker.tsx");
+  const scopes = [
+    { id: null, label: "Everywhere" },
+    ...Array.from({ length: 30 }, (_, index) => ({
+      id: `room-${index}`,
+      label: `#room-${index}`,
+    })),
+  ];
+  render(
+    h(ScopePicker, {
+      id: "closing-scope",
+      label: "Scope",
+      scopes,
+      selected: scopes[0],
+      saving: false,
+      onChoose: () => {},
+    }),
+    tests,
+  );
+  await sleep(70);
+  tests.querySelector("#closing-scope").click();
+  await until(() => tests.querySelector("#closing-scopes:not([inert])"));
+  const panel = tests.querySelector("#closing-scopes:not([inert])");
+  await sleep(150);
+  check(
+    getComputedStyle(panel).overflowY === "auto" &&
+      panel.scrollHeight > panel.clientHeight,
+    "long menus remain scrollable while open",
+  );
+  panel.scrollTop = 40;
+  panel.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  let samples = 0;
+  while (tests.contains(panel)) {
+    if (panel.hasAttribute("inert")) {
+      const style = getComputedStyle(panel);
+      check(
+        style.overflowY === "hidden" && style.overflowX === "hidden",
+        "exiting menu never exposes a scrollbar",
+      );
+      samples++;
+    }
+    if (samples > 60) throw new Error("scope popup exit did not finish");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  check(samples > 0, "sampled the retained closing popup");
+});
+
+await test("display name scopes default globally, save authorized room overrides and retain drafts", async () => {
+  const { AccountEditor } =
+    await import("../../src/components/settings/AccountEditor.tsx");
+  const { DisplayName, DisplayNamesContext } =
+    await import("../../src/components/DisplayName.tsx");
+  let props = {
+    state: {
+      ...empty,
+      display_names: { alice: "Alice Smith" },
+      rooms: [
+        {
+          id: "a-id",
+          name: "a",
+          permissions: ["w:account.displayname.own"],
+          display_names: { alice: "Room Alice" },
+        },
+        {
+          id: "b-id",
+          name: "roomB",
+          permissions: ["w:account.displayname.any"],
+        },
+        { id: "locked", name: "locked", permissions: [] },
+        {
+          id: "private",
+          name: "@private:alice:bob",
+          permissions: ["w:account.displayname.own"],
+        },
+      ],
+    },
+    section: "account",
+    pending: false,
+    onAccountCommand: async () => {
+      throw new Error("unexpected username command");
+    },
+  };
+  let requests = [];
+  let reject = true;
+  const originalFetch = window.fetch;
+  window.fetch = async (url, options) => {
+    check(
+      String(url).endsWith("/api/displayname"),
+      "uses the display name endpoint",
+    );
+    requests.push(JSON.parse(options.body));
+    return new Response(
+      JSON.stringify(reject ? { error: "Try again" } : { ok: true }),
+      {
+        status: reject ? 503 : 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+  try {
+    render(h(AccountEditor, props), tests);
+    tests.querySelector('[aria-controls="account-displayname-editor"]').click();
+    await until(() => tests.querySelector("#account-displayname"));
+    const input = tests.querySelector("#account-displayname");
+    await until(() => document.activeElement === input);
+    const scope = tests.querySelector("#displayname-scope");
+    check(
+      scope.textContent.trim() === "Everywhere",
+      "scope defaults to Everywhere",
+    );
+    scope.click();
+    await until(() => tests.querySelector("#displayname-scopes:not([inert])"));
+    const options = tests.querySelector("#displayname-scopes:not([inert])");
+    check(
+      [...options.querySelectorAll('[role="option"]')]
+        .map((option) => option.textContent.trim())
+        .join(",") === "Everywhere,#a,#roomB",
+      "only authorized room scopes are offered",
+    );
+    const surface = document.createElement("span");
+    surface.style.backgroundColor = "var(--paper)";
+    tests.append(surface);
+    for (const theme of ["light", "dark"]) {
+      applyAppearance(theme, false, defaultSeeds);
+      check(
+        getComputedStyle(options).backgroundColor ===
+          getComputedStyle(surface).backgroundColor,
+        `${theme}: dropdown follows the theme surface`,
+      );
+      check(
+        getComputedStyle(options.querySelector('[aria-selected="true"]'))
+          .outlineStyle === "none",
+        "focused options have no outline border",
+      );
+    }
+    applyAppearance("light", false, defaultSeeds);
+    surface.remove();
+    options.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await until(() => scope.getAttribute("aria-expanded") === "false");
+    check(
+      document.activeElement === scope,
+      "Escape restores focus to the scope toggle",
+    );
+    async function chooseScope(label) {
+      await until(
+        () =>
+          document.activeElement ===
+          tests.querySelector("#account-displayname"),
+      );
+      tests.querySelector("#displayname-scope").click();
+      await until(() =>
+        tests.querySelector("#displayname-scopes:not([inert])"),
+      );
+      const panel = tests.querySelector("#displayname-scopes:not([inert])");
+      [...panel.querySelectorAll('[role="option"]')]
+        .find((option) => option.textContent.trim() === label)
+        .click();
+      await until(
+        () =>
+          tests
+            .querySelector("#displayname-scope")
+            .getAttribute("aria-expanded") === "false",
+      );
+    }
+    for (const width of [1100, 360]) {
+      tests.style.width = `${width}px`;
+      const inputBounds = input.getBoundingClientRect();
+      const scopeBounds = scope.getBoundingClientRect();
+      check(
+        scopeBounds.left >= inputBounds.right &&
+          Math.abs(scopeBounds.top - inputBounds.top) < 1,
+        `scope sits to the right at ${width}px`,
+      );
+      check(
+        scopeBounds.right <= tests.getBoundingClientRect().right + 1,
+        "controls fit the viewport",
+      );
+    }
+    tests.style.width = "";
+    input.value = "New Display Name";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(10);
+    const submit = () =>
+      tests
+        .querySelector("form")
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+    submit();
+    await until(() => tests.querySelector('[role="alert"]'));
+    check(input.value === "New Display Name", "failure retains the draft");
+    props = {
+      ...props,
+      state: { ...props.state, display_names: { alice: "Alice Smith" } },
+    };
+    render(h(AccountEditor, props), tests);
+    await sleep(20);
+    check(
+      input.value === "New Display Name",
+      "unrelated snapshots retain the draft",
+    );
+    reject = false;
+    submit();
+    await until(() => !tests.querySelector("#account-displayname"));
+    check(
+      requests.every(
+        (request) =>
+          request.value === "New Display Name" && request.room === undefined,
+      ),
+      "settings writes only the global default",
+    );
+    tests.querySelector('[aria-controls="account-displayname-editor"]').click();
+    await until(() => tests.querySelector("#account-displayname"));
+    const blank = tests.querySelector("#account-displayname");
+    blank.value = "";
+    blank.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(10);
+    submit();
+    await until(() => requests.at(-1).value === null);
+    await until(() => !tests.querySelector("#account-displayname"));
+    tests.querySelector('[aria-controls="account-displayname-editor"]').click();
+    await until(() => tests.querySelector("#account-displayname"));
+    await chooseScope("#a");
+    await until(
+      () => tests.querySelector("#account-displayname").value === "Room Alice",
+    );
+    const roomInput = tests.querySelector("#account-displayname");
+    check(
+      roomInput.placeholder === "Alice Smith",
+      "room placeholder shows the global fallback",
+    );
+    roomInput.value = "Scoped Name";
+    roomInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(10);
+    for (const scopeLabel of ["#roomB", "Everywhere", "#a"]) {
+      roomInput.focus();
+      await chooseScope(scopeLabel);
+      await sleep(30);
+      check(
+        roomInput.value === "Scoped Name",
+        "changing scope preserves the typed name",
+      );
+    }
+    submit();
+    await until(() => !tests.querySelector("#account-displayname"));
+    check(
+      requests.at(-1).room === "a-id" &&
+        requests.at(-1).value === "Scoped Name",
+      "room save uses the stable room ID",
+    );
+    tests.querySelector('[aria-controls="account-displayname-editor"]').click();
+    await until(() => tests.querySelector("#account-displayname"));
+    check(
+      tests.querySelector("#displayname-scope").textContent.trim() ===
+        "Everywhere",
+      "reopening starts at Everywhere",
+    );
+    await chooseScope("#roomB");
+    await until(() => tests.querySelector("#account-displayname").value === "");
+    const clearedDraft = tests.querySelector("#account-displayname");
+    clearedDraft.dispatchEvent(new Event("input", { bubbles: true }));
+    for (const scopeLabel of ["#a", "#roomB"]) {
+      clearedDraft.focus();
+      await chooseScope(scopeLabel);
+      await sleep(30);
+      check(
+        clearedDraft.value === "",
+        "cleared drafts remain blank when changing scope",
+      );
+    }
+    submit();
+    await until(() => !tests.querySelector("#account-displayname"));
+    check(
+      requests.at(-1).room === "b-id" && requests.at(-1).value === null,
+      "clearing a room restores inheritance",
+    );
+    render(
+      h(
+        DisplayNamesContext.Provider,
+        { value: { alice: "Same", bob: "Same" } },
+        h(
+          "div",
+          {},
+          h(DisplayName, { name: "alice" }),
+          h(DisplayName, { name: "bob" }),
+          h(DisplayName, { name: "constructor" }),
+        ),
+      ),
+      tests,
+    );
+    check(
+      tests.querySelector('[title="alice"]').textContent === "Same",
+      "first duplicate retains username tooltip",
+    );
+    check(
+      tests.querySelector('[title="bob"]').textContent === "Same",
+      "second duplicate retains its own tooltip",
+    );
+    check(
+      tests.querySelector('[title="constructor"]').textContent ===
+        "constructor",
+      "unset names safely fall back to username",
+    );
+  } finally {
+    tests.style.width = "";
+    window.fetch = originalFetch;
+  }
+});
+
+for (const change of ["revoke", "remove"]) {
+  await test(`display name drafts keep their scope when rooms ${change} access`, async () => {
+    const { AccountEditor } =
+      await import("../../src/components/settings/AccountEditor.tsx");
+    let props = {
+      state: {
+        ...empty,
+        display_names: { alice: "Global Alice" },
+        rooms: [
+          {
+            id: "review-room",
+            name: "review",
+            permissions: ["w:account.displayname.own"],
+            display_names: { alice: "Room Alice" },
+          },
+        ],
+      },
+      pending: false,
+      section: "account",
+      onAccountCommand: async () => ({ kind: "notice", id: 1, text: "ok" }),
+    };
+    const saved = [];
+    api.setDisplayName = async (value, room) => {
+      saved.push({ value, room });
+      return { ok: true };
+    };
+    render(h(AccountEditor, props), tests);
+    tests.querySelector('[aria-controls="account-displayname-editor"]').click();
+    await until(
+      () =>
+        tests.querySelector("#account-displayname") === document.activeElement,
+    );
+    tests.querySelector("#displayname-scope").click();
+    await until(() => tests.querySelector("#displayname-scopes:not([inert])"));
+    [
+      ...tests.querySelectorAll(
+        '#displayname-scopes:not([inert]) [role="option"]',
+      ),
+    ]
+      .find((option) => option.textContent.trim() === "#review")
+      .click();
+    await until(
+      () => tests.querySelector("#account-displayname").value === "Room Alice",
+    );
+    const input = tests.querySelector("#account-displayname");
+    input.value = "Unsaved Room Draft";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(30);
+    const originalState = props.state;
+    props = {
+      ...props,
+      state: {
+        ...props.state,
+        rooms:
+          change === "remove"
+            ? []
+            : props.state.rooms.map((room) => ({ ...room, permissions: [] })),
+      },
+    };
+    render(h(AccountEditor, props), tests);
+    const save = () =>
+      tests.querySelector('#account-displayname-editor button[type="submit"]');
+    await until(() => save().disabled);
+    check(
+      tests.querySelector("#displayname-scope").textContent.trim() ===
+        "#review",
+      "unavailable scope never switches to Everywhere",
+    );
+    check(
+      input.value === "Unsaved Room Draft",
+      "draft survives loss of room authority",
+    );
+    check(
+      tests
+        .querySelector('[role="alert"]')
+        .textContent.includes("Choose an available scope"),
+      "unavailable scope is explained",
+    );
+    tests
+      .querySelector("#account-displayname-editor")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await sleep(20);
+    check(
+      saved.length === 0,
+      "invalid scope cannot send even a programmatic form submission",
+    );
+    props = { ...props, state: originalState };
+    render(h(AccountEditor, props), tests);
+    await until(() => !save().disabled);
+    check(
+      input.value === "Unsaved Room Draft" &&
+        tests.querySelector("#displayname-scope").textContent.trim() ===
+          "#review",
+      "restoring authority preserves the original target and draft",
+    );
+    props = { ...props, state: { ...props.state, rooms: [] } };
+    render(h(AccountEditor, props), tests);
+    await until(() => save().disabled);
+    tests.querySelector("#displayname-scope").click();
+    await until(() => tests.querySelector("#displayname-scopes:not([inert])"));
+    [
+      ...tests.querySelectorAll(
+        '#displayname-scopes:not([inert]) [role="option"]',
+      ),
+    ]
+      .find((option) => option.textContent.trim() === "Everywhere")
+      .click();
+    await until(() => !save().disabled);
+    tests
+      .querySelector("#account-displayname-editor")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await until(() => saved.length === 1);
+    check(
+      saved[0].room === undefined && saved[0].value === "Unsaved Room Draft",
+      "only explicit scope selection can redirect a draft globally",
+    );
+  });
+}
+
+await test("display name records show explicit scopes and remove only the selected record", async () => {
+  const { AccountEditor } =
+    await import("../../src/components/settings/AccountEditor.tsx");
+  let props = {
+    state: {
+      ...empty,
+      username: "bob",
+      display_names: { bob: "Bob" },
+      rooms: [
+        {
+          id: "a-id",
+          name: "a",
+          permissions: ["w:account.displayname.own"],
+          display_names: { bob: "Bobby" },
+        },
+        { id: "b-id", name: "b", permissions: ["w:account.displayname.own"] },
+        {
+          id: "managed-id",
+          name: "managed",
+          permissions: [],
+          display_names: { bob: "Managed Bob" },
+        },
+      ],
+    },
+    pending: false,
+    section: "account",
+    onAccountCommand: async () => {
+      throw new Error("unexpected command");
+    },
+  };
+  let reject = true;
+  const requests = [];
+  const originalFetch = window.fetch;
+  window.fetch = async (url, options) => {
+    check(String(url).endsWith("/api/displayname"), "uses the profile API");
+    const input = JSON.parse(options.body);
+    requests.push(input);
+    if (!reject) {
+      const state = { ...props.state };
+      if (input.room)
+        state.rooms = state.rooms.map((room) => {
+          if (room.id !== input.room) return room;
+          const names = { ...room.display_names };
+          delete names.bob;
+          return { ...room, display_names: names };
+        });
+      else {
+        state.display_names = { ...state.display_names };
+        delete state.display_names.bob;
+      }
+      props = { ...props, state };
+      render(h(AccountEditor, props), tests);
+    }
+    return new Response(
+      JSON.stringify(reject ? { error: "Unavailable" } : { ok: true }),
+      {
+        status: reject ? 503 : 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+  try {
+    render(h(AccountEditor, props), tests);
+    const rows = () => [
+      ...tests.querySelectorAll(".displayname-records tbody tr"),
+    ];
+    check(
+      rows()
+        .map(
+          (row) =>
+            `${row.cells[0].textContent.trim()}:${row.cells[1].textContent.trim()}`,
+        )
+        .join("|") === "Bob:Global|Bobby:#a|Managed Bob:#managed",
+      "summary lists explicit names and excludes inherited room values",
+    );
+    check(
+      getComputedStyle(tests.querySelector(".displayname-records thead"))
+        .position === "absolute",
+      "column names are available to screen readers without visible headings",
+    );
+    check(
+      !tests.querySelector(".displayname-record-remove"),
+      "removal is exposed only while editing",
+    );
+    tests.querySelector('[aria-controls="account-displayname-editor"]').click();
+    await until(() => tests.querySelector(".displayname-record-remove"));
+    const removeRoom = () =>
+      tests.querySelector('[aria-label="Remove display name at #a"]');
+    check(
+      tests.querySelector('[aria-label="Remove display name at #managed"]')
+        .disabled,
+      "room-managed records cannot be removed without permission",
+    );
+    for (const width of [1100, 360]) {
+      tests.style.width = `${width}px`;
+      for (const row of rows()) {
+        check(
+          row.getBoundingClientRect().right <=
+            tests.getBoundingClientRect().right + 1,
+          `records fit at ${width}px`,
+        );
+        check(
+          row.querySelector("button").getBoundingClientRect().left >=
+            row
+              .querySelector(".displayname-record-scope")
+              .getBoundingClientRect().right,
+          "remove actions do not overlap names",
+        );
+      }
+    }
+    tests.style.width = "";
+    removeRoom().click();
+    await until(() => tests.querySelector('[role="alert"]'));
+    await until(() => !removeRoom().disabled);
+    check(
+      requests[0].value === null && requests[0].room === "a-id",
+      "removal targets only the selected scope",
+    );
+    check(
+      rows().length === 3 && tests.querySelector("#account-displayname"),
+      "failed removal preserves records and the editor",
+    );
+    reject = false;
+    removeRoom().click();
+    await until(() => !removeRoom());
+    const removeGlobal = () =>
+      tests.querySelector('[aria-label="Remove display name at Global"]');
+    await until(() => !removeGlobal().disabled);
+    check(
+      rows().some(
+        (row) =>
+          row.cells[0].textContent === "Bob" &&
+          row.cells[1].textContent === "Global",
+      ) &&
+        rows().some(
+          (row) =>
+            row.cells[0].textContent === "Managed Bob" &&
+            row.cells[1].textContent === "#managed",
+        ),
+      "removing a room leaves the global and other room records intact",
+    );
+    removeGlobal().click();
+    await until(() => !removeGlobal());
+    check(
+      requests.at(-1).value === null && requests.at(-1).room === undefined,
+      "global removal does not target a room",
+    );
+    props = {
+      ...props,
+      state: {
+        ...props.state,
+        rooms: props.state.rooms.map((room) => ({
+          ...room,
+          display_names: {},
+        })),
+      },
+    };
+    render(h(AccountEditor, props), tests);
+    await until(() => tests.textContent.includes("Display name is unset."));
+    await until(() => rows().length === 0);
+    check(
+      !tests.querySelector("table"),
+      "unset summary replaces the records table",
+    );
+  } finally {
+    tests.style.width = "";
+    window.fetch = originalFetch;
+  }
+});
+
 await test("account save errors preserve drafts and remain visible until a successful retry", async () => {
   const { AccountEditor } =
     await import("../../src/components/settings/AccountEditor.tsx");

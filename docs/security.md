@@ -275,7 +275,7 @@ existing member or assigning a user/admin group does not restore own-color acces
 Regrant explicitly with `/grant bob #support w:account.color.own`. Normal additive
 semantics remain; another explicit `color.any` grant still authorizes room writes.
 Color grants never authorize other metadata keys, another room, or someone else's
-root metadata. Non-su writers cannot manage protected su accounts. Other metadata
+root metadata. Non-su writers cannot manage protected su accounts. Display names follow the equivalent grants below. Other metadata
 writes remain su-only.
 
 ## Media grants
@@ -336,3 +336,20 @@ directory rights cannot bypass that filter. Explicit token `profile` delegates
 own account-wide appearance, while room colors additionally enforce room scope.
 Existing account grants, object ownership and live credential checks remain in
 the service/engine paths. See [Bot media and profiles](bots.md#media-and-profiles-v1-extension).
+
+## Display names
+
+Display names follow the name-color security model. Each active account owns its
+global `displayname` metadata value without a separate grant. Room overrides need
+`w:account.displayname.own` for self-editing or `w:account.displayname.any` for member
+management. These grants are valid only in rooms and are absent from group bundles.
+First admission grants own editing; room ownership grants any editing. Managers
+holding any plus policy authority may delegate own editing. Rejoining an existing
+membership or assigning a group does not restore revoked grants. Existing stored
+grants remain unchanged on upgrade; su can add the new capabilities explicitly.
+Su accounts retain protection from other users' profile changes.
+
+These permissions control changes to the name. Readers see the effective room,
+global, or username fallback under their existing directory/message access.
+Display names need not be unique and never select a login principal or command
+target. Username tooltips preserve access to the unique identifier.

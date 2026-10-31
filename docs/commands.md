@@ -39,7 +39,7 @@ allows login again; it does not restore previous room access or ownership.
 
 Omitted scope uses the selected room; Console/stdin use `@global`.
 In private views, specify a room or `@global` for user lists/metadata. `#support` names a room explicitly. `/user ls` lists its members using `r:member.list`;
-global listing requires `r:account.list`. `/user rename robert` renames yourself.
+global listing requires `r:account.list`. Entries use `username(displayname)` with the effective name for that scope. `/user rename robert` renames yourself.
 Names use 1–32 Unicode characters without whitespace, controls, or ASCII
 punctuation except `_` and `-`.
 
@@ -52,7 +52,7 @@ custom values appear only with permission to read that account's global metadata
 Room managers without that permission see local custom values and effective media/cleanup
 limits. `media.user_quota` appears only in the global section and is never a room
 override. `/user get @all #support` applies the same view to every member.
-Metadata never grants permissions. Only the public global avatar link and the `color` key
+Metadata never grants permissions. The public global avatar link, `displayname`, and the `color` key
 (global value plus room overrides) are public profile projections; color data is sent only to browsers that opt in. `color` accepts one
 of 16 palette names (`red` … `pink`) at `@global` or a room. Accounts change their own color
 from Settings › Preferences after enabling Show name colors. Their global default needs
@@ -70,10 +70,34 @@ color and remove that direct grant:
 
 Bob can still change his root default, but cannot set or clear this room override.
 `/user reset bob color #support` restores inheritance; `/grant bob #support w:account.color.own` restores self-editing. Tab completes `color`, the palette and `@unset`.
+Display names use `displayname` in the same override tree. Settings › Account edits
+the global default by default; the adjacent scope selector also offers rooms with
+permission to change your own display name. The summary uses a table of explicit names and
+their Global or room scope; it says the display name is unset when no records exist.
+Edit reveals Remove controls for records you can change. Unsaved input is preserved
+when switching scopes. If room access or editing permission is lost, the selected
+scope and draft remain in place; saving requires choosing an available scope. Removing a record or
+saving a blank field unsets that scope and restores its fallback. Duplicate names and spaces are
+allowed (1–256 UTF-8 bytes without controls). Username remains the unique login,
+mention and command identifier. Chat, private-chat labels and online users show
+display names with username tooltips. Room overrides use the same commands:
+
+```text
+/user set bob displayname Bobby #support
+/revoke bob #support w:account.displayname.own
+/user reset bob displayname #support
+```
+
+Root ownership needs no displayname grant. Room `w:account.displayname.own` and
+`w:account.displayname.any` mirror the color grants, including bulk writes, protected
+su accounts, first-admission grants and owner delegation. Unset room values fall
+back to the global display name, then username. Existing memberships/grants are
+preserved on upgrade; su can grant these new room permissions explicitly.
+
 Read your own metadata;
 other users require `r:account.metadata` at global/account scope or room policy
 management. Color writes follow the ownership/room grants above, including bulk color
-updates with `color.any`. Other metadata writes and bulk resets remain su-only. Global admins
+updates with `color.any`. Display name writes follow the equivalent displayname grants described below. Other metadata writes and bulk resets remain su-only. Global admins
 receive `r:account.metadata` for reading; room policy managers may inspect their
 members' room metadata. `x:account.metadata` remains reserved for su, and an
 explicit write flag does not bypass this restriction. Stdin and authorized

@@ -308,6 +308,7 @@ export function suggestions(
     if (position === 3 && ["get", "set", "reset"].includes(operation || ""))
       values = [
         "color",
+        "displayname",
         "media.max_size",
         "media.max_age",
         "media.user_quota",

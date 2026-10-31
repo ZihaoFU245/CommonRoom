@@ -14,7 +14,7 @@ fn object_commands_preserve_room_and_account_identity_and_metadata() {
         .unwrap();
     assert_eq!(
         e.execute(Some("bob"), Some("lobby"), "/user ls").unwrap(),
-        "alice\nbob\neve"
+        "alice(alice)\nbob(bob)\neve(eve)"
     );
     assert!(
         e.execute(Some("bob"), None, "/room ls")

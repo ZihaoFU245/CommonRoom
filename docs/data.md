@@ -274,8 +274,15 @@ removes that room's entries from every account in the same transaction as room
 deletion. Account deletion removes the complete map. Empty branches are removed
 on unset; reusing a room name creates a new ID and inherits no deleted overrides.
 Metadata updates save changed accounts and audit entries atomically. Other values are
-never included in public snapshots; the global avatar link is a public profile projection. User media limits are independent of grants;
+never included in public snapshots; the global avatar link, scoped display names and opt-in colors are public profile projections. User media limits are independent of grants;
 `/user get` and `/user set` enforce current access on every selected account.
+
+Display names use `metadata["@global"]["displayname"]` for the optional global
+default and `metadata[room_id]["displayname"]` for room overrides. No schema
+migration is needed. Missing values inherit global → username, duplicates are
+allowed, and renames preserve overrides with the stable account. Room deletion
+prunes its overrides using the existing metadata transaction.
+
 
 Message mutation bodies are owned transient rows outside room/private metadata.
 The message transaction writes the row, reference changes, counter, retention and
@@ -286,7 +293,7 @@ reaction map; edit rollback coordinates retain only the previous attachment IDs.
 Changed reference sets insert/delete only their differences. Startup and failed
 command recovery share authoritative metadata/cursor loaders.
 
-Metadata mutation requires su at execution time. Global admin group bundles
+General metadata mutation requires su at execution time; self-service profile values and scoped color/displayname writes follow their own ownership/grant checks. Global admin group bundles
 provide only metadata read access; stored direct write flags cannot override the
 su check. This authorization check does not rewrite stored metadata values.
 

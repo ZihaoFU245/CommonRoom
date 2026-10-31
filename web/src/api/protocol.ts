@@ -25,6 +25,8 @@ export interface MessageColors {
   values: Record<string, string | null>;
 }
 export interface Room {
+  display_names?: Record<string, string>;
+  message_display_names?: MessageDisplayNames | undefined;
   /** Client-only supplemental history colors; snapshots do not send this field. */
   name_colors?: MessageColors | undefined;
   id: string;
@@ -87,6 +89,9 @@ export interface Access {
   commands: Command[];
 }
 export interface Snapshot {
+  display_name_version?: string;
+  message_display_names?: MessageDisplayNames | undefined;
+  display_names?: Record<string, string>;
   preferences?: Record<string, string>;
   color_version?: string;
   /** Client-only supplemental history colors; snapshots do not send this field. */
@@ -115,7 +120,12 @@ export interface Snapshot {
   available_rooms: string[];
   unread: Record<string, Unread>;
 }
+export interface MessageDisplayNames {
+  version: string;
+  values: Record<string, string | null>;
+}
 export interface History {
+  message_display_names?: MessageDisplayNames | undefined;
   name_colors?: MessageColors | undefined;
   view: string;
   messages: Message[];
@@ -132,6 +142,7 @@ export interface HistoryRange {
   limit?: number;
 }
 export interface ConversationUpdate {
+  message_display_names?: MessageDisplayNames | undefined;
   name_colors?: MessageColors | undefined;
   kind: "conversation";
   view: string;
@@ -319,6 +330,16 @@ const messageColors = (v: unknown): v is MessageColors =>
   Object.values(v.values).every(
     (color) => color === null || typeof color === "string",
   );
+const displayNameMap = (value: unknown): value is Record<string, string> =>
+  record(value) &&
+  Object.values(value).every((name) => typeof name === "string");
+const messageDisplayNames = (value: unknown): value is MessageDisplayNames =>
+  record(value) &&
+  typeof value.version === "string" &&
+  record(value.values) &&
+  Object.values(value.values).every(
+    (name) => name === null || typeof name === "string",
+  );
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
   v.kind === "snapshot" &&
@@ -361,6 +382,9 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
           typeof item.label === "string" &&
           (item.kind === "issuer" || item.kind === "worker"),
       ))) &&
+  (v.display_names === undefined || displayNameMap(v.display_names)) &&
+  (v.display_name_version === undefined ||
+    typeof v.display_name_version === "string") &&
   (v.avatars === undefined ||
     (record(v.avatars) &&
       Object.values(v.avatars).every((url) => typeof url === "string"))) &&
@@ -377,6 +401,7 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
       commands(r.commands) &&
       strings(r.members) &&
       messages(r.messages) &&
+      (r.display_names === undefined || displayNameMap(r.display_names)) &&
       (r.colors === undefined || colorMap(r.colors)) &&
       (r.name_colors === undefined || messageColors(r.name_colors)),
   ) &&
@@ -393,6 +418,8 @@ export const isHistory = (v: unknown): v is History =>
   typeof v.has_after === "boolean" &&
   messages(v.messages) &&
   v.messages.length <= 100 &&
+  (v.message_display_names === undefined ||
+    messageDisplayNames(v.message_display_names)) &&
   (v.name_colors === undefined || messageColors(v.name_colors));
 export const isOk = (v: unknown): v is { ok: true } =>
   record(v) && v.ok === true;
@@ -440,11 +467,16 @@ export function parseFrame(raw: string): ServerFrame | null {
     typeof value.id === "string" &&
     messages(value.messages) &&
     value.messages.length <= 50 &&
+    (value.message_display_names === undefined ||
+      messageDisplayNames(value.message_display_names)) &&
     unread(value.unread) &&
     (value.name_colors === undefined || messageColors(value.name_colors))
   )
     return {
       kind: "conversation",
+      ...(value.message_display_names === undefined
+        ? {}
+        : { message_display_names: value.message_display_names }),
       view: value.view,
       id: value.id,
       messages: value.messages,

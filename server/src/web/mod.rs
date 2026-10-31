@@ -2,6 +2,7 @@ pub(crate) mod admission;
 pub(crate) mod auth;
 pub(crate) mod avatars;
 pub(crate) mod colors;
+mod display_names;
 mod error;
 mod metadata_commands;
 pub(crate) mod metrics;
@@ -295,6 +296,10 @@ pub fn router(app: App) -> Router {
         .route(path("/api/read"), post(history::read))
         .route(path("/api/color"), post(colors::set))
         .route(path("/api/preferences"), post(preferences::set))
+        .route(
+            path("/api/displayname"),
+            post(display_names::set_display_name),
+        )
         .route(path("/api/bot-commands"), get(bot_commands::get))
         .route(
             path("/api/health"),

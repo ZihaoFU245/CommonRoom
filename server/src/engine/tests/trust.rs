@@ -524,7 +524,13 @@ fn su_is_a_grant_group_and_only_su_can_assign_it() {
     for action in Action::ALL {
         assert_eq!(
             e.allows(Some("bob"), &Scope::Server, *action),
-            !matches!(action, Action::ColorOwn | Action::ColorAny)
+            !matches!(
+                action,
+                Action::ColorOwn
+                    | Action::ColorAny
+                    | Action::DisplayNameOwn
+                    | Action::DisplayNameAny
+            )
         );
     }
     e.execute(Some("bob"), None, "/grant eve su").unwrap();
@@ -1606,9 +1612,11 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
             if scope == room {
                 if matches!(actor, Some("alice" | "bob")) {
                     expected.insert("w:account.color.own");
+                    expected.insert("w:account.displayname.own");
                 }
                 if actor == Some("alice") {
                     expected.insert("w:account.color.any");
+                    expected.insert("w:account.displayname.any");
                 }
                 if actor == Some("alice") {
                     expected.extend(member.iter().copied());
@@ -1625,7 +1633,13 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
                 let allowed =
                     (actor.is_none() || actor == Some("eve") || expected.contains(&action.name()))
                         && (matches!(scope, Scope::Room(_))
-                            || !matches!(action, Action::ColorOwn | Action::ColorAny));
+                            || !matches!(
+                                action,
+                                Action::ColorOwn
+                                    | Action::ColorAny
+                                    | Action::DisplayNameOwn
+                                    | Action::DisplayNameAny
+                            ));
                 assert_eq!(
                     e.allows(actor, &scope, *action),
                     allowed,

@@ -1,3 +1,4 @@
+import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { CollapsibleMessage } from "./CollapsibleMessage.tsx";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
@@ -139,7 +140,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
         {!grouped && (
           <header class="message-meta">
             <strong class="message-author" data-name-color={authorColor}>
-              {message.from}
+              <DisplayName name={message.from} />
             </strong>
             <time dateTime={date.iso} title={date.full} aria-label={date.full}>
               {date.time}
@@ -156,7 +157,9 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 : "Jump to original message"
             }
           >
-            <strong data-name-color={replyColor}>↳ {reply.from}</strong>
+            <strong data-name-color={replyColor}>
+              ↳ <DisplayName name={reply.from} />
+            </strong>
             <span dir="auto">{reply.text}</span>
           </button>
         )}

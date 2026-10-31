@@ -1,3 +1,4 @@
+import { DisplayName } from "./DisplayName.tsx";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import autoAnimate from "@formkit/auto-animate";
@@ -230,7 +231,9 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
           />
         </button>
         <div>
-          <strong>{state.username}</strong>
+          <strong>
+            <DisplayName name={state.username} />
+          </strong>
           <p>Groups: {state.groups.join(", ") || "none"}</p>
         </div>
       </div>

@@ -8,7 +8,7 @@ fn user_lists_and_metadata_default_to_current_scope() {
     let key = Engine::metadata_scope_key(&room).unwrap().to_owned();
     assert_eq!(
         e.execute(Some("bob"), Some("lobby"), "/user ls").unwrap(),
-        "alice\nbob\neve"
+        "alice(alice)\nbob(bob)\neve(eve)"
     );
     assert!(
         e.execute(Some("bob"), Some("lobby"), "/user ls @global")

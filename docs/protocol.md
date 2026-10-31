@@ -10,6 +10,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/me` | Session cookie | Authorized `Snapshot` |
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
+| `POST /api/displayname` | `{value:string|null,room?:string|null}` | `{ok:true,sync}`; self only; omit room for global default; stable room ID requires own/any displayname permission |
 | `POST /api/preferences` | `{values:{key:string|null},initialize?:boolean}` | `{values,sync}`; validated own-account settings; initialization fills only absent keys, normal updates patch/unset; private metadata notice after commit |
 | `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
 | `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
@@ -524,3 +525,18 @@ remain pending for retry with visible feedback; optimistic values do not overwri
 unrelated settings received from another device. Logout clears the active settings
 session and ignores its late responses. Browser notification permission is never
 requested by a remote settings update and never written back as an account choice.
+
+## Display name profiles
+
+Snapshots contain `display_names` (username → global display name),
+`display_name_version`, and each room's sparse `display_names` overrides. Names
+are limited to identities already disclosed by the directory, membership,
+private peers or messages/replies/mentions. Unset names are omitted and clients
+fall back to username. Display names do not replace protocol usernames.
+
+History and conversation frames include `message_display_names:{version,values}`
+for disclosed authors, quoted authors and mentions. Values are resolved for the
+conversation; null restores username fallback. Versions change when the display
+name directory changes or the process restarts. Clients ignore stale versions and
+refresh paged profiles while preserving history. A committed display name edit
+invalidates browser baselines, so other devices and viewers receive the update.

@@ -17,6 +17,7 @@ pub(crate) struct SnapshotPlan {
     pub(super) jobs: Vec<Conversation>,
     pub(super) history: Arc<HistoryStore>,
     pub(super) avatars: BTreeMap<String, String>,
+    pub(super) display_names: super::display_names::DisplayNameDirectory,
     pub(super) colors: super::colors::ColorDirectory,
 }
 impl SnapshotPlan {
@@ -139,6 +140,12 @@ impl SnapshotPlan {
         for room in &self.snapshot.rooms {
             visible.extend(super::colors::message_names(&room.messages));
         }
+        self.snapshot.display_names = self
+            .display_names
+            .global
+            .into_iter()
+            .filter(|(name, _)| visible.contains(name.as_str()))
+            .collect();
         self.snapshot.colors = self
             .colors
             .global
@@ -148,6 +155,19 @@ impl SnapshotPlan {
         // A room override also reveals room access, so it is limited to names
         // this room already discloses: visible members, tail authors and the viewer.
         for room in &mut self.snapshot.rooms {
+            let names = super::colors::message_names(&room.messages);
+            room.display_names = self
+                .display_names
+                .rooms
+                .remove(&room.id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(name, _)| {
+                    *name == self.snapshot.username
+                        || room.members.contains(name)
+                        || names.contains(name.as_str())
+                })
+                .collect();
             let Some(overrides) = self.colors.rooms.remove(&room.id) else {
                 continue;
             };
@@ -213,6 +233,8 @@ impl BotSnapshotPlan {
 
 /// A conversation notification owns its authorization result and read coordinates.
 pub(crate) struct ConversationPlan {
+    pub(super) display_names: super::display_names::DisplayNameDirectory,
+    pub(super) display_name_version: String,
     pub(super) colors: super::colors::ColorDirectory,
     pub(super) color_version: String,
     pub(super) user: String,
@@ -249,6 +271,11 @@ impl ConversationPlan {
             .next()
             .ok_or_else(|| EngineError::Internal("Missing unread result.".into()))??;
         let mut frame = serde_json::json!({"kind":"conversation","view":job.view,"id":job.id,"messages":page.messages,"unread":unread});
+        frame["message_display_names"] = serde_json::to_value(self.display_names.for_messages(
+            self.display_name_version,
+            &job.id,
+            &page.messages,
+        ))?;
         if !self.color_version.is_empty() {
             frame["name_colors"] = serde_json::to_value(self.colors.for_messages(
                 self.color_version,

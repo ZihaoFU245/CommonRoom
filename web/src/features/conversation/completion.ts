@@ -22,6 +22,8 @@ export const permissionNames = [
   "w:account.rename.own",
   "w:account.color.own",
   "w:account.color.any",
+  "w:account.displayname.own",
+  "w:account.displayname.any",
   "x:account.rename.any",
   "w:account.password.own",
   "x:member.add",
