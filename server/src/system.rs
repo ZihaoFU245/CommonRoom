@@ -64,7 +64,12 @@ impl Command {
                 let mut cache = history.stats_async().await?;
                 let pools = cache.as_object_mut().and_then(|value| value.remove("pools")).unwrap_or(Value::Null);
                 let snapshots = app.snapshots.lock().map_err(|_| EngineError::unavailable("Snapshot cache poisoned"))?.stats();
-                let runtime = json!({"io_jobs_available":app.io_jobs.available_permits(),"password_jobs_available":app.password_jobs.available_permits()});
+                let runtime = json!({"io_jobs_available":app.io_jobs.available_permits(),
+                    "io_jobs_limit":app.config.server.io_jobs,
+                    "password_jobs_available":app.password_jobs.available_permits(),
+                    "password_jobs_limit":app.config.server.password_jobs,
+                    "max_http_connections":app.config.server.max_http_connections,
+                    "admission":app.admission.stats(), "ordering":app.mutations.stats()});
                 Ok(if self == Self::MetricsText {
                     render_metrics_text(&cache, &pools, &snapshots, &runtime)
                 } else {
@@ -158,6 +163,7 @@ fn render_report(
     section(&mut text, "Database pools", pools, plain);
     text.push_str("\n\nPool acquisition timing includes checkout health checks and connection creation. Cancelled acquisitions are excluded from completed-attempt totals.");
     section(&mut text, "Server admission", runtime, plain);
+    text.push_str("\n\nHTTP route duration buckets [0..5] are non-cumulative: <=10 ms, <=50 ms, <=250 ms, <=1 s, <=5 s, >5 s. Timing ends at response creation/upgrade, before response delivery. Cancelled requests are counted separately. Ordering timings include timed-out completed attempts; cancelled waits are excluded.");
     text
 }
 

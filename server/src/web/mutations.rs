@@ -15,13 +15,46 @@ use tokio::sync::{
     Mutex as AsyncMutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
 };
 
-#[derive(Default)]
 pub(crate) struct Coordinator {
+    ordering_timeout: std::time::Duration,
+    wait_stats: WaitStats,
+    conversation_waits: WaitStats,
+    metadata_waits: WaitStats,
+    audit_waits: WaitStats,
     metadata: Arc<RwLock<()>>,
     recovering: std::sync::atomic::AtomicBool,
     recovery_done: tokio::sync::Notify,
     pub(crate) audit: AsyncMutex<()>,
     conversations: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
+}
+#[derive(Default)]
+struct WaitStats {
+    completed: std::sync::atomic::AtomicU64,
+    timeouts: std::sync::atomic::AtomicU64,
+    total_us: std::sync::atomic::AtomicU64,
+    max_us: std::sync::atomic::AtomicU64,
+}
+impl WaitStats {
+    fn record(&self, us: u64, timeout: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.total_us.fetch_add(us, Relaxed);
+        self.max_us.fetch_max(us, Relaxed);
+        self.completed.fetch_add(1, Relaxed);
+        if timeout {
+            self.timeouts.fetch_add(1, Relaxed);
+        }
+    }
+    fn stats(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        serde_json::json!({"completed":self.completed.load(Relaxed),
+            "timeouts":self.timeouts.load(Relaxed),"total_us":self.total_us.load(Relaxed),
+            "max_us":self.max_us.load(Relaxed)})
+    }
+}
+impl Default for Coordinator {
+    fn default() -> Self {
+        Self::new(std::time::Duration::from_secs(5))
+    }
 }
 #[derive(Clone)]
 pub(crate) struct ConversationPermit(Arc<Reservation>);
@@ -38,6 +71,43 @@ struct Reservation {
     _metadata: Option<OwnedRwLockReadGuard<()>>,
 }
 impl Coordinator {
+    pub(crate) fn new(ordering_timeout: std::time::Duration) -> Self {
+        Self {
+            ordering_timeout,
+            wait_stats: WaitStats::default(),
+            conversation_waits: WaitStats::default(),
+            metadata_waits: WaitStats::default(),
+            audit_waits: WaitStats::default(),
+            metadata: Arc::default(),
+            recovering: false.into(),
+            recovery_done: Default::default(),
+            audit: Default::default(),
+            conversations: Mutex::default(),
+        }
+    }
+    pub(crate) async fn audit(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, EngineError> {
+        self.wait(&self.audit_waits, self.audit.lock()).await
+    }
+    pub(crate) fn stats(&self) -> serde_json::Value {
+        let mut stats = self.wait_stats.stats();
+        stats["conversations"] = self.conversation_waits.stats();
+        stats["metadata"] = self.metadata_waits.stats();
+        stats["audit"] = self.audit_waits.stats();
+        stats
+    }
+    async fn wait<T>(
+        &self,
+        stats: &WaitStats,
+        future: impl std::future::Future<Output = T>,
+    ) -> Result<T, EngineError> {
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(self.ordering_timeout, future).await;
+        let us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.wait_stats.record(us, result.is_err());
+        stats.record(us, result.is_err());
+        result
+            .map_err(|_| EngineError::Unavailable("Operation ordering busy; retry shortly.".into()))
+    }
     pub(crate) fn recovering(&self) -> bool {
         self.recovering.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -52,7 +122,17 @@ impl Coordinator {
             notified.await;
         }
     }
-    pub(crate) async fn metadata(self: &Arc<Self>) -> MetadataPermit {
+    pub(crate) async fn metadata(self: &Arc<Self>) -> Result<MetadataPermit, EngineError> {
+        let guard = self
+            .wait(&self.metadata_waits, self.metadata.clone().write_owned())
+            .await?;
+        Ok(MetadataPermit(Arc::new(MetadataReservation {
+            coordinator: self.clone(),
+            _metadata: guard,
+        })))
+    }
+    // A known committed write must recover authoritative memory even under load.
+    async fn recovery_metadata(self: &Arc<Self>) -> MetadataPermit {
         MetadataPermit(Arc::new(MetadataReservation {
             coordinator: self.clone(),
             _metadata: self.metadata.clone().write_owned().await,
@@ -105,12 +185,15 @@ impl Coordinator {
             conversations: Vec::with_capacity(conversations.len()),
             _metadata: None,
         };
-        for conversation in conversations {
-            reservation
-                .conversations
-                .push(conversation.lock_owned().await);
-        }
-        reservation._metadata = Some(self.metadata.clone().read_owned().await);
+        self.wait(&self.conversation_waits, async {
+            for conversation in conversations {
+                reservation
+                    .conversations
+                    .push(conversation.lock_owned().await);
+            }
+            reservation._metadata = Some(self.metadata.clone().read_owned().await);
+        })
+        .await?;
         Ok(ConversationPermit(Arc::new(reservation)))
     }
 }
@@ -264,7 +347,7 @@ impl super::App {
                     .acquire_owned()
                     .await
                     .map_err(EngineError::unavailable)?;
-                let _metadata = app.mutations.metadata().await;
+                let _metadata = app.mutations.recovery_metadata().await;
                 let database = {
                     let mut engine = app
                         .engine

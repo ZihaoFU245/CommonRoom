@@ -30,20 +30,29 @@ Login allows 10 failed attempts per IP and 20 per username in fixed 60-second
 windows. Pending attempts reserve capacity; successful logins and internal
 failures refund only their reservation. Successful logins do not clear earlier
 failures. Tracking is bounded to 4,096 IP/username entries; saturation rejects
-new entries with 429 until windows expire. Password work has its own two-worker
-limit, independent of the general HTTP pool; busy password workers return 503.
+new entries with 429 until windows expire. Password work has its own budget
+(default two workers), independent of the general HTTP pool; busy password workers
+return retryable 503 across login, credential commands and stdin provisioning.
 Failed verification logs the client IP without credentials or request bodies.
 Each failed verification also applies per-username exponential backoff of 1, 2,
 4, 8, 16 and then 32 seconds, bounded by the fixed minute window. A successful
 verification resets the backoff, while prior failures still count toward limits.
 
-Authenticated HTTP requests and socket commands share an eight-job allowance
-per stable account. Excess requests return 429; disconnected requests retain
-their allowance until blocking work finishes. Browser and bot sockets have
-separate pools of 128 and 64. Each account can hold four sockets per profile;
+Authenticated HTTP requests and socket commands share a per-account job allowance
+(default eight). Excess requests return 429; disconnected requests retain
+their allowance until accepted work finishes. Browser and bot sockets have
+separate pools (default 128 and 64). Each account can hold four sockets per profile by default;
 opening another closes its oldest socket. Bot socket controls share the
 30-input/10-second per-account HTTP budget; expected discovery responses to
 server requests remain exempt. Shutdown cancels sockets immediately.
+
+Admission budgets and header/body/socket-write/request deadlines are configured in
+`server`; see [Deployment](deployment.md#http-resource-limits). Browser HTTP bodies
+are bounded to 4 KiB and bot v1 bodies to 32 KiB. Body and handler deadlines return
+408; oversized bodies return 413. Incomplete/rejected bodies close the connection.
+Ordering waits exceeding their deadline return retryable 503 before mutation
+commit. Accepted durable writes still finish commit/publication after HTTP
+timeout or disconnection; a timeout does not imply rollback.
 
 Messages allow 4,000 Unicode scalar values; command lines allow 4,100, including
 the command itself. Passwords allow 128 UTF-8 bytes. Reactions allow 128 Unicode

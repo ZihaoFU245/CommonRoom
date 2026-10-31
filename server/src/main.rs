@@ -125,19 +125,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("No accounts yet. Console: /new user alice a-long-password admin");
     }
     let (changes, _) = broadcast::channel(256);
+    let limits = config.server.clone();
     let app = App {
         media,
         engine: Arc::new(RwLock::new(engine)),
         attempts: Default::default(),
         changes,
         config: Arc::new(config),
-        admission: Default::default(),
-        io_jobs: Arc::new(tokio::sync::Semaphore::new(usize::try_from(web::IO_JOBS)?)),
+        admission: Arc::new(web::admission::Admission::new(limits.clone())),
+        io_jobs: Arc::new(tokio::sync::Semaphore::new(usize::try_from(
+            limits.io_jobs,
+        )?)),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(usize::try_from(
-            web::PASSWORD_JOBS,
+            limits.password_jobs,
         )?)),
         snapshots: Default::default(),
-        mutations: Default::default(),
+        mutations: Arc::new(web::mutations::Coordinator::new(
+            std::time::Duration::from_secs(limits.ordering_timeout_seconds),
+        )),
         bot_runtimes: Default::default(),
         stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         shutdown: Default::default(),
@@ -146,19 +151,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     console::start(app.clone());
     web::media::start_cleanup(app.clone());
     tracing::info!(address = %listener.local_addr()?, production = app.config.production, "Chat server ready");
-    web::http_server::serve(listener, web::router(app.clone()), {
-        let app = app.clone();
-        async move {
-            if let Err(error) = shutdown_signal().await {
-                tracing::error!(error = %error, "Shutdown signal handler failed");
+    web::http_server::serve(
+        listener,
+        web::router(app.clone()),
+        limits,
+        app.admission.metrics.clone(),
+        {
+            let app = app.clone();
+            async move {
+                if let Err(error) = shutdown_signal().await {
+                    tracing::error!(error = %error, "Shutdown signal handler failed");
+                }
+                app.stopping
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                app.shutdown.notify_waiters();
+                let _ = app.changes.send(web::Change::Shutdown);
+                tracing::info!("Shutting down");
             }
-            app.stopping
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            app.shutdown.notify_waiters();
-            let _ = app.changes.send(web::Change::Shutdown);
-            tracing::info!("Shutting down");
-        }
-    })
+        },
+    )
     .await?;
     app.checkpoint_after_jobs().await?;
     Ok(())

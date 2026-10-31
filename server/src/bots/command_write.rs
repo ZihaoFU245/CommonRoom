@@ -115,7 +115,7 @@ pub(super) async fn execute(
         if metadata || !ids.is_empty() {
             drop(ordering);
             ordering = if metadata {
-                Ordering::Metadata(app.mutations.metadata().await)
+                Ordering::Metadata(app.mutations.metadata().await?)
             } else {
                 Ordering::Conversations(app.mutations.conversations(ids.clone()).await?)
             };
@@ -132,7 +132,7 @@ pub(super) async fn execute(
         }
     }
     let _audit = if planned.as_ref().is_ok_and(NativeCommand::audited) {
-        Some(app.mutations.audit.lock().await)
+        Some(app.mutations.audit().await?)
     } else {
         None
     };

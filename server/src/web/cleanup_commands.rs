@@ -33,7 +33,7 @@ pub(super) async fn execute(
         let ordering = app.mutations.conversations(plan.matched_ids()).await?;
         let reply = plan.report();
         let _audit = if !plan.preview && plan.has_matches() {
-            Some(app.mutations.audit.lock().await)
+            Some(app.mutations.audit().await?)
         } else {
             None
         };

@@ -76,6 +76,32 @@ def check_second_owner(binary, env, data):
     assert (data / "config.json").read_bytes() == original, "Rejected server rewrote configuration"
 
 
+def check_runtime_limits(process, port, log_path):
+    # Exercise configured transport deadlines through the real binary, on either backend.
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as slow:
+        slow.sendall(b"POST /api/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
+        response = bytearray()
+        while chunk := slow.recv(4096):
+            response.extend(chunk)
+        assert b"408 Request Timeout" in response
+        assert b"cache-control: no-store" in response
+    offset = log_path.stat().st_size
+    process.stdin.write("/system metrics --txt\n")
+    process.stdin.flush()
+    expected = ["io_jobs_limit: 4", "password_jobs_limit: 1", "max_http_connections: 8",
+                "admission.http_per_account_limit: 2", "admission.browser_sockets_limit: 8",
+                "admission.bot_sockets_limit: 4", "admission.sockets_per_account_limit: 2",
+                "admission.http.body_timeouts: 1", "ordering.metadata.completed:"]
+    deadline = time.monotonic() + 5
+    while True:
+        report = log_path.read_bytes()[offset:].decode()
+        if all(item in report for item in expected):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Configured capacities/new runtime metrics missing from console report: " + report)
+        time.sleep(0.05)
+
+
 def main():
     destination = os.environ.get("CHAT_TEST_POSTGRES_URL")
     if not destination:
@@ -87,6 +113,14 @@ def main():
         folder = Path(folder)
         data = folder / "data"
         data.mkdir()
+        # Non-default budgets must survive startup, backend transfer and restarts.
+        (data / "config.json").write_text(json.dumps({"server": {
+            "max_http_connections": 8, "http_per_account": 2, "io_jobs": 4,
+            "password_jobs": 1, "browser_sockets": 8, "bot_sockets": 4,
+            "sockets_per_account": 2, "header_timeout_seconds": 2,
+            "body_timeout_seconds": 1, "write_timeout_seconds": 2,
+            "request_timeout_seconds": 120, "ordering_timeout_seconds": 2,
+        }}))
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
@@ -122,6 +156,7 @@ def main():
                     if time.monotonic() >= deadline:
                         raise RuntimeError("Console provisioning did not finish")
                     time.sleep(0.05)
+                check_runtime_limits(process, port, log_path)
                 check_second_owner(binary, env, data)
                 stop(process)
                 process = None
@@ -159,13 +194,14 @@ def main():
                     assert any(room["name"] == "smoke" for room in snapshot["rooms"])
                     _, new_cookie = request(port, "/api/login", payload={"username": "alice", "password": "smoke-password"})
                     assert new_cookie
+                    check_runtime_limits(process, port, log_path)
                     check_second_owner(binary, env, data)
                     stop(process)
                     process = None
                 assert hashlib.sha256(path.read_bytes()).digest() == original
                 with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
                     assert db.execute("PRAGMA user_version").fetchone()[0] == 20
-                print("Passed: real-binary SQLite provisioning, verified migration, preserved session/password, PostgreSQL HTTP startup/restart/shutdown, second-owner config protection, unchanged SQLite source")
+                print("Passed: real-binary SQLite provisioning, verified migration, preserved session/password, PostgreSQL HTTP startup/restart/shutdown, second-owner config protection, unchanged SQLite source, configured admission/deadlines/runtime metrics")
         except BaseException:
             if process is not None:
                 stop(process)

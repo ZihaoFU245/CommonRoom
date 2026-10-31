@@ -4,6 +4,7 @@ pub(crate) mod avatars;
 pub(crate) mod colors;
 mod error;
 mod metadata_commands;
+pub(crate) mod metrics;
 mod preferences;
 pub(crate) mod principal;
 mod profiles;
@@ -12,6 +13,7 @@ pub(crate) use error::ApiError;
 mod bot_commands;
 mod cleanup_commands;
 pub(crate) mod commands;
+mod deadline_io;
 pub(crate) mod history;
 pub(crate) mod http_server;
 pub(crate) mod login_limits;
@@ -80,11 +82,17 @@ pub struct App {
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
     pub shutdown: Arc<tokio::sync::Notify>,
 }
-pub(crate) const IO_JOBS: u32 = 64;
-pub(crate) const PASSWORD_JOBS: u32 = 2;
 impl App {
+    pub(crate) fn password_permit(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, crate::engine::EngineError> {
+        self.password_jobs.clone().try_acquire_owned().map_err(|_| {
+            metrics::increment(&self.admission.metrics.password_rejections);
+            crate::engine::EngineError::Unavailable("Password workers busy; retry shortly.".into())
+        })
+    }
     pub fn io_permit(&self) -> Result<admission::IoPermit, String> {
-        admission::io_permit(&self.io_jobs)
+        admission::io_permit(&self.io_jobs, &self.admission.metrics)
     }
 
     /// Capture or validate owned metadata with a short memory guard, using a
@@ -138,13 +146,13 @@ impl App {
             let _io = self
                 .io_jobs
                 .clone()
-                .acquire_many_owned(IO_JOBS)
+                .acquire_many_owned(self.config.server.io_jobs)
                 .await
                 .map_err(EngineError::unavailable)?;
             let _password = self
                 .password_jobs
                 .clone()
-                .acquire_many_owned(PASSWORD_JOBS)
+                .acquire_many_owned(self.config.server.password_jobs)
                 .await
                 .map_err(EngineError::unavailable)?;
             if self.mutations.recovering() {
@@ -254,50 +262,65 @@ pub(crate) fn error(code: StatusCode, message: &str) -> ApiError {
 }
 
 pub fn router(app: App) -> Router {
+    let mut registry = metrics::Registry::new(&app.config.base_url);
+    let bots = crate::bots::routes(&mut registry);
+    let mut path = |path| registry.register("", path);
     let routes = Router::new()
-        .merge(crate::bots::routes())
-        .route("/api/avatars", post(avatars::set))
-        .route("/api/avatars/uploads", post(avatars::allocate))
+        .merge(bots)
+        .route(path("/api/avatars"), post(avatars::set))
+        .route(path("/api/avatars/uploads"), post(avatars::allocate))
         .route(
-            "/api/avatars/uploads/{id}/complete",
+            path("/api/avatars/uploads/{id}/complete"),
             post(avatars::complete),
         )
-        .route("/api/avatars/{id}/info", get(avatars::info))
-        .route("/api/avatars/{id}/file", get(avatars::download))
-        .route("/api/media/config", get(media::config))
-        .route("/api/media/uploads", post(media::allocate))
-        .route("/api/media/uploads/{id}/complete", post(media::complete))
-        .route("/api/media/uploads/{id}/abandon", post(media::abandon))
-        .route("/api/media/{id}/file", get(media::download))
-        .route("/api/media/{id}/info", get(media::info))
-        .route("/api/login", post(auth::login))
-        .route("/api/logout", post(auth::logout))
-        .route("/api/me", get(auth::me))
-        .route("/api/session", get(auth::session_status))
-        .route("/api/history", get(history::history))
-        .route("/api/read", post(history::read))
-        .route("/api/color", post(colors::set))
-        .route("/api/preferences", post(preferences::set))
-        .route("/api/bot-commands", get(bot_commands::get))
-        .route("/api/health", get(|| async { Json(json!({ "ok": true })) }))
-        .route("/ws", get(socket::upgrade));
+        .route(path("/api/avatars/{id}/info"), get(avatars::info))
+        .route(path("/api/avatars/{id}/file"), get(avatars::download))
+        .route(path("/api/media/config"), get(media::config))
+        .route(path("/api/media/uploads"), post(media::allocate))
+        .route(
+            path("/api/media/uploads/{id}/complete"),
+            post(media::complete),
+        )
+        .route(
+            path("/api/media/uploads/{id}/abandon"),
+            post(media::abandon),
+        )
+        .route(path("/api/media/{id}/file"), get(media::download))
+        .route(path("/api/media/{id}/info"), get(media::info))
+        .route(path("/api/login"), post(auth::login))
+        .route(path("/api/logout"), post(auth::logout))
+        .route(path("/api/me"), get(auth::me))
+        .route(path("/api/session"), get(auth::session_status))
+        .route(path("/api/history"), get(history::history))
+        .route(path("/api/read"), post(history::read))
+        .route(path("/api/color"), post(colors::set))
+        .route(path("/api/preferences"), post(preferences::set))
+        .route(path("/api/bot-commands"), get(bot_commands::get))
+        .route(
+            path("/api/health"),
+            get(|| async { Json(json!({ "ok": true })) }),
+        )
+        .route(path("/ws"), get(socket::upgrade));
     let routes = if app.config.base_url == "/" {
         routes
     } else {
         Router::new().nest(app.config.base_url.trim_end_matches('/'), routes)
     };
+    app.admission.metrics.register_routes(registry);
     routes
-        .layer(axum::extract::DefaultBodyLimit::max(4096))
-        // Leave room for the media completion deadline (100 seconds).
-        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            std::time::Duration::from_secs(120),
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::limits::BROWSER_BODY_BYTES,
         ))
         .layer(middleware::from_fn_with_state(app.clone(), admission::http))
+        .layer(middleware::from_fn_with_state(app.clone(), metrics::http))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(
             app.clone(),
             security::security,
+        ))
+        .layer(middleware::from_fn_with_state(
+            app.clone(),
+            metrics::observe,
         ))
         .layer(middleware::from_fn_with_state(
             app.clone(),

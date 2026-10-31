@@ -112,3 +112,54 @@ a new delivery epoch, and their final authorization checks remain mandatory.
 Policy, identity and membership changes invalidate authority templates normally.
 See [Storage benchmarks](storage-benchmarks.md) for cache and engine-inspection
 measurement procedures and work-count assertions.
+
+## Admission and request metrics
+
+The Server admission section reports configured job/HTTP limits, available job and
+socket permits, active authenticated API reservations, and effective account/socket
+limits. `admission.http` contains bounded lifetime counters:
+
+- `connections`: accepted HTTP connections, current/peak active connections,
+  connection errors and header/write timeouts. Upgraded WebSockets leave HTTP
+  occupancy and are tracked by their separate socket permits. Connection errors
+  include transport/protocol failures and timeout failures; timeout counts can overlap.
+- `io_jobs`: accepted general jobs and current/peak retained job permits. A job
+  stays active after HTTP cancellation until its accepted work completes. Console
+  jobs also use this budget; internal recovery's direct reservation is reflected
+  in available permits rather than these job counters.
+- `rejections`: account HTTP, general I/O, password and socket capacity rejections.
+  `socket_replacements` counts account/profile socket replacement. Password
+  rejections share one counter across login, credential commands and stdin provisioning.
+- `body_timeouts`, `body_rejections` and `request_timeouts`: absolute body deadlines,
+  oversized/invalid body reads, and whole-request response-creation deadlines.
+- `routes`: active/completed/cancelled requests, 4xx/5xx counts, completed total/max
+  microseconds and six non-cumulative latency buckets (<=10 ms, <=50 ms, <=250 ms,
+  <=1 s, <=5 s, >5 s). Labels use registered route patterns; unknown paths share
+  `unmatched`. No user IDs, query strings, credentials or message bodies are stored.
+  Time includes body receipt, admission, handlers and security checks, but excludes
+  header receipt, response transfer and the bot error-envelope wrapper. WebSocket
+  request timing ends at upgrade, not disconnection. HTTP status errors overlap
+  timeout/rejection counters. Cancelled requests do not contribute completed timing.
+
+Route counters and latency buckets use relaxed atomics. The route table is built
+alongside browser/bot route registration and frozen before serving requests. Request
+start performs an immutable lookup; completion/cancellation updates the retained
+route counters directly. Neither path takes a metrics mutex or allocates a route
+label. Report collection reads atomics without blocking these updates. Every request
+is counted; there is no sampling. Concurrent reports can observe different instants
+across counters, so fields such as completed counts and bucket sums can briefly
+differ while traffic continues; they agree after the updates finish. Untouched
+routes are omitted. Existing admission/cache locks retain their own responsibilities.
+
+`ordering` reports completed permit-acquisition attempts, timeout count, and total/max
+microseconds across conversation sets, metadata fences and audit permits, with
+separate `conversations`, `metadata` and `audit` breakdowns. Total time
+includes timed-out attempts. Cancelled acquisitions and authoritative recovery's
+unbounded fence acquisition are excluded. These metrics measure pre-execution wait,
+not transaction duration. Reports themselves occupy request/job capacity; current
+occupancy is not expected to be zero while a report is collected.
+
+Use deltas over a representative traffic interval. Low cache reuse alone does not
+prove wasted work: writes, permission changes and cursor changes can require a fresh
+snapshot even when its history pages are reused. No cache/pool increase is warranted
+by a low reuse percentage without evictions, slow acquisition or observed latency.

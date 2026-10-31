@@ -215,7 +215,7 @@ async fn execute_message(
     };
     let ordering = app.mutations.conversation(id.clone()).await?;
     let _audit = if matches!(&plan, MessagePlan::Action(plan) if plan.action.is_retraction()) {
-        Some(app.mutations.audit.lock().await)
+        Some(app.mutations.audit().await?)
     } else {
         None
     };

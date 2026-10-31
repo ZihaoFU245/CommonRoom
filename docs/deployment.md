@@ -809,11 +809,71 @@ HTTP resynchronization continues to return the full current avatar directory.
 
 ## HTTP resource limits
 
-The server admits at most 512 active HTTP connections and gives each HTTP/1
-header block 15 seconds to arrive, even if bytes keep trickling in. Requests have
-a 120-second response deadline, leaving room for the 100-second media completion
-deadline. Accepted durable writes still finish commit/publication after a request
-times out. Upgraded WebSockets use their existing separate socket caps, heartbeat
-and idle deadlines. The listener serves HTTP/1.1; TLS/HTTP/2 termination belongs at
-the reverse proxy. Configure proxy header/body deadlines too, since the proxy can
-buffer a slow client before forwarding its request to chat.
+The backend uses async tasks and bounded admission on both SQLite and PostgreSQL.
+The optional `server` section in `config.json` controls capacity and deadlines:
+
+```json
+{
+  "server": {
+    "max_http_connections": 512,
+    "http_per_account": 8,
+    "io_jobs": 64,
+    "password_jobs": 2,
+    "browser_sockets": 128,
+    "bot_sockets": 64,
+    "sockets_per_account": 4,
+    "header_timeout_seconds": 15,
+    "body_timeout_seconds": 15,
+    "write_timeout_seconds": 30,
+    "request_timeout_seconds": 120,
+    "ordering_timeout_seconds": 5
+  }
+}
+```
+
+Omitted fields retain these defaults. Changes require restart. Invalid or unknown
+settings fail before database ownership/bootstrap and configuration normalization.
+Capacity ranges are 1–16,384 HTTP connections, 1–256 concurrent API requests per
+account, 1–4,096 general jobs, 1–32 password jobs, 1–4,096 sockets per browser/bot
+pool, and 1–64 sockets per account **per socket profile**. Header/body/ordering
+deadlines are 1–120 seconds, socket-write deadlines 1–300 seconds, and request
+deadlines 110–300 seconds. The request minimum leaves room for media completion's
+100-second deadline. These are resource budgets, not promised throughput.
+
+HTTP capacity includes idle keepalive connections, but excludes sockets after
+WebSocket upgrade; upgraded connections use the browser/bot limits. Full HTTP
+capacity pauses accept rather than allocating unbounded tasks. Authenticated API
+admission returns 429 when the account budget is full. General-job and password
+capacity reject overload with 503 rather than queuing an unbounded backlog.
+Login uses its own password budget. The oldest socket for an account/profile is
+replaced when that account's socket limit is reached.
+
+Each HTTP/1 header block has an absolute header deadline. Browser request bodies
+are bounded to 4 KiB, bot v1 bodies to 32 KiB. Both are read under an absolute body
+deadline, including bytes sent slowly but continuously. Rejected/incomplete bodies close the HTTP connection.
+The request deadline covers body reading, admission and handler work through
+response creation; body/header/request deadline failures return 408 when a response
+can still be sent. It does not measure complete response delivery. A pending socket
+write/flush/shutdown also has a deadline, so a peer that stops reading cannot retain
+an HTTP connection indefinitely once socket buffers fill. Successful writes reset
+that write deadline. WebSockets retain their own heartbeat, idle and send deadlines.
+
+Conversation, metadata and audit permit acquisitions use the ordering deadline;
+timeouts release partial reservations and return retryable unavailable failures
+before mutation commit. Known committed-state recovery waits for its exclusive
+fence without this deadline. Accepted durable writes retain their capacity through
+commit/publication even after a request timeout or client disconnect. A timeout does
+not prove that a write failed. Shutdown drains the configured job budgets before
+checkpointing.
+
+The listener serves HTTP/1.1; TLS/HTTP/2 termination belongs at the reverse proxy.
+Keep Rust and PostgreSQL listeners private. Nginx should retain request/response
+buffering for ordinary APIs and disable response buffering for WebSockets. Set
+client header/body and response-send timeouts at the proxy too: it may receive a
+slow client's body before Rust sees it. Proxy body/send timeouts are inactivity
+timeouts, while Rust's header/body budgets are absolute. The sample API upstream
+read timeout is 130 seconds; increase it if raising the backend request deadline.
+Add per-IP and aggregate API connection limits in addition to arrival-rate limits.
+Keep separate WebSocket budgets. Increasing Rust admission above database capacity
+can increase waiting and memory without improving throughput; use admission,
+ordering and database acquisition metrics to tune it.

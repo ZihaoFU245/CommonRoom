@@ -405,7 +405,7 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                         } else {
                             async {
                                 context.verify_async(&app).await?;
-                                let ordering = app.mutations.metadata().await;
+                                let ordering = app.mutations.metadata().await?;
                                 app.with_metadata(&ordering, {
                                     let context = context.clone();
                                     move |engine| -> Result<_, Error> {

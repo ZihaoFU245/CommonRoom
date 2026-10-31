@@ -34,7 +34,7 @@ pub(super) async fn execute(
         account,
         config: app.config.clone(),
     };
-    let ordering = app.mutations.metadata().await;
+    let ordering = app.mutations.metadata().await?;
     let (prepared, history) = app
         .with_metadata(&ordering, {
             let identity = identity.clone();

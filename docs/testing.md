@@ -65,13 +65,31 @@ independently with native keyboard-accessible disclosure controls.
 `auto/test-postgres.py` requires the target's default schema to be empty. It
 provisions a temporary SQLite server through the real stdin console, verifies HTTP
 login, runs the binary's transfer command, then checks PostgreSQL HTTP sessions,
-password login, restart and graceful shutdown twice. It leaves migrated tables in the target database; repeat it with a fresh empty
+password login, restart and graceful shutdown twice. It uses non-default server budgets on both backends,
+checks absolute body timeouts through real sockets and verifies capacity/timeout
+metrics through stdin reports. It leaves migrated tables in the target database; repeat it with a fresh empty
 database or remove the disposable container.
 It also verifies that a rejected second process cannot rewrite saved configuration
 for either backend, a URL alone cannot select PostgreSQL, and missing/empty URLs
 cannot silently fall back to SQLite after PostgreSQL is selected in configuration.
 Configuration regressions cover legacy SQLite defaults, backend changes during
 startup, and rejection of database URLs/passwords and S3 credentials in saved JSON.
+
+## Admission and slow-client contracts
+
+The ordinary Rust suite covers legacy/default and custom server budgets, rejects
+invalid/unknown configuration before normalization, and checks configured HTTP,
+account and socket admission. It verifies slow headers release connection capacity,
+absolute body deadlines despite trickled bytes, bounded oversized bodies, stalled
+socket-write deadlines, handler response deadlines, and progress of independent
+requests. Cancellation metrics and registered-route label bounds prevent active
+counter leaks and attacker-controlled metrics growth. Concurrent metrics tests
+update one route from multiple threads while collecting reports, then require exact
+completion/error/cancellation totals and histogram counts after all writers finish.
+Nested route tests preserve registered parameter labels and base paths. Ordering timeout tests hold
+conversation/metadata/audit locks, check partial reservation cleanup and retry,
+and verify configured job capacities drain through shutdown. Existing cancellation,
+commit/publication, permission-revocation and PostgreSQL contracts remain required.
 
 ## Required checks
 

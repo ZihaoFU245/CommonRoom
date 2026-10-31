@@ -14,9 +14,81 @@ pub struct Config {
     pub max_rooms: usize,
     pub max_messages: usize,
     pub database: DatabaseConfig,
+    pub server: ServerConfig,
     pub media: MediaConfig,
     pub avatar_hosts: Vec<String>,
     pub s3: Option<S3Config>,
+}
+
+/// Restart-required resource budgets. These apply to both database backends.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerConfig {
+    pub max_http_connections: u32,
+    pub http_per_account: u32,
+    pub io_jobs: u32,
+    pub password_jobs: u32,
+    pub browser_sockets: u32,
+    pub bot_sockets: u32,
+    pub sockets_per_account: u32,
+    pub header_timeout_seconds: u64,
+    pub body_timeout_seconds: u64,
+    pub write_timeout_seconds: u64,
+    pub request_timeout_seconds: u64,
+    pub ordering_timeout_seconds: u64,
+}
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            max_http_connections: 512,
+            http_per_account: 8,
+            io_jobs: 64,
+            password_jobs: 2,
+            browser_sockets: 128,
+            bot_sockets: 64,
+            sockets_per_account: 4,
+            header_timeout_seconds: 15,
+            body_timeout_seconds: 15,
+            write_timeout_seconds: 30,
+            request_timeout_seconds: 120,
+            ordering_timeout_seconds: 5,
+        }
+    }
+}
+impl ServerConfig {
+    fn validate(&self) -> Result<(), String> {
+        for (name, value, maximum) in [
+            ("max_http_connections", self.max_http_connections, 16384),
+            ("http_per_account", self.http_per_account, 256),
+            ("io_jobs", self.io_jobs, 4096),
+            ("password_jobs", self.password_jobs, 32),
+            ("browser_sockets", self.browser_sockets, 4096),
+            ("bot_sockets", self.bot_sockets, 4096),
+            ("sockets_per_account", self.sockets_per_account, 64),
+        ] {
+            if !(1..=maximum).contains(&value) {
+                return Err(format!("server.{name} must be between 1 and {maximum}."));
+            }
+        }
+        for (name, value, maximum) in [
+            ("header_timeout_seconds", self.header_timeout_seconds, 120),
+            ("body_timeout_seconds", self.body_timeout_seconds, 120),
+            ("write_timeout_seconds", self.write_timeout_seconds, 300),
+            (
+                "ordering_timeout_seconds",
+                self.ordering_timeout_seconds,
+                120,
+            ),
+        ] {
+            if !(1..=maximum).contains(&value) {
+                return Err(format!("server.{name} must be between 1 and {maximum}."));
+            }
+        }
+        if !(110..=300).contains(&self.request_timeout_seconds) {
+            return Err("server.request_timeout_seconds must be between 110 and 300 (media completion needs 100 seconds).".into());
+        }
+        Ok(())
+    }
 }
 /// Backend selection is persisted; connection URLs and credentials are not.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +289,7 @@ impl Default for Config {
             max_rooms: 64,
             max_messages: 1000,
             database: DatabaseConfig::default(),
+            server: ServerConfig::default(),
             media: MediaConfig::default(),
             avatar_hosts: Vec::new(),
             s3: None,
@@ -238,6 +311,7 @@ impl Config {
                 .map_err(|error| error.to_string())
                 .and_then(|config| {
                     config.database.validate()?;
+                    config.server.validate()?;
                     Ok(config.database)
                 })
                 .map_err(|error| format!("Invalid data/config.json: {error}")),
@@ -343,6 +417,9 @@ impl Config {
             media: saved
                 .as_ref()
                 .map_or_else(MediaConfig::default, |c| c.media.clone()),
+            server: saved
+                .as_ref()
+                .map_or_else(ServerConfig::default, |c| c.server.clone()),
             base_url: normalize_base_url(
                 &std::env::var("CHAT_BASE_URL")
                     .ok()
@@ -385,6 +462,7 @@ impl Config {
             return Err("avatar_hosts must contain at most 32 exact canonical hostnames without schemes, ports, paths or wildcards.".into());
         }
         config.database.validate()?;
+        config.server.validate()?;
         validate_limits(config.max_users, config.max_rooms, config.max_messages)?;
         config
             .bind
@@ -481,6 +559,59 @@ pub(crate) fn validate_limits(users: usize, rooms: usize, messages: usize) -> Re
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures intentionally assert success.
 mod tests {
     use super::*;
+    #[test]
+    fn server_budgets_validate_before_ownership_and_preserve_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for (name, maximum) in [
+            ("max_http_connections", 16384),
+            ("http_per_account", 256),
+            ("io_jobs", 4096),
+            ("password_jobs", 32),
+            ("browser_sockets", 4096),
+            ("bot_sockets", 4096),
+            ("sockets_per_account", 64),
+            ("header_timeout_seconds", 120),
+            ("body_timeout_seconds", 120),
+            ("write_timeout_seconds", 300),
+            ("ordering_timeout_seconds", 120),
+            ("request_timeout_seconds", 300),
+        ] {
+            for invalid in [0, maximum + 1] {
+                let raw = serde_json::json!({"server":{name:invalid}}).to_string();
+                std::fs::write(&path, &raw).unwrap();
+                assert!(Config::read_database(dir.path()).is_err(), "{name}");
+                assert!(Config::load(dir.path()).is_err(), "{name}");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+            }
+        }
+        std::fs::write(&path, r#"{"server":{"request_timeout_seconds":100}}"#).unwrap();
+        assert!(Config::read_database(dir.path()).is_err());
+        std::fs::write(&path, r#"{"server":{"io_job":2}}"#).unwrap();
+        assert!(Config::read_database(dir.path()).is_err());
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(
+            Config::load(dir.path()).unwrap().server,
+            ServerConfig::default()
+        );
+        let limits = ServerConfig {
+            max_http_connections: 64,
+            io_jobs: 12,
+            password_jobs: 1,
+            http_per_account: 3,
+            browser_sockets: 16,
+            bot_sockets: 8,
+            sockets_per_account: 2,
+            header_timeout_seconds: 10,
+            body_timeout_seconds: 5,
+            write_timeout_seconds: 20,
+            request_timeout_seconds: 130,
+            ordering_timeout_seconds: 2,
+        };
+        std::fs::write(&path, serde_json::json!({"server":limits}).to_string()).unwrap();
+        assert_eq!(Config::load(dir.path()).unwrap().server, limits);
+        assert_eq!(Config::load(dir.path()).unwrap().server, limits);
+    }
     #[test]
     fn postgres_pool_limits_are_bounded_and_rejected_before_config_is_saved() {
         for pool in [
@@ -693,6 +824,7 @@ mod tests {
                 postgres_pool: None,
                 history_cache: None,
             },
+            server: ServerConfig::default(),
             media: MediaConfig::default(),
             avatar_hosts: vec!["www.gravatar.com".into()],
             s3: None,

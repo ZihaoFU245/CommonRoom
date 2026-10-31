@@ -5,9 +5,6 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
-const SOCKETS_PER_ACCOUNT: usize = 4;
-const HTTP_PER_ACCOUNT: usize = 8;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Profile {
     Browser,
@@ -27,16 +24,44 @@ struct State {
 }
 pub(crate) struct Admission {
     state: Mutex<State>,
+    limits: crate::config::ServerConfig,
+    pub(crate) metrics: Arc<super::metrics::Metrics>,
     browser: Arc<Semaphore>,
     bot: Arc<Semaphore>,
 }
 impl Default for Admission {
     fn default() -> Self {
+        Self::new(crate::config::ServerConfig::default())
+    }
+}
+impl Admission {
+    pub fn new(limits: crate::config::ServerConfig) -> Self {
         Self {
             state: Mutex::default(),
-            browser: Arc::new(Semaphore::new(128)),
-            bot: Arc::new(Semaphore::new(64)),
+            browser: Arc::new(Semaphore::new(
+                usize::try_from(limits.browser_sockets).unwrap_or(128),
+            )),
+            bot: Arc::new(Semaphore::new(
+                usize::try_from(limits.bot_sockets).unwrap_or(64),
+            )),
+            limits,
+            metrics: Arc::default(),
         }
+    }
+    pub fn stats(&self) -> serde_json::Value {
+        let active_http = self
+            .state
+            .lock()
+            .map(|state| state.http.values().sum::<usize>())
+            .unwrap_or(0);
+        serde_json::json!({"http_active":active_http,
+            "http_per_account_limit":self.limits.http_per_account,
+            "browser_sockets_available":self.browser.available_permits(),
+            "browser_sockets_limit":self.limits.browser_sockets,
+            "bot_sockets_available":self.bot.available_permits(),
+            "bot_sockets_limit":self.limits.bot_sockets,
+            "sockets_per_account_limit":self.limits.sockets_per_account,
+            "http":self.metrics.stats()})
     }
 }
 pub(crate) struct SocketLease {
@@ -59,16 +84,36 @@ tokio::task_local! {
 pub(crate) struct IoPermit {
     _global: OwnedSemaphorePermit,
     _account: Option<Arc<HttpLease>>,
+    metrics: Arc<super::metrics::Metrics>,
 }
-pub(crate) fn io_permit(pool: &Arc<Semaphore>) -> Result<IoPermit, String> {
-    let global = pool
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| "Server busy; retry shortly.")?;
+pub(crate) fn io_permit(
+    pool: &Arc<Semaphore>,
+    metrics: &Arc<super::metrics::Metrics>,
+) -> Result<IoPermit, String> {
+    let global = pool.clone().try_acquire_owned().map_err(|_| {
+        super::metrics::increment(&metrics.io_rejections);
+        "Server busy; retry shortly."
+    })?;
+    super::metrics::increment(&metrics.io_accepted);
+    let active = metrics
+        .io_active
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
+    metrics
+        .io_peak
+        .fetch_max(active, std::sync::atomic::Ordering::Relaxed);
     Ok(IoPermit {
+        metrics: metrics.clone(),
         _global: global,
         _account: HTTP_LEASE.try_with(Arc::clone).ok(),
     })
+}
+impl Drop for IoPermit {
+    fn drop(&mut self) {
+        self.metrics
+            .io_active
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 impl Admission {
     /// Self-service profile writes have a separate bounded account budget.
@@ -119,9 +164,10 @@ impl Admission {
         let key = (account, profile);
         // Reclaim the oldest lease before obtaining capacity for its replacement.
         if let Some(entries) = state.sockets.get_mut(&key)
-            && entries.len() >= SOCKETS_PER_ACCOUNT
+            && entries.len() >= usize::try_from(self.limits.sockets_per_account).unwrap_or(4)
             && let Some(mut entry) = entries.pop_front()
         {
+            super::metrics::increment(&self.metrics.socket_replacements);
             let _ = entry.closed.send(true);
             entry.permit.take();
         }
@@ -129,10 +175,10 @@ impl Admission {
             Profile::Browser => &self.browser,
             Profile::Bot => &self.bot,
         };
-        let permit = pool
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "Connection limit reached.")?;
+        let permit = pool.clone().try_acquire_owned().map_err(|_| {
+            super::metrics::increment(&self.metrics.socket_rejections);
+            "Connection limit reached."
+        })?;
         state.serial = state.serial.wrapping_add(1);
         let id = state.serial;
         let (closed, receiver) = watch::channel(false);
@@ -168,8 +214,12 @@ impl Admission {
             .lock()
             .map_err(|_| "Admission state unavailable; restart the service.")?;
         let count = state.http.entry(account.clone()).or_default();
-        if *count >= HTTP_PER_ACCOUNT {
-            return Err("Account busy; at most 8 concurrent requests.".into());
+        if *count >= usize::try_from(self.limits.http_per_account).unwrap_or(8) {
+            super::metrics::increment(&self.metrics.account_rejections);
+            return Err(format!(
+                "Account busy; at most {} concurrent requests.",
+                self.limits.http_per_account
+            ));
         }
         *count += 1;
         Ok(HttpLease {

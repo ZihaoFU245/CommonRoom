@@ -21,7 +21,7 @@ pub(crate) async fn set(
         .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
     admission::spawn_io(permit, async move {
         let (identity, store) = media::native_context(&app, media::Access::Browser(headers)).await?;
-        let ordering = app.mutations.metadata().await;
+        let ordering = app.mutations.metadata().await?;
         let pending = app.with_metadata(&ordering, {
             let identity = identity.clone();
             move |engine| -> Result<_, ApiError> {

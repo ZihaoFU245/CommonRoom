@@ -742,7 +742,7 @@ const SYSTEM: &str = r#"# /system
 
 - `/system` lists its subcommands.
 - `/system configs` shows active configuration in a Markdown JSON block. Restart after changing configuration. Database URLs and credentials are environment-only.
-- `/system metrics` shows cumulative history/unread/snapshot cache counters, hit rates, eviction/miss reasons, shard occupancy, database pool statistics and current worker availability.
+- `/system metrics` shows cumulative history/unread/snapshot cache counters, hit rates, eviction/miss reasons, shard occupancy, database pool statistics, configured/available worker capacity, HTTP route latency buckets, connection occupancy, overload/timeouts and conversation/metadata/audit ordering waits.
 - Counters start at server startup and survive cache eviction/recovery. Rates use cumulative counts; concurrent observations are approximate. No lookups shows n/a.
 - A coalesced page request counts as a hit; snapshot reuse includes callers sharing an in-progress build. Full/incremental unread counters describe database calculations after unread-cache misses.
 - Collection uses integer counters on existing cache/pool paths. Reports are formatted only when requested; no periodic profiling or metric logging runs in the background.

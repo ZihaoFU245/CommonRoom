@@ -287,6 +287,7 @@ dependencies = [
  "axum",
  "blake2",
  "futures-util",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "rand_core 0.6.4",

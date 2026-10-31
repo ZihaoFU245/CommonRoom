@@ -1,4 +1,7 @@
 //! Text limits count Unicode scalar values; storage/header limits count UTF-8 bytes.
+pub(crate) const BROWSER_BODY_BYTES: usize = 4096;
+pub(crate) const BOT_BODY_BYTES: usize = 32768;
+
 pub(crate) const MAX_MESSAGE_CHARS: usize = 4_000;
 pub(crate) const MAX_COMMAND_CHARS: usize = 4_100;
 pub(crate) const MAX_PASSWORD_BYTES: usize = 128;

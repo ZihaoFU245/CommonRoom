@@ -136,11 +136,7 @@ pub(super) async fn execute(
         .await?
     };
     let hash = tokio::task::spawn_blocking({
-        let permit = app
-            .password_jobs
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "Account management busy. Try again shortly.")?;
+        let permit = app.password_permit()?;
         let old = request.name.clone();
         let password = request.password.clone();
         let expected = expected.clone();
@@ -157,7 +153,7 @@ pub(super) async fn execute(
     .await
     .map_err(|_| EngineError::Unavailable("Password worker unavailable.".into()))??;
     let passwd = request.passwd;
-    let ordering = app.mutations.metadata().await;
+    let ordering = app.mutations.metadata().await?;
     let (reply, pending) = app
         .with_metadata(&ordering, {
             let identity = identity.clone();

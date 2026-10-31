@@ -17,8 +17,10 @@ pub(crate) fn digest(secret: &str) -> String {
     format!("{:x}", Blake2s256::digest(secret.as_bytes()))
 }
 
-pub(crate) fn routes() -> axum::Router<crate::web::App> {
-    api::routes()
+pub(crate) fn routes(
+    registry: &mut crate::web::metrics::Registry,
+) -> axum::Router<crate::web::App> {
+    api::routes(registry)
 }
 
 pub(crate) fn now() -> u64 {

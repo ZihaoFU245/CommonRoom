@@ -95,13 +95,11 @@ async fn execute_inner(app: &App, line: String) -> Result<Output, EngineError> {
             let name = account.name.to_owned();
             let password = account.password.to_owned();
             let (admin, reset) = (account.admin, account.reset);
-            let _password = app.password_jobs.clone().try_acquire_owned().map_err(|_| {
-                EngineError::Unavailable("Password workers busy; retry shortly.".into())
-            })?;
+            let _password = app.password_permit()?;
             let hash = tokio::task::spawn_blocking(move || hash_password(&password))
                 .await
                 .map_err(EngineError::unavailable)??;
-            let ordering = app.mutations.metadata().await;
+            let ordering = app.mutations.metadata().await?;
             let (reply, pending) = app
                 .with_metadata(&ordering, move |engine| {
                     engine.prepare_provision(None, &name, hash, admin, reset)
@@ -165,7 +163,7 @@ async fn ordinary(app: &App, input: String) -> Result<String, EngineError> {
             })
             .await;
     }
-    let ordering = app.mutations.metadata().await;
+    let ordering = app.mutations.metadata().await?;
     let prepared = app
         .with_metadata(&ordering, move |engine| {
             engine.prepare_metadata(None, None, &input)
@@ -210,7 +208,7 @@ async fn action(app: &App, input: String) -> Result<String, EngineError> {
         .ok_or("Message not found in this conversation (it may have expired).")?;
     let ordering = app.mutations.conversation(id.clone()).await?;
     let _audit = if plan.action.is_retraction() {
-        Some(app.mutations.audit.lock().await)
+        Some(app.mutations.audit().await?)
     } else {
         None
     };
@@ -275,7 +273,7 @@ async fn cleanup(app: &App, input: String) -> Result<String, EngineError> {
     plan.count().await?;
     let reply = plan.report();
     let _audit = if !plan.preview && plan.has_matches() {
-        Some(app.mutations.audit.lock().await)
+        Some(app.mutations.audit().await?)
     } else {
         None
     };

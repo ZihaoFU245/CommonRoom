@@ -22,6 +22,8 @@ async fn live_socket_recovers_a_failed_read_without_another_broadcast_and_closes
     let server = tokio::spawn(super::super::http_server::serve(
         listener,
         super::super::router(app.clone()),
+        app.config.server.clone(),
+        app.admission.metrics.clone(),
         {
             let app = app.clone();
             async move {

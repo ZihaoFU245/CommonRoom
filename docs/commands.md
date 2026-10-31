@@ -172,7 +172,8 @@ not executable.
 `/system metrics --txt` returns the complete report in one plain text Markdown
 code block for sharing. Configuration is a Markdown JSON block; default metrics use Markdown tables and show
 cache hit rates, misses/evictions, shard occupancy, unread/snapshot results,
-database-pool statistics and current worker capacity. Counters are collected
+database-pool statistics, configured/available worker capacity, HTTP route latency
+buckets, connection occupancy, overload/timeouts and operation-ordering waits. Counters are collected
 cheaply since startup, with no periodic logging/profiling. See
 [Server caches and system metrics](cache.md) and `/man system` for definitions.
 

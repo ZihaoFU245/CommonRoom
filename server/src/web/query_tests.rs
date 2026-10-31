@@ -95,6 +95,14 @@ async fn contract(mut app: App) {
         .unwrap();
     assert!(metrics.starts_with("# System metrics"));
     assert!(metrics.contains("| `readers.open` |"));
+    for key in [
+        "io_jobs_limit",
+        "admission.http.rejections.io",
+        "admission.http.connections.peak",
+        "ordering.metadata.completed",
+    ] {
+        assert!(metrics.contains(&format!("| `{key}` |")), "{key}");
+    }
     assert!(command(&app, "bob", None, "/system").await.is_err());
     assert!(
         command(&app, "alice", None, "/system configs")

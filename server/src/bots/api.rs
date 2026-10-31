@@ -19,52 +19,64 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub(super) fn routes() -> Router<App> {
+pub(super) fn routes(registry: &mut crate::web::metrics::Registry) -> Router<App> {
+    let mut path = |path| registry.register("/api/bot/v1", path);
     Router::new()
         .nest(
             "/api/bot/v1",
             Router::new()
-                .route("/me", get(me))
-                .route("/credentials", post(credential))
-                .route("/conversations", post(conversation))
+                .route(path("/me"), get(me))
+                .route(path("/credentials"), post(credential))
+                .route(path("/conversations"), post(conversation))
                 .route(
-                    "/commands",
+                    path("/commands"),
                     get(super::control::commands).post(super::control::command),
                 )
                 .route(
-                    "/commands/receipts/{key}",
+                    path("/commands/receipts/{key}"),
                     get(super::control::command_receipt),
                 )
-                .route("/message-context", get(super::control::message_context))
-                .route("/history", get(history))
-                .route("/messages", post(message))
-                .route("/read", post(read))
-                .route("/reactions", put(react))
-                .route("/ws", get(upgrade))
-                .route("/schema", get(schema))
-                .route("/media/config", get(super::media::media_config))
-                .route("/media/uploads", post(super::media::media_allocate))
                 .route(
-                    "/media/uploads/{id}/complete",
+                    path("/message-context"),
+                    get(super::control::message_context),
+                )
+                .route(path("/history"), get(history))
+                .route(path("/messages"), post(message))
+                .route(path("/read"), post(read))
+                .route(path("/reactions"), put(react))
+                .route(path("/ws"), get(upgrade))
+                .route(path("/schema"), get(schema))
+                .route(path("/media/config"), get(super::media::media_config))
+                .route(path("/media/uploads"), post(super::media::media_allocate))
+                .route(
+                    path("/media/uploads/{id}/complete"),
                     post(super::media::media_complete),
                 )
                 .route(
-                    "/media/uploads/{id}/abandon",
+                    path("/media/uploads/{id}/abandon"),
                     post(super::media::media_abandon),
                 )
-                .route("/media/{id}/info", get(super::media::media_info))
-                .route("/media/{id}/file", get(super::media::media_download))
-                .route("/avatars", post(super::media::avatar_set))
-                .route("/avatars/uploads", post(super::media::avatar_allocate))
+                .route(path("/media/{id}/info"), get(super::media::media_info))
+                .route(path("/media/{id}/file"), get(super::media::media_download))
+                .route(path("/avatars"), post(super::media::avatar_set))
                 .route(
-                    "/avatars/uploads/{id}/complete",
+                    path("/avatars/uploads"),
+                    post(super::media::avatar_allocate),
+                )
+                .route(
+                    path("/avatars/uploads/{id}/complete"),
                     post(super::media::avatar_complete),
                 )
-                .route("/avatars/{id}/info", get(super::media::avatar_info))
-                .route("/avatars/{id}/file", get(super::media::avatar_download))
-                .route("/color", post(super::media::color_set)),
+                .route(path("/avatars/{id}/info"), get(super::media::avatar_info))
+                .route(
+                    path("/avatars/{id}/file"),
+                    get(super::media::avatar_download),
+                )
+                .route(path("/color"), post(super::media::color_set)),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(32768))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::limits::BOT_BODY_BYTES,
+        ))
 }
 
 #[cfg(test)]
@@ -293,7 +305,7 @@ async fn credential(
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_issuer_async(&app, &headers).await?;
-        let ordering = app.mutations.metadata().await;
+        let ordering = app.mutations.metadata().await?;
         let (result, pending) = app
             .with_metadata(&ordering, {
                 let context = context.clone();
@@ -329,7 +341,7 @@ async fn conversation(
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_async(&app, &headers).await?;
-        let ordering = app.mutations.metadata().await;
+        let ordering = app.mutations.metadata().await?;
         let (id, pending, store) = app
             .with_metadata(&ordering, {
                 let context = context.clone();

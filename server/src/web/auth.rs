@@ -160,12 +160,7 @@ pub(crate) async fn login(
         .map_err(|message| error(StatusCode::BAD_REQUEST, message))?;
     // Admit password work before reserving attempts. Busy workers must not spend
     // the caller's allowance, and login never occupies the general HTTP pool.
-    let permit = app.password_jobs.clone().try_acquire_owned().map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Login busy. Please try again shortly.",
-        )
-    })?;
+    let permit = app.password_permit().map_err(ApiError::from)?;
     let reservation = app
         .attempts
         .lock()
@@ -247,7 +242,7 @@ async fn login_inner(
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    let ordering = app.mutations.metadata().await;
+    let ordering = app.mutations.metadata().await?;
     let pending = app
         .with_metadata(&ordering, {
             let value = value.clone();
@@ -317,7 +312,7 @@ pub(crate) async fn logout(
         .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
     super::admission::spawn_io(permit, async move {
         if let Some(token) = token(&app.config, &headers).map(str::to_owned) {
-            let ordering = app.mutations.metadata().await;
+            let ordering = app.mutations.metadata().await?;
             let (user, pending) = app
                 .with_metadata(&ordering, move |engine| -> Result<_, ApiError> {
                     let user = engine.session(&token);

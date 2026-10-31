@@ -172,6 +172,8 @@ async fn preferences_commits_reach_every_connected_device_without_relogin() {
     let server = tokio::spawn(super::super::http_server::serve(
         listener,
         router(app.clone()),
+        app.config.server.clone(),
+        app.admission.metrics.clone(),
         {
             let app = app.clone();
             async move {

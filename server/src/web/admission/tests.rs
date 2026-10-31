@@ -177,3 +177,75 @@ async fn spawned_handlers_reuse_capture_and_recheck_revoked_sessions() {
         }).await.unwrap();
     }).await;
 }
+
+#[tokio::test]
+async fn configured_admission_limits_and_rejections_are_reported() {
+    let admission = Arc::new(Admission::new(crate::config::ServerConfig {
+        http_per_account: 1,
+        browser_sockets: 1,
+        bot_sockets: 2,
+        sockets_per_account: 1,
+        ..Default::default()
+    }));
+    let http = admission.http("alice".into()).unwrap();
+    assert!(admission.http("alice".into()).is_err());
+    let mut first = admission.socket("alice".into(), Profile::Browser).unwrap();
+    let replacement = admission.socket("alice".into(), Profile::Browser).unwrap();
+    first.cancelled().await;
+    assert!(admission.socket("bob".into(), Profile::Browser).is_err());
+    let stats = admission.stats();
+    assert_eq!(stats["http_active"], 1);
+    assert_eq!(stats["http"]["rejections"]["account"], 1);
+    assert_eq!(stats["http"]["rejections"]["socket"], 1);
+    assert_eq!(stats["http"]["socket_replacements"], 1);
+    drop((http, first, replacement));
+    assert_eq!(admission.stats()["http_active"], 0);
+    assert_eq!(admission.stats()["browser_sockets_available"], 1);
+}
+
+#[tokio::test]
+async fn shutdown_drains_configured_job_capacities() {
+    let mut app = crate::web::tests::login_test_app();
+    let mut config = (*app.config).clone();
+    config.server.io_jobs = 3;
+    config.server.password_jobs = 1;
+    app.config = Arc::new(config);
+    app.io_jobs = Arc::new(Semaphore::new(3));
+    app.password_jobs = Arc::new(Semaphore::new(1));
+    let io = app.io_permit().unwrap();
+    let password = app.password_jobs.clone().acquire_owned().await.unwrap();
+    app.stopping
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut drain = Box::pin(app.checkpoint_after_jobs());
+    assert!(futures_util::poll!(&mut drain).is_pending());
+    drop(io);
+    assert!(futures_util::poll!(&mut drain).is_pending());
+    drop(password);
+    tokio::time::timeout(std::time::Duration::from_secs(2), drain)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shared_worker_budgets_count_overload_and_recover_after_release() {
+    let mut app = crate::web::tests::login_test_app();
+    app.io_jobs = Arc::new(Semaphore::new(1));
+    app.password_jobs = Arc::new(Semaphore::new(1));
+    let io = app.io_permit().unwrap();
+    let password = app.password_permit().unwrap();
+    assert!(app.io_permit().is_err());
+    assert!(matches!(
+        app.password_permit(),
+        Err(crate::engine::EngineError::Unavailable(_))
+    ));
+    let metrics = app.admission.metrics.stats();
+    assert_eq!(metrics["io_jobs"]["active"], 1);
+    assert_eq!(metrics["io_jobs"]["peak"], 1);
+    assert_eq!(metrics["rejections"]["io"], 1);
+    assert_eq!(metrics["rejections"]["password"], 1);
+    drop((io, password));
+    assert_eq!(app.admission.metrics.stats()["io_jobs"]["active"], 0);
+    assert!(app.io_permit().is_ok());
+    assert!(app.password_permit().is_ok());
+}

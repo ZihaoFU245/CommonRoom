@@ -53,7 +53,7 @@ async fn inspection_scheduling_benchmark() {
 #[tokio::test]
 async fn cancelled_conversation_acquisitions_remove_weak_entries() {
     let coordinator = Arc::new(Coordinator::default());
-    let metadata = coordinator.metadata().await;
+    let metadata = coordinator.metadata().await.unwrap();
     for index in 0..600 {
         let mut acquisition = Box::pin(coordinator.conversation(format!("cancelled-{index}")));
         assert!(futures_util::poll!(&mut acquisition).is_pending());
@@ -96,7 +96,7 @@ async fn shutdown_yields_drain_permits_to_queued_metadata_recovery() {
     let mut app =
         crate::web::media::tests::app(Engine::open(std::path::Path::new(":memory:")).unwrap());
     app.io_jobs = Arc::new(tokio::sync::Semaphore::new(
-        usize::try_from(super::super::IO_JOBS).unwrap(),
+        usize::try_from(app.config.server.io_jobs).unwrap(),
     ));
     let id = {
         let mut engine = app.engine().unwrap();
@@ -124,7 +124,7 @@ async fn shutdown_yields_drain_permits_to_queued_metadata_recovery() {
     let occupied = app
         .io_jobs
         .clone()
-        .acquire_many_owned(super::super::IO_JOBS)
+        .acquire_many_owned(app.config.server.io_jobs)
         .await
         .unwrap();
     app.stopping
@@ -360,4 +360,32 @@ async fn conversations_order_independently_and_metadata_waits_for_publication() 
     let next = coordinator.conversation("next".into()).await.unwrap();
     drop(next);
     assert!(coordinator.conversations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ordering_deadlines_release_partial_locks_and_report_timeouts() {
+    let coordinator = Arc::new(Coordinator::new(Duration::from_millis(30)));
+    let held = coordinator.conversation("b".into()).await.unwrap();
+    assert!(matches!(
+        coordinator
+            .conversations(vec!["a".into(), "b".into()])
+            .await,
+        Err(EngineError::Unavailable(_))
+    ));
+    // The first lock in a partially acquired set must have been released.
+    let independent = coordinator.conversation("a".into()).await.unwrap();
+    assert!(coordinator.metadata().await.is_err());
+    let audit = coordinator.audit().await.unwrap();
+    assert!(coordinator.audit().await.is_err());
+    assert_eq!(coordinator.stats()["timeouts"], 3);
+    drop((held, independent, audit));
+    let metadata = coordinator.metadata().await.unwrap();
+    assert!(coordinator.conversation("a".into()).await.is_err());
+    drop(metadata);
+    assert!(coordinator.conversations.lock().unwrap().is_empty());
+    assert!(coordinator.conversation("a".into()).await.is_ok());
+    assert_eq!(coordinator.stats()["timeouts"], 4);
+    assert_eq!(coordinator.stats()["conversations"]["timeouts"], 2);
+    assert_eq!(coordinator.stats()["metadata"]["timeouts"], 1);
+    assert_eq!(coordinator.stats()["audit"]["timeouts"], 1);
 }
