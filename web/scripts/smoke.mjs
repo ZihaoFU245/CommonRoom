@@ -536,7 +536,7 @@ try {
   await send(bob, "/user ls", "study");
   assert.equal(
     bob.frames.find((frame) => frame.id === bob.serial).text,
-    "alice\nbob",
+    "alice(alice)\nbob(bob)",
   );
   await send(alice, "/user get bob @global", "study");
   const globalMetadata = JSON.parse(

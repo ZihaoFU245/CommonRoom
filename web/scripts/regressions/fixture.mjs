@@ -3663,8 +3663,9 @@ await test("closing scope menus hide scrollbars throughout their exit animation"
 await test("display name scopes default globally, save authorized room overrides and retain drafts", async () => {
   const { AccountEditor } =
     await import("../../src/components/settings/AccountEditor.tsx");
-  const { DisplayName, DisplayNamesContext } =
-    await import("../../src/components/DisplayName.tsx");
+  const { DisplayName } = await import("../../src/components/DisplayName.tsx");
+  const { DisplayNamesContext } =
+    await import("../../src/components/DisplayNamesContext.ts");
   let props = {
     state: {
       ...empty,
