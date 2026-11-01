@@ -2,6 +2,12 @@
 use super::super::{Error, Result, SQLITE_SCHEMA_VERSION, message::number};
 use sqlx::{Connection as _, Executor as _, SqliteConnection};
 
+/// v21 adds account sticker libraries; existing library uploads become entries.
+const STICKER_LIBRARY_SQL: &str = "CREATE TABLE IF NOT EXISTS sticker_library(owner TEXT NOT NULL, media_id TEXT NOT NULL REFERENCES media(id), created INTEGER NOT NULL, PRIMARY KEY(owner,media_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS sticker_library_media ON sticker_library(media_id);
+CREATE INDEX IF NOT EXISTS sticker_library_recent ON sticker_library(owner,created);
+INSERT OR IGNORE INTO sticker_library SELECT uploader,id,created FROM media WHERE conversation='@sticker' AND ready=1 AND deleting=0 AND deleted=0;";
+
 pub(in crate::engine::database) async fn initialize(
     db: &mut SqliteConnection,
     state: &str,
@@ -10,9 +16,10 @@ pub(in crate::engine::database) async fn initialize(
     let version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut *db)
         .await?;
-    if version != 0 && version != 19 && version != i64::from(SQLITE_SCHEMA_VERSION) {
+    if version != 0 && version != 19 && version != 20 && version != i64::from(SQLITE_SCHEMA_VERSION)
+    {
         return Err(Error::InvalidRequest(
-            "Unsupported database schema; only v19 upgrades and current v20 are supported.",
+            "Unsupported database schema; only v19/v20 upgrades and current v21 are supported.",
         ));
     }
     if version == 0 {
@@ -49,6 +56,12 @@ pub(in crate::engine::database) async fn initialize(
             .execute(&mut *tx)
             .await?;
         (&mut *tx).execute("PRAGMA user_version=20").await?;
+        tx.commit().await?;
+    }
+    if version == 19 || version == 20 {
+        let mut tx = db.begin().await?;
+        (&mut *tx).execute(STICKER_LIBRARY_SQL).await?;
+        (&mut *tx).execute("PRAGMA user_version=21").await?;
         tx.commit().await?;
     }
     (&mut *db)

@@ -91,6 +91,11 @@ const TABLES: &[Table] = &[
         ["conversation", "sequence", "media_id"],
         ["conversation", "sequence", "media_id"]
     ),
+    table!(
+        "sticker_library",
+        ["owner", "media_id", "created"],
+        ["owner", "media_id"]
+    ),
     Table {
         derived: true,
         ..table!(

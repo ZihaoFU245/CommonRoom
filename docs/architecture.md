@@ -228,7 +228,7 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. SQLite HEAD is v20; v19 upgrades atomically to explicit bot credential kinds. Unpublished PostgreSQL uses its independent v1 schema and has no historical WIP upgrade path. HEAD SQLite always transfers read-only into current PostgreSQL. Deletion retention aggregates once per statement/conversation. Unsupported schema markers are rejected unchanged.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. SQLite HEAD is v21; v19 upgrades atomically to explicit bot credential kinds and v20 to sticker libraries. Unpublished PostgreSQL uses its independent v1 schema and has no historical WIP upgrade path. HEAD SQLite always transfers read-only into current PostgreSQL. Deletion retention aggregates once per statement/conversation. Unsupported schema markers are rejected unchanged.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 256 pages, and default global budgets of 10,000 entries and 32 MiB of conservative payload accounting. `database.history_cache` tunes the global byte/message budgets at startup. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. Both caches use four conversation-hashed mutex shards; each shard receives one quarter of the global message, byte, page and unread-entry budgets. One hot shard cannot borrow another shard’s allowance. Recovery retains configured limits. Grant-authorized `/system configs` shows configuration and `/system metrics` shows lifetime cache counters, hit rates, shard occupancy and pool acquisition statistics as Markdown. Metrics use existing cache locks/counters without periodic profiling or logging; see [Cache metrics](cache.md).
 
@@ -313,7 +313,7 @@ background cleanup orchestration. `engine/media.rs` owns scoped authorization,
 scoped user metadata limits and configured quotas. `engine/media_store.rs` and
 owned media plans coordinate typed lifecycle operations; independent SQLite and
 PostgreSQL modules under `engine/database/` own media SQL, transactional message
-references, deletion claims and SQLite schema v20. `media.rs`
+references, sticker libraries, deletion claims and SQLite schema v21. `media.rs`
 provides the S3 transport through rust-s3. Storage network calls run outside engine
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe

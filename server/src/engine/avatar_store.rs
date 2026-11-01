@@ -46,6 +46,7 @@ impl Engine {
                 expires: None,
                 deleting: false,
                 deleted: false,
+                content_digest: None,
             },
         })
     }

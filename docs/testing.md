@@ -39,7 +39,7 @@ reaction-heavy page before decoding, complete reaction users in either direction
 and pagination progress for a single oversized message. Bulk-deletion EXPLAIN
 requires exactly one retention trigger invocation per statement; partial/full
 multi-conversation deletes preserve counts/oldest and roll back atomically.
-The offline transfer contract explicitly requires HEAD SQLite v20 and checks the
+The offline transfer contract explicitly requires HEAD SQLite v21 and checks the
 PostgreSQL v1 marker, retained data and unchanged source bytes. Other schema
 versions (including PostgreSQL v2) are rejected unchanged. Idle-pool coverage reclaims
 readers to zero while preserving the writer floor and dedicated ownership.
@@ -237,7 +237,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover HEAD SQLite v20 initialization and restart, lazy history loading, state/cursor preservation, unchanged v20 reopen, atomic v19-to-v20 credential upgrades, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover HEAD SQLite v21 initialization and restart, lazy history loading, state/cursor preservation, unchanged v21 reopen, atomic v19-to-v20 credential upgrades, v20-to-v21 sticker-library backfill, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -364,7 +364,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, HEAD SQLite v20 initialization and restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, HEAD SQLite v21 initialization and restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),

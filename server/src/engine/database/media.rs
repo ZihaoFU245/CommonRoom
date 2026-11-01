@@ -16,6 +16,24 @@ pub(crate) enum MediaWrite<'a> {
         allocation: MediaAllocation<'a>,
         pending_ttl: u64,
     },
+    /// Counts library entries and pending sticker uploads under the uploader lock.
+    StickerAllocate {
+        allocation: MediaAllocation<'a>,
+        limit: u64,
+    },
+    /// Removes one library entry; the object remains while anything references it.
+    DeleteSticker {
+        id: &'a str,
+        owner: &'a str,
+        at: u64,
+    },
+    /// Adds a library entry for an existing sticker object; repeats are no-ops.
+    CollectSticker {
+        id: &'a str,
+        owner: &'a str,
+        at: u64,
+        limit: u64,
+    },
     Ready {
         media: &'a Media,
         at: u64,
@@ -102,8 +120,58 @@ impl super::Connection {
         };
         self.checked(result)
     }
+    async fn stickers_async(&mut self, owner: &str) -> Result<Vec<Media>> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => super::sqlite::media::stickers(db, owner).await,
+            Backend::Postgres(db) => super::postgres::media::stickers(db, owner).await,
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+    async fn sticker_reach_async(&mut self, id: &str, owner: &str) -> Result<StickerReach> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => super::sqlite::media::sticker_reach(db, id, owner).await,
+            Backend::Postgres(db) => super::postgres::media::sticker_reach(db, id, owner).await,
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+    async fn sticker_digest_taken_async(&mut self, owner: &str, digest: &str) -> Result<bool> {
+        self.ensure_available()?;
+        let result = match self.backend.get_mut() {
+            Backend::Sqlite(db) => {
+                super::sqlite::media::sticker_digest_taken(db, owner, digest).await
+            }
+            Backend::Postgres(db) => {
+                super::postgres::media::sticker_digest_taken(db, owner, digest).await
+            }
+            Backend::Closed => Err(Error::Conversion("Database closed")),
+        };
+        self.checked(result)
+    }
+}
+/// Paths through which one account may reach a sticker object.
+#[derive(Default)]
+pub(crate) struct StickerReach {
+    pub(crate) owned: bool,
+    /// Conversations with a message that references the sticker.
+    pub(crate) conversations: Vec<String>,
 }
 impl super::Handle {
+    pub(crate) async fn stickers(&self, owner: &str) -> Result<Vec<Media>> {
+        let mut session = self.acquire_read().await?;
+        session.stickers_async(owner).await
+    }
+    pub(crate) async fn sticker_reach(&self, id: &str, owner: &str) -> Result<StickerReach> {
+        let mut session = self.acquire_read().await?;
+        session.sticker_reach_async(id, owner).await
+    }
+    pub(crate) async fn sticker_digest_taken(&self, owner: &str, digest: &str) -> Result<bool> {
+        let mut session = self.acquire_read().await?;
+        session.sticker_digest_taken_async(owner, digest).await
+    }
     #[cfg(test)]
     pub(crate) fn media_write_blocking(&self, request: &MediaWrite<'_>) -> Result<MediaCommit> {
         super::runtime::run(self.media_write(request))
