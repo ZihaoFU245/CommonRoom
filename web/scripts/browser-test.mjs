@@ -112,7 +112,7 @@ try {
     });
   }
   const { targetId } = await command("Target.createTarget", {
-    url: `http://127.0.0.1:${address.port}/scripts/regressions/index.html`,
+    url: `http://127.0.0.1:${address.port}/scripts/regressions/index.html${process.argv[2] ? `?${new URLSearchParams({ test: process.argv[2] })}` : ""}`,
   });
   const { sessionId } = await command("Target.attachToTarget", {
     targetId,

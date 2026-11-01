@@ -50,6 +50,12 @@ rtk pnpm --dir web format
 
 ## Coverage
 
+Run browser regressions with `rtk pnpm --dir web test:browser`. Pass a test-name
+substring to isolate a cold-browser scenario, for example
+`rtk pnpm --dir web test:browser 'history navigation starts unread'`.
+Unread-entry checks ensure the unread shortcut stays hidden at the boundary and
+appears when scrolling above it.
+
 `virtualTimelineHook.test.js` checks render suppression within a virtual window,
 latest-position paging anchors, observer-based row resizing and bottom following.
 Its DOM-commit simulation clamps scroll offsets before layout effects to cover

@@ -94,7 +94,7 @@ export function useReadTracking({
       const unreadAhead =
         away &&
         unreadTarget !== undefined &&
-        (sequence === undefined || sequence <= unreadTarget);
+        (sequence === undefined || sequence < unreadTarget);
       return previous.identity === identity &&
         previous.bottom === bottom &&
         previous.unread === unreadAhead

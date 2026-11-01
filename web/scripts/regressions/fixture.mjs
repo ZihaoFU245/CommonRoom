@@ -856,6 +856,71 @@ await test("keyboard history paging works without scroll overflow and ignores ed
   check(newer === 1, "unmount removes keyboard listeners");
 });
 
+await test("unread shortcut hides at its target and returns only above it", async () => {
+  api.read = async () => ({ ok: true });
+  const viewport = document.createElement("section");
+  viewport.style.cssText = "height:200px;overflow:auto";
+  const content = document.createElement("div");
+  content.style.height = "2000px";
+  viewport.append(content);
+  tests.append(viewport);
+  let sequence = 90;
+  const context = {
+    selected: "a",
+    conversationId: "a-id",
+    unread: { first: 90, count: 11, oldest: 1, through: 100 },
+    messages: [80, 90, 100].map(message),
+    historyReady: true,
+    output: [],
+    cleared: {},
+    resetCleared() {},
+    settingsOpen: false,
+    menu: false,
+    status: "online",
+    loadSequence() {
+      throw new Error("target is already loaded");
+    },
+    virtualTimeline: {
+      current: {
+        position: () => ({ sequence, offset: 0 }),
+        scrollToSequence: (target) => {
+          sequence = target;
+        },
+      },
+    },
+    atBottom: { current: false },
+    historyElement: { current: viewport },
+    hasAfter: true,
+  };
+  const p = probe(() => useReadTracking(context));
+  try {
+    p.update();
+    await sleep(50);
+    check(
+      !p.current.showJumpToUnread,
+      "initial entry at unread target has no unread shortcut",
+    );
+    sequence = 80;
+    p.current.updateNavigation();
+    await until(() => p.current.showJumpToUnread);
+    sequence = 90;
+    p.current.updateNavigation();
+    await until(() => !p.current.showJumpToUnread);
+    sequence = 100;
+    p.current.updateNavigation();
+    await sleep(30);
+    check(
+      !p.current.showJumpToUnread,
+      "reading past the target does not offer a backward unread jump",
+    );
+    sequence = 80;
+    p.current.updateNavigation();
+    await until(() => p.current.showJumpToUnread);
+  } finally {
+    p.close();
+  }
+});
+
 await test("unread navigation resolves a deleted target after paging and within loaded history", async () => {
   api.read = async () => ({ ok: true });
   const viewport = document.createElement("section");
@@ -1167,6 +1232,10 @@ for (const width of [1100, 360]) {
           }),
       );
       await sleep(180);
+      check(
+        !button("Jump to unread ↓"),
+        "entry at the first unread message does not offer a redundant unread jump",
+      );
       check(
         !button("Older messages") &&
           !button("Newer messages") &&
