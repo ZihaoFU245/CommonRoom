@@ -169,6 +169,21 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
         .0,
         StatusCode::TEMPORARY_REDIRECT
     );
+    let link = request(
+        &app,
+        "bob",
+        "GET",
+        &format!("/api/avatars/{id}/link"),
+        json!(null),
+    )
+    .await;
+    assert_eq!(link.0, StatusCode::OK, "{}", link.1);
+    let signed = url::Url::parse(link.1["url"].as_str().unwrap()).unwrap();
+    assert!(
+        signed
+            .query_pairs()
+            .any(|(key, _)| key == "X-Amz-Signature")
+    );
     {
         let mut engine = app.engine().unwrap();
         engine

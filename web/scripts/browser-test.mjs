@@ -6,9 +6,14 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { createServer } from "vite";
 import WebSocket from "ws";
+import {
+  startRemoteServer,
+  runRemoteServer,
+} from "./remote-server-browser.mjs";
 
 // Use an installed browser and an isolated profile; no backend or account data.
 const root = fileURLToPath(new URL("../", import.meta.url));
+const remote = process.argv[2] === "--remote-server";
 const candidates = process.env.CHROME_BIN
   ? [process.env.CHROME_BIN]
   : [
@@ -32,20 +37,32 @@ if (!executable)
     "Install Chrome/Chromium or set CHROME_BIN to its executable.",
   );
 const profile = await mkdtemp(join(tmpdir(), "chatroom-web-browser-"));
-let server, browser, socket;
+let server, browser, socket, fixture;
+const events = [];
 const pending = new Map();
 let serial = 0;
 try {
   server = await createServer({
     root,
     configFile: resolve(root, "vite.config.ts"),
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+      strictPort: false,
+      ...(remote ? { allowedHosts: ["ui.test"], hmr: false } : {}),
+    },
     logLevel: "error",
   });
   await server.listen();
   const address = server.httpServer.address();
   if (!address || typeof address === "string")
     throw new Error("Missing Vite test listener.");
+  if (remote)
+    fixture = await startRemoteServer(
+      root,
+      address.port,
+      process.argv[3] === "*",
+    );
   browser = spawn(
     executable,
     [
@@ -53,6 +70,14 @@ try {
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
+      ...(remote
+        ? [
+            "--ignore-certificate-errors",
+            "--no-proxy-server",
+            "--host-resolver-rules=MAP ui.test 127.0.0.1, MAP api.test 127.0.0.1, MAP store.test 127.0.0.1",
+            "--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd",
+          ]
+        : []),
       "--remote-debugging-port=0",
       `--user-data-dir=${profile}`,
       "about:blank",
@@ -86,6 +111,7 @@ try {
   await once(socket, "open");
   socket.on("message", (raw) => {
     const message = JSON.parse(String(raw));
+    if (message.method) events.push(message);
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
@@ -112,7 +138,9 @@ try {
     });
   }
   const { targetId } = await command("Target.createTarget", {
-    url: `http://127.0.0.1:${address.port}/scripts/regressions/index.html${process.argv[2] ? `?${new URLSearchParams({ test: process.argv[2] })}` : ""}`,
+    url:
+      fixture?.url ??
+      `http://127.0.0.1:${address.port}/scripts/regressions/index.html${process.argv[2] ? `?${new URLSearchParams({ test: process.argv[2] })}` : ""}`,
   });
   const { sessionId } = await command("Target.attachToTarget", {
     targetId,
@@ -129,25 +157,46 @@ try {
     sessionId,
   );
   await command("Page.bringToFront", {}, sessionId);
-  const deadline = Date.now() + 45000;
-  let result;
-  while (Date.now() < deadline) {
-    const evaluation = await command(
-      "Runtime.evaluate",
-      { expression: "window.browserTestResults ?? null", returnByValue: true },
-      sessionId,
-    );
-    result = evaluation.result.value;
-    if (result) break;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  if (fixture) {
+    try {
+      await runRemoteServer({ command, sessionId, fixture, events });
+    } catch (error) {
+      const diagnostic = await command(
+        "Runtime.evaluate",
+        { expression: "document.body.innerText", returnByValue: true },
+        sessionId,
+      );
+      throw new Error(
+        `${error.stack}\nBrowser: ${diagnostic.result.value}\nServer: ${fixture.logs}`,
+        { cause: error },
+      );
+    }
+  } else {
+    const deadline = Date.now() + 45000;
+    let result;
+    while (Date.now() < deadline) {
+      const evaluation = await command(
+        "Runtime.evaluate",
+        {
+          expression: "window.browserTestResults ?? null",
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      result = evaluation.result.value;
+      if (result) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    if (!result)
+      throw new Error(
+        "Browser regressions timed out before producing results.",
+      );
+    for (const test of result)
+      console.log(
+        `${test.error ? "FAIL" : "PASS"} ${test.name}${test.error ? `\n${test.error}` : ""}`,
+      );
+    if (result.some((test) => test.error)) process.exitCode = 1;
   }
-  if (!result)
-    throw new Error("Browser regressions timed out before producing results.");
-  for (const test of result)
-    console.log(
-      `${test.error ? "FAIL" : "PASS"} ${test.name}${test.error ? `\n${test.error}` : ""}`,
-    );
-  if (result.some((test) => test.error)) process.exitCode = 1;
 } finally {
   for (const request of pending.values()) {
     clearTimeout(request.timer);
@@ -161,6 +210,7 @@ try {
     await exited;
     clearTimeout(force);
   }
+  await fixture?.close();
   server?.httpServer?.closeAllConnections();
   await server?.close();
   await rm(profile, { recursive: true, force: true });

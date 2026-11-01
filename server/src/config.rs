@@ -303,6 +303,14 @@ impl Default for Config {
     }
 }
 impl Config {
+    /// Wildcard browser access still requires a concrete, supported web origin.
+    pub(crate) fn allows_origin(&self, origin: &str) -> bool {
+        valid_origin(origin, self.production)
+            && self
+                .origins
+                .iter()
+                .any(|allowed| allowed == "*" || allowed == origin)
+    }
     /// Read backend selection without normalizing or writing configuration. The
     /// selected database/folder owner must be acquired before settings are saved.
     pub fn read_database(data: &std::path::Path) -> Result<DatabaseConfig, String> {
@@ -368,26 +376,16 @@ impl Config {
             !cfg!(debug_assertions) || std::env::var("CHAT_PRODUCTION").as_deref() == Ok("1");
         let production = production || saved.as_ref().is_some_and(|c| c.production);
         let origins = if production {
-            let origin = std::env::var("CHAT_ORIGIN")
+            std::env::var("CHAT_ORIGIN")
                 .ok()
+                .map(|origin| vec![origin])
                 .or_else(|| {
                     saved
                         .as_ref()
                         .filter(|c| c.production)
-                        .and_then(|c| c.origins.first().cloned())
+                        .map(|c| c.origins.clone())
                 })
-                .ok_or("First production start requires CHAT_ORIGIN=https://your-host")?;
-            let uri: axum::http::Uri = origin.parse().map_err(|_| "Invalid CHAT_ORIGIN")?;
-            if uri.scheme_str() != Some("https")
-                || uri.authority().is_none()
-                || uri.path_and_query().is_some_and(|p| p.as_str() != "/")
-                || origin.ends_with('/')
-            {
-                return Err(
-                    "CHAT_ORIGIN must be an HTTPS origin without a trailing slash or path.".into(),
-                );
-            }
-            vec![origin]
+                .ok_or("First production start requires CHAT_ORIGIN=https://your-host")?
         } else {
             saved
                 .as_ref()
@@ -450,6 +448,15 @@ impl Config {
                 .map_err(|_| "set_real_ip_from must be a valid HTTP header name or null.")?;
         }
         config.media.validate()?;
+        if config.origins.is_empty()
+            || config.origins.len() > 32
+            || config
+                .origins
+                .iter()
+                .any(|origin| origin != "*" && !valid_origin(origin, config.production))
+        {
+            return Err("origins must contain 1 to 32 exact HTTP(S) origins without paths or trailing slashes, or '*'; production requires HTTPS.".into());
+        }
         if config.direct_bot_http && !private_peer(config.trust) {
             return Err("direct_bot_http requires a loopback or private trusted peer.".into());
         }
@@ -479,6 +486,16 @@ impl Config {
         }
         Ok(config)
     }
+}
+fn valid_origin(origin: &str, production: bool) -> bool {
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    matches!(uri.scheme_str(), Some("https") | Some("http"))
+        && (!production || uri.scheme_str() == Some("https"))
+        && uri.authority().is_some_and(|a| !a.as_str().contains('@'))
+        && uri.path_and_query().is_none_or(|p| p.as_str() == "/")
+        && !origin.ends_with('/')
 }
 fn persist_config(
     data: &std::path::Path,
@@ -898,6 +915,68 @@ mod tests {
         std::fs::write(&path, r#"{"set_real_ip_from":null}"#).unwrap();
         assert!(Config::load(dir.path()).unwrap().set_real_ip_from.is_none());
         assert!(Config::load(dir.path()).unwrap().set_real_ip_from.is_none());
+    }
+
+    #[test]
+    fn origins_are_explicit_and_invalid_values_do_not_rewrite_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for origin in [
+            "null",
+            "https://ui.example.com/",
+            "https://ui.example.com/chat",
+            "https://user@ui.example.com",
+            "ftp://ui.example.com",
+        ] {
+            let raw = serde_json::json!({"origins":[origin]}).to_string();
+            std::fs::write(&path, &raw).unwrap();
+            assert!(Config::load(dir.path()).is_err(), "{origin}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+        std::fs::write(&path, r#"{"origins":["https://ui.example.com"]}"#).unwrap();
+        assert_eq!(
+            Config::load(dir.path()).unwrap().origins,
+            ["https://ui.example.com"]
+        );
+        std::fs::write(&path, r#"{"origins":["*"]}"#).unwrap();
+        let mut config = Config::load(dir.path()).unwrap();
+        assert!(config.allows_origin("https://any.example.com"));
+        assert!(config.allows_origin("http://localhost:5173"));
+        config.production = true;
+        assert!(config.allows_origin("https://another.example.com"));
+        for origin in [
+            "null",
+            "*",
+            "http://ui.example.com",
+            "https://ui.example.com/",
+            "https://ui.example.com/path",
+            "https://user@ui.example.com",
+        ] {
+            assert!(!config.allows_origin(origin), "{origin}");
+        }
+    }
+
+    #[test]
+    fn production_preserves_every_configured_origin_and_wildcard_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for origins in [
+            vec!["https://one.example.com", "https://two.example.com"],
+            vec!["*"],
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::json!({"production":true,"origins":origins}).to_string(),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                let config = Config::load(dir.path()).unwrap();
+                assert_eq!(config.origins, origins);
+                assert!(config.allows_origin("https://one.example.com"));
+                assert!(config.allows_origin("https://two.example.com"));
+                assert!(!config.allows_origin("http://one.example.com"));
+            }
+        }
     }
 }
 

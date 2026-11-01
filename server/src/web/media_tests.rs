@@ -207,6 +207,18 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
     .await;
     assert_eq!(reserved.0, StatusCode::OK, "{}", reserved.1);
     let id = reserved.1["media_id"].as_str().unwrap();
+    assert_eq!(
+        request(
+            &app,
+            "alice",
+            "GET",
+            &format!("/api/media/{id}/link"),
+            json!(null)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(app.engine_read().unwrap().data.private.len(), 1);
     assert!(changes.try_recv().is_err(), "reservation must stay silent");
     assert_eq!(
@@ -286,6 +298,36 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
         .0,
         StatusCode::TEMPORARY_REDIRECT
     );
+    for download in [false, true] {
+        let link = request(
+            &app,
+            "bob",
+            "GET",
+            &format!("/api/media/{id}/link?download={download}"),
+            json!(null),
+        )
+        .await;
+        assert_eq!(link.0, StatusCode::OK, "{}", link.1);
+        let url = url::Url::parse(link.1["url"].as_str().unwrap()).unwrap();
+        assert!(url.query_pairs().any(|(key, _)| key == "X-Amz-Signature"));
+        assert!(
+            url.query_pairs()
+                .any(|(key, value)| key == "response-content-disposition"
+                    && value.starts_with(if download { "attachment" } else { "inline" }))
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "carol",
+            "GET",
+            &format!("/api/media/{id}/link"),
+            json!(null)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         request(
             &app,
@@ -306,6 +348,18 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
         .unwrap()
         .execute(None, None, "/revoke bob user")
         .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            "bob",
+            "GET",
+            &format!("/api/media/{id}/link"),
+            json!(null)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         request(
             &app,

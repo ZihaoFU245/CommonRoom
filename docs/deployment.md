@@ -88,15 +88,15 @@ Resulting layout:
   data/          # created on first start
 ```
 
-The first production start must know the public origin, because release builds enforce
-HTTPS and origin checks:
+The first production start must configure allowed browser origins, because release
+builds enforce HTTPS and origin checks:
 
 ```sh
 CHAT_ORIGIN=https://chat.example.com ./chat
 ```
 
 Later starts need no variables: `./chat`. `CHAT_ORIGIN` must be an HTTPS origin with no
-path or trailing slash.
+path or trailing slash, or `*` to allow all HTTPS web clients.
 
 The listener defaults to `127.0.0.1:3000` and serves only `/api/` and `/ws`. Data lives
 in `./data` unless `CHAT_DATA` says otherwise. The directory is created on first start,
@@ -145,7 +145,7 @@ are read at startup.
 | `trust` | `127.0.0.1` | The single proxy IP allowed to connect. Enforced in production. |
 | `set_real_ip_from` | `"X-Forwarded-For"` | Header carrying the real client IP for login throttling; `null` disables it. |
 | `base_url` | `"/"` | Path prefix for the API, WebSocket, and UI URLs. |
-| `origins` | local dev origins (`localhost:5173`, `localhost:3000`) | Browser origins accepted for login, logout, read acks, and WebSocket auth. |
+| `origins` | local dev origins (`localhost:5173`, `localhost:3000`) | Single allowlist for browser API/CORS and WebSocket access. Supports multiple exact origins or `["*"]`; HTTPS only in production. |
 | `max_users` | `64` | Accounts, including disabled ones. |
 | `max_rooms` | `64` | Rooms. |
 | `max_messages` | `1000` | Retained messages per room and per private conversation; the oldest are evicted. |
@@ -168,8 +168,10 @@ changing it.
 
 `origins` entries are scheme, host, and optional port, never a path: use
 `https://chat.example.com`, not `https://chat.example.com/commonroom/`. Production
-requires HTTPS. To change the production origin later, start once with the new
-`CHAT_ORIGIN`; it is saved. The storage public origin must not be listed here; the server
+requires HTTPS. All entries are preserved across restarts; none is a primary
+origin. Use up to 32 entries, or `["*"]` to allow any supported web origin.
+`CHAT_ORIGIN`, when set, replaces the entire saved list with that one origin
+(or `*`); edit the list in `config.json` to configure multiple origins. The storage public origin must not be listed here; the server
 refuses to start if one matches.
 
 Limits are positive integers. Lowering an account or room limit preserves existing data
@@ -188,7 +190,7 @@ rejected at startup.
 | --- | --- |
 | `CHAT_DATA` | Data folder. Default `./data`. |
 | `CHAT_DATABASE_URL` | PostgreSQL connection secret, required only when the selected config sets `database.backend=postgres`; never saved. |
-| `CHAT_ORIGIN` | Public HTTPS origin, e.g. `https://chat.example.com`. Required on the first production start and saved. |
+| `CHAT_ORIGIN` | One HTTPS origin or `*`. Required on first production start; replaces and saves the complete `origins` list. |
 | `CHAT_BIND` | Listener address. Saved when overridden. |
 | `CHAT_TRUST` | Proxy IP. Saved when overridden. |
 | `CHAT_BASE_URL` | Path prefix. Saved when overridden. |
@@ -425,7 +427,7 @@ operations at once. Keep the API proxy timeout at 130s or more.
    CSP](#storage-headers-and-csp)).
 7. Upload a file through the UI and verify it renders, downloads, and can be retracted.
 
-The storage origin must differ from every value in `origins`; the server exits at startup
+The storage origin must differ from every explicit entry in `origins`; the server exits at startup
 with `Media storage must use a separate origin from the chat application.` This keeps
 chat cookies away from media responses and makes CSP scoping possible.
 
@@ -724,6 +726,39 @@ Stop chat (and RustFS, if self-hosted) before copying, or snapshot consistently.
 the SQLite database and the bucket together: a database restored without its objects has
 broken messages, and objects restored without the database have no permissions or
 references. Do not copy `data/` while the server is running.
+
+## Connecting a separately hosted web client
+
+The login page’s gear button saves a server URL such as
+`chat.example.com/server` and connects from the current page. The server must use
+`base_url: "/server/"`. To permit a UI at `https://ui.example.com`, include the
+UI in `"origins": ["https://chat.example.com", "https://ui.example.com"]` in the
+backend configuration and restart. This is an explicit credentialed browser access grant; use origins you
+control. To accept any HTTPS web client, set `"origins": ["*"]` instead
+(HTTP clients are also accepted in development). The server echoes the concrete
+request Origin with credentials enabled; it never emits a literal CORS wildcard.
+This trusts every supported website to use available session cookies, so use it
+only when you intend that access. Opaque `null` origins remain rejected.
+
+The Rust API response CSP includes every configured HTTPS/WSS origin (or
+`https: wss:` for `*`); it does not govern the separately served HTML page.
+The UI host’s CSP must allow the selected HTTPS API and WSS host in `connect-src`
+and its media host in `media-src`. The supplied Nginx policy defaults to its own
+host, so update both UI and hashed-asset policies for a separate backend. Preserve
+Origin, Cookie, Set-Cookie, preflight headers, and the backend’s CORS response
+headers through the reverse proxy. Cross-site sessions also require browser
+permission for third-party cookies. Prefer hosts on the same site when that
+permission is unavailable.
+
+For another API origin, the UI resolves media/avatar `/link` endpoints with
+credentialed CORS and loads the returned short-lived signed URLs directly from
+storage. Storage receives no chat credentials; HTML/SVG source fetches use
+credentialless CORS. Storage CORS must allow the UI’s origin for GET/HEAD previews
+and PUT uploads, including the documented upload headers. Storage may use `*`
+for these credentialless requests when accepting arbitrary web clients. Native downloads
+navigate directly to signed attachment URLs without buffering files in the UI.
+Local UI assets and the media service worker remain on the UI host; remote files
+use the network rather than its same-origin private media cache.
 
 ## External agent workers
 

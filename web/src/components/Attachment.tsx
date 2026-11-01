@@ -1,4 +1,7 @@
 import { HtmlCover } from "./HtmlCover.tsx";
+import { MediaDownload } from "./MediaDownload.tsx";
+import { useFileUrl } from "../hooks/useFileUrl.ts";
+import { serverBaseUrl } from "../api/server.ts";
 import { HtmlSource } from "./HtmlSource.tsx";
 import { lazy, Suspense } from "preact/compat";
 import type { ComponentChildren } from "preact";
@@ -42,6 +45,7 @@ export function Attachment({
     position: 0,
     resume: false,
   });
+  const file = useFileUrl(href, playback.version);
   const request = useRef<AbortController | null>(null);
   const player = useRef<HTMLMediaElement | null>(null);
   const failures = useRef(0);
@@ -71,7 +75,11 @@ export function Attachment({
         throw new Error(
           "Preview is limited to 1 MiB. Download this file instead.",
         );
-      setSource(await documentSource(media.path, controller.signal));
+      const path =
+        new URL(serverBaseUrl()).origin === new URL(document.baseURI).origin
+          ? media.path
+          : (await api.fileLink("media", id, false, controller.signal)).url;
+      setSource(await documentSource(path, controller.signal));
     } catch (failure) {
       if (!controller.signal.aborted)
         setError(
@@ -88,7 +96,7 @@ export function Attachment({
       player.current?.play().catch(() => {
         /* Native Play remains available. */
       });
-  }, [playback]);
+  }, [playback, file.url]);
   function playbackError() {
     const element = player.current;
     if (!element) return;
@@ -119,7 +127,7 @@ export function Attachment({
     },
     // The authenticated file endpoint supplies verified MIME and live access
     // checks. Native controls can wait for Play without a metadata request.
-    src: `${href}?playback=${playback.version}`,
+    src: file.url === href ? `${href}?playback=${playback.version}` : file.url,
     controls: true,
     preload: "none" as const,
     onLoadedMetadata: loaded,
@@ -159,7 +167,7 @@ export function Attachment({
   );
   return (
     <span class="attachment-viewer">
-      {!isDocument && error && (
+      {!isDocument && (error || file.error) && (
         <span class="attachment-actions">
           <button
             type="button"
@@ -177,8 +185,14 @@ export function Attachment({
           </button>
         </span>
       )}
-      {!isDocument && error && <span role="status">{error}</span>}
+      {!isDocument && (error || file.error) && (
+        <span role="status">{error || file.error}</span>
+      )}
+      {!isDocument && !file.url && !file.error && (
+        <span role="status">Loading file…</span>
+      )}
       {!isDocument &&
+        file.url &&
         (kind === "video" ? (
           <video {...mediaProps} playsInline />
         ) : (
@@ -213,15 +227,14 @@ export function Attachment({
           )}
         </HtmlCover>
       )}
-      <a
-        class="attachment-download"
+      <MediaDownload
+        id={id}
+        className="attachment-download"
         href={`${href}?download=true`}
-        target="_blank"
-        rel="noopener noreferrer"
       >
         {isDocument && "Download "}
         {children}
-      </a>
+      </MediaDownload>
     </span>
   );
 }

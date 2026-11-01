@@ -1,4 +1,6 @@
+import { serverBaseUrl } from "../api/server.ts";
 import { useState } from "preact/hooks";
+import { useFileUrl } from "../hooks/useFileUrl.ts";
 import { avatarSource } from "../features/preferences/avatar.ts";
 import { useExternalAvatars } from "../hooks/useExternalAvatars.ts";
 export function Avatar({
@@ -17,7 +19,9 @@ export function Avatar({
   preview?: string;
 }) {
   const [external] = useExternalAvatars();
-  const source = preview ?? avatarSource(url, document.baseURI, external);
+  const source = useFileUrl(
+    preview ?? avatarSource(url, serverBaseUrl(), external),
+  ).url;
   const [shown, setShown] = useState<{
     source: string;
     name: string;

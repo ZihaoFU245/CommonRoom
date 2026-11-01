@@ -53,12 +53,15 @@ Audio/video and HTML/SVG use ordinary Markdown links with a display-hint title
 activate attachment controls. Hints never authorize access or determine the
 trusted MIME. Document preview requests `/api/media/UUID/info`, which checks
 publication, expiry and current conversation read permission without S3 I/O.
-Audio/video use the authenticated file endpoint directly; its verified MIME and
-current authorization checks apply before redirecting to storage.
+Audio/video use the authenticated file endpoint on same-origin deployments; its
+verified MIME and current authorization checks apply before redirecting to storage.
+With a remote API, `/link` resolves the same authorized signed storage URL first,
+and the player loads it directly without a credentialed redirect chain.
 
 Native audio/video controls appear immediately with no extra Play button, no
 autoplay attribute and `preload="none"`. The browser defers file loading until
-its Play control is used; no preliminary metadata request is needed. Preload is
+its Play control is used. Same-origin playback needs no preliminary metadata
+request; a remote API requires a signed-link request before displaying the player. Preload is
 a browser hint rather than an access restriction. The app refreshes a failed S3
 redirect through the authenticated file endpoint, preserving playback position;
 repeated failures before successful playback stop with Retry/download controls.
@@ -127,6 +130,16 @@ require another download. Cache Storage retains local downloaded copies across
 sessions; it contains no credentials and never supplies an offline authorization
 fallback. Clear site data to erase these local copies.
 A downloaded copy cannot be revoked; an issued URL can remain usable until expiry.
+
+Remote web clients resolve `GET /api/media/UUID/link` (optional
+`?download=true`) or `GET /api/avatars/UUID/link` with a session cookie and allowed
+Origin. These endpoints reuse the file routes’ signing and authorization checks,
+return `{url}`, and use `no-store`. Downloads navigate directly to the signed
+attachment URL; images, avatars and players load signed inline URLs. HTML/SVG
+source fetches omit credentials to storage. Signed URLs stay in component memory,
+expire within the same 60-second bound, and are refreshed on playback retry.
+Remote files bypass the UI host’s same-origin service-worker cache. Show text
+remains available when Allow HTML rendering is disabled.
 
 ## Configuration
 

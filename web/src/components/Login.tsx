@@ -5,6 +5,7 @@ import type { Snapshot } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
 import { Brand } from "./Brand.tsx";
+import { LoginServerSettings } from "./LoginServerSettings.tsx";
 
 export function Login({
   onLogin,
@@ -77,6 +78,13 @@ export function Login({
           </button>
         </form>
       </section>
+      <LoginServerSettings
+        disabled={busy}
+        onSave={() => {
+          setPassword("");
+          setError("");
+        }}
+      />
     </main>
   );
 }

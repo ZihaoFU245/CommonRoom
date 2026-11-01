@@ -170,7 +170,19 @@ rtk pnpm --dir web format
 
 ## Coverage
 
-Run browser regressions with `rtk pnpm --dir web test:browser`. Pass a test-name
+Run browser regressions with `rtk pnpm --dir web test:browser`.
+After `rtk cargo build --locked`, run
+`rtk pnpm --dir web test:browser --remote-server` and
+`rtk pnpm --dir web test:browser --remote-server '*'` for exact-origin and wildcard
+production-mode browser integration. These scenarios use disposable Rust data,
+accounts, a local S3 protocol fixture, ephemeral self-signed TLS certificates,
+and separate `ui.test`, `api.test`, and `store.test` hosts. They verify saved
+server settings, cross-site Secure/HttpOnly/SameSite=None cookies, WSS messaging,
+media upload, image/avatar/audio access, HTML text preview, actual file download,
+reload, and logout. Chrome is configured to allow third-party cookies in this
+isolated profile; deployment browser restrictions still apply. OpenSSL and an
+installed Chrome/Chromium are required. All processes and temporary files are
+cleaned up on completion. Pass a test-name
 substring to isolate a cold-browser scenario, for example
 `rtk pnpm --dir web test:browser 'history navigation starts unread'`.
 Unread-entry checks ensure the unread shortcut stays hidden at the boundary and

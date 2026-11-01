@@ -1,3 +1,4 @@
+import { serverBaseUrl } from "../../api/server.ts";
 import { defaultSeeds } from "./palette.ts";
 import { loadFonts, loadSeeds, loadTheme } from "./settings.ts";
 import {
@@ -56,7 +57,7 @@ export function preferenceError(): string {
 
 function cacheKey(id: string): string {
   const deployment =
-    typeof document === "undefined" ? "" : new URL(".", document.baseURI).href;
+    typeof document === "undefined" ? "" : new URL(".", serverBaseUrl()).href;
   return `commonroom-preferences:${deployment}${id}`;
 }
 function cache(): void {

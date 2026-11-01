@@ -5,6 +5,150 @@ use super::{
 };
 use axum::http::{HeaderMap, HeaderValue, header};
 
+#[tokio::test]
+async fn remote_client_cors_is_explicit_and_excludes_bot_credentials() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let mut app = login_test_app();
+    Arc::make_mut(&mut app.config).origins = vec![
+        "https://ui.example.com".into(),
+        "https://second.example.com".into(),
+    ];
+    Arc::make_mut(&mut app.config).base_url = "/server/".into();
+    for (origin, method, headers, path, allowed) in [
+        (
+            "https://ui.example.com",
+            "POST",
+            "content-type, x-chat-name-colors",
+            "/server/api/login",
+            true,
+        ),
+        (
+            "https://evil.example.com",
+            "POST",
+            "content-type",
+            "/server/api/login",
+            false,
+        ),
+        (
+            "https://second.example.com",
+            "GET",
+            "x-chat-name-colors",
+            "/server/api/me",
+            true,
+        ),
+        (
+            "https://ui.example.com",
+            "DELETE",
+            "content-type",
+            "/server/api/login",
+            false,
+        ),
+        (
+            "https://ui.example.com",
+            "GET",
+            "authorization",
+            "/server/api/me",
+            false,
+        ),
+        (
+            "https://ui.example.com",
+            "POST",
+            "content-type",
+            "/server/api/bot/v1/commands",
+            false,
+        ),
+    ] {
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri(path)
+                    .header(header::ORIGIN, origin)
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, method)
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, headers)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status() == StatusCode::NO_CONTENT, allowed);
+        if allowed {
+            assert_eq!(
+                response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+                origin
+            );
+            assert_eq!(
+                response.headers()[header::ACCESS_CONTROL_ALLOW_CREDENTIALS],
+                "true"
+            );
+        }
+        if path.contains("/bot/") || origin.contains("evil") {
+            assert!(
+                !response
+                    .headers()
+                    .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            );
+        }
+    }
+    let response = router(app.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/server/api/me")
+                .header(header::ORIGIN, "https://ui.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://ui.example.com"
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ORIGIN, "https://ui.example.com".parse().unwrap());
+    assert!(check_origin(&app, &headers).is_ok());
+    headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
+    assert!(check_origin(&app, &headers).is_err());
+    Arc::make_mut(&mut app.config).origins = vec!["*".into()];
+    for origin in ["https://first.example.com", "https://second.example.com"] {
+        headers.insert(header::ORIGIN, origin.parse().unwrap());
+        assert!(check_origin(&app, &headers).is_ok());
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/server/api/login")
+                    .header(header::ORIGIN, origin)
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            origin
+        );
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_CREDENTIALS],
+            "true"
+        );
+        assert!(
+            response
+                .headers()
+                .get_all(header::VARY)
+                .iter()
+                .any(|value| value == "Origin")
+        );
+    }
+    headers.insert(header::ORIGIN, "null".parse().unwrap());
+    assert!(check_origin(&app, &headers).is_err());
+}
+
 #[test]
 #[allow(clippy::panic)] // Deliberately simulate a panic during a state mutation.
 fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {

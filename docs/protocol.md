@@ -15,10 +15,40 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
 | `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
+| `GET /api/media/{id}/link?download=true` | Session cookie and allowed Origin; `download` defaults to false | `{url}`; short-lived signed storage URL after current conversation access/reference/expiry checks; true forces download disposition |
+| `GET /api/avatars/{id}/link` | Session cookie and allowed Origin | `{url}`; short-lived signed storage URL after current avatar visibility checks |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
 
-Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are same-origin, HttpOnly, SameSite Strict, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript. Browser routes and `/ws` reject Authorization headers; bot bearer authentication is confined to `/api/bot/v1/`. Media/profile bot counterparts are listed in [Bots](bots.md#media-and-profiles-v1-extension).
+Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are HttpOnly, SameSite Strict by default, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript. Browser routes and `/ws` reject Authorization headers; bot bearer authentication is confined to `/api/bot/v1/`. Media/profile bot counterparts are listed in [Bots](bots.md#media-and-profiles-v1-extension).
+
+The login page’s bottom-right gear opens a server settings card. Save stores a
+normalized server directory URL in browser storage, scoped to this UI deployment;
+Cancel discards edits. A missing scheme defaults to HTTPS and the path receives a
+trailing slash. Blank input resets to the UI deployment URL. API requests,
+WebSockets, managed media, and per-account preference caches use this server;
+static UI assets continue loading from the page’s own deployment. The selected
+server stays fixed during a session even if another tab edits browser storage.
+
+For a separately hosted UI, the backend’s `origins` explicitly lists its
+origin (maximum 32; HTTPS only in production), or `["*"]` to trust all supported
+web origins. The wildcard echoes each concrete request Origin and excludes opaque
+`null` origins. Browser API CORS permits cookies,
+GET/POST, and the Content-Type/X-Chat-Name-Colors headers for those origins only.
+Preflights never authenticate or mutate data; Bot API routes do not opt into CORS.
+The same allowlist applies to browser API and WebSocket origin checks. Production
+login/logout requests with an allowed Origin and `Sec-Fetch-Site: cross-site`
+set Secure, HttpOnly, SameSite=None cookies. Same-origin and same-site requests
+retain the default Strict cookie policy. Browser policies
+that block third-party cookies can still prevent cross-site sessions; use UI and
+API hosts on the same site in that case. HTTP development cookies remain Strict.
+
+When the selected API is on another origin, native images/avatars/playback and
+downloads first resolve `/link` with an authenticated CORS fetch. They then load
+or navigate directly to signed storage URLs, avoiding navigation requests without
+Origin and cross-origin redirect chains. HTML/SVG source fetches omit credentials
+to storage. The app does not persist signed URLs in preferences or localStorage. Local
+files retain the existing `/file` redirect and private service-worker cache path.
 
 Login throttling uses the client address from the configured `set_real_ip_from`
 header (default `X-Forwarded-For`) only when the socket peer matches `trust`.

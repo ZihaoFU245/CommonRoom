@@ -1,3 +1,4 @@
+import { serverBaseUrl } from "../api/server.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
   Snapshot,
@@ -112,9 +113,9 @@ export function useConnection(
       clearTimeout(resumeTimer);
       awaitingBaseline = true;
       setStatus("connecting");
-      const url = new URL("ws", document.baseURI);
+      const url = new URL("ws", serverBaseUrl());
       if (projection.current) url.searchParams.set("colors", "1");
-      url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       socket.current = ws;
       ws.onopen = () => {

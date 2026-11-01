@@ -1,0 +1,558 @@
+// Production-mode browser integration. All keys, accounts and files are disposable.
+import assert from "node:assert/strict";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { once } from "node:events";
+import { createServer as httpServer, request as httpRequest } from "node:http";
+import { createServer as httpsServer } from "node:https";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import WebSocket from "ws";
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(predicate, label) {
+  const end = Date.now() + 15000;
+  while (!(await predicate())) {
+    if (Date.now() > end) throw new Error(`Timed out: ${label}`);
+    await pause(25);
+  }
+}
+async function listen(server) {
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return server.address().port;
+}
+function proxy(port, forwarded = false) {
+  return (req, res) => {
+    const upstream = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        method: req.method,
+        path: req.url,
+        headers: {
+          ...req.headers,
+          ...(forwarded
+            ? { "x-forwarded-proto": "https", "x-forwarded-for": "127.0.0.1" }
+            : {}),
+        },
+      },
+      (response) => {
+        res.writeHead(response.statusCode, response.headers);
+        response.pipe(res);
+      },
+    );
+    upstream.on("error", () => {
+      res.writeHead(502);
+      res.end();
+    });
+    req.pipe(upstream);
+  };
+}
+
+export async function startRemoteServer(root, vitePort, wildcard = false) {
+  const work = await mkdtemp(join(tmpdir(), "commonroom-remote-browser-"));
+  const servers = [];
+  let child, socket;
+  let logs = "";
+  const close = async () => {
+    socket?.terminate();
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const stopped = once(child, "exit");
+      child.kill("SIGTERM");
+      const force = setTimeout(() => child.kill("SIGKILL"), 5000);
+      await stopped;
+      clearTimeout(force);
+    }
+    for (const server of servers) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await rm(work, { recursive: true, force: true });
+  };
+  try {
+    await promisify(execFile)("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      join(work, "key.pem"),
+      "-out",
+      join(work, "cert.pem"),
+      "-days",
+      "1",
+      "-subj",
+      "/CN=commonroom-browser-test",
+      "-addext",
+      "subjectAltName=DNS:ui.test,DNS:api.test,DNS:store.test",
+    ]);
+    const tls = {
+      key: await readFile(join(work, "key.pem")),
+      cert: await readFile(join(work, "cert.pem")),
+    };
+    const ui = httpsServer(tls, (req, res) => {
+      // Never send this isolated browser's default bootstrap to an existing dev backend.
+      if (req.url.startsWith("/api/")) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Please log in." }));
+      } else proxy(vitePort)(req, res);
+    });
+    servers.push(ui);
+    const uiOrigin = `https://ui.test:${await listen(ui)}`;
+    const objects = new Map();
+    const storageRequests = [];
+    const storageHandler = async (req, res) => {
+      const url = new URL(req.url, "http://storage.test");
+      storageRequests.push({
+        method: req.method,
+        path: url.pathname,
+        origin: req.headers.origin,
+        cookie: req.headers.cookie,
+      });
+      if (req.headers.origin === uiOrigin)
+        res.setHeader("Access-Control-Allow-Origin", uiOrigin);
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "Access-Control-Allow-Methods": "GET, HEAD, PUT",
+          "Access-Control-Allow-Headers":
+            "content-type, range, x-amz-meta-client-filename, x-amz-meta-client-content-type, x-amz-meta-client-client, x-amz-meta-client-label",
+        });
+        res.end();
+        return;
+      }
+      if (req.method === "PUT") {
+        const source = req.headers["x-amz-copy-source"];
+        if (source) {
+          const bytes = objects.get(
+            `/${decodeURIComponent(source).replace(/^\/+/, "")}`,
+          );
+          if (!bytes) {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          objects.set(url.pathname, bytes);
+          res.writeHead(200, { "Content-Type": "application/xml" });
+          res.end("<CopyObjectResult><ETag>test</ETag></CopyObjectResult>");
+        } else {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          objects.set(url.pathname, Buffer.concat(chunks));
+          res.writeHead(200);
+          res.end();
+        }
+        return;
+      }
+      if (req.method === "DELETE") {
+        objects.delete(url.pathname);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const bytes = objects.get(url.pathname);
+      if (!bytes) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      const range = /^bytes=(\d+)-(\d*)$/u.exec(req.headers.range ?? "");
+      const start = range ? Number(range[1]) : 0;
+      const end = range?.[2]
+        ? Math.min(Number(range[2]), bytes.length - 1)
+        : bytes.length - 1;
+      const body = bytes.subarray(start, end + 1);
+      res.setHeader(
+        "Content-Type",
+        url.searchParams.get("response-content-type") ??
+          "application/octet-stream",
+      );
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Length", body.length);
+      if (url.searchParams.has("response-content-disposition"))
+        res.setHeader(
+          "Content-Disposition",
+          url.searchParams.get("response-content-disposition"),
+        );
+      if (range)
+        res.setHeader("Content-Range", `bytes ${start}-${end}/${bytes.length}`);
+      res.writeHead(range ? 206 : 200);
+      res.end(req.method === "HEAD" ? undefined : body);
+    };
+    const internalStorage = httpServer((req, res) => {
+      storageHandler(req, res).catch((error) => {
+        res.destroy(error);
+      });
+    });
+    const publicStorage = httpsServer(tls, (req, res) => {
+      storageHandler(req, res).catch((error) => {
+        res.destroy(error);
+      });
+    });
+    servers.push(internalStorage, publicStorage);
+    const internalStorageOrigin = `http://127.0.0.1:${await listen(internalStorage)}`;
+    const storageOrigin = `https://store.test:${await listen(publicStorage)}`;
+    let apiPort;
+    const apiProxy = httpsServer(tls, (req, res) =>
+      proxy(apiPort, true)(req, res),
+    );
+    apiProxy.on("upgrade", async (req, incoming, head) => {
+      const { connect } = await import("node:net");
+      const upstream = connect(apiPort, "127.0.0.1", () => {
+        upstream.write(
+          `${req.method} ${req.url} HTTP/1.1\r\n${Object.entries({
+            ...req.headers,
+            "x-forwarded-proto": "https",
+            "x-forwarded-for": "127.0.0.1",
+          })
+            .map(([name, value]) => `${name}: ${value}`)
+            .join("\r\n")}\r\n\r\n`,
+        );
+        if (head.length) upstream.write(head);
+        incoming.pipe(upstream).pipe(incoming);
+      });
+      upstream.on("error", () => incoming.destroy());
+      incoming.on("error", () => upstream.destroy());
+      incoming.on("close", () => upstream.destroy());
+    });
+    servers.push(apiProxy);
+    const base = `https://api.test:${await listen(apiProxy)}/server/`;
+    const data = join(work, "data");
+    await mkdir(data);
+    await mkdir(join(work, "downloads"));
+    await writeFile(
+      join(data, "config.json"),
+      JSON.stringify({
+        production: true,
+        origins: wildcard ? ["*"] : [uiOrigin],
+        bind: "127.0.0.1:0",
+        base_url: "/server/",
+        s3: {
+          endpoint: internalStorageOrigin,
+          public_endpoint: storageOrigin,
+          bucket: "test",
+          region: "us-east-1",
+          path_style: true,
+        },
+      }),
+    );
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("CHAT_")),
+    );
+    Object.assign(env, {
+      CHAT_DATA: data,
+      CHAT_S3_ACCESS_KEY: "test-only",
+      CHAT_S3_SECRET_KEY: "test-only-secret",
+      RUST_LOG: "chat=info",
+    });
+    child = spawn(join(root, "../target/debug/chat"), [], {
+      cwd: work,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.on("error", (error) => {
+      logs += error.stack;
+    });
+    child.stdout.on("data", (chunk) => {
+      logs += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      logs += chunk;
+    });
+    await until(() => {
+      if (child.exitCode !== null) throw new Error(logs);
+      return logs.includes("Chat server ready");
+    }, "Rust startup");
+    apiPort = Number(/address=127\.0\.0\.1:(\d+)/u.exec(logs)?.[1]);
+    assert.ok(apiPort, logs);
+    child.stdin.write(
+      "/user new alice remote-test-password admin\n/room new files\n/room add alice #files\n",
+    );
+    await until(() => logs.includes("alice added to #files"), "accounts");
+    const direct = `http://127.0.0.1:${apiPort}/server/`;
+    let cookie;
+    async function api(path, body) {
+      const response = await fetch(new URL(`api/${path}`, direct), {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          Origin: uiOrigin,
+          "X-Forwarded-Proto": "https",
+          ...(cookie ? { Cookie: cookie } : {}),
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      if (!response.ok)
+        throw new Error(
+          `${path}: ${response.status} ${await response.text()}\n${logs}`,
+        );
+      return response;
+    }
+    const login = await api("login", {
+      username: "alice",
+      password: "remote-test-password",
+    });
+    cookie = login.headers.get("set-cookie").split(";")[0];
+    const account = await (await api("me")).json();
+    const room = account.rooms.find((room) => room.name === "files");
+    assert.ok(room, JSON.stringify(account));
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ZkAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const noteBytes = Buffer.from("Downloaded from the remote server.\n");
+    async function upload(bytes, filename, avatar = false) {
+      const prefix = avatar ? "avatars/uploads" : "media/uploads";
+      const ticket = await (
+        await api(
+          prefix,
+          avatar
+            ? { size: bytes.length, upload_id: crypto.randomUUID() }
+            : { conversation_id: room.id, filename, size: bytes.length },
+        )
+      ).json();
+      const target = new URL(ticket.upload.url);
+      const upload = await fetch(
+        `${internalStorageOrigin}${target.pathname}${target.search}`,
+        { method: "PUT", headers: ticket.upload.headers, body: bytes },
+      );
+      assert.equal(upload.status, 200);
+      return (await api(`${prefix}/${ticket.media_id}/complete`, {})).json();
+    }
+    const image = await upload(png, "remote.png");
+    const note = await upload(noteBytes, "remote-note.txt");
+    const html = await upload(
+      Buffer.from(
+        "<!doctype html><html><body>Remote preview verified</body></html>",
+      ),
+      "remote-preview.html",
+    );
+    const wave = Buffer.alloc(4044);
+    wave.write("RIFF");
+    wave.writeUInt32LE(wave.length - 8, 4);
+    wave.write("WAVE", 8);
+    wave.write("fmt ", 12);
+    wave.writeUInt32LE(16, 16);
+    wave.writeUInt16LE(1, 20);
+    wave.writeUInt16LE(1, 22);
+    wave.writeUInt32LE(8000, 24);
+    wave.writeUInt32LE(16000, 28);
+    wave.writeUInt16LE(2, 32);
+    wave.writeUInt16LE(16, 34);
+    wave.write("data", 36);
+    wave.writeUInt32LE(4000, 40);
+    const audio = await upload(wave, "remote.wav");
+    await upload(png, "avatar.png", true);
+    socket = new WebSocket(`${direct.replace("http:", "ws:")}ws`, {
+      headers: {
+        Origin: uiOrigin,
+        Cookie: cookie,
+        "X-Forwarded-Proto": "https",
+      },
+    });
+    await once(socket, "open");
+    const frames = [];
+    socket.on("message", (raw) => frames.push(JSON.parse(String(raw))));
+    await until(
+      () => frames.some((frame) => frame.kind === "snapshot"),
+      "seed snapshot",
+    );
+    socket.send(
+      JSON.stringify({
+        id: 1,
+        room: "files",
+        text: `![Remote image](${image.path})\n[remote-note.txt](${note.path})\n[remote-preview.html](${html.path} "media:html")\n[remote.wav](${audio.path} "media:audio")`,
+        markdown: true,
+      }),
+    );
+    await until(
+      () => frames.some((frame) => frame.id === 1),
+      "seed attachment message",
+    );
+    assert.notEqual(
+      frames.find((frame) => frame.id === 1).kind,
+      "error",
+      JSON.stringify(frames),
+    );
+    return {
+      url: uiOrigin,
+      base,
+      work,
+      storageOrigin,
+      noteBytes,
+      storageRequests,
+      close,
+      get logs() {
+        return logs;
+      },
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+export async function runRemoteServer({ command, sessionId, fixture, events }) {
+  async function evaluate(expression) {
+    const result = await command(
+      "Runtime.evaluate",
+      {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        userGesture: true,
+      },
+      sessionId,
+    );
+    if (result.exceptionDetails)
+      throw new Error(
+        result.exceptionDetails.exception?.description ??
+          result.exceptionDetails.text,
+      );
+    return result.result.value;
+  }
+  async function wait(expression, label) {
+    await until(() => evaluate(expression), label);
+  }
+  await command("Browser.setDownloadBehavior", {
+    behavior: "allow",
+    downloadPath: join(fixture.work, "downloads"),
+    eventsEnabled: true,
+  });
+  await wait('!!document.querySelector(".login-server-trigger")', "login gear");
+  await evaluate('document.querySelector(".login-server-trigger").click()');
+  await wait('!!document.querySelector("#login-server-url")', "settings card");
+  await evaluate(
+    `document.querySelector("#login-server-url").value=${JSON.stringify(fixture.base)}; document.querySelector("#login-server-url").dispatchEvent(new Event("input",{bubbles:true}));`,
+  );
+  await pause(30);
+  await evaluate(
+    'document.querySelector(".login-server-card").requestSubmit()',
+  );
+  await wait('!document.querySelector(".login-server-card")', "saved settings");
+  await evaluate(
+    'document.querySelector("#username").value="alice"; document.querySelector("#username").dispatchEvent(new Event("input",{bubbles:true})); document.querySelector("#password").value="remote-test-password"; document.querySelector("#password").dispatchEvent(new Event("input",{bubbles:true}));',
+  );
+  await pause(30);
+  await evaluate('document.querySelector(".login-card form").requestSubmit()');
+  await wait('!!document.querySelector(".chat-shell")', "cross-site login");
+  await wait(
+    'document.querySelector(".connection")?.textContent.includes("Connected") || document.querySelector(".connection")?.classList.contains("online")',
+    "cross-site WSS",
+  );
+  await evaluate(
+    '[...document.querySelectorAll(".room-link")].find((element)=>element.textContent.includes("files")).click()',
+  );
+  await wait(
+    '[...document.querySelectorAll("a")].some((anchor)=>anchor.href.includes("/api/media/"))',
+    "attachment history",
+  );
+  await wait(
+    '[...document.querySelectorAll(".message-markdown img")].some((image)=>image.complete && image.naturalWidth===1)',
+    "remote inline image",
+  );
+  await wait(
+    '[...document.querySelectorAll(".user-avatar")].some((image)=>!image.hidden && image.complete && image.naturalWidth===1)',
+    "remote avatar",
+  );
+  const cookies = await command("Storage.getCookies");
+  const session = cookies.cookies.find(
+    (cookie) => cookie.name === "chat_session",
+  );
+  assert.ok(
+    session?.secure &&
+      session.httpOnly &&
+      session.sameSite === "None" &&
+      session.path === "/server/",
+    "cross-site login uses a Secure HttpOnly SameSite=None session",
+  );
+  await evaluate(
+    '[...document.querySelectorAll(".html-gate button")].find((button)=>button.textContent==="Show text").click()',
+  );
+  await wait(
+    'document.body.textContent.includes("Remote preview verified")',
+    "remote HTML text preview",
+  );
+  await wait('!!document.querySelector("audio[src]")', "signed audio source");
+  await evaluate('document.querySelector("audio").play()');
+  await wait(
+    'document.querySelector("audio").currentTime > 0',
+    "remote audio playback",
+  );
+
+  await wait('!!document.querySelector("input[type=file]")', "upload control");
+  await evaluate(
+    'const files=new DataTransfer(); files.items.add(new File(["Browser upload verified"],"browser-upload.txt",{type:"text/plain"})); const picker=document.querySelector("input[type=file]"); picker.files=files.files; picker.dispatchEvent(new Event("change",{bubbles:true}));',
+  );
+  await wait(
+    'document.querySelector(".media-upload-status")?.textContent.includes("Attachment ready")',
+    "cross-site browser upload",
+  );
+  await evaluate('document.querySelector(".composer").requestSubmit()');
+  await wait(
+    '[...document.querySelectorAll(".message-markdown a")].some((anchor)=>anchor.textContent==="browser-upload.txt")',
+    "published browser upload",
+  );
+
+  await evaluate(
+    'const input=document.querySelector(".composer textarea"); input.value="Browser remote message verified"; input.dispatchEvent(new Event("input",{bubbles:true}));',
+  );
+  await pause(30);
+  await evaluate('document.querySelector(".composer").requestSubmit()');
+  await wait(
+    'document.querySelector(".message-list")?.textContent.includes("Browser remote message verified")',
+    "message acknowledgement",
+  );
+  await evaluate(
+    '[...document.querySelectorAll("a")].find((anchor)=>anchor.textContent==="remote-note.txt").click()',
+  );
+  await until(
+    () =>
+      events.some(
+        (event) =>
+          event.method === "Browser.downloadProgress" &&
+          event.params.state === "completed",
+      ),
+    "remote download completion",
+  );
+  assert.deepEqual(
+    await readFile(join(fixture.work, "downloads", "remote-note.txt")),
+    fixture.noteBytes,
+  );
+  assert.equal(
+    new URL(
+      events.find((event) => event.method === "Browser.downloadWillBegin")
+        .params.url,
+    ).origin,
+    fixture.storageOrigin,
+  );
+  assert.ok(
+    fixture.storageRequests
+      .filter((req) => req.method === "GET")
+      .every((req) => !req.cookie),
+    "storage never receives a chat session cookie",
+  );
+  await command("Page.reload", {}, sessionId);
+  await wait(
+    '!!document.querySelector(".chat-shell")',
+    "saved server and session after reload",
+  );
+  await wait(
+    'document.querySelector(".connection")?.classList.contains("online")',
+    "WSS after reload",
+  );
+  await evaluate('document.querySelector(".signout").click()');
+  await wait('!!document.querySelector(".login-server-trigger")', "logout UI");
+  await command("Page.reload", {}, sessionId);
+  await wait('!!document.querySelector(".login-server-trigger")', "logout");
+  await evaluate('document.querySelector(".login-server-trigger").click()');
+  await wait(
+    `document.querySelector("#login-server-url")?.value === ${JSON.stringify(fixture.base)}`,
+    "server persists after logout",
+  );
+  console.log(
+    "PASS real HTTPS cross-site server: settings, login, WSS, messages, avatar, image, audio, HTML preview, upload, download, reload and logout",
+  );
+}

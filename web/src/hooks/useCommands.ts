@@ -1,3 +1,4 @@
+import { serverBaseUrl } from "../api/server.ts";
 import { useMessageActions } from "./useMessageActions.ts";
 import { useCommandNavigation } from "./useCommandNavigation.ts";
 import { useCommandRequests } from "./useCommandRequests.ts";
@@ -170,7 +171,7 @@ export function useCommands({
       return;
     }
     const attachmentMarkdown = attachment
-      ? mediaMarkdown(attachment.media, document.baseURI)
+      ? mediaMarkdown(attachment.media, serverBaseUrl())
       : null;
     if (attachment && !attachmentMarkdown) {
       append(

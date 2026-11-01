@@ -276,7 +276,7 @@ async fn login_inner(
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_str(&cookie(app, &value, 43200)).map_err(|_| {
+        HeaderValue::from_str(&request_cookie(app, &value, 43200, headers)).map_err(|_| {
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Invalid session cookie configuration.",
@@ -297,6 +297,22 @@ pub(crate) fn cookie(app: &App, value: &str, age: u32) -> String {
             ""
         }
     )
+}
+fn request_cookie(app: &App, value: &str, age: u32, headers: &HeaderMap) -> String {
+    let cookie = cookie(app, value, age);
+    if app.config.production
+        && headers
+            .get("sec-fetch-site")
+            .is_some_and(|value| value == "cross-site")
+        && headers
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|origin| app.config.allows_origin(origin))
+    {
+        cookie.replace("SameSite=Strict", "SameSite=None")
+    } else {
+        cookie
+    }
 }
 pub(crate) async fn logout(
     State(app): State<App>,
@@ -340,7 +356,7 @@ pub(crate) async fn logout(
         let mut response = Json(json!({"ok":true})).into_response();
         response.headers_mut().insert(
             header::SET_COOKIE,
-            HeaderValue::from_str(&cookie(&app, "", 0)).map_err(|_| {
+            HeaderValue::from_str(&request_cookie(&app, "", 0, &headers)).map_err(|_| {
                 error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Invalid session cookie configuration.",
@@ -416,6 +432,34 @@ mod transaction_tests;
 #[allow(clippy::unwrap_used)] // Test assertions intentionally fail on invalid fixtures.
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_client_cookies_require_an_explicit_origin_and_secure_transport() {
+        let mut app = crate::web::tests::login_test_app();
+        Arc::make_mut(&mut app.config).origins = vec!["https://ui.example.com".into()];
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://ui.example.com".parse().unwrap());
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(request_cookie(&app, "session", 43200, &headers).contains("SameSite=Strict"));
+        Arc::make_mut(&mut app.config).production = true;
+        let cookie = request_cookie(&app, "session", 43200, &headers);
+        assert!(cookie.contains("SameSite=None"));
+        assert!(cookie.ends_with("; Secure"));
+        headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        assert!(request_cookie(&app, "session", 43200, &headers).contains("SameSite=Strict"));
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
+        assert!(request_cookie(&app, "session", 43200, &headers).contains("SameSite=Strict"));
+        assert!(request_cookie(&app, "", 0, &HeaderMap::new()).contains("SameSite=Strict"));
+        Arc::make_mut(&mut app.config).origins = vec!["*".into()];
+        headers.insert(
+            header::ORIGIN,
+            "https://another.example.com".parse().unwrap(),
+        );
+        assert!(request_cookie(&app, "session", 43200, &headers).contains("SameSite=None"));
+        headers.insert(header::ORIGIN, "null".parse().unwrap());
+        assert!(request_cookie(&app, "session", 43200, &headers).contains("SameSite=Strict"));
+    }
     #[test]
     fn cookie_selection_enforces_host_prefix_and_rejects_duplicate_values_across_headers() {
         let mut config = Config {

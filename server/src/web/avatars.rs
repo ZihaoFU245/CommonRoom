@@ -143,14 +143,29 @@ pub(crate) async fn download_as(
     access: Access,
     Path(id): Path<String>,
 ) -> Result<Redirect, ApiError> {
-    let storage = storage(&app)?;
-    let avatar = readable(&app, &access, id).await?;
+    let url = download_url_as(&app, access, id).await?;
+    Ok(Redirect::temporary(&url))
+}
+
+async fn download_url_as(app: &App, access: Access, id: String) -> Result<String, ApiError> {
+    let storage = storage(app)?;
+    let avatar = readable(app, &access, id).await?;
     let url = storage
         .download_url(&avatar, false)
         .await
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign avatar URL."))?;
-    readable(&app, &access, avatar.id).await?;
-    Ok(Redirect::temporary(&url))
+    readable(app, &access, avatar.id).await?;
+    Ok(url)
+}
+
+pub(crate) async fn link(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    let url = download_url_as(&app, Access::Browser(headers), id).await?;
+    Ok(Json(json!({"url":url})))
 }
 
 async fn owner(

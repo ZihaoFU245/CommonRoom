@@ -1,3 +1,4 @@
+import { serverBaseUrl } from "./server.ts";
 import type { PreferenceState } from "../features/preferences/account.ts";
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { responseJson } from "./responseJson.ts";
@@ -7,6 +8,7 @@ import {
   isCompletedMedia,
   isMediaConfig,
   isMediaInfo,
+  isFileLink,
 } from "./media.ts";
 import {
   isSnapshot,
@@ -49,9 +51,9 @@ async function request<T>(
 ): Promise<T> {
   const cancellation = requestAbort(timeoutMs, signal);
   try {
-    const response = await fetch(new URL(`api/${path}`, document.baseURI), {
+    const response = await fetch(new URL(`api/${path}`, serverBaseUrl()), {
       method: body === undefined ? "GET" : "POST",
-      credentials: "same-origin",
+      credentials: "include",
       cache: "no-store",
       signal: cancellation.signal,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -113,6 +115,18 @@ function isPreferences(value: unknown): value is PreferenceState {
 }
 
 export const api = {
+  fileLink: (
+    kind: "media" | "avatars",
+    id: string,
+    download: boolean,
+    signal: AbortSignal,
+  ) =>
+    request(
+      `${kind}/${encodeURIComponent(id)}/link${kind === "media" && download ? "?download=true" : ""}`,
+      isFileLink,
+      undefined,
+      signal,
+    ),
   preferences: (values: Record<string, string | null>, initialize: boolean) =>
     request("preferences", isPreferences, { values, initialize }),
   setDisplayName: (value: string | null, room?: string) =>

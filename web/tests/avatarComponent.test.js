@@ -17,6 +17,8 @@ globalThis.avatarTestState = (value) => {
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
+    if (specifier.endsWith("/useFileUrl.ts"))
+      return { url: "test:file-url", shortCircuit: true };
     if (specifier.endsWith("/useExternalAvatars.ts"))
       return { url: "test:external-avatars", shortCircuit: true };
     return specifier === "preact/hooks"
@@ -24,6 +26,12 @@ const hooks = registerHooks({
       : next(specifier, context);
   },
   load(url, context, next) {
+    if (url === "test:file-url")
+      return {
+        format: "module",
+        shortCircuit: true,
+        source: "export const useFileUrl=(url)=>({url,error:'',retry(){}});",
+      };
     if (url === "test:external-avatars")
       return {
         format: "module",

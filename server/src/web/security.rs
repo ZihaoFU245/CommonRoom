@@ -64,11 +64,77 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
             }
         }
     };
+    let client_origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .filter(|origin| {
+            origin
+                .to_str()
+                .is_ok_and(|origin| app.config.allows_origin(origin))
+        })
+        .cloned();
+    let browser_api = request
+        .uri()
+        .path()
+        .starts_with(&format!("{}api/", app.config.base_url))
+        && !request
+            .uri()
+            .path()
+            .starts_with(&format!("{}api/bot/", app.config.base_url));
+    let preflight = browser_api && request.method() == axum::http::Method::OPTIONS;
     let response = match rejection {
         Some(response) => response,
+        None if preflight => {
+            let headers = request.headers();
+            let method_allowed = headers
+                .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+                .is_some_and(|method| method == "GET" || method == "POST");
+            let headers_allowed = headers
+                .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+                .is_none_or(|headers| {
+                    headers.to_str().is_ok_and(|headers| {
+                        headers.split(',').all(|name| {
+                            matches!(
+                                name.trim().to_ascii_lowercase().as_str(),
+                                "content-type" | "x-chat-name-colors"
+                            )
+                        })
+                    })
+                });
+            if client_origin.is_some() && method_allowed && headers_allowed {
+                StatusCode::NO_CONTENT.into_response()
+            } else {
+                StatusCode::FORBIDDEN.into_response()
+            }
+        }
         None => next.run(request).await,
     };
-    with_security_headers(&app, response)
+    let mut response = with_security_headers(&app, response);
+    if browser_api {
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("Origin"));
+        if let Some(origin) = client_origin {
+            let headers = response.headers_mut();
+            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
+            if preflight && response.status() == StatusCode::NO_CONTENT {
+                let headers = response.headers_mut();
+                headers.insert(
+                    header::ACCESS_CONTROL_ALLOW_METHODS,
+                    HeaderValue::from_static("GET, POST"),
+                );
+                headers.insert(
+                    header::ACCESS_CONTROL_ALLOW_HEADERS,
+                    HeaderValue::from_static("Content-Type, X-Chat-Name-Colors"),
+                );
+            }
+        }
+    }
+    response
 }
 
 fn with_security_headers(app: &App, mut response: Response) -> Response {
@@ -87,20 +153,32 @@ fn with_security_headers(app: &App, mut response: Response) -> Response {
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static("max-age=31536000"),
         );
-        let Some(origin) = app.config.origins.first() else {
+        if app.config.origins.is_empty() {
             return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Missing origin configuration.",
             )
             .into_response();
-        };
-        let websocket_origin = origin.replacen("https://", "wss://", 1);
+        }
+        let connection_origins = app
+            .config
+            .origins
+            .iter()
+            .flat_map(|origin| {
+                if origin == "*" {
+                    vec!["https:".to_owned(), "wss:".to_owned()]
+                } else {
+                    vec![origin.clone(), origin.replacen("https://", "wss://", 1)]
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         let media_origin = app
             .media
             .as_ref()
             .map_or("", |storage| storage.public_origin.as_str());
         let policy = format!(
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https: data: blob:; font-src 'self' data:; connect-src 'self' {websocket_origin} {media_origin}; media-src 'self' {media_origin}; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https: data: blob:; font-src 'self' data:; connect-src 'self' {connection_origins} {media_origin}; media-src 'self' {media_origin}; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests"
         );
         let Ok(policy) = HeaderValue::from_str(&policy) else {
             return error(
@@ -121,7 +199,7 @@ pub(crate) fn check_origin(app: &App, headers: &HeaderMap) -> Result<(), ApiErro
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if app.config.origins.iter().any(|o| o == origin) {
+    if app.config.allows_origin(origin) {
         Ok(())
     } else {
         Err(error(StatusCode::FORBIDDEN, "Untrusted request origin."))
@@ -172,4 +250,40 @@ pub(crate) fn check_read_origin(app: &App, headers: &HeaderMap) -> Result<(), Ap
         return Ok(());
     }
     Err(error(StatusCode::FORBIDDEN, "Untrusted request origin."))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Test assertions.
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_csp_uses_all_origins_without_a_primary_entry() {
+        let mut app = crate::web::tests::login_test_app();
+        let config = Arc::make_mut(&mut app.config);
+        config.production = true;
+        config.origins = vec![
+            "https://one.example.com".into(),
+            "https://two.example.com".into(),
+        ];
+        let response = with_security_headers(&app, StatusCode::OK.into_response());
+        let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        for origin in [
+            "https://one.example.com",
+            "https://two.example.com",
+            "wss://one.example.com",
+            "wss://two.example.com",
+        ] {
+            assert!(policy.contains(origin), "{origin}");
+        }
+        Arc::make_mut(&mut app.config).origins = vec!["*".into()];
+        let response = with_security_headers(&app, StatusCode::OK.into_response());
+        let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(policy.contains("connect-src 'self' https: wss:"));
+        assert!(!policy.contains("connect-src 'self' *"));
+    }
 }

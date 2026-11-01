@@ -1,5 +1,7 @@
+import { serverBaseUrl } from "../api/server.ts";
 import type { AttachmentContext } from "./Attachment.tsx";
 import { ExternalImage } from "./ExternalImage.tsx";
+import { MediaDownload } from "./MediaDownload.tsx";
 import { ManagedAttachment } from "./ManagedAttachment.tsx";
 import { attachmentLink, managedMediaLink } from "../api/media.ts";
 import { createElement } from "preact";
@@ -49,11 +51,11 @@ export const MarkdownContent = memo(function MarkdownContent({
         );
       const attachment =
         node.href && node.title
-          ? attachmentLink(node.href, node.title, document.baseURI)
+          ? attachmentLink(node.href, node.title, serverBaseUrl())
           : null;
       const managed = managedMediaLink(
         node.image?.src ?? node.href ?? "",
-        document.baseURI,
+        serverBaseUrl(),
       );
       function wrap(content: ComponentChildren) {
         return managed ? (
@@ -66,15 +68,18 @@ export const MarkdownContent = memo(function MarkdownContent({
       }
       if (attachment) {
         const fallback = (
-          <a href={node.href} target="_blank" rel="noopener noreferrer">
+          <MediaDownload
+            id={attachment.id}
+            href={new URL(node.href ?? attachment.path, serverBaseUrl()).href}
+          >
             {render(node.children)}
-          </a>
+          </MediaDownload>
         );
         return wrap(
           <Suspense key={attachment.id + attachment.kind} fallback={fallback}>
             <Attachment
               id={attachment.id}
-              href={node.href ?? attachment.path}
+              href={new URL(node.href ?? attachment.path, serverBaseUrl()).href}
               kind={attachment.kind}
               {...(attachmentContext ? { context: attachmentContext } : {})}
             >
@@ -91,6 +96,15 @@ export const MarkdownContent = memo(function MarkdownContent({
             alt={node.image.alt}
           />,
         );
+      if (managed && node.href && node.tag === "a")
+        return wrap(
+          <MediaDownload
+            id={managed.id}
+            href={new URL(node.href, serverBaseUrl()).href}
+          >
+            {render(node.children)}
+          </MediaDownload>,
+        );
       return wrap(
         createElement(
           node.tag === "p" &&
@@ -104,7 +118,9 @@ export const MarkdownContent = memo(function MarkdownContent({
             key: index,
             ...(node.href
               ? {
-                  href: node.href,
+                  href: managed
+                    ? new URL(node.href, serverBaseUrl()).href
+                    : node.href,
                   target: "_blank",
                   rel: "noopener noreferrer",
                 }

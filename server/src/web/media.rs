@@ -491,9 +491,19 @@ pub(crate) async fn download_as(
     Path(id): Path<String>,
     Query(options): Query<Download>,
 ) -> Result<Redirect, ApiError> {
-    let storage = storage(&app)?;
+    let url = download_url_as(&app, access, id, options).await?;
+    Ok(Redirect::temporary(&url))
+}
+
+async fn download_url_as(
+    app: &App,
+    access: Access,
+    id: String,
+    options: Download,
+) -> Result<String, ApiError> {
+    let storage = storage(app)?;
     let ticket = native_media(
-        &app,
+        app,
         &access,
         id,
         "Attachment not found.",
@@ -512,7 +522,7 @@ pub(crate) async fn download_as(
             error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign download URL.")
         })?;
     native_media(
-        &app,
+        app,
         &access,
         ticket.media.id.clone(),
         "Attachment not found.",
@@ -523,7 +533,19 @@ pub(crate) async fn download_as(
         },
     )
     .await?;
-    Ok(Redirect::temporary(&url))
+    Ok(url)
+}
+
+/// Resolve a signed storage URL without navigating through a cookie-authenticated redirect.
+pub(crate) async fn link(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(options): Query<Download>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    security::check_read_origin(&app, &headers)?;
+    let url = download_url_as(&app, Access::Browser(headers), id, options).await?;
+    Ok(Json(json!({"url":url})))
 }
 
 pub(crate) fn start_cleanup(app: App) {

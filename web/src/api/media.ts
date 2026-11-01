@@ -1,3 +1,4 @@
+import { serverBaseUrl } from "./server.ts";
 import { requestAbort } from "./requestAbort.ts";
 export interface UploadTicket {
   media_id: string;
@@ -20,6 +21,21 @@ export interface CompletedMedia {
 export interface MediaInfo extends CompletedMedia {
   expires: number | null;
   expired: boolean;
+}
+export function isFileLink(value: unknown): value is { url: string } {
+  if (!record(value) || typeof value.url !== "string") return false;
+  try {
+    const url = new URL(value.url);
+    return (
+      (url.protocol === "https:" ||
+        (url.protocol === "http:" &&
+          new URL(serverBaseUrl()).protocol === "http:")) &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
 }
 export function isMediaInfo(value: unknown): value is MediaInfo {
   return (
@@ -249,8 +265,12 @@ export async function documentSource(
 ): Promise<string> {
   const cancellation = requestAbort(15000, signal);
   try {
-    const response = await fetch(path, {
-      credentials: "same-origin",
+    const response = await fetch(new URL(path, serverBaseUrl()), {
+      credentials:
+        new URL(path, serverBaseUrl()).origin ===
+        new URL(serverBaseUrl()).origin
+          ? "include"
+          : "omit",
       cache: "no-store",
       signal: cancellation.signal,
     });

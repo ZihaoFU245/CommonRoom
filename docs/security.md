@@ -251,8 +251,20 @@ outside the participant bundle, only su/console may delegate it; a room manager
 cannot grant it even when holding it. Ordinary participants retain edit-own.
 
 Session-bearing GET endpoints require a configured Origin or, when browsers omit
-Origin, `Sec-Fetch-Site: same-origin`. Same-site sibling requests are rejected.
+Origin, `Sec-Fetch-Site: same-origin`. Unlisted same-site sibling requests are rejected.
 Bearer-authenticated reads retain their credential checks without requiring Origin.
+
+`origins` is the single allowlist for browser API/CORS and WebSocket access.
+It defaults to local development origins; production requires configuration.
+`["*"]` explicitly trusts all supported
+web origins (HTTPS in production, HTTP/HTTPS in development), while rejecting
+opaque `null` origins. Credentialed CORS responses echo the actual Origin.
+Production login/logout requests from allowed origins with
+`Sec-Fetch-Site: cross-site` use Secure, HttpOnly, SameSite=None cookies so
+cross-site clients can establish sessions when
+the browser permits third-party cookies. Default sessions remain SameSite Strict.
+Treat each listed origin as a trusted application capable of using the user's
+session; see [Deployment](deployment.md#connecting-a-separately-hosted-web-client).
 
 ## Name colors
 

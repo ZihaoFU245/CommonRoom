@@ -276,6 +276,7 @@ pub fn router(app: App) -> Router {
         )
         .route(path("/api/avatars/{id}/info"), get(avatars::info))
         .route(path("/api/avatars/{id}/file"), get(avatars::download))
+        .route(path("/api/avatars/{id}/link"), get(avatars::link))
         .route(path("/api/media/config"), get(media::config))
         .route(path("/api/media/uploads"), post(media::allocate))
         .route(
@@ -287,6 +288,7 @@ pub fn router(app: App) -> Router {
             post(media::abandon),
         )
         .route(path("/api/media/{id}/file"), get(media::download))
+        .route(path("/api/media/{id}/link"), get(media::link))
         .route(path("/api/media/{id}/info"), get(media::info))
         .route(path("/api/login"), post(auth::login))
         .route(path("/api/logout"), post(auth::logout))

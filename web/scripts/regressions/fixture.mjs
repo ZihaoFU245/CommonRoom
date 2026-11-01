@@ -1,3 +1,5 @@
+import { LoginServerSettings } from "../../src/components/LoginServerSettings.tsx";
+import { savedServerUrl, saveServerUrl } from "../../src/api/server.ts";
 import { UserCards } from "../../src/components/UserCard.tsx";
 import { UserCardTrigger } from "../../src/components/UserCardTrigger.tsx";
 import { AppearanceSettings } from "../../src/components/settings/AppearanceSettings.tsx";
@@ -99,6 +101,186 @@ async function test(name, run) {
     tests.replaceChildren();
   }
 }
+await test("login server settings animate from the gear and persist only on Save", async () => {
+  const original = savedServerUrl();
+  let selected;
+  try {
+    render(
+      h(LoginServerSettings, {
+        disabled: false,
+        onSave: (url) => {
+          selected = url;
+        },
+      }),
+      tests,
+    );
+    const gear = tests.querySelector(".login-server-trigger");
+    gear.click();
+    await until(
+      () => tests.querySelector("#login-server-url") === document.activeElement,
+    );
+    let input = tests.querySelector("#login-server-url");
+    check(input.value === original, "shows saved server URL");
+    const card = tests.querySelector(".login-server-card");
+    const rect = card.getBoundingClientRect();
+    const gearRect = gear.getBoundingClientRect();
+    await sleep(180);
+    const origin = getComputedStyle(card)
+      .transformOrigin.split(" ")
+      .map(parseFloat);
+    const settled = card.getBoundingClientRect();
+    check(
+      Math.abs(
+        settled.left + origin[0] - (gearRect.left + gearRect.width / 2),
+      ) < 2,
+      "animation originates at the gear horizontally",
+    );
+    check(
+      Math.abs(settled.top + origin[1] - (gearRect.top + gearRect.height / 2)) <
+        2,
+      "animation originates at the gear vertically",
+    );
+    check(
+      rect.width > 0 && settled.right <= innerWidth && settled.left >= 0,
+      "card fits viewport",
+    );
+    input.value = "discard.example.com";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(30);
+    [...tests.querySelectorAll("button")]
+      .find((button) => button.textContent === "Cancel")
+      .click();
+    await until(() => !tests.querySelector(".login-server-card"));
+    check(
+      selected === undefined && savedServerUrl() === original,
+      "Cancel keeps saved server",
+    );
+    gear.click();
+    await until(
+      () => tests.querySelector("#login-server-url") === document.activeElement,
+    );
+    input = tests.querySelector("#login-server-url");
+    check(input.value === original, "discarded draft is not restored");
+    input.value = "ftp://invalid.example.com";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(30);
+    tests
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await until(() => tests.querySelector('[role="alert"]'));
+    check(savedServerUrl() === original, "invalid URLs are not saved");
+    input.value = "chat.example.com/server";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(30);
+    tests
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await until(() => selected);
+    check(
+      selected === "https://chat.example.com/server/",
+      "Save normalizes scheme and prefix",
+    );
+    await until(() => !tests.querySelector(".login-server-card"));
+    gear.click();
+    await until(
+      () => tests.querySelector("#login-server-url") === document.activeElement,
+    );
+    check(
+      tests.querySelector("#login-server-url").value === selected,
+      "reopening shows saved URL",
+    );
+    tests
+      .querySelector("#login-server-url")
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    await until(() => !tests.querySelector(".login-server-card"));
+    check(document.activeElement === gear, "Escape returns focus to gear");
+  } finally {
+    saveServerUrl(original);
+  }
+});
+
+await test("login server settings shrink visibly back to the gear on every dismissal", async () => {
+  const play = Animation.prototype.play;
+  let exit;
+  Animation.prototype.play = function () {
+    const effect = this.effect;
+    if (
+      effect instanceof KeyframeEffect &&
+      effect.target?.classList.contains("login-server-card") &&
+      effect.getKeyframes()[0]?.transform === "scale(1)"
+    ) {
+      exit = this;
+      this.pause();
+      this.currentTime = 0;
+      return;
+    }
+    return play.call(this);
+  };
+  try {
+    render(h(LoginServerSettings, { disabled: false, onSave() {} }), tests);
+    const gear = tests.querySelector(".login-server-trigger");
+    for (const dismissal of ["gear", "cancel", "escape", "outside"]) {
+      exit = undefined;
+      gear.click();
+      await until(
+        () =>
+          tests.querySelector("#login-server-url") === document.activeElement,
+      );
+      await sleep(180);
+      const card = tests.querySelector(".login-server-card");
+      const before = card.getBoundingClientRect();
+      if (dismissal === "gear") gear.click();
+      else if (dismissal === "cancel")
+        [...card.querySelectorAll("button")]
+          .find((button) => button.textContent === "Cancel")
+          .click();
+      else if (dismissal === "escape")
+        card.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        );
+      else
+        document.body.dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true }),
+        );
+      await until(() => exit);
+      const closing = exit.effect.target;
+      const start = closing.getBoundingClientRect();
+      const origin = getComputedStyle(closing)
+        .transformOrigin.split(" ")
+        .map(parseFloat);
+      const anchor = gear.getBoundingClientRect();
+      check(
+        closing.isConnected && closing.querySelector("input"),
+        `${dismissal}: card remains visible for exit`,
+      );
+      check(
+        Math.abs(start.top - before.top) < 2 &&
+          Math.abs(start.left - before.left) < 2,
+        `${dismissal}: closing does not jump when its parent collapses`,
+      );
+      check(
+        Math.abs(start.left + origin[0] - (anchor.left + anchor.width / 2)) <
+          2 &&
+          Math.abs(start.top + origin[1] - (anchor.top + anchor.height / 2)) <
+            2,
+        `${dismissal}: exit shrinks toward the gear`,
+      );
+      exit.currentTime = 60;
+      check(
+        Number(getComputedStyle(closing).opacity) > 0 &&
+          Number(getComputedStyle(closing).opacity) < 1,
+        `${dismissal}: card fades during exit`,
+      );
+      play.call(exit);
+      await until(() => !tests.querySelector(".login-server-card"));
+    }
+  } finally {
+    Animation.prototype.play = play;
+  }
+});
+
 await test("user cards show profiles and open private messages", async () => {
   let messaged;
   render(

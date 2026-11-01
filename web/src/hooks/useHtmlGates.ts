@@ -24,14 +24,12 @@ export function useHtmlGates(
   const [gateRevision, setGateRevision] = useState(0);
   const liveMessages = useMemo(() => {
     const messages = new Map<string, string>();
-    if (allowHtml) {
-      for (const entry of entries) {
-        if (entry.kind === "message")
-          messages.set(entry.message.id, entry.message.text);
-      }
+    for (const entry of entries) {
+      if (entry.kind === "message")
+        messages.set(entry.message.id, entry.message.text);
     }
     return messages;
-  }, [entries, allowHtml]);
+  }, [entries]);
   const gates = useMemo(() => {
     for (const [key, choice] of choices) {
       if (liveMessages.get(choice.messageKey) !== choice.text)
