@@ -2,16 +2,16 @@
 use super::super::{
     Error, Result,
     history::unsigned,
-    media::{MediaAllocation, MediaColumns, MediaWrite, decode},
+    media::{MediaAllocation, MediaColumns, MediaWrite, StickerReach, decode},
     message::number,
     metadata::WriteResult,
 };
 use crate::engine::media::Media;
 use sqlx::SqliteConnection;
 
-pub(crate) const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=?1) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)\n            ) ORDER BY cleanup_attempt,created LIMIT ?3";
+pub(crate) const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM sticker_library WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=?1) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM sticker_library WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND NOT EXISTS(SELECT 1 FROM sticker_library WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)\n            ) ORDER BY cleanup_attempt,created LIMIT ?3";
 
 pub(in crate::engine::database) async fn apply(
     db: &mut SqliteConnection,
@@ -28,15 +28,88 @@ pub(in crate::engine::database) async fn apply(
             result.media = reserved.media;
             reserved.changed
         }
+        MediaWrite::StickerAllocate { allocation, limit } => {
+            sticker_capacity(db, &allocation.media.uploader, *limit).await?;
+            allocate(db, allocation).await?
+        }
+        MediaWrite::DeleteSticker { id, owner, at } => {
+            let changed =
+                sqlx::query("DELETE FROM sticker_library WHERE owner=?1 AND media_id=?2")
+                    .bind(*owner)
+                    .bind(*id)
+                    .execute(&mut *db)
+                    .await?
+                    .rows_affected();
+            if changed == 0 {
+                0
+            } else {
+                changed + release_sticker(db, id, *at).await?
+            }
+        }
+        MediaWrite::CollectSticker {
+            id,
+            owner,
+            at,
+            limit,
+        } => {
+            let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation='@sticker' AND ready=1 AND deleting=0 AND deleted=0)")
+                .bind(*id).fetch_one(&mut *db).await?;
+            if !live {
+                return Err(Error::MissingMedia);
+            }
+            let present: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM sticker_library WHERE owner=?1 AND media_id=?2)",
+            )
+            .bind(*owner)
+            .bind(*id)
+            .fetch_one(&mut *db)
+            .await?;
+            if present {
+                0
+            } else {
+                sticker_capacity(db, owner, *limit).await?;
+                sqlx::query("INSERT INTO sticker_library VALUES(?1,?2,?3)")
+                    .bind(*owner)
+                    .bind(*id)
+                    .bind(number(*at)?)
+                    .execute(&mut *db)
+                    .await?;
+                sqlx::query("UPDATE media SET unreferenced=NULL WHERE id=?1")
+                    .bind(*id)
+                    .execute(&mut *db)
+                    .await?
+                    .rows_affected()
+                    + 1
+            }
+        }
         MediaWrite::Ready { media, at } => {
+            if media.conversation == "@sticker"
+                && let Some(digest) = media.content_digest.as_deref()
+            {
+                let taken: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM sticker_library l JOIN media m ON m.id=l.media_id WHERE l.owner=?1 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 AND json_extract(m.json,'$.content_digest')=?2)",
+                )
+                .bind(&media.uploader)
+                .bind(digest)
+                .fetch_one(&mut *db)
+                .await?;
+                if taken {
+                    return Err(Error::Conflict(
+                        "This sticker is already in your library.",
+                    ));
+                }
+            }
             let json = serde_json::to_string(media)
                 .map_err(|_| Error::Conversion("Cannot serialize media record"))?;
-            let changed = sqlx::query("UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND uploader=?5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
-                .bind(media.expires.map(number).transpose()?).bind(&media.uploader).execute(db).await?.rows_affected();
+            // A completed sticker is referenced by its uploader's library entry.
+            let changed = sqlx::query("UPDATE media SET ready=1,json=?2,unreferenced=CASE WHEN conversation='@sticker' THEN NULL ELSE ?3 END,expires=?4,published=CASE WHEN conversation IN ('@avatar','@sticker') THEN ?3 ELSE published END WHERE id=?1 AND uploader=?5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
+                .bind(media.expires.map(number).transpose()?).bind(&media.uploader).execute(&mut *db).await?.rows_affected();
             if changed != 1 {
                 return Err(Error::Conflict("Upload changed; retry completion."));
             }
             changed
+                + sqlx::query("INSERT INTO sticker_library SELECT uploader,id,?2 FROM media WHERE id=?1 AND conversation='@sticker'")
+                    .bind(&media.id).bind(number(*at)?).execute(&mut *db).await?.rows_affected()
         }
         MediaWrite::PrepareCleanup { pending_before } => sqlx::query(STARTUP_CLEANUP_SQL)
             .bind(number(*pending_before)?)
@@ -133,6 +206,37 @@ pub(in crate::engine::database) async fn apply(
     };
     Ok(result)
 }
+async fn sticker_capacity(db: &mut SqliteConnection, owner: &str, limit: u64) -> Result<()> {
+    let used: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM sticker_library WHERE owner=?1)+(SELECT COUNT(*) FROM media WHERE uploader=?1 AND conversation='@sticker' AND ready=0 AND deleting=0 AND deleted=0)")
+        .bind(owner).fetch_one(&mut *db).await?;
+    if unsigned(used)? >= limit {
+        return Err(Error::InvalidRequest(
+            "Sticker limit reached; delete a sticker first.",
+        ));
+    }
+    Ok(())
+}
+pub(in crate::engine::database) async fn remove_stickers(
+    db: &mut SqliteConnection,
+    owner: &str,
+    at: u64,
+) -> Result<u64> {
+    let ids: Vec<String> =
+        sqlx::query_scalar("DELETE FROM sticker_library WHERE owner=?1 RETURNING media_id")
+            .bind(owner)
+            .fetch_all(&mut *db)
+            .await?;
+    let mut changed = 0;
+    for id in &ids {
+        changed += 1 + release_sticker(db, id, at).await?;
+    }
+    Ok(changed)
+}
+/// Marks a sticker object for cleanup once no library or message references it.
+async fn release_sticker(db: &mut SqliteConnection, id: &str, at: u64) -> Result<u64> {
+    Ok(sqlx::query("UPDATE media SET unreferenced=COALESCE(unreferenced,?2) WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1) AND NOT EXISTS(SELECT 1 FROM sticker_library WHERE media_id=?1)")
+        .bind(id).bind(number(at)?).execute(db).await?.rows_affected())
+}
 async fn tombstones(db: &mut SqliteConnection, before: u64) -> Result<u64> {
     Ok(sqlx::query(TOMBSTONES_SQL)
         .bind(number(before)?)
@@ -199,6 +303,49 @@ async fn avatar_allocate(
         changed,
         media: vec![request.media.clone()],
         ..Default::default()
+    })
+}
+pub(in crate::engine::database) async fn stickers(
+    db: &mut SqliteConnection,
+    owner: &str,
+) -> Result<Vec<Media>> {
+    let rows: Vec<MediaColumns> = sqlx::query_as("SELECT m.json,m.ready,m.expires,m.deleting,m.deleted FROM sticker_library l JOIN media m ON m.id=l.media_id WHERE l.owner=?1 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 ORDER BY l.created DESC,l.media_id")
+        .bind(owner).fetch_all(db).await?;
+    rows.into_iter().map(decode).collect()
+}
+pub(in crate::engine::database) async fn sticker_digest_taken(
+    db: &mut SqliteConnection,
+    owner: &str,
+    digest: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sticker_library l JOIN media m ON m.id=l.media_id WHERE l.owner=?1 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 AND json_extract(m.json,'$.content_digest')=?2)",
+    )
+    .bind(owner)
+    .bind(digest)
+    .fetch_one(db)
+    .await?)
+}
+pub(in crate::engine::database) async fn sticker_reach(
+    db: &mut SqliteConnection,
+    id: &str,
+    owner: &str,
+) -> Result<StickerReach> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sticker_library WHERE owner=?1 AND media_id=?2)",
+    )
+    .bind(owner)
+    .bind(id)
+    .fetch_one(&mut *db)
+    .await?;
+    let conversations =
+        sqlx::query_scalar("SELECT DISTINCT conversation FROM message_media WHERE media_id=?1")
+            .bind(id)
+            .fetch_all(db)
+            .await?;
+    Ok(StickerReach {
+        owned,
+        conversations,
     })
 }
 pub(in crate::engine::database) async fn load(

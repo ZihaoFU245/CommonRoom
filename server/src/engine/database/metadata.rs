@@ -45,6 +45,11 @@ pub(crate) enum MetadataOp<'a> {
     RemoveAccountReceipts {
         account: String,
     },
+    /// Library entries go; shared sticker objects stay while referenced.
+    RemoveAccountStickers {
+        account: String,
+        at: u64,
+    },
     RemoveAccountCursors {
         user: String,
     },

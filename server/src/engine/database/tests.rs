@@ -215,13 +215,22 @@ fn populate(e: &mut Engine) -> crate::bots::models::MessageInput {
     avatar.object_key = avatar.final_key();
     avatar.content_type = "image/png".into();
     e.finish_avatar("alice", &avatar).unwrap();
+    let sticker = e.prepare_sticker_allocation("alice", 8).unwrap();
+    super::block_on_storage(sticker.save()).unwrap().unwrap();
+    let mut sticker = sticker.media().clone();
+    sticker.ready = true;
+    sticker.object_key = sticker.final_key();
+    sticker.content_type = "image/png".into();
+    super::block_on_storage(e.media_store().ready(&sticker))
+        .unwrap()
+        .unwrap();
     request
 }
 
 #[test]
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
 fn postgres_sqlite_migration_preserves_every_table_and_retries() {
-    assert_eq!(SQLITE_SCHEMA_VERSION, 20);
+    assert_eq!(SQLITE_SCHEMA_VERSION, 21);
     assert_eq!(POSTGRES_SCHEMA_VERSION, 1);
     let fixture = PostgresFixture::new();
     let source = tempfile::tempdir().unwrap();
@@ -244,7 +253,7 @@ fn postgres_sqlite_migration_preserves_every_table_and_retries() {
         );
     }
     let report = Engine::migrate_sqlite(&path, &fixture.url).unwrap();
-    assert_eq!(report.rows.len(), 14);
+    assert_eq!(report.rows.len(), 15);
     assert!(report.rows.values().all(|rows| *rows > 0));
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let mut pg = Engine::open_postgres(&fixture.url).unwrap();
@@ -318,7 +327,7 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
     let path = source.path().join("chat.sqlite");
     assert!(Engine::migrate_sqlite(&path, "invalid-target").is_err());
     assert!(!path.exists());
-    for version in [18, 19, 21] {
+    for version in [18, 20, 22] {
         let db = Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE IF NOT EXISTS marker(value TEXT);")
             .unwrap();
@@ -329,7 +338,7 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
         assert!(
             Engine::migrate_sqlite(&path, "invalid-target")
                 .unwrap_err()
-                .contains("v20")
+                .contains("v21")
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }

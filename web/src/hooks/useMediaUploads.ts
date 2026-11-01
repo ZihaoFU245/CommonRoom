@@ -2,11 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import { filenameHint, uploadFile } from "../api/media.ts";
 import type { CompletedMedia } from "../api/media.ts";
+import type { Sticker } from "../api/stickers.ts";
 import { errorMessage } from "../api/protocol.ts";
 
 export interface Attachment {
   media: CompletedMedia;
   preview: string | null;
+  /** Rendered as a small sticker; the preview is a server URL, not a blob. */
+  sticker?: boolean;
 }
 export function useMediaUploads(
   conversationId: string | undefined,
@@ -48,7 +51,8 @@ export function useMediaUploads(
   }
   function release() {
     const previous = currentAttachment.current;
-    if (previous?.preview) URL.revokeObjectURL(previous.preview);
+    if (previous?.preview && !previous.sticker)
+      URL.revokeObjectURL(previous.preview);
     currentAttachment.current = null;
     setAttachment(null);
   }
@@ -152,6 +156,30 @@ export function useMediaUploads(
       if (valid()) setBusy(false);
     }
   }
+  /** Library stickers are sent by reference; nothing to upload or abandon. */
+  function attachSticker(sticker: Sticker) {
+    if (controller.current || currentAttachment.current) return;
+    if (!conversationId) {
+      setError("Select a conversation before adding a sticker.");
+      return;
+    }
+    const value = {
+      media: {
+        media_id: sticker.id,
+        path: sticker.path,
+        filename: "sticker",
+        content_type: sticker.content_type,
+        size: sticker.size,
+      },
+      preview: sticker.path,
+      sticker: true,
+    };
+    setError("");
+    setRetryFile(null);
+    setStatus("");
+    currentAttachment.current = value;
+    setAttachment(value);
+  }
   function cancel() {
     controller.current?.abort();
     controller.current = null;
@@ -177,6 +205,7 @@ export function useMediaUploads(
     error,
     attachment,
     start,
+    attachSticker,
     cancel,
     published,
     retry: retryFile ? () => start(retryFile) : undefined,

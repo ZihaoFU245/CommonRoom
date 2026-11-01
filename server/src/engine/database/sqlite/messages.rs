@@ -218,7 +218,7 @@ async fn reconcile(
         BTreeSet::new()
     };
     for id in ids.difference(&previous) {
-        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND conversation=?2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND (uploader=?3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)))")
+        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>?4) AND ((conversation=?2 AND uploader=?3) OR (conversation IN (?2,'@sticker') AND EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)) OR (conversation='@sticker' AND EXISTS(SELECT 1 FROM sticker_library WHERE media_id=?1 AND owner=?3))))")
             .bind(id).bind(request.conversation).bind(actor).bind(number(request.at)?)
             .fetch_one(&mut *db).await?;
         if !valid {

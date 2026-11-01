@@ -155,9 +155,30 @@ async fn native_media<T: Send + 'static>(
             .load(&id)
             .await
             .map_err(|cause| super::error::hidden(cause, missing))?;
+        let reach = if media.conversation == crate::engine::stickers::STICKERS {
+            Some(
+                store
+                    .sticker_reach(&id, &identity.account)
+                    .await
+                    .map_err(|cause| super::error::hidden(cause, missing))?,
+            )
+        } else {
+            None
+        };
         app.inspect_engine(move |engine, _| {
             verify_identity(&identity, engine)?;
-            identity.permit_conversation(engine, &media.conversation)?;
+            let attached = match reach {
+                None => {
+                    identity.permit_conversation(engine, &media.conversation)?;
+                    attached
+                }
+                Some(mut reach) => {
+                    reach
+                        .conversations
+                        .retain(|id| identity.permit_conversation(engine, id).is_ok());
+                    engine.sticker_readable(&identity.user, &reach)
+                }
+            };
             inspect(engine, &identity, media, attached)
         })
         .await
@@ -184,7 +205,7 @@ async fn owner(
 }
 enum MediaMutation {
     Ready(
-        crate::engine::media::Media,
+        Box<crate::engine::media::Media>,
         tokio::sync::OwnedMutexGuard<()>,
     ),
     Abandon(String),
@@ -311,7 +332,10 @@ async fn reserve(
     .await
     .map_err(|_| unavailable())?
 }
-fn media_json(app: &App, media: &crate::engine::media::Media) -> Json<serde_json::Value> {
+pub(super) fn media_json(
+    app: &App,
+    media: &crate::engine::media::Media,
+) -> Json<serde_json::Value> {
     Json(
         json!({"media_id":media.id,"path":format!("{}api/media/{}/file",app.config.base_url,media.id),"content_type":media.content_type,"size":media.size,"filename":media.filename}),
     )
@@ -438,7 +462,7 @@ pub(crate) async fn complete_as(
         mutate(
             &app,
             &access,
-            MediaMutation::Ready(media.clone(), object_lock),
+            MediaMutation::Ready(Box::new(media.clone()), object_lock),
         )
         .await?;
     }
