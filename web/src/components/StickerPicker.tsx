@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api } from "../api/client.ts";
+import { ApiError, api } from "../api/client.ts";
 import { uploadFile } from "../api/media.ts";
 import { errorMessage } from "../api/protocol.ts";
 import type { Sticker, StickerLibrary } from "../api/stickers.ts";
@@ -7,7 +7,10 @@ import {
   formatBytes,
   prepareSticker,
   stickerAccept,
+  stickerDigest,
 } from "../features/conversation/stickers.ts";
+
+const DUPLICATE_STICKER = "This sticker is already in your library.";
 
 interface Props {
   disabled: boolean;
@@ -28,6 +31,8 @@ export function StickerPicker({ disabled, pick, close }: Props) {
   const [uploading, setUploading] = useState(false);
   const [offset, setOffset] = useState(0);
   const [roll, setRoll] = useState<"down" | "up" | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [duplicateNotice, setDuplicateNotice] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
   const grid = useRef<HTMLDivElement>(null);
   const upload = useRef<AbortController | null>(null);
@@ -56,6 +61,19 @@ export function StickerPicker({ disabled, pick, close }: Props) {
     function dismiss(event: PointerEvent) {
       const target = event.target;
       if (
+        target instanceof Element &&
+        target.closest(".sticker-delete-confirm, .sticker-delete")
+      )
+        return;
+      if (duplicateNotice) {
+        setDuplicateNotice(false);
+        return;
+      }
+      if (pendingDelete) {
+        setPendingDelete(null);
+        return;
+      }
+      if (
         target instanceof Node &&
         !panel.current?.contains(target) &&
         !(target instanceof Element && target.closest(".sticker-button"))
@@ -63,7 +81,16 @@ export function StickerPicker({ disabled, pick, close }: Props) {
         close();
     }
     function escape(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
+      if (event.key !== "Escape") return;
+      if (duplicateNotice) {
+        setDuplicateNotice(false);
+        return;
+      }
+      if (pendingDelete) {
+        setPendingDelete(null);
+        return;
+      }
+      close();
     }
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("keydown", escape);
@@ -71,7 +98,7 @@ export function StickerPicker({ disabled, pick, close }: Props) {
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("keydown", escape);
     };
-  }, [close]);
+  }, [close, pendingDelete, duplicateNotice]);
   const stickers = library?.stickers ?? [];
   const maxOffset = Math.max(0, stickers.length - VISIBLE);
   useEffect(() => {
@@ -86,6 +113,7 @@ export function StickerPicker({ disabled, pick, close }: Props) {
       event.stopPropagation();
       if (event.deltaY === 0) return;
       const direction = event.deltaY > 0 ? "down" : "up";
+      setPendingDelete(null);
       setOffset((current) => {
         const next =
           direction === "down"
@@ -107,9 +135,16 @@ export function StickerPicker({ disabled, pick, close }: Props) {
     upload.current = active;
     setUploading(true);
     setError("");
+    setDuplicateNotice(false);
     setStatus("Preparing sticker…");
     try {
       const blob = await prepareSticker(file, library.max_size);
+      const digest = await stickerDigest(blob);
+      if (library.stickers.some((item) => item.digest === digest)) {
+        setStatus("");
+        setDuplicateNotice(true);
+        return;
+      }
       setStatus("Uploading sticker…");
       const ticket = await api.allocateSticker(blob.size, active.signal);
       await uploadFile(ticket, blob, active.signal);
@@ -118,7 +153,13 @@ export function StickerPicker({ disabled, pick, close }: Props) {
       if (active.signal.aborted) return;
       setLibrary((current) =>
         current
-          ? { ...current, stickers: [sticker, ...current.stickers] }
+          ? {
+              ...current,
+              stickers: [
+                { ...sticker, digest: sticker.digest ?? digest },
+                ...current.stickers,
+              ],
+            }
           : current,
       );
       setOffset(0);
@@ -126,6 +167,14 @@ export function StickerPicker({ disabled, pick, close }: Props) {
     } catch (failure) {
       if (active.signal.aborted) return;
       setStatus("");
+      if (
+        failure instanceof ApiError &&
+        failure.status === 409 &&
+        failure.message === DUPLICATE_STICKER
+      ) {
+        setDuplicateNotice(true);
+        return;
+      }
       setError(errorMessage(failure));
     } finally {
       if (upload.current === active) upload.current = null;
@@ -134,6 +183,7 @@ export function StickerPicker({ disabled, pick, close }: Props) {
   }
   async function remove(sticker: Sticker) {
     setError("");
+    setPendingDelete(null);
     try {
       await api.deleteSticker(sticker.id);
       setLibrary((current) =>
@@ -194,19 +244,42 @@ export function StickerPicker({ disabled, pick, close }: Props) {
             >
               <img src={sticker.path} alt="" loading="lazy" decoding="async" />
             </button>
-            <button
-              type="button"
-              class="sticker-delete"
-              aria-label="Delete sticker"
-              title="Delete sticker"
-              onClick={() => {
-                remove(sticker).catch(() => undefined);
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m7 7 10 10M17 7 7 17" />
-              </svg>
-            </button>
+            {pendingDelete === sticker.id ? (
+              <div
+                class="sticker-delete-confirm"
+                role="dialog"
+                aria-label="Delete this sticker?"
+              >
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="sticker-delete-confirm-yes"
+                  autoFocus
+                  onClick={() => {
+                    remove(sticker).catch(() => undefined);
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                class="sticker-delete"
+                aria-label="Delete sticker"
+                title="Delete sticker"
+                onClick={() => setPendingDelete(sticker.id)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 7 10 10M17 7 7 17" />
+                </svg>
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -223,6 +296,24 @@ export function StickerPicker({ disabled, pick, close }: Props) {
         >
           {error || status}
         </p>
+      )}
+      {duplicateNotice && (
+        <div
+          class="sticker-duplicate-notice"
+          role="alertdialog"
+          aria-labelledby="sticker-duplicate-title"
+          aria-describedby="sticker-duplicate-body"
+        >
+          <p id="sticker-duplicate-title">Can’t add this sticker</p>
+          <p id="sticker-duplicate-body">{DUPLICATE_STICKER}</p>
+          <button
+            type="button"
+            autoFocus
+            onClick={() => setDuplicateNotice(false)}
+          >
+            OK
+          </button>
+        </div>
       )}
     </div>
   );
