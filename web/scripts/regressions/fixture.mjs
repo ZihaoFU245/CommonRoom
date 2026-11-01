@@ -3078,6 +3078,100 @@ for (const width of [1000, 320]) {
   });
 }
 
+await test("slow upward scrolling survives visible image layout updates", async () => {
+  const canvas = document.createElement("canvas");
+  canvas.width = 180;
+  canvas.height = 120;
+  canvas.getContext("2d").fillRect(0, 0, 180, 120);
+  const source = canvas.toDataURL();
+  const messages = Array.from({ length: 60 }, (_, i) => ({
+    ...message(i + 1),
+    markdown: true,
+    text: i === 59 ? `![preview](${source})` : `Message ${i + 1}`,
+  }));
+  const state = {
+    ...empty,
+    rooms: [
+      {
+        name: "a",
+        id: "a-id",
+        owner: "alice",
+        members: ["alice"],
+        permissions: ["r:message.read", "w:message.create"],
+        commands: [],
+        messages,
+      },
+    ],
+    unread: {
+      a: { revision: 1, count: 0, first: null, oldest: 1, through: 60 },
+    },
+  };
+  const originalSocket = window.WebSocket;
+  window.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() {
+      queueMicrotask(() => this.onopen?.());
+    }
+    send() {}
+    close() {
+      this.readyState = 3;
+    }
+  };
+  api.me = async () => state;
+  api.read = async () => ({ ok: true });
+  api.mediaConfig = async () => ({ enabled: false, max_size: 0 });
+  api.botCommands = async (id) => ({ conversation_id: id, bots: [] });
+  api.history = async (view) => ({
+    view,
+    revision: 1,
+    messages,
+    has_before: false,
+    has_after: false,
+  });
+  history.replaceState(null, "", "#room=a");
+  try {
+    render(
+      h(Chat, {
+        initial: state,
+        onLogout() {},
+        appearance: {
+          theme: "light",
+          seeds: defaultSeeds,
+          setTheme() {},
+          setSeeds() {},
+        },
+      }),
+      tests,
+    );
+    await until(() => tests.querySelector(".message-markdown img")?.complete);
+    await sleep(400);
+    const viewport = tests.querySelector(".message-list");
+    const image = viewport.querySelector("img");
+    viewport.scrollTop = viewport.scrollHeight;
+    viewport.dispatchEvent(new Event("scroll"));
+    const initialTop = viewport.scrollTop;
+    check(initialTop > 100, "fixture has scrollable history");
+    for (let step = 0; step < 8; step++) {
+      viewport.dispatchEvent(
+        new WheelEvent("wheel", { deltaY: -2, bubbles: true }),
+      );
+      viewport.scrollTop -= 2;
+      viewport.dispatchEvent(new Event("scroll"));
+      // A preview can keep changing size while small wheel deltas arrive.
+      image.style.height = `${121 + step}px`;
+      await sleep(240);
+      check(
+        viewport.scrollTop <= initialTop - (step + 1) * 2 + 1,
+        `small upward movement survives preview measurement (step ${step})`,
+      );
+    }
+  } finally {
+    render(null, tests);
+    window.WebSocket = originalSocket;
+  }
+});
+
 await test("mounted reply jumps release bottom following and clean up motion", async () => {
   const original = window.matchMedia;
   const listeners = new Set();

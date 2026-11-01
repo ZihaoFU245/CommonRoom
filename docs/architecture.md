@@ -397,7 +397,9 @@ failures discard the index for rebuilding on the next write.
 Bottom-following intent survives temporary scroll-height growth from animated
 rows and delayed content. Wheel, touch, pointer and keyboard input cancel timeline
 motion before scroll tracking evaluates the new position; readers of older
-messages are never repinned just because another row is animating.
+messages are never repinned just because another row is animating. Upward scroll
+movement releases bottom following even inside the proximity threshold; duplicate
+scroll events at the same position preserve that release.
 
 Browser and bot sockets share transport lifecycle, heartbeat, idle timeout and
 frame-budget helpers. Stable-account admission allows four sockets per profile

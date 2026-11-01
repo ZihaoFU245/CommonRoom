@@ -200,7 +200,9 @@ monotonic movement and disabled elastic overscroll.
 socket-baseline recovery and revoked-session handling. Media-cache tests cover
 reuse of cached response sizes, byte limits after restart, overlapping worker
 lifetimes, recency and storage-error recovery. `timelineScroll.test.js` covers
-temporary animation overflow retaining bottom intent and manual release.
+temporary animation overflow retaining bottom intent, slow upward movement and
+duplicate scroll events. The visible-image browser regression checks small upward
+scrolls while preview dimensions change.
 
 Browser command-output regressions submit `/debug on` without a command grant in
 rooms, Command view and private chats, then submit another message or command.
