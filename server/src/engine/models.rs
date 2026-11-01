@@ -123,6 +123,7 @@ pub struct Snapshot {
     pub kind: &'static str,
     pub username: String,
     pub groups: Vec<String>,
+    pub user_groups: BTreeMap<String, Vec<String>>,
     pub permissions: Vec<String>,
     pub account_access: Access,
     pub private_access: BTreeMap<String, Access>,

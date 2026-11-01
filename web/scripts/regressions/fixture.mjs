@@ -1,3 +1,5 @@
+import { UserCards } from "../../src/components/UserCard.tsx";
+import { UserCardTrigger } from "../../src/components/UserCardTrigger.tsx";
 import { AppearanceSettings } from "../../src/components/settings/AppearanceSettings.tsx";
 import {
   connectPreferences,
@@ -97,6 +99,435 @@ async function test(name, run) {
     tests.replaceChildren();
   }
 }
+await test("user cards show profiles and open private messages", async () => {
+  let messaged;
+  render(
+    h(
+      UserCards,
+      {
+        state: {
+          online: [],
+          username: "alice",
+          avatars: {},
+          user_groups: { bob: ["admin"] },
+        },
+        onMessage: (name) => {
+          messaged = name;
+        },
+      },
+      h(UserCardTrigger, { name: "bob", label: "Bobby" }, "Bobby"),
+    ),
+    tests,
+  );
+  const trigger = tests.querySelector("button");
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  let card = document.querySelector(".user-card");
+  check(card.querySelector("strong").textContent === "Bobby", "display name");
+  check(
+    card.textContent.includes("@bob") && card.textContent.includes("admin"),
+    "username and group",
+  );
+  check(
+    getComputedStyle(card.querySelector(".user-card-avatar")).display ===
+      "none",
+    "missing avatar leaves no placeholder or space",
+  );
+  const details = card
+    .querySelector(".user-card-details")
+    .getBoundingClientRect();
+  const messageButton = card.querySelector(".primary").getBoundingClientRect();
+  check(
+    messageButton.left >= details.right,
+    "Message sits to the right of the profile details",
+  );
+  const bounds = card.getBoundingClientRect();
+  check(bounds.height < 110, "card uses a short horizontal layout");
+  check(bounds.left >= 0 && bounds.right <= innerWidth, "card fits viewport");
+  document.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  await until(() => !document.querySelector(".user-card"));
+  check(document.activeElement === trigger, "Escape restores focus");
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  card = document.querySelector(".user-card");
+  card.querySelector(".primary").click();
+  await until(() => !document.querySelector(".user-card"));
+  check(messaged === "bob", "message uses username identity");
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  document.body.dispatchEvent(
+    new PointerEvent("pointerdown", { bubbles: true }),
+  );
+  await until(() => !document.querySelector(".user-card"));
+});
+await test("user cards expand from the clicked profile position", async () => {
+  const animate = Element.prototype.animate;
+  const openings = [];
+  Element.prototype.animate = function (frames, options) {
+    if (this.classList.contains("user-card"))
+      openings.push({ frames, options, element: this });
+    return animate.call(this, frames, options);
+  };
+  try {
+    render(
+      h(
+        UserCards,
+        {
+          state: {
+            online: [],
+            username: "alice",
+            avatars: {},
+            user_groups: { bob: ["user"] },
+          },
+          onMessage() {},
+        },
+        h(UserCardTrigger, { name: "bob" }, "Bob"),
+      ),
+      tests,
+    );
+    const trigger = tests.querySelector("button");
+    const anchor = trigger.getBoundingClientRect();
+    const point = { x: anchor.left + 4, y: anchor.top + 4 };
+    trigger.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        detail: 1,
+        clientX: point.x,
+        clientY: point.y,
+      }),
+    );
+    await until(() => document.querySelector(".user-card"));
+    const card = document.querySelector(".user-card");
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      check(openings.length === 1, "opening has one animation");
+      const { frames, options } = openings[0];
+      check(
+        frames[0].transform === "scale(0.15)" &&
+          frames[1].transform === "scale(1)",
+        "whole card expands to its natural size",
+      );
+      const [x, y] = frames[0].transformOrigin.split(" ").map(parseFloat);
+      check(
+        Math.abs(x + parseFloat(card.style.left) - point.x) < 1 &&
+          Math.abs(y + parseFloat(card.style.top) - point.y) < 1,
+        "expansion starts at the pointer position",
+      );
+      check(
+        options.duration === 90 && options.easing === "ease-out",
+        "opening uses faster timing with shared easing",
+      );
+      const left = card.style.left;
+      const top = card.style.top;
+      await sleep(160);
+      check(
+        card.style.left === left && card.style.top === top,
+        "animation does not disturb card placement",
+      );
+    }
+  } finally {
+    Element.prototype.animate = animate;
+  }
+});
+await test("user cards toggle by reversing their opening animation", async () => {
+  render(
+    h(
+      UserCards,
+      {
+        state: {
+          online: [],
+          username: "alice",
+          avatars: {},
+          user_groups: { bob: ["user"] },
+        },
+        onMessage() {},
+      },
+      h(UserCardTrigger, { name: "bob" }, "Bob"),
+    ),
+    tests,
+  );
+  const trigger = tests.querySelector("button");
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  const card = document.querySelector(".user-card");
+  const animation = card.getAnimations()[0];
+  if (animation) {
+    animation.finish();
+    await sleep(20);
+    trigger.click();
+    await animation.ready;
+    check(
+      document.querySelector(".user-card") === card,
+      "closing retains the current card until the animation completes",
+    );
+    check(
+      animation.playbackRate < 0,
+      "second click reverses the existing animation",
+    );
+    trigger.click();
+    await animation.ready;
+    check(
+      animation.playbackRate > 0,
+      "clicking during closure reopens without restarting",
+    );
+    animation.finish();
+    await sleep(20);
+    trigger.click();
+    await animation.ready;
+    animation.finish();
+  } else {
+    trigger.click();
+  }
+  await until(() => !document.querySelector(".user-card"));
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  check(
+    document.querySelector(".user-card") !== card,
+    "card can be opened again after closing",
+  );
+});
+await test("user cards animate every dismissal and handle rapid toggles", async () => {
+  render(
+    h(
+      UserCards,
+      {
+        state: {
+          online: [],
+          username: "alice",
+          avatars: {},
+          user_groups: { bob: ["user"] },
+        },
+        onMessage() {},
+      },
+      [
+        h(UserCardTrigger, { name: "bob" }, "Bob"),
+        h("button", { id: "outside-profile" }, "Outside"),
+      ],
+    ),
+    tests,
+  );
+  const trigger = tests.querySelector("button");
+  for (const dismiss of [
+    () =>
+      document.body.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      ),
+    () =>
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    () => tests.querySelector("#outside-profile").focus(),
+  ]) {
+    trigger.click();
+    await until(() => document.querySelector(".user-card"));
+    const card = document.querySelector(".user-card");
+    const animation = card.getAnimations()[0];
+    if (animation) {
+      animation.finish();
+      await sleep(20);
+    }
+    dismiss();
+    if (animation) {
+      check(animation.playbackRate < 0, "dismissal reverses the visible card");
+      check(
+        document.querySelector(".user-card") === card,
+        "dismissal does not remove the card before animating",
+      );
+    }
+    await until(() => !document.querySelector(".user-card"));
+  }
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  const animation = document.querySelector(".user-card").getAnimations()[0];
+  if (animation) {
+    animation.pause();
+    animation.currentTime = 45;
+    trigger.click();
+    trigger.click();
+    trigger.click();
+    check(
+      animation.playbackRate < 0,
+      "a rapid click burst ends in the requested direction",
+    );
+    await until(() => !document.querySelector(".user-card"));
+  }
+});
+await test("user cards keep their trigger uncovered near the bottom edge", async () => {
+  render(
+    h(
+      UserCards,
+      {
+        state: {
+          online: [],
+          username: "alice",
+          avatars: {},
+          user_groups: { bob: ["user"] },
+        },
+        onMessage() {},
+      },
+      h(
+        "div",
+        { style: { position: "fixed", left: "20px", bottom: "20px" } },
+        h(UserCardTrigger, { name: "bob" }, "Bob"),
+      ),
+    ),
+    tests,
+  );
+  const trigger = tests.querySelector("button");
+  trigger.click();
+  await until(() => document.querySelector(".user-card"));
+  const card = document.querySelector(".user-card");
+  const animation = card.getAnimations()[0];
+  if (animation) animation.finish();
+  const anchor = trigger.getBoundingClientRect();
+  const bounds = card.getBoundingClientRect();
+  check(
+    bounds.bottom <= anchor.top - 7,
+    "card opens above a trigger near the bottom",
+  );
+  check(
+    document
+      .elementFromPoint(
+        anchor.left + anchor.width / 2,
+        anchor.top + anchor.height / 2,
+      )
+      ?.closest("button") === trigger,
+    "trigger stays clickable to close the card",
+  );
+});
+await test("user cards label self, show presence and copy usernames", async () => {
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  let copied;
+  let fail = false;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      async writeText(text) {
+        if (fail) throw new Error("Clipboard denied");
+        copied = text;
+      },
+    },
+  });
+  try {
+    render(
+      h(
+        UserCards,
+        {
+          state: {
+            username: "alice",
+            online: ["alice"],
+            avatars: {},
+            user_groups: { alice: ["admin"], bob: ["user"] },
+          },
+          onMessage() {},
+        },
+        [
+          h(UserCardTrigger, { name: "alice", label: "Alice" }, "Alice"),
+          h(UserCardTrigger, { name: "bob", label: "Bob" }, "Bob"),
+        ],
+      ),
+      tests,
+    );
+    const [self, peer] = tests.querySelectorAll("button");
+    self.click();
+    await until(() => document.querySelector(".user-card"));
+    let card = document.querySelector(".user-card");
+    check(
+      card.querySelector(".user-card-self")?.textContent === "You",
+      "own card is labeled You",
+    );
+    check(!card.querySelector(".primary"), "own card hides Message");
+    check(
+      card.querySelector(".user-card-presence")?.getAttribute("aria-label") ===
+        "Online",
+      "online presence is accessible",
+    );
+    card.querySelector(".user-card-username").click();
+    await until(
+      () => card.querySelector(".user-card-username").textContent === "Copied",
+    );
+    check(copied === "@alice", "copy includes the username prefix");
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await until(() => !document.querySelector(".user-card"));
+    peer.click();
+    await until(() => document.querySelector(".user-card"));
+    card = document.querySelector(".user-card");
+    check(
+      !card.querySelector(".user-card-self") && card.querySelector(".primary"),
+      "peer card keeps Message and has no You label",
+    );
+    check(
+      card.querySelector(".user-card-presence")?.getAttribute("aria-label") ===
+        "Offline",
+      "offline presence is accessible",
+    );
+    check(
+      card.querySelector(".user-card-username").textContent === "@bob",
+      "copy feedback resets for another profile",
+    );
+    fail = true;
+    card.querySelector(".user-card-username").click();
+    await until(
+      () =>
+        card.querySelector(".user-card-username").textContent ===
+        "Couldn’t copy",
+    );
+    check(copied === "@alice", "failed copy does not report success");
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else delete navigator.clipboard;
+  }
+});
+await test("user cards hide empty avatar triggers", async () => {
+  render(
+    h(
+      UserCardTrigger,
+      { name: "bob", avatar: true },
+      h(Avatar, { name: "bob", url: undefined }),
+    ),
+    tests,
+  );
+  check(
+    getComputedStyle(tests.querySelector(".avatar-trigger")).display === "none",
+    "empty avatar is neither clickable nor focusable",
+  );
+});
+await test("user cards omit failed avatar images", async () => {
+  render(
+    h(
+      UserCards,
+      {
+        state: {
+          online: [],
+          username: "alice",
+          avatars: {
+            bob: "/api/avatars/00000000-0000-0000-0000-000000000000/file",
+          },
+          user_groups: { bob: ["user"] },
+        },
+        onMessage() {},
+      },
+      h(UserCardTrigger, { name: "bob" }, "Bob"),
+    ),
+    tests,
+  );
+  tests.querySelector("button").click();
+  await until(() => document.querySelector(".user-card"));
+  const card = document.querySelector(".user-card");
+  await until(() => !card.querySelector("img"));
+  check(
+    getComputedStyle(card.querySelector(".user-card-avatar")).display ===
+      "none",
+    "failed avatar leaves no placeholder or space",
+  );
+  check(
+    card.querySelector(".primary").getBoundingClientRect().height < 30,
+    "message button stays compact",
+  );
+});
 await test("system metrics sections expand independently while keeping rates visible", async () => {
   for (const command of ["/system metrics", "/sudo /system metrics"]) {
     render(
@@ -4151,6 +4582,104 @@ for (const native of [false, true]) {
     }
   });
 }
+
+await test("user cards start a new private chat without sending a message", async () => {
+  const Socket = window.WebSocket;
+  const url = location.href;
+  const sidebar = localStorage.getItem("commonroom-sidebar-open");
+  const frames = [];
+  window.WebSocket = class {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 1;
+    constructor() {
+      queueMicrotask(() => this.onopen?.());
+    }
+    send(frame) {
+      frames.push(JSON.parse(frame));
+    }
+    close() {
+      this.readyState = 3;
+    }
+  };
+  localStorage.setItem("commonroom-sidebar-open", "true");
+  history.replaceState(null, "", "#room=%40command");
+  const state = {
+    ...empty,
+    users: ["alice", "bob"],
+    online: ["bob"],
+    display_names: { bob: "Bobby" },
+    user_groups: { bob: ["user"] },
+    private_peers: ["alice"],
+    private_permissions: ["w:message.create"],
+  };
+  try {
+    render(
+      h(Chat, {
+        initial: state,
+        onLogout() {},
+        appearance: {
+          theme: "light",
+          setTheme() {},
+          seeds: defaultSeeds,
+          setSeeds() {},
+        },
+      }),
+      tests,
+    );
+    tests.querySelector(".online-toggle").click();
+    await until(() => tests.querySelector(".online-list .user-card-trigger"));
+    tests.querySelector(".online-list .user-card-trigger").click();
+    await until(() => document.querySelector(".user-card"));
+    document.querySelector(".user-card .primary").click();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "Bobby",
+    );
+    await sleep(100);
+    check(
+      new URLSearchParams(location.hash.slice(1)).get("room") === "@direct:bob",
+      "private draft remains selected",
+    );
+    check(
+      tests.querySelector(".composer textarea:not(:disabled)"),
+      "private draft accepts messages",
+    );
+    check(
+      !frames.some((frame) => frame.kind === "command"),
+      "opening a private draft sends no command",
+    );
+    const alice = [...tests.querySelectorAll("button.room-link")].find(
+      (button) => button.textContent.includes("alice"),
+    );
+    check(alice, "existing private chat is a navigation button");
+    alice.querySelector("span[title='alice']").click();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "alice",
+    );
+    check(
+      !document.querySelector(".user-card"),
+      "sidebar names switch chats without a profile card",
+    );
+    const bob = [...tests.querySelectorAll("button.room-link")].find((button) =>
+      button.textContent.includes("Bobby"),
+    );
+    check(bob, "new private draft is a navigation button");
+    bob.querySelector(".private-chat-icon").click();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "Bobby",
+    );
+    check(
+      !document.querySelector(".user-card"),
+      "sidebar avatar area switches chats without a profile card",
+    );
+  } finally {
+    render(null, tests);
+    window.WebSocket = Socket;
+    history.replaceState(null, "", url);
+    if (sidebar === null) localStorage.removeItem("commonroom-sidebar-open");
+    else localStorage.setItem("commonroom-sidebar-open", sidebar);
+  }
+});
 
 await test("room selection preserves fragments and restores the default view with Back", async () => {
   const Socket = window.WebSocket;

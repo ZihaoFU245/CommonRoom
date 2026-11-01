@@ -88,3 +88,121 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.user-card-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.user-card-trigger:hover {
+  text-decoration: underline;
+}
+.avatar-trigger:not(:has(.user-avatar:not([hidden]))) {
+  display: none;
+}
+.avatar-trigger {
+  width: 28px;
+  height: 28px;
+}
+.user-card {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--wash);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+}
+.user-card-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--paper);
+  font-size: 24px;
+}
+.user-card-avatar:not(:has(.user-avatar:not([hidden]))) {
+  display: none;
+}
+.user-card-avatar .user-avatar {
+  position: absolute;
+  inset: 0;
+  width: 56px;
+  height: 56px;
+}
+.user-card-details {
+  flex: 1;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.user-card-details strong {
+  font-size: 1.05rem;
+}
+.user-card-details small {
+  font-size: 0.85rem;
+  color: var(--subtle);
+}
+.user-card > .primary {
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.user-card-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.user-card-presence {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--offline);
+}
+.user-card-presence.online {
+  background: var(--online);
+}
+.user-card-self {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.user-card-username {
+  justify-self: start;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 0.85rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.user-card-username:hover {
+  text-decoration: underline;
+}

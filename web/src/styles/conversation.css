@@ -478,7 +478,8 @@ button:focus-visible {
 .chat-message:hover {
   background: var(--wash);
 }
-.chat-message > .user-avatar {
+.chat-message > .user-avatar,
+.chat-message > .avatar-trigger {
   position: absolute;
   top: 16px;
   left: 14px;

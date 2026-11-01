@@ -157,7 +157,7 @@ export function Composer({
         <div class="reply-composer">
           <div>
             <strong>
-              Reply to <DisplayName name={replyTarget.from} />
+              Reply to <DisplayName name={replyTarget.from} interactive />
             </strong>
             <p dir="auto">
               {Array.from(replyTarget.text).slice(0, 160).join("")}

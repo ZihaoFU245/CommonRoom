@@ -318,6 +318,12 @@ impl Engine {
             username: name.into(),
             admin: self.is_admin(name),
             groups: self.groups(Some(name)),
+            user_groups: self
+                .data
+                .users
+                .keys()
+                .map(|name| (name.clone(), self.groups(Some(name))))
+                .collect(),
             permissions: rights(&Scope::Server).names(),
             account_access: Access {
                 id: account.id.clone(),

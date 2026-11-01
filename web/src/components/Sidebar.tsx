@@ -1,3 +1,4 @@
+import { UserCardTrigger } from "./UserCardTrigger.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
 import type { Snapshot } from "../api/protocol.ts";
@@ -60,6 +61,7 @@ export function Sidebar({
             {peers.map((name) => (
               <button
                 key={name}
+                type="button"
                 class={`room-link ${peer === name ? "selected" : ""}`}
                 onClick={() => choose(`@direct:${name}`)}
               >
@@ -81,10 +83,15 @@ export function Sidebar({
       </nav>
       <div class="sidebar-bottom">
         <div class="profile">
-          <Avatar url={state.avatars?.[state.username]} name={state.username} />
+          <UserCardTrigger name={state.username} avatar>
+            <Avatar
+              url={state.avatars?.[state.username]}
+              name={state.username}
+            />
+          </UserCardTrigger>
           <div class="profile-name">
             <strong>
-              <DisplayName name={state.username} />
+              <DisplayName name={state.username} interactive />
             </strong>
             <small>
               {state.groups.includes("su")

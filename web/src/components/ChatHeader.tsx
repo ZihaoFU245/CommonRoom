@@ -26,7 +26,7 @@ export function ChatHeader({
             "Command"
           ) : direct ? (
             peer ? (
-              <DisplayName name={peer} />
+              <DisplayName name={peer} interactive />
             ) : (
               "Private messages"
             )

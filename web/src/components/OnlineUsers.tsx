@@ -6,7 +6,7 @@ function OnlineName({ name, self }: { name: string; self: boolean }) {
   return (
     <span>
       <b data-name-color={useNameColor(name)}>
-        <DisplayName name={name} />
+        <DisplayName name={name} interactive />
       </b>
       {self ? " (you)" : ""}
     </span>

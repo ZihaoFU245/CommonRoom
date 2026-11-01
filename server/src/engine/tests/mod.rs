@@ -91,6 +91,28 @@ fn password_change_keeps_current_session_and_rejects_stale_hashes() {
     assert_eq!(e.revision, revision);
 }
 #[test]
+fn snapshot_user_groups_follow_visible_profile_identities() {
+    let mut e = engine();
+    let snapshot = e.snapshot("alice").unwrap();
+    assert_eq!(snapshot.user_groups["alice"], snapshot.groups);
+    for name in snapshot.user_groups.keys() {
+        assert!(
+            name == &snapshot.username
+                || snapshot.users.contains(name)
+                || snapshot.private_peers.contains(name)
+                || snapshot.rooms.iter().any(|room| room.members.contains(name)
+                    || room.messages.iter().any(|message| &message.from == name))
+        );
+        assert_eq!(snapshot.user_groups[name], e.groups(Some(name)));
+    }
+    e.execute(Some("bob"), None, "/tell alice hello").unwrap();
+    assert_eq!(
+        e.snapshot("alice").unwrap().user_groups["bob"],
+        e.groups(Some("bob"))
+    );
+}
+
+#[test]
 fn private_contacts_come_only_from_the_users_retained_messages() {
     let mut e = engine();
     assert!(e.snapshot("alice").unwrap().private_peers.is_empty());

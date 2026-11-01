@@ -1,5 +1,6 @@
+import { UserCards } from "./UserCard.tsx";
 import { resolveDisplayNames } from "../features/preferences/displayNames.ts";
-import { DisplayNamesContext } from "./DisplayName.tsx";
+import { DisplayNamesContext } from "./DisplayNamesContext.ts";
 import { usePreferenceSync } from "../hooks/usePreferenceSync.ts";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
@@ -82,6 +83,7 @@ export function Chat({
       ? requested
       : initial.rooms[0]?.name || "@command";
   });
+  const [draftPeers, setDraftPeers] = useState<string[]>([]);
   const initialSelection = useRef(selected);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -196,12 +198,17 @@ export function Chat({
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
     () =>
-      privatePeers({
-        username: state.username,
-        direct: state.direct,
-        private_peers: state.private_peers,
-      }),
-    [state.private_peers, state.direct, state.username],
+      [
+        ...new Set([
+          ...draftPeers,
+          ...privatePeers({
+            username: state.username,
+            direct: state.direct,
+            private_peers: state.private_peers,
+          }),
+        ]),
+      ].sort(),
+    [state.private_peers, state.direct, state.username, draftPeers],
   );
   const direct = selected === "@direct" || selected.startsWith("@direct:");
   const peer = selected.startsWith("@direct:") ? selected.slice(8) : null;
@@ -691,7 +698,17 @@ export function Chat({
   return (
     <NameColorContext.Provider value={colors.current}>
       <DisplayNamesContext.Provider value={state.display_names ?? {}}>
-        {view}
+        <UserCards
+          state={state}
+          onMessage={(name) => {
+            setDraftPeers((peers) =>
+              peers.includes(name) ? peers : [...peers, name],
+            );
+            choose(`@direct:${name}`);
+          }}
+        >
+          {view}
+        </UserCards>
       </DisplayNamesContext.Provider>
     </NameColorContext.Provider>
   );

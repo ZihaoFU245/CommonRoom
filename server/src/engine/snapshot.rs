@@ -131,6 +131,9 @@ impl SnapshotPlan {
                     .flat_map(|room| room.messages.iter().map(|message| message.from.as_str())),
             )
             .collect();
+        self.snapshot
+            .user_groups
+            .retain(|name, _| visible.contains(name.as_str()));
         self.snapshot.avatars = self
             .avatars
             .into_iter()

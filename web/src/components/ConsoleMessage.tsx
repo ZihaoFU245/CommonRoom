@@ -1,3 +1,4 @@
+import { UserCardTrigger } from "./UserCardTrigger.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { CollapsibleMessage } from "./CollapsibleMessage.tsx";
@@ -135,12 +136,16 @@ export const ConsoleMessage = memo(function ConsoleMessage({
           {date.time}
         </time>
       )}
-      {!grouped && <Avatar url={avatar} name={message.from} />}
+      {!grouped && (
+        <UserCardTrigger name={message.from} avatar>
+          <Avatar url={avatar} name={message.from} />
+        </UserCardTrigger>
+      )}
       <div class="message-content" data-name-color={authorColor}>
         {!grouped && (
           <header class="message-meta">
             <strong class="message-author" data-name-color={authorColor}>
-              <DisplayName name={message.from} />
+              <DisplayName name={message.from} interactive />
             </strong>
             <time dateTime={date.iso} title={date.full} aria-label={date.full}>
               {date.time}

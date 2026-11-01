@@ -540,3 +540,22 @@ conversation; null restores username fallback. Versions change when the display
 name directory changes or the process restarts. Clients ignore stale versions and
 refresh paged profiles while preserving history. A committed display name edit
 invalidates browser baselines, so other devices and viewers receive the update.
+
+### User cards
+
+Browser snapshots include `user_groups`, a username-to-group-list map filtered to
+the same visible identities as avatars. User cards show the current scope's display
+name, `@username`, avatar, groups and an accessible online/offline indicator. The
+signed-in user's card is labeled “You” and hides Message. Clicking `@username`
+copies the handle, including `@`, with brief success or failure feedback.
+
+Clicking an author avatar or name, an online name, or the signed-in sidebar profile
+opens the card from the clicked position with a 90 ms animation. The card opens
+above triggers near the bottom edge so the trigger stays clickable. Escape, outside
+clicks, focus leaving the card and scrolling reverse the animation to dismiss it.
+Clicking the same trigger toggles the animation direction without restarting it;
+reduced-motion users get an immediate toggle. Private-message entries in the sidebar switch
+directly to the selected conversation without opening a card. The themed Message
+button selects that user's private chat. A new private-chat draft stays local
+until the first message is sent; sending uses the existing `/tell` permission
+checks and creates no conversation merely by opening the card or draft.
