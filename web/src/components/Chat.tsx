@@ -424,12 +424,21 @@ export function Chat({
     input.current?.focus();
   });
   const handleLoadSequence = useEvent(loadSequence);
+  const previousScroll = useRef<{ view: string; top: number } | null>(null);
   const handleScroll = useEvent(() => {
     const element = historyElement.current;
     const scrolling = virtualTimeline.current?.isScrolling?.() ?? false;
-    if (element)
+    if (element) {
+      const previous = previousScroll.current;
       atBottom.current =
-        !scrolling && timelineAtBottom(element, atBottom.current === true);
+        !scrolling &&
+        timelineAtBottom(
+          element,
+          atBottom.current === true,
+          previous?.view === selected ? previous.top : undefined,
+        );
+      previousScroll.current = { view: selected, top: element.scrollTop };
+    }
     rememberPosition();
     acknowledgeVisible();
     updateNavigation();
