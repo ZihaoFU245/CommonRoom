@@ -146,6 +146,7 @@ export function useCommands({
   const { retract, editMessage, reactTo } = useMessageActions({
     permissions,
     username: state.username,
+    commands: serverCommands,
     canExecute,
     lifecycle,
     socket,

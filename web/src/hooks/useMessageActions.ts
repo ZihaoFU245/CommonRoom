@@ -1,16 +1,19 @@
 import type { RefObject } from "preact";
 import type {
   Acknowledgement,
+  Command,
   Message,
   PendingCommand,
   ReplyTarget,
 } from "../api/protocol.ts";
 import type { createRequestLifecycle } from "../features/conversation/requestLifecycle.ts";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
+import { messageActionCommand } from "../features/conversation/permissions.ts";
 
 interface Context {
   permissions: string[];
   username: string;
+  commands: Command[];
   canExecute: (name: string) => boolean;
   lifecycle: ReturnType<typeof createRequestLifecycle>;
   socket: RefObject<WebSocket | null>;
@@ -27,6 +30,7 @@ interface Context {
 export function useMessageActions({
   permissions,
   username,
+  commands,
   canExecute,
   lifecycle,
   socket,
@@ -38,42 +42,51 @@ export function useMessageActions({
   handleAcknowledgement,
 }: Context) {
   function retract(message: Message, confirmed = false) {
+    const command = messageActionCommand(
+      "retract",
+      message,
+      username,
+      permissions,
+      commands,
+    );
     if (
-      (!permissions.includes("w:message.retract.any") &&
-        (message.from !== username ||
-          !permissions.includes("w:message.retract.own"))) ||
-      !canExecute("/retract") ||
+      !command ||
       lifecycle.pending ||
       socket.current?.readyState !== WebSocket.OPEN
     )
       return;
     if (!confirmed) return requestDelete(() => retract(message, true));
-    sendAction(`/retract ${message.id}`);
+    sendAction(`${command} ${message.id}`);
     if (replyTarget?.id === message.id) setReplyTarget(null);
   }
   function editMessage(message: Message, value: string): Promise<boolean> {
+    const command = messageActionCommand(
+      "edit",
+      message,
+      username,
+      permissions,
+      commands,
+    );
     if (
-      (!permissions.includes("w:message.edit.any") &&
-        (message.from !== username ||
-          !permissions.includes("w:message.edit.own"))) ||
-      !canExecute("/edit") ||
+      !command ||
       !hasMessageContent(value) ||
       Array.from(value.trim()).length > 4000 ||
       lifecycle.pending ||
       socket.current?.readyState !== WebSocket.OPEN
     )
       return Promise.resolve(false);
+    const text = `${command} ${message.id} ${value.trim()}`;
     return new Promise((resolve) => {
       lifecycle.submit({
         command: {
-          text: `/edit ${message.id} ${value.trim()}`,
+          text,
           room: selected,
           key: null,
           action: true,
         },
         frame: {
           room: consoleView ? null : selected,
-          text: `/edit ${message.id} ${value.trim()}`,
+          text,
         },
         complete: (result, current) => {
           handleAcknowledgement(result, current);

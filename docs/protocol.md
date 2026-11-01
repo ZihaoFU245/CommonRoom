@@ -215,7 +215,8 @@ selected room or their private history. It increments the conversation revision
 and clears quotes of that message in retained replies. Snapshots and history
 resynchronization remove the message and quotes on other devices. Ordinary admins
 follow the same ownership restriction. The `su` group has any-message retraction
-and read grants; stdin can locate a retained message globally by ID.
+and read grants; stdin can locate a retained message globally by ID. Authorized
+`/sudo /retract message-id` deletes any readable message with su authority.
 
 `/debug on|off` is a read-only command requiring metadata permission; a successful acknowledgement
 toggles message details locally in the requesting tab. It does not change persisted
@@ -276,6 +277,12 @@ The Edit button appears between Reply and Delete on messages you have permission
 inline editor offers Save and Cancel; Escape cancels. Failed saves retain the
 draft for retry. The editor fits its full text and grows or shrinks as you type
 or resize the view. Edits support nonempty text of at most 4,000 Unicode characters.
+Callers whose current scope advertises an authorized `/sudo` descriptor also get
+Edit and Delete controls on every readable message, including other authors’
+messages.
+Those controls send `/sudo /edit …` or `/sudo /retract …` unless the direct
+command and matching action grant are already present, in which case the
+unwrapped command is used. The server rechecks live sudo authority on execution.
 New messages, replies and edits must contain content beyond whitespace, control
 characters, Unicode default-ignorable characters, blank braille (U+2800) and the
 object replacement placeholder (U+FFFC). The browser and server enforce this;
