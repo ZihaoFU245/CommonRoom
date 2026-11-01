@@ -28,6 +28,14 @@ export function formatBytes(size: number): string {
   return `${size} bytes`;
 }
 
+/** Lowercase SHA-256 hex of sticker bytes (matches server content_digest). */
+export async function stickerDigest(blob: Blob): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return [...new Uint8Array(hash)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function encode(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) =>
     canvas.toBlob(

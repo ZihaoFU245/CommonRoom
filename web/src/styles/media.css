@@ -288,6 +288,75 @@
   stroke-width: 2;
   stroke-linecap: round;
 }
+.sticker-delete-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  animation: sticker-pop var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.sticker-delete-confirm button {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-pop);
+}
+.sticker-delete-confirm-yes {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-label);
+}
+.sticker-duplicate-notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+  animation: sticker-pop var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.sticker-duplicate-notice p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.sticker-duplicate-notice p:first-child {
+  font-weight: 600;
+}
+.sticker-duplicate-notice button {
+  justify-self: end;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--wash);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
 .sticker-note {
   margin: 8px 4px 2px;
   color: var(--subtle);
@@ -299,6 +368,12 @@
 @media (hover: none) {
   .sticker-delete {
     opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sticker-delete-confirm,
+  .sticker-duplicate-notice {
+    animation: none;
   }
 }
 
