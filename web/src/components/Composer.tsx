@@ -2,7 +2,9 @@ import { DisplayName } from "./DisplayName.tsx";
 import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
-import { useEffect, useRef } from "preact/hooks";
+import type { Sticker } from "../api/stickers.ts";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { StickerPicker } from "./StickerPicker.tsx";
 import {
   canAttachFile,
   clipboardAttachment,
@@ -18,6 +20,7 @@ interface Props {
     status: string;
     error: string;
     start: (file: File) => Promise<void>;
+    attachSticker: (sticker: Sticker) => void;
     cancel: () => void;
     retry: (() => Promise<void>) | undefined;
   };
@@ -67,6 +70,8 @@ export function Composer({
 }: Props) {
   const hintList = useRef<HTMLUListElement>(null);
   const composition = useCompositionGuard(keydown);
+  const [stickers, setStickers] = useState(false);
+  const closeStickers = useCallback(() => setStickers(false), []);
   useEffect(() => {
     hintList.current
       ?.querySelector('[aria-selected="true"]')
@@ -94,6 +99,17 @@ export function Composer({
   }
   return (
     <div class="composer-area">
+      {mediaUpload && attachVisible && stickers && (
+        <StickerPicker
+          disabled={!attachAllowed}
+          close={closeStickers}
+          pick={(sticker) => {
+            setStickers(false);
+            mediaUpload.attachSticker(sticker);
+            input.current?.focus();
+          }}
+        />
+      )}
       <div
         class="composer-resize"
         role="separator"
@@ -195,7 +211,13 @@ export function Composer({
         </div>
       )}
       {mediaUpload?.attachment && (
-        <div class="composer-attachment">
+        <div
+          class={
+            mediaUpload.attachment.sticker
+              ? "composer-attachment composer-sticker"
+              : "composer-attachment"
+          }
+        >
           {mediaUpload.attachment.preview && (
             <img
               src={mediaUpload.attachment.preview}
@@ -203,7 +225,9 @@ export function Composer({
             />
           )}
           <span>
-            {mediaUpload.attachment.media.filename}
+            {mediaUpload.attachment.sticker
+              ? "Sticker"
+              : mediaUpload.attachment.media.filename}
             <small>
               {mediaUpload.attachment.media.size.toLocaleString()} bytes
             </small>
@@ -239,6 +263,23 @@ export function Composer({
                 }}
               />
             </label>
+          )}
+          {mediaUpload && attachVisible && (
+            <button
+              type="button"
+              class="attach-button sticker-button"
+              aria-label="Stickers"
+              aria-expanded={stickers}
+              aria-haspopup="dialog"
+              title="Stickers"
+              onClick={() => setStickers((open) => !open)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8" />
+                <path d="M8.75 14.5c.85 1.15 2 1.75 3.25 1.75s2.4-.6 3.25-1.75" />
+                <path d="M9.25 9.75h.01M14.75 9.75h.01" />
+              </svg>
+            </button>
           )}
           {consoleView && (
             <span class="prompt" aria-hidden="true">
