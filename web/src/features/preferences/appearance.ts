@@ -9,8 +9,8 @@ import {
   type Theme,
 } from "./settings.ts";
 
-/* Kept in step with --paper in style.css so the browser chrome matches. */
-const surfaces = { light: "#F9F9F7", dark: "#181C26" };
+/* Kept in step with --paper in styles/base.css so the browser chrome matches. */
+const surfaces = { light: "#FCFCFC", dark: "#070708" };
 
 function setBrowserColor(color: string) {
   document

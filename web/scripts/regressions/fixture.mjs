@@ -2589,8 +2589,8 @@ await test("chat colors update for newly disclosed live and paged authors and re
       );
     }
     for (const [theme, base, accent] of [
-      ["light", "#f9f9f7", "#cc7d5e"],
-      ["dark", "#181c26", "#cc7d5e"],
+      ["light", "#fcfcfc", "#1924be"],
+      ["dark", "#070708", "#878787"],
       ["custom", "#0f2018", "#3ddc84"],
       ["custom", "#fdf6e3", "#ffe066"],
       ["custom", "#767676", "#ffffff"],

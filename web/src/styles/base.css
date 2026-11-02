@@ -5,14 +5,14 @@
   --chat-header-height: 64px;
   --chat-footer-height: 80px;
   /* Light appearance. Every themed surface reads from this palette. */
-  --paper: #f9f9f7;
+  --paper: #fcfcfc;
   --ink: #2d2d2b;
   --muted: #2d2d2b;
   --subtle: #666661;
   --line: #e5e1db;
   --wash: #efefec;
-  --accent: #cc7d5e;
-  --accent-hover: #ba6c4f;
+  --accent: #1924be;
+  --accent-hover: #141d9b;
   --accent-ink: #2d2d2b;
   --field: #ffffffb8;
   --placeholder: #918c85;
@@ -24,8 +24,8 @@
   --shadow-float: 0 6px 20px #00000012;
   --shadow-pop: 0 4px 15px #2d2d2b12;
   --shadow-dialog: 0 12px 50px #2d2d2b20;
-  /* Text on --accent stays dark in both themes: the fill itself is unchanged. */
-  --accent-label: #2d2d2b;
+  /* Foregrounds remain readable on each theme's accent fill. */
+  --accent-label: #fff;
   --accent-contrast: #fff;
   /* Built-in name shades; custom palettes derive contrast against their surfaces. */
   --name-red: #dc2626;
@@ -60,20 +60,19 @@
   line-height: 1.5;
 }
 /* Dark appearance. bootAppearance sets data-theme before the first frame;
-   the app-level useTheme keeps it current afterwards. The surfaces are a
-   blue-tinted near-black (the blue channel leads the red) rather than a warm
-   charcoal, following the ChatGPT/Codex dark family. --accent itself is
-   shared: the brand fill does not change, only the foregrounds tuned for it. */
+   the app-level useTheme keeps it current afterwards. */
 :root[data-theme="dark"] {
-  --paper: #181c26;
+  --paper: #070708;
   --ink: #e5e9f2;
   --muted: #a3abbd;
   --subtle: #959fb3;
   --line: #2f3646;
   --wash: #232838;
-  --accent-hover: #d98a66;
+  --accent: #878787;
+  --accent-hover: #999999;
   --accent-ink: #e5e9f2;
   --accent-label: #1f1d1a;
+  --accent-contrast: #1f1d1a;
   --field: #1f2430;
   --placeholder: #8892a6;
   --danger: #f08c7f;
