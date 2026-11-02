@@ -294,6 +294,7 @@ dependencies = [
  "rust-s3",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",

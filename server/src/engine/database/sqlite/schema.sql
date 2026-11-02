@@ -48,6 +48,9 @@ CREATE INDEX IF NOT EXISTS media_tombstone ON media(created) WHERE deleted=1 AND
 CREATE TRIGGER IF NOT EXISTS media_reference_removed AFTER DELETE ON message_media BEGIN
  UPDATE media SET unreferenced=COALESCE(unreferenced,unixepoch()) WHERE id=OLD.media_id AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=OLD.media_id);
 END;
+CREATE TABLE sticker_library(owner TEXT NOT NULL, media_id TEXT NOT NULL REFERENCES media(id), created INTEGER NOT NULL, PRIMARY KEY(owner,media_id)) WITHOUT ROWID;
+CREATE INDEX sticker_library_media ON sticker_library(media_id);
+CREATE INDEX sticker_library_recent ON sticker_library(owner,created);
 
 
 CREATE TABLE retention(conversation TEXT PRIMARY KEY, count INTEGER NOT NULL CHECK(count>=0), oldest INTEGER) WITHOUT ROWID;
@@ -64,4 +67,4 @@ CREATE TRIGGER retention_move AFTER UPDATE OF conversation,sequence ON messages 
 END;
 
 CREATE TABLE auth_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,client TEXT,username TEXT,outcome TEXT NOT NULL CHECK(outcome IN ('success','failure','logout')));
-PRAGMA user_version=20;
+PRAGMA user_version=21;

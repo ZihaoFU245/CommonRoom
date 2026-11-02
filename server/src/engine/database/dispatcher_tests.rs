@@ -39,7 +39,39 @@ fn pool_diagnostics_count_acquisition_timeouts_and_successes() {
 }
 
 #[test]
-fn sqlite_head_v20_opens_without_a_postgres_index_upgrade() {
+fn sqlite_v20_upgrade_adds_existing_stickers_to_their_libraries() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chat.sqlite");
+    drop(Engine::open(&path).unwrap());
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "DROP TABLE sticker_library;
+         INSERT INTO media(id,uploader,conversation,size,created,ready,staging_clean,json) VALUES
+          ('kept','owner','@sticker',8,1,1,1,'{}'),('pending','owner','@sticker',8,1,0,0,'{}'),('photo','owner','room',8,1,1,1,'{}');
+         PRAGMA user_version=20;",
+    )
+    .unwrap();
+    drop(db);
+    let engine = Engine::open(&path).unwrap();
+    let db = engine.store.db.lock().unwrap();
+    assert_eq!(
+        db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        super::super::SQLITE_SCHEMA_VERSION
+    );
+    assert_eq!(
+        db.query_row::<String, _, _>(
+            "SELECT owner||':'||media_id FROM sticker_library",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        "owner:kept"
+    );
+}
+
+#[test]
+fn sqlite_head_opens_without_a_postgres_index_upgrade() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("chat.sqlite");
     let mut engine = Engine::open(&path).unwrap();
@@ -58,7 +90,7 @@ fn sqlite_head_v20_opens_without_a_postgres_index_upgrade() {
     assert_eq!(
         db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        20
+        super::super::SQLITE_SCHEMA_VERSION
     );
     assert_eq!(
         db.query_row::<u64, _, _>(
@@ -658,6 +690,7 @@ fn postgres_upload_quotas_lock_each_uploader_and_cleanup_skips_busy_rows() {
         expires: None,
         deleting: false,
         deleted: false,
+        content_digest: None,
     };
     let blocker = Connection::postgres(&fixture.url, false).unwrap();
     let hold = blocker.unchecked_transaction().unwrap();

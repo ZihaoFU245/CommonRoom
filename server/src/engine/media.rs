@@ -39,6 +39,9 @@ pub(crate) struct Media {
     pub deleting: bool,
     #[serde(default)]
     pub deleted: bool,
+    /// SHA-256 hex of finalized sticker bytes; absent on older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
 }
 
 pub(crate) fn timestamp() -> u64 {
@@ -60,6 +63,9 @@ impl Media {
     pub(crate) fn final_key(&self) -> String {
         if self.conversation == "@avatar" {
             return format!("avatars/{}/{}", self.uploader, self.id);
+        }
+        if self.conversation == super::stickers::STICKERS {
+            return format!("stickers/{}/{}", self.uploader, self.id);
         }
         let class = match self.max_age {
             -1 => "permanent".to_owned(),
@@ -208,6 +214,15 @@ impl Engine {
             Scope::Room(id) | Scope::Private(id) => id,
             _ => return Err(EngineError::NotFound("Upload not found.".into())),
         };
+        if media.conversation == super::stickers::STICKERS {
+            // Storage admits the reference only from the sender's library or
+            // when the conversation already references this sticker.
+            if !media.ready || media.deleting || media.deleted {
+                return Err(EngineError::NotFound("Upload not found.".into()));
+            }
+            self.media_allowance(user, scope, media.size, None)?;
+            return Ok(());
+        }
         if media.conversation != *conversation
             || !media.ready
             || media.deleting
@@ -299,6 +314,7 @@ impl Engine {
             expires: None,
             deleting: false,
             deleted: false,
+            content_digest: None,
         };
         self.store_media_allocation(&media)?;
         Ok(media)
@@ -408,6 +424,7 @@ impl Engine {
         self.authorize_media_read(user, &media, attached, false)?;
         Ok(media)
     }
+    /// For sticker objects `attached` must be [`Engine::sticker_readable`].
     pub(crate) fn authorize_media_read(
         &self,
         user: &str,
@@ -415,6 +432,12 @@ impl Engine {
         attached: bool,
         include_expired: bool,
     ) -> Result<(), EngineError> {
+        if media.conversation == super::stickers::STICKERS {
+            if !attached || !media.ready || media.deleting || media.deleted {
+                return Err(EngineError::NotFound("Attachment not found.".into()));
+            }
+            return Ok(());
+        }
         self.media_scope(user, &media.conversation, MediaAccess::Read)?;
         let expired = media.expires.is_some_and(|time| time <= now());
         if !attached

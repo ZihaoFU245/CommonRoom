@@ -45,6 +45,7 @@ pub(in crate::engine::database) async fn apply(
                 let changed = sqlx::query("DELETE FROM bot_receipts WHERE account_id=?1").bind(account).execute(&mut *db).await?.rows_affected();
                 changed + sqlx::query("DELETE FROM bot_command_receipts WHERE account_id=?1").bind(account).execute(&mut *db).await?.rows_affected()
             }
+            MetadataOp::RemoveAccountStickers { account, at } => super::media::remove_stickers(db, account, *at).await?,
             MetadataOp::RemoveAccountCursors { user } => sqlx::query("DELETE FROM read_positions WHERE username=?1").bind(user).execute(&mut *db).await?.rows_affected(),
             MetadataOp::RenameAccountCursors { old, new } => {
                 let changed = sqlx::query("DELETE FROM read_positions WHERE username=?1").bind(new).execute(&mut *db).await?.rows_affected();

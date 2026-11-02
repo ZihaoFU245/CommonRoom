@@ -1,4 +1,4 @@
--- PostgreSQL v1 representation of SQLite HEAD v20. JSON stays text to preserve
+-- PostgreSQL v1 representation of SQLite HEAD v21. JSON stays text to preserve
 -- serialized payloads and no-op comparisons across an offline transfer.
 CREATE TABLE chat_schema(id BIGINT PRIMARY KEY CHECK(id=1), version BIGINT NOT NULL);
 INSERT INTO chat_schema VALUES(1,1);
@@ -96,3 +96,6 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER media_reference_removed AFTER DELETE ON message_media FOR EACH ROW EXECUTE FUNCTION chat_media_reference_removed();
+CREATE TABLE sticker_library(owner TEXT NOT NULL, media_id TEXT NOT NULL REFERENCES media(id), created BIGINT NOT NULL, PRIMARY KEY(owner,media_id));
+CREATE INDEX sticker_library_media ON sticker_library(media_id);
+CREATE INDEX sticker_library_recent ON sticker_library(owner,created);
