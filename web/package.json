@@ -15,6 +15,7 @@
     "format": "prettier --write src tests scripts vite.config.ts eslint.config.mjs tsconfig.json package.json stylelint.config.mjs README.md index.html",
     "format:check": "prettier --check src tests scripts vite.config.ts eslint.config.mjs tsconfig.json package.json stylelint.config.mjs README.md index.html",
     "test:browser": "node scripts/browser-test.mjs",
+    "build:emoji-categories": "node scripts/build-emoji-categories.mjs",
     "lint:css": "stylelint \"src/**/*.css\"",
     "lint:exports": "knip --include exports"
   },
@@ -32,6 +33,7 @@
     "@types/node": "^26.6.6",
     "@typescript/native": "npm:typescript@7.0.2",
     "ajv": "6.15.0",
+    "emojibase-data": "^16.0.3",
     "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.13.0",

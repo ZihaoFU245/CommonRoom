@@ -41,17 +41,22 @@
   font-size: 0.85rem;
 }
 .attach-button {
+  box-sizing: border-box;
   position: relative;
   display: grid;
   place-items: center;
   flex-shrink: 0;
   width: 36px;
   height: 36px;
+  margin: 0;
+  padding: 0;
   border: 0;
   border-radius: 50%;
-  background: transparent;
+  /* Same 36px disk as .send-button; darker than --wash so the circle reads clearly. */
+  background: color-mix(in srgb, var(--ink) 28%, var(--wash));
   color: var(--ink);
   cursor: pointer;
+  appearance: none;
 }
 .attach-button svg {
   display: block;
@@ -61,6 +66,7 @@
   stroke: currentColor;
   stroke-width: 1.75;
   stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .attach-button input {
   position: absolute;
@@ -69,12 +75,21 @@
   opacity: 0;
   cursor: pointer;
 }
+.attach-button:focus-visible,
 .attach-button:focus-within {
-  outline: 2px solid var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--ink) 28%, var(--wash));
+  outline-offset: 1px;
 }
 .attach-button:has(input:disabled) {
   opacity: 0.4;
   cursor: default;
+}
+.attach-button + .sticker-button {
+  margin-inline-start: -6px;
+}
+.sticker-button svg {
+  width: 22px;
+  height: 22px;
 }
 
 .composer-attachment {
@@ -127,4 +142,394 @@
 .attachment-download {
   display: block;
   margin-top: 0.5rem;
+}
+
+.composer-sticker img {
+  width: 64px;
+  height: 64px;
+}
+
+@keyframes sticker-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.sticker-picker {
+  /*
+   * Mixed from --paper/--ink so light, dark, and custom palettes keep the
+   * bar distinct from the chat background without hard-coded surfaces.
+   */
+  --sticker-panel: color-mix(in srgb, var(--paper) 72%, var(--ink) 28%);
+  --sticker-panel-lift: color-mix(in srgb, var(--paper) 90%, var(--ink) 10%);
+  --sticker-dock-well: color-mix(in srgb, var(--paper) 42%, var(--ink) 58%);
+  --sticker-dock-icon: color-mix(in srgb, var(--paper) 72%, var(--ink) 28%);
+  /* Fixed vertical size; horizontal size follows each image's aspect ratio. */
+  --sticker-height: 112px;
+  --sticker-gap: 6px;
+  --sticker-body-height: min(400px, 52vh);
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 16px;
+  z-index: 6;
+  display: grid;
+  grid-template-rows: var(--sticker-body-height) auto;
+  gap: 8px;
+  width: min(440px, calc(100% - 32px));
+  max-height: min(480px, 62vh);
+  padding: 8px 8px 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 55%, var(--ink) 45%);
+  border-radius: 14px;
+  background: var(--sticker-panel);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+  animation: sticker-pop var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.sticker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
+  gap: var(--sticker-gap);
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0;
+}
+.sticker-emoji-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 6px;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.sticker-emoji-categories {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px;
+}
+.sticker-emoji-category {
+  flex: 1 1 0;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 1.15rem;
+  line-height: 1;
+  opacity: 0.72;
+}
+.sticker-emoji-category[aria-selected="true"] {
+  background: var(--sticker-panel-lift);
+  opacity: 1;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.sticker-emoji-category:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--sticker-panel-lift) 70%, transparent);
+}
+.sticker-emoji-category:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.sticker-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  align-content: start;
+  gap: 2px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px;
+}
+.sticker-choice {
+  display: block;
+  box-sizing: border-box;
+  width: auto;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  aspect-ratio: auto;
+  line-height: 0;
+  overflow: hidden;
+}
+.sticker-emoji-choice {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+.sticker-choice:focus-visible,
+.sticker-emoji-choice:focus-visible {
+  outline: 2px solid var(--accent);
+}
+.sticker-choice:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.sticker-emoji-choice:hover {
+  background: color-mix(in srgb, var(--sticker-panel-lift) 70%, transparent);
+}
+.sticker-choice:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sticker-choice img {
+  display: block;
+  box-sizing: border-box;
+  width: auto;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  object-fit: contain;
+  aspect-ratio: auto;
+}
+.sticker-item {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: fit-content;
+  height: var(--sticker-height);
+  max-height: var(--sticker-height);
+  aspect-ratio: auto;
+  align-self: flex-start;
+}
+.sticker-dock {
+  justify-self: center;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  width: min(220px, 100%);
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--ink) 28%, transparent);
+  border-radius: 999px;
+  background: var(--sticker-dock-well);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.sticker-dock-tab {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sticker-dock-icon);
+  cursor: pointer;
+}
+.sticker-dock-tab[aria-selected="true"] {
+  background: var(--sticker-panel-lift);
+  color: var(--ink);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+.sticker-dock-tab svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sticker-dock-add input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.sticker-dock-add:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+.sticker-dock-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.sticker-delete {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  opacity: 0;
+}
+.sticker-item:hover .sticker-delete,
+.sticker-delete:focus-visible {
+  opacity: 1;
+}
+.sticker-delete svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.sticker-delete-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  animation: sticker-pop var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.sticker-delete-confirm button {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-pop);
+}
+.sticker-delete-confirm-yes {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-label);
+}
+.sticker-duplicate-notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+  animation: sticker-pop var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.sticker-duplicate-notice p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.sticker-duplicate-notice p:first-child {
+  font-weight: 600;
+}
+.sticker-duplicate-notice button {
+  justify-self: end;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--wash);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.sticker-note {
+  margin: 4px 4px 0;
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
+  font-size: 0.85rem;
+}
+.sticker-error {
+  color: var(--danger);
+}
+@media (hover: none) {
+  .sticker-delete {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sticker-delete-confirm,
+  .sticker-duplicate-notice {
+    animation: none;
+  }
+}
+
+img.sticker {
+  display: block;
+  max-width: 160px;
+  max-height: 160px;
+  object-fit: contain;
+}
+.sticker-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+  animation: sticker-pop var(--control-motion-duration)
+    var(--control-motion-easing);
+}
+.sticker-menu button,
+.sticker-menu span {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  text-align: start;
+  font: inherit;
+}
+.sticker-menu button {
+  cursor: pointer;
+}
+.sticker-menu button:hover,
+.sticker-menu button:focus-visible {
+  background: var(--wash);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sticker-picker,
+  .sticker-menu {
+    animation: none;
+  }
 }

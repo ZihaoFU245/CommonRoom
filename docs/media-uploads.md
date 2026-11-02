@@ -163,7 +163,9 @@ non-secret settings in `data/config.json` while stopped, then restart:
     "cleanup_batch": 32,
     "user_quota": "1g",
     "pending_limit": 8,
-    "allocations_per_minute": 30
+    "allocations_per_minute": 30,
+    "sticker_max_size": "2m",
+    "sticker_limit": 200
   }
 }
 ```
@@ -174,6 +176,8 @@ cleanup after message references disappear. `max_size` is a hard chat ceiling;
 client validation reads it from the API. Per-grant size restrictions are also
 checked server-side. Pending slots include verified unsent objects; byte quota
 remains reserved until storage deletion succeeds. The default limit is 25 **MiB**.
+`sticker_max_size` (default 2 MiB, also capped by `max_size`) and `sticker_limit`
+(default 200, at most 10000) bound each account's [sticker library](#stickers).
 
 | Environment variable | Purpose |
 | --- | --- |
@@ -312,7 +316,7 @@ rtk proxy env CHAT_DATA="$PWD/tmp/media-chat" \
 
 Development credentials must never be used for public storage. Keep storage's
 administration console private. Service credentials need object read/write/delete
-on `uploads/*`, `media/*`, and `avatars/*`; clients get no listing/deletion/final-key writes.
+on `uploads/*`, `media/*`, `avatars/*`, and `stickers/*`; clients get no listing/deletion/final-key writes.
 
 ## Deployment and verification
 
@@ -327,7 +331,7 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite HEAD is v20, with an atomic v19 credential upgrade. Other SQLite versions
+SQLite HEAD is v21, with atomic v19 credential and v20 sticker-library upgrades. Other SQLite versions
 are rejected unchanged; PostgreSQL has an independent current schema.
 
 ```sh
@@ -429,6 +433,28 @@ and carry a stable-account ticket through signing. Before redirecting, the serve
 rechecks credentials, current read permission, expiry and a writer-change stamp;
 it reloads metadata/references when that stamp changes. Shared-reader media
 cleanup writes also invalidate the stamp. No global API permit spans S3 I/O.
+
+## Stickers
+
+The composer's sticker button, shown beside the attach button wherever attaching
+is available, opens the caller's private library. Any active account can add
+stickers while storage is configured. PNG/JPEG/WebP are resized in the browser
+to at most 512 px and encoded WebP (PNG fallback); GIFs keep their original bytes
+so animation survives, and are rejected above `sticker_max_size`. Completion
+verifies PNG/JPEG/GIF/WebP bytes and copies them to
+`stickers/<stable-account-id>/<upload-id>`. Sticker objects use conversation
+`@sticker`, no expiry and the uploader's byte quota and rate limits.
+
+Stickers are reference-tracked rather than copied. Choosing one in the composer
+attaches the library object directly; sending needs the normal
+`w:media.upload` permission in the target conversation. Right-clicking a sent
+sticker offers Add to my stickers, which adds a library entry for the same
+object. Library entries and message references each keep the object alive; room
+retention removes messages, not the object. Once no entry or message refers to
+it, the cleanup worker deletes it like any other orphan, so deleting an entry
+never breaks messages already sent. The byte quota stays charged to the
+uploader until then. Include `stickers/*` in storage credentials and backups and
+exclude it from expiry lifecycle rules. See [Protocol](protocol.md#stickers).
 
 ## Bot transport
 

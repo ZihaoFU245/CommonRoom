@@ -12,9 +12,16 @@ import {
   managedMediaLink,
   isUploadTicket,
   mediaMarkdown,
+  stickerImage,
   uploadFile,
 } from "../src/api/media.ts";
 import { api } from "../src/api/client.ts";
+import { isSticker, isStickerLibrary } from "../src/api/stickers.ts";
+import {
+  libraryHasDigest,
+  resolveLibraryDigests,
+  stickerSize,
+} from "../src/features/conversation/stickers.ts";
 
 const id = "d5cd8a44-d8b7-4c63-91fe-3cc63f106178";
 const media = {
@@ -84,6 +91,88 @@ test("signed document previews omit credentials when fetching storage bytes", as
     ),
     "remote preview",
   );
+});
+
+test("stickers send as titled images and render only from managed paths", () => {
+  const base = "https://chat.example.com/commonroom/";
+  assert.equal(
+    mediaMarkdown(media, base, true),
+    `![sticker](/commonroom/api/media/${id}/file "media:sticker")`,
+  );
+  assert.equal(
+    mediaMarkdown({ ...media, content_type: "application/pdf" }, base, true),
+    `[screen_shot_.png](/commonroom/api/media/${id}/file)`,
+  );
+  assert.equal(stickerImage(media.path, "media:sticker", base)?.id, id);
+  assert.equal(stickerImage(media.path, undefined, base), null);
+  assert.equal(
+    stickerImage("https://evil.test/x.gif", "media:sticker", base),
+    null,
+  );
+});
+
+test("sticker library responses are validated", () => {
+  const sticker = {
+    id,
+    path: `/commonroom/api/media/${id}/file`,
+    content_type: "image/gif",
+    size: 10,
+  };
+  assert.ok(isSticker(sticker));
+  for (const bad of [
+    { ...sticker, path: "https://evil.test/x" },
+    { ...sticker, path: `https://evil.test/api/media/${id}/file` },
+    { ...sticker, path: `/api/media/${id}/../../logout` },
+    { ...sticker, path: `/api/stickers/${id}/file` },
+    { ...sticker, content_type: "image/svg+xml" },
+    { ...sticker, size: -1 },
+  ])
+    assert.equal(isSticker(bad), false);
+  const library = {
+    enabled: true,
+    max_size: 2,
+    limit: 200,
+    stickers: [sticker],
+  };
+  assert.ok(isStickerLibrary(library));
+  assert.equal(isStickerLibrary({ ...library, stickers: [{}] }), false);
+  assert.equal(isStickerLibrary({ ...library, enabled: "yes" }), false);
+});
+
+test("sticker images shrink to fit without enlarging", () => {
+  assert.deepEqual(stickerSize(1024, 512, 512), { width: 512, height: 256 });
+  assert.deepEqual(stickerSize(300, 900, 512), { width: 171, height: 512 });
+  assert.deepEqual(stickerSize(100, 80, 512), { width: 100, height: 80 });
+});
+
+test("library digests catch source and prepared hashes, including omitted digests", async () => {
+  const digest = "a".repeat(64);
+  const other = "b".repeat(64);
+  assert.equal(libraryHasDigest([{ digest }], digest), true);
+  assert.equal(libraryHasDigest([{ digest }], other), false);
+  assert.equal(libraryHasDigest([{ digest: undefined }], digest), false);
+  assert.equal(libraryHasDigest([{ digest }], digest, other), true);
+  // 1x1 PNG
+  const png = Uint8Array.from(
+    atob(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    ),
+    (char) => char.charCodeAt(0),
+  );
+  const resolved = await resolveLibraryDigests(
+    [
+      { path: "/api/media/known/file", digest },
+      { path: "/api/media/missing/file" },
+    ],
+    async (path) => {
+      assert.equal(path, "/api/media/missing/file");
+      return new Blob([png], { type: "image/png" });
+    },
+  );
+  assert.equal(resolved.digests.has(digest), true);
+  assert.equal(resolved.digests.size, 2);
+  assert.equal(resolved.byPath.get("/api/media/known/file"), digest);
+  assert.ok(resolved.byPath.get("/api/media/missing/file"));
 });
 
 test("media responses reject unsafe destinations and preserve base paths", () => {

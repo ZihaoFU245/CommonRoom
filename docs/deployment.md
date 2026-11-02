@@ -777,7 +777,7 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-SQLite HEAD is v20; v19 upgrades atomically to explicit issuer/worker credentials.
+SQLite HEAD is v21; v19 upgrades atomically to explicit issuer/worker credentials and v20 to sticker libraries.
 Exchange issuer tokens for expiring workers before making operational bot calls. Unpublished
 PostgreSQL initializes its current v1 schema, including statement-level deletion
 retention. This unpublished format is not deployed yet; fixes modify v1 directly,

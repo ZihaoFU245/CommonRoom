@@ -296,6 +296,10 @@ pub(super) fn write_delta_entities(
             batch.operations.push(MetadataOp::RemoveAccountReceipts {
                 account: account.id.clone(),
             });
+            batch.operations.push(MetadataOp::RemoveAccountStickers {
+                account: account.id.clone(),
+                at: now(),
+            });
         }
     }
     if data.policy.revision != before.policy.revision

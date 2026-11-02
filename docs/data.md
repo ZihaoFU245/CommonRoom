@@ -9,18 +9,20 @@ and worker files, but chat accounts/history live in PostgreSQL.
 
 ## Database compatibility
 
-SQLite HEAD is **v20**. Empty databases initialize as v20. Startup upgrades v19
+SQLite HEAD is **v21**. Empty databases initialize as v21. Startup upgrades v19
 transactionally by assigning explicit `issuer` or `worker` kinds to bot credentials;
 worker operations, expiry and conversation scopes are preserved. Malformed legacy
 credentials or a failed write roll back both metadata and the schema marker.
-Other versions and unversioned existing databases are rejected before journal,
-schema or data changes. Back up v19 before upgrading; older binaries cannot open v20.
+v19 and v20 then gain the `sticker_library` table in a second transaction, with an
+entry for each live completed `@sticker` upload. Other versions and unversioned
+existing databases are rejected before journal, schema or data changes. Back up
+before upgrading; older binaries cannot open v21.
 
 PostgreSQL is unpublished and uses its own **v1** schema marker. Fixes are folded
 directly into this unused format. Empty targets initialize transactionally with
 all current indexes and statement-level deletion retention. Existing targets must
 match current v1; historical WIP versions have no upgrade path and unsupported
-schema markers are rejected unchanged. HEAD SQLite v20 transfers read-only
+schema markers are rejected unchanged. HEAD SQLite v21 transfers read-only
 into current PostgreSQL v1.
 
 The offline SQLite-to-PostgreSQL transfer is always maintained from **HEAD SQLite
@@ -79,7 +81,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary opens the current v20 schema and upgrades v19 as described above. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary opens the current v21 schema and upgrades v19/v20 as described above. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -359,3 +361,18 @@ while disabled. Replacing/removing the avatar or deleting its account releases t
 reference.
 They count toward existing byte quotas and rate limits; completed avatars do not
 consume pending-upload slots. Backups must include the `avatars/` prefix.
+
+## Stickers
+
+Sticker objects are media records with conversation `@sticker`, the uploader's
+stable account ID and no expiry. Bytes live at
+`stickers/<stable-account-id>/<upload-id>`. Completed stickers store an optional
+SHA-256 `content_digest` in the media JSON so an account cannot add the same
+bytes twice. Table `sticker_library(owner, media_id, created)` (SQLite v21,
+PostgreSQL v1) holds library entries; completion adds the uploader's entry and
+collection adds others to the same object. Messages reference sticker objects
+through `message_media` like other attachments.
+Removing the last entry or message reference sets `unreferenced`; cleanup claims,
+startup cleanup and tombstone deletion all recheck that neither a library entry
+nor a message reference exists. Account deletion removes that account's entries
+in the same transaction. Backups must include the `stickers/` prefix.

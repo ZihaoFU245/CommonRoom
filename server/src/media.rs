@@ -318,6 +318,61 @@ impl MediaStorage {
         Ok(())
     }
 
+    /// SHA-256 of the finalized object. Stickers are small enough to hash in one read.
+    pub async fn content_digest(
+        &self,
+        media: &crate::engine::media::Media,
+    ) -> Result<String, StorageError> {
+        use sha2::{Digest, Sha256};
+        use StorageError::{Invalid, Unavailable};
+        if media.object_key.is_empty() || media.size == 0 {
+            return Err(Invalid("Final file is not ready."));
+        }
+        let limit = usize::try_from(media.size).map_err(|_| Invalid("Invalid upload size."))?;
+        let _job = self.work().await?;
+        let url = self
+            .bucket
+            .presign_get(&media.object_key, 60, None)
+            .await
+            .map_err(|cause| {
+                tracing::warn!(media_id = %media.id, error = %cause, "S3 digest signing failed");
+                Unavailable("Cannot inspect final file; retry completion.")
+            })?;
+        let mut response = self
+            .bucket
+            .http_client()
+            .get(url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|cause| {
+                tracing::warn!(media_id = %media.id, error = %cause.without_url(), "S3 digest request failed");
+                Unavailable("Cannot inspect final file; retry completion.")
+            })?;
+        if response.status().as_u16() != 200 {
+            return Err(Unavailable("Cannot inspect final file; retry completion."));
+        }
+        if response.content_length() != Some(media.size) {
+            return Err(Invalid("Final file size does not match the request."));
+        }
+        let mut digest = Sha256::new();
+        let mut read = 0usize;
+        while let Some(chunk) = response.chunk().await.map_err(|cause| {
+            tracing::warn!(media_id = %media.id, error = %cause.without_url(), "S3 digest read failed");
+            Unavailable("Cannot read final file; retry completion.")
+        })? {
+            read = read.saturating_add(chunk.len());
+            if read > limit {
+                return Err(Invalid("Final file size does not match the request."));
+            }
+            digest.update(&chunk);
+        }
+        if read != limit {
+            return Err(Invalid("Final file size does not match the request."));
+        }
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
     pub async fn download_url(
         &self,
         media: &crate::engine::media::Media,

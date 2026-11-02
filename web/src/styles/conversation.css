@@ -342,7 +342,8 @@ button:focus-visible {
 .sidebar-close,
 .signout,
 .mobile-menu,
-.send-button {
+.send-button,
+.attach-button {
   display: grid;
   place-items: center;
   width: 36px;
