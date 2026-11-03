@@ -427,6 +427,19 @@ pub(crate) async fn setup_local_s3() -> Result<(), String> {
     }
     let storage =
         MediaStorage::from_config(false, None)?.ok_or("Missing local S3 configuration.")?;
+    let mut origins = vec![
+        "http://127.0.0.1:5173".into(),
+        "http://localhost:5173".into(),
+    ];
+    if let Ok(origin) = std::env::var("CHAT_DEBUG_ORIGIN") {
+        let url = url::Url::parse(&origin).map_err(|_| "Invalid debug UI origin.")?;
+        if url.scheme() != "http" || url.origin().ascii_serialization() != origin {
+            return Err("Debug UI origin must be an HTTP origin without a path.".into());
+        }
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
     tokio::time::timeout(Duration::from_secs(10), async {
         if !storage.bucket.exists().await.map_err(|e| format!("Cannot inspect local S3 buckets: {e}"))? {
             let response = Bucket::create_with_path_style(
@@ -442,7 +455,7 @@ pub(crate) async fn setup_local_s3() -> Result<(), String> {
         let cors = s3::serde_types::CorsConfiguration::new(vec![s3::serde_types::CorsRule::new(
             Some(vec!["content-type".into(), "x-amz-meta-client-filename".into(), "x-amz-meta-client-content-type".into(), "x-amz-meta-client-label".into(), "x-amz-meta-client-client".into()]),
             vec!["PUT".into(), "GET".into(), "HEAD".into()],
-            vec!["http://127.0.0.1:5173".into(), "http://localhost:5173".into()],
+            origins,
             Some(vec!["ETag".into()]),
             None,
             Some(300),

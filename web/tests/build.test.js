@@ -134,6 +134,8 @@ for (const { withS3, custom, offline, network } of [
   { withS3: true, custom: false, offline: true },
   { withS3: false, network: "100.101.102.103" },
   { withS3: false, network: "devbox.example.ts.net" },
+  { withS3: true, network: "100.101.102.103" },
+  { withS3: true, network: "devbox.example.ts.net" },
 ]) {
   test(
     `debug leaves S3 startup to the caller (S3=${withS3}, overrides=${custom}, offline=${offline}, network=${network})`,
@@ -156,7 +158,7 @@ for (const { withS3, custom, offline, network } of [
         join(root, "target/debug/chat"),
         `#!${process.execPath}
 const fs=require('node:fs');
-if(process.argv.includes('--setup-local-s3')) {fs.writeFileSync('local-s3-setup.json',JSON.stringify({endpoint:process.env.CHAT_S3_ENDPOINT,bucket:process.env.CHAT_S3_BUCKET}));process.exit(${offline ? 1 : 0});}
+if(process.argv.includes('--setup-local-s3')) {fs.writeFileSync('local-s3-setup.json',JSON.stringify({endpoint:process.env.CHAT_S3_ENDPOINT,bucket:process.env.CHAT_S3_BUCKET,origin:process.env.CHAT_DEBUG_ORIGIN}));process.exit(${offline ? 1 : 0});}
 fs.writeFileSync('debug-env.json',JSON.stringify({s3:Object.fromEntries(Object.entries(process.env).filter(([name])=>name.startsWith('CHAT_S3_'))),stdin:fs.readFileSync(0,'utf8')}));
 `,
         { mode: 0o755 },
@@ -240,7 +242,7 @@ setTimeout(()=>process.exit(1),3000).unref();
           : custom
             ? {
                 CHAT_S3_ENDPOINT: "http://127.0.0.1:19000",
-                CHAT_S3_PUBLIC_ENDPOINT: "http://127.0.0.1:19000",
+                CHAT_S3_PUBLIC_ENDPOINT: `http://${network ?? "127.0.0.1"}:19000`,
                 CHAT_S3_BUCKET: "fixture-media",
                 CHAT_S3_REGION: "us-east-1",
                 CHAT_S3_PATH_STYLE: "true",
@@ -249,7 +251,7 @@ setTimeout(()=>process.exit(1),3000).unref();
               }
             : {
                 CHAT_S3_ENDPOINT: "http://127.0.0.1:19000",
-                CHAT_S3_PUBLIC_ENDPOINT: "http://127.0.0.1:19000",
+                CHAT_S3_PUBLIC_ENDPOINT: `http://${network ?? "127.0.0.1"}:19000`,
                 CHAT_S3_BUCKET: "commonroom-draft",
                 CHAT_S3_REGION: "us-east-1",
                 CHAT_S3_PATH_STYLE: "true",
@@ -266,6 +268,7 @@ setTimeout(()=>process.exit(1),3000).unref();
         {
           endpoint: captured.s3.CHAT_S3_ENDPOINT,
           bucket: captured.s3.CHAT_S3_BUCKET,
+          origin,
         },
       );
       assert.equal(existsSync(join(root, "s3-was-started")), false);

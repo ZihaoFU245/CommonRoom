@@ -117,12 +117,15 @@ trap 'exit 143' TERM
 if [ "$with_s3" = true ]; then
     export CHAT_S3_ENDPOINT=http://127.0.0.1:19000 CHAT_S3_PATH_STYLE=true
     export CHAT_S3_PUBLIC_ENDPOINT="$CHAT_S3_ENDPOINT"
+    if [ -n "$network_host" ]; then
+        export CHAT_S3_PUBLIC_ENDPOINT="http://$network_host:19000"
+    fi
     export CHAT_S3_BUCKET="${CHAT_S3_BUCKET:-commonroom-draft}"
     export CHAT_S3_REGION=us-east-1
     export CHAT_S3_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-cr}"
     export CHAT_S3_SECRET_KEY="${RUSTFS_SECRET_KEY:-pass}"
     unset CHAT_S3_SESSION_TOKEN
-    ./target/debug/chat --setup-local-s3 </dev/null
+    CHAT_DEBUG_ORIGIN="$ui_origin" ./target/debug/chat --setup-local-s3 </dev/null
 else
     unset CHAT_S3_ENDPOINT CHAT_S3_PUBLIC_ENDPOINT CHAT_S3_BUCKET CHAT_S3_REGION \
         CHAT_S3_PATH_STYLE CHAT_S3_ACCESS_KEY CHAT_S3_SECRET_KEY CHAT_S3_SESSION_TOKEN

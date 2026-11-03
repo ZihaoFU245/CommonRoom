@@ -15,6 +15,7 @@ import {
   uploadFile,
 } from "../src/api/media.ts";
 import { api } from "../src/api/client.ts";
+import { saveServerUrl, serverBaseUrl } from "../src/api/server.ts";
 
 const id = "d5cd8a44-d8b7-4c63-91fe-3cc63f106178";
 const media = {
@@ -414,7 +415,26 @@ test("expiry metadata validates and generic files use canonical same-origin link
   assert.equal(managedMediaLink(`${media.path}?download=true`, base), null);
 });
 
-test("upload tickets require TLS except for loopback development endpoints", () => {
+test("upload tickets allow remote HTTP debugging and prevent HTTPS downgrades", async (t) => {
+  const originalServer = serverBaseUrl();
+  const originalDocument = globalThis.document;
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+  globalThis.document = { baseURI: "http://100.111.46.53:5173/" };
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { setItem() {} },
+  });
+  t.after(() => {
+    saveServerUrl(originalServer);
+    globalThis.document = originalDocument;
+    if (originalStorage)
+      Object.defineProperty(globalThis, "localStorage", originalStorage);
+    else delete globalThis.localStorage;
+  });
+  saveServerUrl("http://100.111.46.53:5173/");
   const ticket = {
     media_id: "test",
     upload: {
@@ -428,15 +448,53 @@ test("upload tickets require TLS except for loopback development endpoints", () 
     "http://localhost:19000/upload",
     "http://127.0.0.1:19000/upload",
     "http://[::1]:19000/upload",
+    "http://100.111.46.53:19000/upload",
+    "http://devbox.example.ts.net:19000/upload",
   ])
     assert.equal(
       isUploadTicket({ ...ticket, upload: { ...ticket.upload, url } }),
       true,
       url,
     );
+  const remoteTicket = {
+    ...ticket,
+    upload: { ...ticket.upload, url: "http://100.111.46.53:19000/upload" },
+  };
+  t.mock.method(globalThis, "fetch", async () => Response.json(remoteTicket));
+  assert.deepEqual(
+    await api.allocateMedia(
+      "room",
+      "test.txt",
+      1,
+      new AbortController().signal,
+    ),
+    remoteTicket,
+  );
+  for (const url of [
+    "https://user:secret@storage.example/upload",
+    "http://user:secret@100.111.46.53:19000/upload",
+    "javascript:alert(1)",
+  ])
+    assert.equal(
+      isUploadTicket({ ...ticket, upload: { ...ticket.upload, url } }),
+      false,
+      url,
+    );
+  saveServerUrl("https://chat.example.com/");
+  assert.equal(
+    isUploadTicket({
+      ...ticket,
+      upload: { ...ticket.upload, url: "https://storage.example/upload" },
+    }),
+    true,
+  );
   for (const url of [
     "http://storage.example/upload",
     "http://192.168.1.2/upload",
+    "http://100.111.46.53:19000/upload",
+    "http://localhost:19000/upload",
+    "http://127.0.0.1:19000/upload",
+    "http://[::1]:19000/upload",
     "http://localhost.evil.test/upload",
     "https://user:secret@storage.example/upload",
   ])

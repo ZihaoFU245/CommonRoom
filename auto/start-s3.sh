@@ -1,6 +1,34 @@
 #!/bin/sh
 # Starts only a manually installed local S3 server. Never downloads anything.
 set -eu
+bind_host=127.0.0.1
+network_host=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --network)
+            if [ "$#" -lt 2 ]; then
+                echo '--network requires a LAN/Tailscale IPv4 address or hostname.' >&2
+                exit 2
+            fi
+            shift
+            case "$1" in
+                ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9.-]*|0.0.0.0)
+                    echo 'Invalid network host: use an IPv4 address or hostname without a scheme or port.' >&2
+                    exit 2 ;;
+            esac
+            network_host=$1
+            bind_host=0.0.0.0
+            ;;
+        -h|--help)
+            echo 'Usage: ./auto/start-s3.sh [--network HOST]'
+            echo 'Defaults to 127.0.0.1:19000 (API) and 127.0.0.1:19001 (console).'
+            echo '--network HOST listens on all IPv4 interfaces for LAN/Tailscale debugging.'
+            echo 'HOST is the LAN/Tailscale IPv4 address or hostname, without a scheme or port.'
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 if [ -L "$repo/tmp" ]; then
     echo "tmp/ must not be a symlink." >&2
@@ -16,6 +44,9 @@ for path in "$runtime" "$runtime/data" "$runtime/logs" "$runtime/temp"; do
     mkdir -p "$path"
 done
 cd "$runtime"
+if [ -n "$network_host" ]; then
+    printf 'S3 API: http://%s:19000 | console: http://%s:19001\n' "$network_host" "$network_host"
+fi
 # Clean environment prevents inherited RustFS output paths escaping tmp/.
 # Filesystem confinement also covers undocumented/default output paths.
 set -- env -i PATH="$PATH" \
@@ -25,8 +56,8 @@ set -- env -i PATH="$PATH" \
     RUSTFS_LOG_DIRECTORY="$runtime/logs" \
     RUSTFS_OBS_LOG_DIRECTORY="$runtime/logs" \
     TMPDIR="$runtime/temp" TMP="$runtime/temp" TEMP="$runtime/temp" \
-    "$repo/tmp/rustfs" server --address 127.0.0.1:19000 \
-    --console-address 127.0.0.1:19001 "$runtime/data"
+    "$repo/tmp/rustfs" server --address "$bind_host:19000" \
+    --console-address "$bind_host:19001" "$runtime/data"
 case $(uname -s) in
     Darwin)
         # Quote the path as a sandbox string, rejecting characters needing escaping.

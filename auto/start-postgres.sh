@@ -2,16 +2,36 @@
 # Starts an installed PostgreSQL with all writable files confined to pgdata/.
 set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-case "${1:-}" in
-    -h|--help)
-        echo 'Usage: ./auto/start-postgres.sh'
-        echo 'Starts PostgreSQL at 127.0.0.1:5432 (cr / pass, database devdb).'
-        echo 'Keeps the cluster, logs, sockets and temporary files in ./pgdata/.'
-        echo 'Ctrl+C stops PostgreSQL; subsequent runs reuse the cluster.'
-        exit 0 ;;
-    '') ;;
-    *) echo "Unknown option: $1" >&2; exit 2 ;;
-esac
+bind_host=127.0.0.1
+network_host=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --network)
+            if [ "$#" -lt 2 ]; then
+                echo '--network requires a LAN/Tailscale IPv4 address or hostname.' >&2
+                exit 2
+            fi
+            shift
+            case "$1" in
+                ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9.-]*|0.0.0.0)
+                    echo 'Invalid network host: use an IPv4 address or hostname without a scheme or port.' >&2
+                    exit 2 ;;
+            esac
+            network_host=$1
+            bind_host=0.0.0.0
+            ;;
+        -h|--help)
+            echo 'Usage: ./auto/start-postgres.sh [--network HOST]'
+            echo 'Starts PostgreSQL at 127.0.0.1:5432 (cr / pass, database devdb).'
+            echo 'Keeps the cluster, logs, sockets and temporary files in ./pgdata/.'
+            echo 'Ctrl+C stops PostgreSQL; subsequent runs reuse the cluster.'
+            echo '--network HOST listens on all IPv4 interfaces for LAN/Tailscale debugging.'
+            echo 'HOST is the LAN/Tailscale IPv4 address or hostname, without a scheme or port.'
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
 if ! command -v pg_config >/dev/null 2>&1; then
     echo 'Add the installed PostgreSQL bin directory to PATH first.' >&2
     exit 1
@@ -60,6 +80,24 @@ if [ ! -f PG_VERSION ]; then
         --encoding=UTF8 --username=cr --auth=scram-sha-256 --pwfile=/dev/stdin --no-instructions
 fi
 # pg_ctl refuses a second start of this cluster; it never adopts another server.
+# Check before writing the per-run authentication file of an existing cluster.
+if run_pg "$pg_bin/pg_ctl" -D "$runtime" status >/dev/null 2>&1; then
+    echo 'This PostgreSQL cluster is already running.' >&2
+    exit 1
+fi
+# Use a separate file so remote access never changes the cluster's pg_hba.conf.
+hba="$runtime/debug-pg_hba.conf"
+if [ -L "$hba" ]; then
+    echo 'PostgreSQL debug authentication file must not be a symlink.' >&2
+    exit 1
+fi
+cat > "$hba" <<'HBA'
+local all all scram-sha-256
+host all all 127.0.0.1/32 scram-sha-256
+HBA
+if [ -n "$network_host" ]; then
+    printf '%s\n' 'host devdb cr 0.0.0.0/0 scram-sha-256' >> "$hba"
+fi
 started=false
 cleanup() {
     trap '' INT TERM
@@ -71,7 +109,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 run_pg "$pg_bin/pg_ctl" -D "$runtime" -l "$runtime/postgres.log" \
-    -o "-h 127.0.0.1 -p 5432 -k '$runtime' -c data_directory='$runtime' -c log_directory='$runtime' -c external_pid_file=''" \
+    -o "-h $bind_host -p 5432 -k '$runtime' -c data_directory='$runtime' -c log_directory='$runtime' -c hba_file='$hba' -c external_pid_file=''" \
     -w start
 started=true
 if [ "$(run_pg "$pg_bin/psql" -X -Atqc "SELECT 1 FROM pg_database WHERE datname = 'devdb'")" != 1 ]; then
@@ -79,6 +117,9 @@ if [ "$(run_pg "$pg_bin/psql" -X -Atqc "SELECT 1 FROM pg_database WHERE datname 
 fi
 printf '%s\n' 'PostgreSQL: 127.0.0.1:5432 | user: cr | database: devdb' \
     "Data/logs/sockets/temp: $runtime | Ctrl+C to stop."
+if [ -n "$network_host" ]; then
+    printf 'Remote PostgreSQL: %s:5432 | user: cr | database: devdb\n' "$network_host"
+fi
 while run_pg "$pg_bin/pg_ctl" -D "$runtime" status >/dev/null 2>&1; do
     sleep 1
 done

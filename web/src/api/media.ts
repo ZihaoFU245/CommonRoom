@@ -89,10 +89,7 @@ export function isUploadTicket(value: unknown): value is UploadTicket {
     return (
       (url.protocol === "https:" ||
         (url.protocol === "http:" &&
-          (url.hostname === "localhost" ||
-            url.hostname.endsWith(".localhost") ||
-            url.hostname === "[::1]" ||
-            /^127\.\d+\.\d+\.\d+$/u.test(url.hostname)))) &&
+          new URL(serverBaseUrl()).protocol === "http:")) &&
       !url.username &&
       !url.password
     );
