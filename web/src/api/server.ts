@@ -1,4 +1,5 @@
 /** Server addresses are directory URLs so API paths retain the selected prefix. */
+import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
 let selectedServer: string | undefined;
 
 export function serverBaseUrl(): string {
@@ -53,5 +54,6 @@ export function saveServerUrl(value: string): string {
     );
   }
   selectedServer = url;
+  mediaStatusCache.clear();
   return url;
 }

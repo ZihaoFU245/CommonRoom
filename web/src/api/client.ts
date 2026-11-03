@@ -3,12 +3,12 @@ import type { PreferenceState } from "../features/preferences/account.ts";
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { responseJson } from "./responseJson.ts";
 import { requestAbort } from "./requestAbort.ts";
+import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
 import {
   isUploadTicket,
   isCompletedMedia,
   isMediaConfig,
   isMediaInfo,
-  isFileLink,
 } from "./media.ts";
 import {
   isSnapshot,
@@ -54,7 +54,8 @@ async function request<T>(
     const response = await fetch(new URL(`api/${path}`, serverBaseUrl()), {
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
-      cache: "no-store",
+      // API responses are no-store; default fetch mode permits preflight reuse.
+      cache: "default",
       signal: cancellation.signal,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(body !== undefined || nameColors
@@ -70,6 +71,7 @@ async function request<T>(
     });
     const value = await responseJson(response);
     cancellation.signal.throwIfAborted();
+    if (response.status === 401) mediaStatusCache.clear();
     if (!response.ok)
       throw new ApiError(
         response.status,
@@ -115,18 +117,6 @@ function isPreferences(value: unknown): value is PreferenceState {
 }
 
 export const api = {
-  fileLink: (
-    kind: "media" | "avatars",
-    id: string,
-    download: boolean,
-    signal: AbortSignal,
-  ) =>
-    request(
-      `${kind}/${encodeURIComponent(id)}/link${kind === "media" && download ? "?download=true" : ""}`,
-      isFileLink,
-      undefined,
-      signal,
-    ),
   preferences: (values: Record<string, string | null>, initialize: boolean) =>
     request("preferences", isPreferences, { values, initialize }),
   setDisplayName: (value: string | null, room?: string) =>
@@ -154,13 +144,22 @@ export const api = {
       undefined,
       signal,
     ),
-  mediaStatus: (id: string, signal: AbortSignal) =>
-    request(
-      `media/${encodeURIComponent(id)}/info?include_expired=true`,
-      isMediaInfo,
-      undefined,
-      signal,
-    ),
+  cachedMediaStatus: (id: string) =>
+    mediaStatusCache.peek(`${serverBaseUrl()}${id}`),
+  mediaStatus: (id: string, signal: AbortSignal, refresh = false) => {
+    signal.throwIfAborted();
+    return mediaStatusCache.load(
+      `${serverBaseUrl()}${id}`,
+      (signal) =>
+        request(
+          `media/${encodeURIComponent(id)}/info?include_expired=true`,
+          isMediaInfo,
+          undefined,
+          signal,
+        ),
+      refresh,
+    );
+  },
   mediaConfig: (signal: AbortSignal) =>
     request("media/config", isMediaConfig, undefined, signal),
   allocateMedia: (
@@ -208,9 +207,14 @@ export const api = {
   me: (nameColors = false) =>
     request("me", isSnapshot, undefined, undefined, 15000, nameColors),
   session: () => request("session", isOk),
-  login: (username: string, password: string) =>
-    request("login", isOk, { username, password }),
-  logout: () => request("logout", isOk, {}),
+  login: (username: string, password: string) => {
+    mediaStatusCache.clear();
+    return request("login", isOk, { username, password });
+  },
+  logout: () => {
+    mediaStatusCache.clear();
+    return request("logout", isOk, {});
+  },
   history: (
     view: string,
     signal: AbortSignal,

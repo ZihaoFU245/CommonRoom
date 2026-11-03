@@ -36,6 +36,13 @@ web origins. The wildcard echoes each concrete request Origin and excludes opaqu
 `null` origins. Browser API CORS permits cookies,
 GET/POST, and the Content-Type/X-Chat-Name-Colors headers for those origins only.
 Preflights never authenticate or mutate data; Bot API routes do not opt into CORS.
+Successful browser preflights advertise `Access-Control-Max-Age: 600`, allowing
+the browser to reuse method/header approval for ten minutes per URL and origin.
+Rejected preflights and actual API responses do not advertise this lifetime.
+API data remains `no-store`; every actual request still checks current origin,
+session and permissions. Preflight permission caching grants no file-byte access.
+The API client uses default fetch cache mode and honors those response headers;
+forcing request-side `no-store` would bypass Chromium's preflight cache as well.
 The same allowlist applies to browser API and WebSocket origin checks. Production
 login/logout requests with an allowed Origin and `Sec-Fetch-Site: cross-site`
 set Secure, HttpOnly, SameSite=None cookies. Same-origin and same-site requests
@@ -43,12 +50,15 @@ retain the default Strict cookie policy. Browser policies
 that block third-party cookies can still prevent cross-site sessions; use UI and
 API hosts on the same site in that case. HTTP development cookies remain Strict.
 
-When the selected API is on another origin, native images/avatars/playback and
-downloads first resolve `/link` with an authenticated CORS fetch. They then load
-or navigate directly to signed storage URLs, avoiding navigation requests without
-Origin and cross-origin redirect chains. HTML/SVG source fetches omit credentials
-to storage. The app does not persist signed URLs in preferences or localStorage. Local
-files retain the existing `/file` redirect and private service-worker cache path.
+When the selected API is on another origin, controlled images, avatars, players
+and source previews use canonical `/file` URLs through the UI's media worker.
+Each read checks live `/info` with credentials; only a byte-cache miss resolves
+`/link` and fetches signed storage without credentials. Native downloads use a
+UI-scoped `media-download?file=...` navigation through the same cache. Managed
+controls wait for worker control after startup and hard reload; initialization
+failure shows an error instead of taking a direct storage path. This avoids
+credentialed cross-origin redirect chains.
+The app does not persist signed URLs in preferences or localStorage.
 
 Login throttling uses the client address from the configured `set_real_ip_from`
 header (default `X-Forwarded-For`) only when the socket peer matches `trust`.
@@ -378,13 +388,14 @@ Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
 are optional UI hints; the client verifies MIME with the info endpoint on click.
 
 Browser media bytes are explicitly persisted by the application-scoped media worker
-under canonical file URLs (playback/download queries share content). Each cached
+under canonical file URLs including API origin and deployment path, for both local
+and remote APIs (playback/download queries share content). Each cached
 read still calls the authenticated `/info` endpoint; no S3 GET is needed on a hit.
 Only full 200 responses are cached; hits refresh eviction recency, and ranges can
 be served from a complete cached object. Every range still checks `/info` so
 access revocations take effect immediately. Expired metadata stops cache reuse
 with 410 and never fetches storage. Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
-for bounds, full-object caching and fallback behavior.
+for bounds, full-object caching and initialization behavior.
 
 ## Object commands and upload hints
 

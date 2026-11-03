@@ -34,22 +34,24 @@ export function ManagedAttachment({
   id: string;
   children: ComponentChildren;
 }) {
-  const [info, setInfo] = useState<MediaInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [checked, setChecked] = useState<{ id: string; info?: MediaInfo }>();
+  const current = checked?.id === id ? checked : undefined;
+  const info = current?.info ?? api.cachedMediaStatus(id);
+  const loading = !current && !info;
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    async function check() {
+    async function check(refresh = false) {
       try {
-        const media = await api.mediaStatus(id, controller.signal);
+        const media = await api.mediaStatus(id, controller.signal, refresh);
         if (controller.signal.aborted) return;
-        setInfo(media);
+        setChecked({ id, info: media });
         clearTimeout(timer);
         if (!media.expired && media.expires !== null) {
           // Recheck long lifetimes without overflowing the browser timer limit.
           timer = setTimeout(
             () => {
-              check().catch(() => undefined);
+              check(true).catch(() => undefined);
             },
             Math.min(
               2_147_483_647,
@@ -59,13 +61,13 @@ export function ManagedAttachment({
         }
       } catch {
         // A network or access error must not be mislabeled as expiry.
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted)
+          setChecked((previous) => (previous?.id === id ? previous : { id }));
       }
     }
     function resume() {
       if (document.visibilityState === "visible")
-        check().catch(() => undefined);
+        check(true).catch(() => undefined);
     }
     check().catch(() => undefined);
     document.addEventListener("visibilitychange", resume);

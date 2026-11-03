@@ -1,17 +1,27 @@
 import { serverBaseUrl } from "../api/server.ts";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
 import { managedMediaLink } from "../api/media.ts";
-import { useRef, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
+
+// Layout hints only: retain real intrinsic sizes across virtual remounts without
+// prefetching images or keeping decoded bodies. Bound both entries and URL keys.
+const dimensions = new Map<string, { width: number; height: number }>();
 
 /** Consent is scoped to this exact URL, never to an entire remote host. */
 export function ExternalImage({ src, alt }: { src: string; alt: string }) {
   const [approved, setApproved] = useState<string | null>(null);
-  const url = new URL(src, serverBaseUrl());
+  const base = new URL(serverBaseUrl());
+  const url = new URL(src, base);
   const file = useFileUrl(url.href);
+  const [loaded, setLoaded] = useState<{
+    href: string;
+    width: number;
+    height: number;
+  }>();
+  const size = loaded?.href === url.href ? loaded : dimensions.get(url.href);
   const [failed, setFailed] = useState<string>();
-  const refreshed = useRef<string>();
   if (
-    url.origin === new URL(serverBaseUrl()).origin ||
+    url.origin === base.origin ||
     url.protocol === "data:" ||
     approved === src
   )
@@ -21,7 +31,6 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
           type="button"
           onClick={() => {
             setFailed(undefined);
-            refreshed.current = undefined;
             file.retry();
           }}
         >
@@ -32,15 +41,27 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
     ) : file.url ? (
       <img
         src={file.url}
+        width={size?.width}
+        height={size?.height}
+        onLoad={({ currentTarget: image }) => {
+          const { naturalWidth: width, naturalHeight: height } = image;
+          if (!width || !height) return;
+          if (url.href.length <= 4096) {
+            dimensions.delete(url.href);
+            dimensions.set(url.href, { width, height });
+            if (dimensions.size > 128) {
+              const oldest = dimensions.keys().next().value;
+              if (oldest !== undefined) dimensions.delete(oldest);
+            }
+          }
+          setLoaded({ href: url.href, width, height });
+        }}
         onError={() => {
-          if (!managedMediaLink(src, serverBaseUrl())) return;
-          if (file.url !== url.href && refreshed.current !== src) {
-            refreshed.current = src;
-            file.retry();
-          } else setFailed(file.url);
+          if (!managedMediaLink(src, base.href)) return;
+          setFailed(file.url);
         }}
         alt={alt}
-        loading="lazy"
+        loading={size ? "lazy" : "eager"}
         decoding="async"
         referrerPolicy="no-referrer"
       />

@@ -123,6 +123,12 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
             );
             if preflight && response.status() == StatusCode::NO_CONTENT {
                 let headers = response.headers_mut();
+                // Browser-managed permission cache only; every actual request
+                // still checks the current origin, session and domain authority.
+                headers.insert(
+                    header::ACCESS_CONTROL_MAX_AGE,
+                    HeaderValue::from_static("600"),
+                );
                 headers.insert(
                     header::ACCESS_CONTROL_ALLOW_METHODS,
                     HeaderValue::from_static("GET, POST"),

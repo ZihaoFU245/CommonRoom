@@ -2,12 +2,132 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api } from "../src/api/client.ts";
+import {
+  startMediaCache,
+  ensureMediaCache,
+} from "../src/features/conversation/mediaController.ts";
+import { saveServerUrl, serverBaseUrl } from "../src/api/server.ts";
 
 const harness = createHookHarness();
 const { slots, effects } = harness;
 const registration = mockHooks();
 const { useMediaUploads } = await import("../src/hooks/useMediaUploads.ts");
+const { useFileUrl } = await import("../src/hooks/useFileUrl.ts");
 registration.deregister();
+
+test("managed file hooks wait for cache control and never resolve direct storage links", async (t) => {
+  const descriptors = Object.fromEntries(
+    ["document", "navigator", "localStorage"].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  const serviceWorker = new EventTarget();
+  serviceWorker.controller = null;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { baseURI: "https://ui.test/chat/" },
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { serviceWorker },
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => null, setItem() {} },
+  });
+  const originalBase = serverBaseUrl();
+  saveServerUrl("https://api.test/server/");
+  let local = createHookHarness();
+  let release,
+    registrations = 0;
+  const worker = {
+    postMessage(message, [port]) {
+      assert.equal(message, "commonroom-media:claim");
+      if (serviceWorker.controller) {
+        port.postMessage("commonroom-media:ready");
+        port.close();
+      } else
+        release = () => {
+          serviceWorker.controller = worker;
+          serviceWorker.dispatchEvent(new Event("controllerchange"));
+          port.postMessage("commonroom-media:ready");
+          port.close();
+        };
+    },
+  };
+  serviceWorker.register = async () => {
+    registrations++;
+    return { active: worker };
+  };
+  const href =
+    "https://api.test/server/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file";
+  function draw(source = href) {
+    useHarness(local);
+    const result = useFileUrl(source);
+    while (local.effects.length) local.effects.shift()();
+    return result;
+  }
+  t.after(() => {
+    release?.();
+    for (const slot of local.slots) slot?.cleanup?.();
+    saveServerUrl(originalBase);
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  startMediaCache(new URL("https://ui.test/chat/media-cache.js"));
+  assert.equal(draw().url, undefined);
+  await Promise.resolve();
+  assert.equal(
+    draw().url,
+    undefined,
+    "uncontrolled pages cannot start an uncached load",
+  );
+  release();
+  assert.equal(
+    draw().url,
+    undefined,
+    "controller presence alone cannot bypass acknowledgment",
+  );
+  await ensureMediaCache();
+  await Promise.resolve();
+  assert.equal(
+    registrations,
+    1,
+    "all mounts share one bounded startup handshake",
+  );
+  const controlled = draw();
+  assert.equal(controlled.url, href);
+  controlled.retry();
+  assert.equal(new URL(draw().url).searchParams.get("retry"), "0:1");
+  for (const slot of local.slots) slot?.cleanup?.();
+  local = createHookHarness();
+  useHarness(local);
+  assert.equal(
+    useFileUrl(href).url,
+    href,
+    "warm remount exposes its URL before effects run",
+  );
+  local.dirty = false;
+  while (local.effects.length) local.effects.shift()();
+  await Promise.resolve();
+  assert.equal(
+    local.dirty,
+    false,
+    "warm remount schedules no promise-driven state update",
+  );
+  saveServerUrl("https://ui.test/chat/");
+  const localPath = "/chat/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file";
+  const sameOrigin = draw(localPath);
+  sameOrigin.retry();
+  assert.equal(
+    new URL(draw(localPath).url).searchParams.get("retry"),
+    "0:1",
+    "same-origin retries also issue a fresh URL",
+  );
+});
 
 test("late completion never inserts into a replacement conversation; cancellation releases the composer", async (t) => {
   const originals = {

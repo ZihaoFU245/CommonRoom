@@ -92,7 +92,13 @@ test("HTTP and preview requests work without AbortSignal.any and clean up on all
   assert.equal((await api.mediaConfig(parent.signal)).enabled, true);
   assert.equal(getEventListeners(parent.signal, "abort").length, 0);
   t.mock.method(globalThis, "fetch", async () => new Response("preview"));
-  assert.equal(await documentSource("/file", parent.signal), "preview");
+  assert.equal(
+    await documentSource(
+      "/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+      parent.signal,
+    ),
+    "preview",
+  );
   assert.equal(getEventListeners(parent.signal, "abort").length, 0);
   t.mock.method(
     globalThis,
@@ -101,7 +107,10 @@ test("HTTP and preview requests work without AbortSignal.any and clean up on all
   );
   await assert.rejects(api.mediaConfig(parent.signal), /503/);
   await assert.rejects(
-    documentSource("/file", parent.signal),
+    documentSource(
+      "/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+      parent.signal,
+    ),
     /Unable to load/,
   );
   assert.equal(getEventListeners(parent.signal, "abort").length, 0);
@@ -109,7 +118,13 @@ test("HTTP and preview requests work without AbortSignal.any and clean up on all
     throw new TypeError("offline");
   });
   await assert.rejects(api.mediaConfig(parent.signal), /offline/);
-  await assert.rejects(documentSource("/file", parent.signal), /offline/);
+  await assert.rejects(
+    documentSource(
+      "/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+      parent.signal,
+    ),
+    /offline/,
+  );
   assert.equal(getEventListeners(parent.signal, "abort").length, 0);
 });
 
@@ -169,7 +184,10 @@ test("request deadlines remain active through JSON and preview body reads", asyn
         }),
       ),
   );
-  const preview = documentSource("/file", parent.signal);
+  const preview = documentSource(
+    "/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+    parent.signal,
+  );
   await started;
   t.mock.timers.tick(15000);
   await assert.rejects(preview, { name: "TimeoutError" });

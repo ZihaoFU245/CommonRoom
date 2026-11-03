@@ -73,6 +73,14 @@ async fn remote_client_cors_is_explicit_and_excludes_bot_credentials() {
             .await
             .unwrap();
         assert_eq!(response.status() == StatusCode::NO_CONTENT, allowed);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_MAX_AGE)
+                .map(|value| value.as_bytes()),
+            allowed.then_some(b"600".as_slice())
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         if allowed {
             assert_eq!(
                 response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
@@ -102,6 +110,12 @@ async fn remote_client_cors_is_explicit_and_excludes_bot_credentials() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(
+        !response
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_MAX_AGE)
+    );
     assert_eq!(
         response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
         "https://ui.example.com"
@@ -129,6 +143,7 @@ async fn remote_client_cors_is_explicit_and_excludes_bot_credentials() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()[header::ACCESS_CONTROL_MAX_AGE], "600");
         assert_eq!(
             response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
             origin

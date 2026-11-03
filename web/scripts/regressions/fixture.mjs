@@ -21,8 +21,12 @@ import { useHistoryNoticeMotion } from "../../src/hooks/useHistoryNoticeMotion.t
 import { useHistoryPaging } from "../../src/hooks/useHistoryPaging.ts";
 import { useCommands } from "../../src/hooks/useCommands.ts";
 import { MediaCache } from "../../src/features/conversation/mediaCache.ts";
+import { mediaStatusCache } from "../../src/features/conversation/mediaStatusCache.ts";
+import { ManagedAttachment } from "../../src/components/ManagedAttachment.tsx";
+import { CollapsibleMessage } from "../../src/components/CollapsibleMessage.tsx";
 import { MessageList } from "../../src/components/MessageList.tsx";
 import { Avatar } from "../../src/components/Avatar.tsx";
+import { ExternalImage } from "../../src/components/ExternalImage.tsx";
 import { Composer } from "../../src/components/Composer.tsx";
 import { useComposerResize } from "../../src/hooks/useComposerResize.ts";
 import { useRef, useState } from "preact/hooks";
@@ -1092,7 +1096,7 @@ await test("settings panel switches clear credentials and ignore late account re
 });
 
 await test("real CacheStorage shares cold fills while checking each caller's access", async () => {
-  await caches.delete("commonroom-media-v2");
+  await caches.delete("commonroom-media");
   const url = new URL(
     "api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
     location.origin,
@@ -1134,6 +1138,33 @@ await test("real CacheStorage shares cold fills while checking each caller's acc
       downloads === 1 && authorizations === 16,
       `expected one download and 16 checks, got ${downloads}/${authorizations}`,
     );
+    const stored = await caches.open("commonroom-media");
+    await stored.put(url, new Response("broken"));
+    check(
+      (await (
+        await media.respond(new Request(url), url, (promise) =>
+          work.push(promise),
+        )
+      ).text()) === "abcdef",
+      "incompatible stored bytes are replaced from the network",
+    );
+    await Promise.all(work);
+    const reloaded = new MediaCache(caches, () =>
+      Response.json({
+        size: 6,
+        content_type: "image/png",
+        filename: "test.png",
+      }),
+    );
+    check(
+      (await (
+        await reloaded.respond(new Request(url), url, (promise) =>
+          work.push(promise),
+        )
+      ).text()) === "abcdef" && downloads === 2,
+      "the replacement survives worker recreation without another download",
+    );
+    await Promise.all(work);
     denied = true;
     check(
       (
@@ -1144,7 +1175,7 @@ await test("real CacheStorage shares cold fills while checking each caller's acc
       "cached bytes remain inaccessible after revocation",
     );
   } finally {
-    await caches.delete("commonroom-media-v2");
+    await caches.delete("commonroom-media");
   }
 });
 
@@ -1905,7 +1936,7 @@ for (const width of [1100, 360]) {
       await sleep(180);
       check(
         !button("Jump to unread ↓"),
-        "entry at the first unread message does not offer a redundant unread jump",
+        `entry at the first unread message does not offer a redundant unread jump: ${JSON.stringify({ offset: rowOffset(120), top: tests.querySelector(".message-list")?.scrollTop })}`,
       );
       check(
         !button("Older messages") &&
@@ -2961,6 +2992,89 @@ await test("login requests saved name colors in its first authenticated snapshot
     api.me = me;
     if (saved === null) localStorage.removeItem(key);
     else localStorage.setItem(key, saved);
+  }
+});
+
+await test("attachment remounts share pending status and warm rows skip loading motion", async () => {
+  const id = "d5cd8a44-d8b7-4c63-91fe-3cc63f106178";
+  const originalFetch = window.fetch;
+  const pending = deferred();
+  let calls = 0;
+  mediaStatusCache.clear();
+  window.fetch = async (address) => {
+    calls++;
+    await pending.promise;
+    const requestedId = new URL(address).pathname.split("/").at(-2);
+    return Response.json({
+      media_id: requestedId,
+      path: `/api/media/${requestedId}/file`,
+      filename: "photo.png",
+      content_type: "image/png",
+      size: 6,
+      expires: null,
+      expired: false,
+    });
+  };
+  function draw(attachmentId = id) {
+    render(
+      h(
+        CollapsibleMessage,
+        { expanded: true, onExpandedChange() {} },
+        h(
+          ManagedAttachment,
+          { id: attachmentId },
+          h("div", { "data-attachment": true, style: "height:180px" }, "Ready"),
+        ),
+      ),
+      tests,
+    );
+  }
+  try {
+    draw();
+    await until(() => calls === 1);
+    for (let index = 0; index < 8; index++) {
+      render(null, tests);
+      draw();
+      await sleep(40);
+    }
+    check(calls === 1, "fast virtual remounts retain one metadata request");
+    pending.resolve();
+    await until(() => tests.querySelector("[data-attachment]"));
+    await sleep(250);
+    const height = tests
+      .querySelector(".collapsible-message")
+      .getBoundingClientRect().height;
+    for (let index = 0; index < 4; index++) {
+      render(null, tests);
+      draw();
+      check(
+        !tests.querySelector(".attachment-loading"),
+        "warm rows render their content synchronously",
+      );
+      for (let frame = 0; frame < 12; frame++) {
+        await new Promise(requestAnimationFrame);
+        check(
+          Math.abs(
+            tests.querySelector(".collapsible-message").getBoundingClientRect()
+              .height - height,
+          ) < 1,
+          "real message wrapper does not replay a placeholder reveal on warm remount",
+        );
+      }
+    }
+    check(calls === 1, "completed status skips subsequent remount requests");
+    draw("d5cd8a44-d8b7-4c63-91fe-3cc63f106179");
+    check(
+      tests.querySelector(".attachment-loading"),
+      "a changed file identity cannot retain the old file's checked state",
+    );
+    await until(() => tests.querySelector("[data-attachment]"));
+    check(calls === 2, "a replacement file resolves its own metadata once");
+  } finally {
+    pending.resolve();
+    render(null, tests);
+    window.fetch = originalFetch;
+    mediaStatusCache.clear();
   }
 });
 
@@ -4784,6 +4898,79 @@ await test("new-message announcements exclude initial history, backfill and virt
   history.current.dispatchEvent(new Event("scroll"));
   await sleep(150);
   check(!log().textContent.trim(), "virtual remounts do not announce history");
+});
+
+await test("message images learn dimensions once and preserve responsive sizing on virtual remount", async () => {
+  const previousWidth = tests.style.width;
+  tests.style.width = "180px";
+  try {
+    for (const [width, height] of [
+      [600, 80],
+      [80, 640],
+    ]) {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d").fillRect(0, 0, width, height);
+      const src = canvas.toDataURL();
+      check(
+        src.length <= 4096,
+        "fixture fits the bounded dimension key budget",
+      );
+      const draw = () =>
+        render(
+          h(
+            "div",
+            { class: "message-markdown" },
+            h(ExternalImage, { src, alt: "Measured image" }),
+          ),
+          tests,
+        );
+      draw();
+      let image = tests.querySelector("img");
+      check(
+        image.loading === "eager",
+        "unknown dimensions do not create a dimensionless lazy image",
+      );
+      await until(
+        () =>
+          image.complete &&
+          image.naturalWidth === width &&
+          image.hasAttribute("width"),
+      );
+      check(
+        image.getAttribute("width") === String(width) &&
+          image.getAttribute("height") === String(height),
+        "attributes reflect intrinsic dimensions",
+      );
+      const first = image.getBoundingClientRect();
+      check(
+        first.width <= 180 && first.height <= 500,
+        "image fits the available width and height cap",
+      );
+      check(
+        Math.abs(first.width / first.height - width / height) < 0.02,
+        "responsive sizing preserves the intrinsic aspect ratio",
+      );
+      render(null, tests);
+      draw();
+      image = tests.querySelector("img");
+      check(
+        image.loading === "lazy" &&
+          image.getAttribute("width") === String(width) &&
+          image.getAttribute("height") === String(height),
+        "virtual remount has explicit real dimensions before loading",
+      );
+      await until(() => image.complete && image.naturalWidth === width);
+      check(
+        Math.abs(image.getBoundingClientRect().height - first.height) < 1,
+        "warm row geometry is stable",
+      );
+      render(null, tests);
+    }
+  } finally {
+    tests.style.width = previousWidth;
+  }
 });
 
 await test("external message images require URL-specific consent", async () => {

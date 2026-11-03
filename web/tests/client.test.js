@@ -25,7 +25,7 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
   await api.login("alice", "secret");
   assert.equal(request.url, "https://example.com/commonroom/api/login");
   assert.equal(request.options.credentials, "include");
-  assert.equal(request.options.cache, "no-store");
+  assert.equal(request.options.cache, "default");
   assert.deepEqual(JSON.parse(request.options.body), {
     username: "alice",
     password: "secret",

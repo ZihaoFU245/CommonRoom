@@ -69,7 +69,6 @@ export const MarkdownContent = memo(function MarkdownContent({
       if (attachment) {
         const fallback = (
           <MediaDownload
-            id={attachment.id}
             href={new URL(node.href ?? attachment.path, serverBaseUrl()).href}
           >
             {render(node.children)}
@@ -98,10 +97,7 @@ export const MarkdownContent = memo(function MarkdownContent({
         );
       if (managed && node.href && node.tag === "a")
         return wrap(
-          <MediaDownload
-            id={managed.id}
-            href={new URL(node.href, serverBaseUrl()).href}
-          >
+          <MediaDownload href={new URL(node.href, serverBaseUrl()).href}>
             {render(node.children)}
           </MediaDownload>,
         );

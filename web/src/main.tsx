@@ -1,6 +1,7 @@
 import { disconnectPreferences } from "./features/preferences/account.ts";
 import { loadInitialAccount } from "./api/bootstrap.ts";
 import mediaWorkerUrl from "virtual:media-worker-url";
+import { startMediaCache } from "./features/conversation/mediaController.ts";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { Snapshot } from "./api/protocol.ts";
@@ -17,17 +18,7 @@ import "./style.css";
 bootAppearance();
 
 // Production HTTPS redirects and HSTS are configured by the serving proxy.
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker
-    .register(new URL(mediaWorkerUrl, document.baseURI), {
-      type: "module",
-      scope: new URL("./", document.baseURI).pathname,
-      updateViaCache: "none",
-    })
-    .catch(() => {
-      /* Browsers without worker storage use ordinary downloads. */
-    });
-}
+startMediaCache(new URL(mediaWorkerUrl, document.baseURI));
 const root = document.getElementById("app");
 if (!root) throw new Error("Missing application root.");
 render(<App />, root);

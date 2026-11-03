@@ -51,9 +51,26 @@ function proxy(port, forwarded = false) {
   };
 }
 
-export async function startRemoteServer(root, vitePort, wildcard = false) {
+export async function startRemoteServer(
+  root,
+  vitePort,
+  wildcard = false,
+  sameOrigin = false,
+) {
   const work = await mkdtemp(join(tmpdir(), "commonroom-remote-browser-"));
   const servers = [];
+  const connections = new Set();
+  const apiRequests = [];
+  let apiPort;
+  function track(...listeners) {
+    for (const server of listeners) {
+      servers.push(server);
+      server.on("connection", (connection) => {
+        connections.add(connection);
+        connection.on("close", () => connections.delete(connection));
+      });
+    }
+  }
   let child, socket;
   let logs = "";
   const close = async () => {
@@ -65,10 +82,12 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
       await stopped;
       clearTimeout(force);
     }
-    for (const server of servers) {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-    }
+    // closeAllConnections excludes upgraded sockets. Destroy every connection
+    // owned by these disposable fixtures so successful browser runs can exit.
+    for (const connection of connections) connection.destroy();
+    await Promise.all(
+      servers.map((server) => new Promise((resolve) => server.close(resolve))),
+    );
     await rm(work, { recursive: true, force: true });
   };
   try {
@@ -95,12 +114,15 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
     };
     const ui = httpsServer(tls, (req, res) => {
       // Never send this isolated browser's default bootstrap to an existing dev backend.
-      if (req.url.startsWith("/api/")) {
+      if (sameOrigin && req.url.startsWith("/server/")) {
+        apiRequests.push({ method: req.method, path: req.url });
+        proxy(apiPort, true)(req, res);
+      } else if (req.url.startsWith("/api/")) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Please log in." }));
       } else proxy(vitePort)(req, res);
     });
-    servers.push(ui);
+    track(ui);
     const uiOrigin = `https://ui.test:${await listen(ui)}`;
     const objects = new Map();
     const storageRequests = [];
@@ -191,14 +213,14 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
         res.destroy(error);
       });
     });
-    servers.push(internalStorage, publicStorage);
+    track(internalStorage, publicStorage);
     const internalStorageOrigin = `http://127.0.0.1:${await listen(internalStorage)}`;
     const storageOrigin = `https://store.test:${await listen(publicStorage)}`;
-    let apiPort;
-    const apiProxy = httpsServer(tls, (req, res) =>
-      proxy(apiPort, true)(req, res),
-    );
-    apiProxy.on("upgrade", async (req, incoming, head) => {
+    const apiProxy = httpsServer(tls, (req, res) => {
+      apiRequests.push({ method: req.method, path: req.url });
+      proxy(apiPort, true)(req, res);
+    });
+    const upgrade = async (req, incoming, head) => {
       const { connect } = await import("node:net");
       const upstream = connect(apiPort, "127.0.0.1", () => {
         upstream.write(
@@ -216,9 +238,12 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
       upstream.on("error", () => incoming.destroy());
       incoming.on("error", () => upstream.destroy());
       incoming.on("close", () => upstream.destroy());
-    });
-    servers.push(apiProxy);
-    const base = `https://api.test:${await listen(apiProxy)}/server/`;
+    };
+    apiProxy.on("upgrade", upgrade);
+    if (sameOrigin) ui.on("upgrade", upgrade);
+    track(apiProxy);
+    const apiOrigin = `https://api.test:${await listen(apiProxy)}`;
+    const base = `${sameOrigin ? uiOrigin : apiOrigin}/server/`;
     const data = join(work, "data");
     await mkdir(data);
     await mkdir(join(work, "downloads"));
@@ -268,7 +293,7 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
     apiPort = Number(/address=127\.0\.0\.1:(\d+)/u.exec(logs)?.[1]);
     assert.ok(apiPort, logs);
     child.stdin.write(
-      "/user new alice remote-test-password admin\n/room new files\n/room add alice #files\n",
+      "/user new alice remote-test-password admin\n/user new bob other-test-password user\n/room new files\n/room add alice #files\n",
     );
     await until(() => logs.includes("alice added to #files"), "accounts");
     const direct = `http://127.0.0.1:${apiPort}/server/`;
@@ -344,7 +369,7 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
     wave.write("data", 36);
     wave.writeUInt32LE(4000, 40);
     const audio = await upload(wave, "remote.wav");
-    await upload(png, "avatar.png", true);
+    const avatar = await upload(png, "avatar.png", true);
     socket = new WebSocket(`${direct.replace("http:", "ws:")}ws`, {
       headers: {
         Origin: uiOrigin,
@@ -382,7 +407,14 @@ export async function startRemoteServer(root, vitePort, wildcard = false) {
       work,
       storageOrigin,
       noteBytes,
+      notePath: note.path,
       storageRequests,
+      apiRequests,
+      sameOrigin,
+      mediaPaths: [
+        image.path,
+        new URL(`api/avatars/${avatar.media_id}/file`, base).pathname,
+      ],
       close,
       get logs() {
         return logs;
@@ -446,7 +478,7 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     '[...document.querySelectorAll(".room-link")].find((element)=>element.textContent.includes("files")).click()',
   );
   await wait(
-    '[...document.querySelectorAll("a")].some((anchor)=>anchor.href.includes("/api/media/"))',
+    '[...document.querySelectorAll("a")].some((anchor)=>anchor.textContent==="remote-note.txt" && anchor.href.includes("media-download"))',
     "attachment history",
   );
   await wait(
@@ -457,6 +489,131 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     '[...document.querySelectorAll(".user-avatar")].some((image)=>!image.hidden && image.complete && image.naturalWidth===1)',
     "remote avatar",
   );
+  await wait(
+    "!!navigator.serviceWorker.controller",
+    "media worker controls the UI",
+  );
+  await command("Page.enable", {}, sessionId);
+  await command(
+    "Page.addScriptToEvaluateOnNewDocument",
+    {
+      source:
+        'window.hardReloadStartedControlled = !!navigator.serviceWorker.controller; Object.defineProperty(AbortSignal, "any", {value:undefined, configurable:true}); Object.defineProperty(AbortSignal, "timeout", {value:undefined, configurable:true});',
+    },
+    sessionId,
+  );
+  const storageReads = () =>
+    fixture.storageRequests.filter(
+      (req) => req.method === "GET" && req.origin === fixture.url,
+    ).length;
+  const signedLinks = () =>
+    fixture.apiRequests.filter((req) => req.path.includes("/link")).length;
+  async function hardReload() {
+    const previousDocument = await evaluate("performance.timeOrigin");
+    await command("Page.reload", { ignoreCache: true }, sessionId);
+    await wait(
+      `performance.timeOrigin !== ${previousDocument}`,
+      "hard reload commits a new document",
+    );
+    await wait(
+      '!!document.querySelector(".chat-shell")',
+      "chat after hard reload",
+    );
+    assert.equal(
+      await evaluate("window.hardReloadStartedControlled"),
+      false,
+      "hard reload starts without service-worker control",
+    );
+    await wait(
+      "!!navigator.serviceWorker.controller",
+      "hard reload restores media-cache control",
+    );
+    await wait(
+      '[...document.querySelectorAll(".message-markdown img")].some(image => image.complete && image.naturalWidth === 1)',
+      "image after hard reload",
+    );
+    await wait(
+      '[...document.querySelectorAll(".user-avatar")].some(image => !image.hidden && image.complete && image.naturalWidth === 1)',
+      "avatar after hard reload",
+    );
+  }
+  await evaluate('caches.delete("commonroom-media")');
+  const coldReads = storageReads();
+  await hardReload();
+  assert.equal(
+    storageReads() - coldReads,
+    2,
+    "cold reload fetches image and avatar once each",
+  );
+  // Cache fills outlive response consumption; wait for both persistent entries.
+  await wait(
+    'caches.open("commonroom-media").then(cache => cache.keys()).then(keys => keys.length === 2)',
+    "completed image cache fills",
+  );
+  const readsBefore = storageReads(),
+    linksBefore = signedLinks();
+  await hardReload();
+  assert.equal(
+    storageReads(),
+    readsBefore,
+    "warm hard reload transfers no storage bytes",
+  );
+  assert.equal(
+    signedLinks(),
+    linksBefore,
+    "warm hard reload skips signed-link APIs",
+  );
+  // Unique playback queries bypass native image-memory reuse and exercise the
+  // actual service-worker/CORS/CacheStorage pipeline on every virtual remount.
+  async function remountImages() {
+    await evaluate(`Promise.all(${JSON.stringify(fixture.mediaPaths)}.flatMap(path => Array.from({length: 20}, (_, index) => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("Cached remote image failed"));
+      image.src = new URL(path + "?playback=" + index, ${JSON.stringify(fixture.base)}).href;
+    })))).then(() => true)`);
+  }
+  await remountImages();
+  assert.equal(
+    storageReads(),
+    readsBefore,
+    "40 warm remounts transfer no storage bytes",
+  );
+  assert.equal(
+    signedLinks(),
+    linksBefore,
+    "warm remounts skip signed-link APIs",
+  );
+  const preflights = () =>
+    fixture.apiRequests.filter(
+      (req) => req.method === "OPTIONS" && req.path === "/server/api/me",
+    ).length;
+  const beforePreflight = preflights();
+  const snapshots = () =>
+    fixture.apiRequests.filter(
+      (req) => req.method === "GET" && req.path === "/server/api/me",
+    ).length;
+  const beforeSnapshots = snapshots();
+  const requestSnapshot = () =>
+    evaluate(`fetch(new URL("api/me", ${JSON.stringify(fixture.base)}), {
+    credentials: "include", cache: "default", headers: {"X-Chat-Name-Colors": "1"}
+  }).then(async r => { if (!r.ok || r.headers.get("Cache-Control") !== "no-store") throw new Error("Snapshot must be fresh and no-store"); await r.json(); return r.status; })`);
+  assert.equal(await requestSnapshot(), 200);
+  assert.equal(await requestSnapshot(), 200);
+  // Exceed the browser's default five-second preflight lifetime. The explicit
+  // server max-age must reuse OPTIONS while actual authenticated GETs stay live.
+  await pause(6100);
+  assert.equal(await requestSnapshot(), 200);
+  assert.equal(
+    preflights() - beforePreflight,
+    fixture.sameOrigin ? 0 : 1,
+    "three credentialed reads reuse one preflight beyond five seconds",
+  );
+  assert.equal(
+    snapshots() - beforeSnapshots,
+    3,
+    "no-store API responses still send every actual GET to the server",
+  );
   const cookies = await command("Storage.getCookies");
   const session = cookies.cookies.find(
     (cookie) => cookie.name === "chat_session",
@@ -464,9 +621,9 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   assert.ok(
     session?.secure &&
       session.httpOnly &&
-      session.sameSite === "None" &&
+      session.sameSite === (fixture.sameOrigin ? "Strict" : "None") &&
       session.path === "/server/",
-    "cross-site login uses a Secure HttpOnly SameSite=None session",
+    "session cookie retains the deployment-appropriate security attributes",
   );
   await evaluate(
     '[...document.querySelectorAll(".html-gate button")].find((button)=>button.textContent==="Show text").click()',
@@ -526,7 +683,37 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
       events.find((event) => event.method === "Browser.downloadWillBegin")
         .params.url,
     ).origin,
-    fixture.storageOrigin,
+    fixture.url,
+  );
+  await wait(
+    `caches.open("commonroom-media").then(cache => cache.match(new URL(${JSON.stringify(fixture.notePath)}, ${JSON.stringify(fixture.base)}).href)).then(Boolean)`,
+    "download fill persisted",
+  );
+  const readsAfterDownload = storageReads(),
+    linksAfterDownload = signedLinks();
+  const completedDownloads = () =>
+    events.filter(
+      (event) =>
+        event.method === "Browser.downloadProgress" &&
+        event.params.state === "completed",
+    ).length;
+  const downloadsBefore = completedDownloads();
+  await evaluate(
+    '[...document.querySelectorAll("a")].find(anchor => anchor.textContent === "remote-note.txt").click()',
+  );
+  await until(
+    () => completedDownloads() > downloadsBefore,
+    "cached native download completes",
+  );
+  assert.equal(
+    storageReads(),
+    readsAfterDownload,
+    "repeated download reuses cached bytes",
+  );
+  assert.equal(
+    signedLinks(),
+    linksAfterDownload,
+    "repeated download skips signed-link API",
   );
   assert.ok(
     fixture.storageRequests
@@ -543,8 +730,52 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     'document.querySelector(".connection")?.classList.contains("online")',
     "WSS after reload",
   );
+  const readsAfterReload = storageReads(),
+    linksAfterReload = signedLinks();
+  await remountImages();
+  assert.equal(storageReads(), readsAfterReload, "remote bytes survive reload");
+  assert.equal(
+    signedLinks(),
+    linksAfterReload,
+    "reload uses persistent canonical keys",
+  );
   await evaluate('document.querySelector(".signout").click()');
   await wait('!!document.querySelector(".login-server-trigger")', "logout UI");
+  assert.equal(
+    await evaluate(`fetch(new URL("api/me", ${JSON.stringify(fixture.base)}), {
+    credentials: "include", cache: "default", headers: {"X-Chat-Name-Colors": "1"}
+  }).then(r => r.status)`),
+    401,
+    "cached preflight approval cannot authorize a logged-out snapshot",
+  );
+  assert.equal(
+    preflights() - beforePreflight,
+    fixture.sameOrigin ? 0 : 1,
+    "logout still checks authentication with the preflight cached",
+  );
+  const readsAfterLogout = storageReads();
+  assert.equal(
+    await evaluate(
+      `fetch(new URL(${JSON.stringify(fixture.mediaPaths[0])}, ${JSON.stringify(fixture.base)}), {credentials:"include", cache:"no-store"}).then(r => r.status)`,
+    ),
+    401,
+    "logout denies warm cached bytes",
+  );
+  assert.equal(storageReads(), readsAfterLogout);
+  await evaluate(
+    `fetch(new URL("api/login", ${JSON.stringify(fixture.base)}), {method:"POST", credentials:"include", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:"bob", password:"other-test-password"})}).then(r => {if (!r.ok) throw new Error("Second account login failed");})`,
+  );
+  const switchedStatus = await evaluate(
+    `fetch(new URL(${JSON.stringify(fixture.mediaPaths[0])}, ${JSON.stringify(fixture.base)}), {credentials:"include", cache:"no-store"}).then(r => r.status)`,
+  );
+  assert.ok(
+    [403, 404].includes(switchedStatus),
+    "another account cannot read the first account's cached attachment",
+  );
+  assert.equal(storageReads(), readsAfterLogout);
+  await evaluate(
+    `fetch(new URL("api/logout", ${JSON.stringify(fixture.base)}), {method:"POST", credentials:"include"})`,
+  );
   await command("Page.reload", {}, sessionId);
   await wait('!!document.querySelector(".login-server-trigger")', "logout");
   await evaluate('document.querySelector(".login-server-trigger").click()');
@@ -553,6 +784,6 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     "server persists after logout",
   );
   console.log(
-    "PASS real HTTPS cross-site server: settings, login, WSS, messages, avatar, image, audio, HTML preview, upload, download, reload and logout",
+    `PASS real HTTPS ${fixture.sameOrigin ? "same-origin" : "cross-site"} server: settings, login, WSS, messages, avatar, image, audio, HTML preview, upload, cached downloads, cold/warm hard reload and logout`,
   );
 }

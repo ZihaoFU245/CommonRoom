@@ -177,12 +177,20 @@ Run browser regressions with `rtk pnpm --dir web test:browser`.
 After `rtk cargo build --locked`, run
 `rtk pnpm --dir web test:browser --remote-server` and
 `rtk pnpm --dir web test:browser --remote-server '*'` for exact-origin and wildcard
-production-mode browser integration. These scenarios use disposable Rust data,
+production-mode browser integration. Add `same-origin` in place of `'*'` to
+exercise an API on the UI origin. Add `--built` to exercise release UI artifacts
+through Vite preview rather than development modules. These scenarios use disposable Rust data,
 accounts, a local S3 protocol fixture, ephemeral self-signed TLS certificates,
 and separate `ui.test`, `api.test`, and `store.test` hosts. They verify saved
 server settings, cross-site Secure/HttpOnly/SameSite=None cookies, WSS messaging,
 media upload, image/avatar/audio access, HTML text preview, actual file download,
-reload, and logout. Chrome is configured to allow third-party cookies in this
+reload, and logout. Forty warm image/avatar loads with distinct playback queries
+must issue no storage GETs or signed-link requests, including after hard reload.
+A cold hard reload must download image and avatar once each, reclaim worker
+control, and retain bytes for a second hard reload. The reload scripts disable
+`AbortSignal.any` and `AbortSignal.timeout` to exercise Chrome 114 cancellation;
+logout and switching to an account without access must deny warm cached bytes.
+Chrome is configured to allow third-party cookies in this
 isolated profile; deployment browser restrictions still apply. OpenSSL and an
 installed Chrome/Chromium are required. All processes and temporary files are
 cleaned up on completion. Pass a test-name
@@ -214,7 +222,26 @@ monotonic movement and disabled elastic overscroll.
 `connectionHook.test.js` covers resume-event coalescing, hidden-page cancellation,
 socket-baseline recovery and revoked-session handling. Media-cache tests cover
 reuse of cached response sizes, byte limits after restart, overlapping worker
-lifetimes, recency and storage-error recovery. `timelineScroll.test.js` covers
+lifetimes, recency and storage-error recovery. Remote-cache cases cover origin
+isolation, full/range/download reuse and row-cancelled fills. Slow active downloads
+outlive two minutes; cancelled fills expire two minutes after cancellation and
+release their reservations. Range requests complete while a full fill is pending.
+Malformed cached responses are deleted and refetched for full and range reads;
+cache accounting discards incompatible entries rather than undercounting them.
+Presentation metadata
+tests cover remount coalescing, expiry, bounded storage and identity resets.
+Browser image regressions require measured dimensions before lazy loading on
+remount and preserve responsive landscape/portrait aspect ratios and size limits.
+Attachment remount coverage also replaces the file ID without unmounting its
+wrapper and requires the new file's own loading/status state.
+Cache work-count tests cap recency write backlog under slow storage, rank bulk
+evictions once per retained entry, bound pending status ownership and cancel it
+on identity reset, and serialize competing workers' byte-budget maintenance.
+Cross-origin browser scenarios repeat credentialed `/api/me` reads beyond the
+default five-second preflight lifetime and require one OPTIONS request while each
+actual GET remains authenticated. Rust CORS tests require max-age only on accepted
+browser preflights, including wildcard origins; rejected/Bot/actual requests omit it.
+`timelineScroll.test.js` covers
 temporary animation overflow retaining bottom intent, slow upward movement and
 duplicate scroll events. The visible-image browser regression checks small upward
 scrolls while preview dimensions change.

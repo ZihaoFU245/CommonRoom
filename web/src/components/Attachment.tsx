@@ -1,7 +1,6 @@
 import { HtmlCover } from "./HtmlCover.tsx";
 import { MediaDownload } from "./MediaDownload.tsx";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
-import { serverBaseUrl } from "../api/server.ts";
 import { HtmlSource } from "./HtmlSource.tsx";
 import { lazy, Suspense } from "preact/compat";
 import type { ComponentChildren } from "preact";
@@ -75,11 +74,8 @@ export function Attachment({
         throw new Error(
           "Preview is limited to 1 MiB. Download this file instead.",
         );
-      const path =
-        new URL(serverBaseUrl()).origin === new URL(document.baseURI).origin
-          ? media.path
-          : (await api.fileLink("media", id, false, controller.signal)).url;
-      setSource(await documentSource(path, controller.signal));
+      if (!file.url) throw new Error("File is still loading. Try again.");
+      setSource(await documentSource(file.url, controller.signal));
     } catch (failure) {
       if (!controller.signal.aborted)
         setError(
@@ -100,8 +96,8 @@ export function Attachment({
   function playbackError() {
     const element = player.current;
     if (!element) return;
-    // Refresh through the authenticated chat endpoint. Native players cannot
-    // renew an expired S3 redirect themselves. Never loop on unsupported codecs.
+    // Retry through the worker's authorized cache pipeline after a transient
+    // failure. Never loop on unsupported codecs.
     if (element.error?.code !== 3 && failures.current < 1) {
       failures.current++;
       setPlayback({
@@ -127,7 +123,7 @@ export function Attachment({
     },
     // The authenticated file endpoint supplies verified MIME and live access
     // checks. Native controls can wait for Play without a metadata request.
-    src: file.url === href ? `${href}?playback=${playback.version}` : file.url,
+    src: file.url,
     controls: true,
     preload: "none" as const,
     onLoadedMetadata: loaded,
@@ -228,7 +224,6 @@ export function Attachment({
         </HtmlCover>
       )}
       <MediaDownload
-        id={id}
         className="attachment-download"
         href={`${href}?download=true`}
       >

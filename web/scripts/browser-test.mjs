@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
-import { createServer } from "vite";
+import { build, createServer, preview } from "vite";
 import WebSocket from "ws";
 import {
   startRemoteServer,
@@ -42,18 +42,45 @@ const events = [];
 const pending = new Map();
 let serial = 0;
 try {
-  server = await createServer({
-    root,
-    configFile: resolve(root, "vite.config.ts"),
-    server: {
-      host: "127.0.0.1",
-      port: 0,
-      strictPort: false,
-      ...(remote ? { allowedHosts: ["ui.test"], hmr: false } : {}),
-    },
-    logLevel: "error",
-  });
-  await server.listen();
+  const built = remote && process.argv.includes("--built");
+  if (built) {
+    const outDir = join(profile, "dist");
+    await build({
+      root,
+      configFile: resolve(root, "vite.config.ts"),
+      logLevel: "error",
+      build: { outDir },
+    });
+    const serving = await preview({
+      root,
+      configFile: resolve(root, "vite.config.ts"),
+      build: { outDir },
+      preview: {
+        host: "127.0.0.1",
+        port: 0,
+        strictPort: false,
+        allowedHosts: ["ui.test"],
+      },
+    });
+    server = {
+      httpServer: serving.httpServer,
+      close: () =>
+        new Promise((resolveClose) => serving.httpServer.close(resolveClose)),
+    };
+  } else {
+    server = await createServer({
+      root,
+      configFile: resolve(root, "vite.config.ts"),
+      server: {
+        host: "127.0.0.1",
+        port: 0,
+        strictPort: false,
+        ...(remote ? { allowedHosts: ["ui.test"], hmr: false } : {}),
+      },
+      logLevel: "error",
+    });
+    await server.listen();
+  }
   const address = server.httpServer.address();
   if (!address || typeof address === "string")
     throw new Error("Missing Vite test listener.");
@@ -62,6 +89,7 @@ try {
       root,
       address.port,
       process.argv[3] === "*",
+      process.argv[3] === "same-origin",
     );
   browser = spawn(
     executable,

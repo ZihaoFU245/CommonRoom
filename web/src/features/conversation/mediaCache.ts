@@ -1,13 +1,22 @@
 /** Persistent immutable bytes. Every reuse first checks live server authorization. */
 import { rangeStream } from "./rangeStream.ts";
-const cacheName = "commonroom-media-v2";
-const recencyCacheName = "commonroom-media-recency-v1";
+import { requestAbort } from "../../api/requestAbort.ts";
+import { isFileLink } from "../../api/mediaFile.ts";
+const cacheName = "commonroom-media";
+const recencyCacheName = "commonroom-media-recency";
 const byteLimit = 256 * 1024 * 1024;
 const entryLimit = 128;
 const touchInterval = 60_000;
 const fillLimit = 4;
 // Bound cloned response bodies waiting for serialized Cache writes as well as disk use.
 const fillByteLimit = 256 * 1024 * 1024;
+
+// Coordinate disk budgets across worker replacement and other same-origin tabs.
+// Older/storage-limited browsers retain the instance's serialized write fallback.
+function maintain(work: () => Promise<void>): Promise<void> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  return locks ? locks.request(cacheName, work) : work();
+}
 interface Fill {
   done: Promise<void>;
   size: number;
@@ -19,36 +28,48 @@ interface Metadata {
   filename: string;
   expired?: boolean;
 }
-async function waitForWrite(
-  work: Promise<void> | undefined,
-  signal: AbortSignal,
-) {
+// Active consumers may need longer than two minutes on slow connections. Start
+// the background-fill budget only when the original request is cancelled.
+function fillCancellation(parent: AbortSignal) {
+  const controller = new AbortController();
+  let deadline: ReturnType<typeof requestAbort> | undefined;
+  const expire = () => controller.abort(deadline?.signal.reason);
+  const detach = () => {
+    deadline = requestAbort(120_000);
+    deadline.signal.addEventListener("abort", expire, { once: true });
+  };
+  if (parent.aborted) detach();
+  else parent.addEventListener("abort", detach, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      parent.removeEventListener("abort", detach);
+      deadline?.signal.removeEventListener("abort", expire);
+      deadline?.dispose();
+    },
+  };
+}
+async function waitForFill(work: Promise<void>, signal: AbortSignal) {
   signal.throwIfAborted();
-  if (!work) return;
-  await new Promise<void>((resolve, reject) => {
-    const abort = () => {
-      signal.removeEventListener("abort", abort);
-      const reason: unknown = signal.reason;
-      reject(
-        reason instanceof Error
-          ? reason
-          : new DOMException("Request aborted", "AbortError"),
-      );
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    work.then(
-      () => {
-        signal.removeEventListener("abort", abort);
-        resolve();
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(
-          error instanceof Error ? error : new Error("Cache write failed."),
-        );
-      },
-    );
-  });
+  let abort = () => {};
+  try {
+    await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        abort = () => {
+          const reason: unknown = signal.reason;
+          reject(
+            reason instanceof Error
+              ? reason
+              : new DOMException("Request aborted", "AbortError"),
+          );
+        };
+        signal.addEventListener("abort", abort, { once: true });
+      }),
+    ]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 function metadata(value: unknown): value is Metadata {
   return (
@@ -65,18 +86,21 @@ function metadata(value: unknown): value is Metadata {
     (!("expired" in value) || typeof value.expired === "boolean")
   );
 }
-export function mediaCachePath(request: Request, base: string): URL | null {
-  const url = new URL(request.url);
-  const root = new URL(base);
-  const prefix = ["api/media/", "api/avatars/"]
-    .map((path) => new URL(path, root).pathname)
-    .find((path) => url.pathname.startsWith(path));
-  return request.method === "GET" &&
-    url.origin === root.origin &&
-    prefix !== undefined &&
-    /^[0-9a-f-]{36}\/file$/iu.test(url.pathname.slice(prefix.length))
-    ? url
-    : null;
+// Cached bytes are disposable. Reject incompatible records without decoding or
+// buffering their bodies; current authorization supplies presentation headers.
+function cachedSize(response: Response): number | undefined {
+  const length = response.headers.get("Content-Length") ?? "";
+  const size = Number(length);
+  return response.status === 200 &&
+    response.body !== null &&
+    /^[1-9]\d*$/u.test(length) &&
+    Number.isSafeInteger(size) &&
+    size <= byteLimit &&
+    !!response.headers.get("Content-Type") &&
+    !response.headers.has("Content-Range") &&
+    !response.headers.has("Content-Encoding")
+    ? size
+    : undefined;
 }
 function headers(info: Metadata, download: boolean): Headers {
   const inline =
@@ -99,7 +123,7 @@ export class MediaCache {
   private fillingBytes = 0;
   private readonly touched = new Map<string, number>();
   private readonly persistedAt = new Map<string, number>();
-  private readonly pending = new Map<string, Promise<void>>();
+  private readonly recencyWrites = new Set<string>();
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
   private readonly storage: CacheStorage;
   private readonly network: typeof fetch;
@@ -134,6 +158,34 @@ export class MediaCache {
     this.fillingBytes += size;
     return fill;
   }
+  private async read(cache: Cache, key: string, info: Metadata) {
+    const valid = (response: Response) =>
+      cachedSize(response) !== undefined &&
+      response.headers.get("Content-Type") === info.content_type;
+    let saved = await cache.match(key);
+    if (!saved || valid(saved)) return saved;
+    saved.body?.cancel().catch(() => {});
+    // Recheck under the write lock: another worker may have replaced the record.
+    const work = this.writes.then(() =>
+      maintain(async () => {
+        saved = await cache.match(key);
+        if (!saved || valid(saved)) return;
+        saved.body?.cancel().catch(() => {});
+        await cache.delete(key);
+        this.forget(key);
+        await this.storage
+          .open(recencyCacheName)
+          .then((recency) => recency.delete(key))
+          .catch(() => {});
+        saved = undefined;
+      }),
+    );
+    this.writes = work.catch(() => {
+      this.index = null;
+    });
+    await work;
+    return saved;
+  }
   // Reconcile keys across overlapping worker lifetimes, reusing known sizes.
   // Listing keys is cheap compared with reading every cached response on insert.
   private async accounting(cache: Cache) {
@@ -144,7 +196,12 @@ export class MediaCache {
       if (size === undefined) {
         const saved = await cache.match(key);
         if (!saved) continue;
-        size = Number(saved.headers.get("Content-Length")) || 0;
+        size = cachedSize(saved);
+        saved.body?.cancel().catch(() => {});
+        if (size === undefined) {
+          await cache.delete(key);
+          continue;
+        }
       }
       sizes.set(key.url, size);
       bytes += size;
@@ -175,74 +232,108 @@ export class MediaCache {
         this.persistedAt.delete(oldest);
       }
     }
-    if (previous !== undefined && now - previous < touchInterval) return;
+    if (
+      (previous !== undefined && now - previous < touchInterval) ||
+      this.recencyWrites.has(key) ||
+      this.recencyWrites.size >= entryLimit
+    )
+      return;
     this.persistedAt.set(key, now);
+    this.recencyWrites.add(key);
     // Persist only a tiny timestamp. Immutable attachment bytes are never
     // deleted/re-written merely because a player seeks or a row remounts.
     const work = this.writes
-      .then(async () => {
-        const recency = await this.storage.open(recencyCacheName);
-        await recency.put(
-          key,
-          new Response(null, { headers: { "X-Accessed-At": String(now) } }),
-        );
-        // Browser eviction can remove bodies without their metadata. Bound this
-        // cache independently, including when body storage never reaches pressure.
-        const records = await recency.keys();
-        for (const record of records.slice(
-          0,
-          Math.max(0, records.length - entryLimit),
-        ))
-          await recency.delete(record);
-      })
+      .then(() =>
+        maintain(async () => {
+          const recency = await this.storage.open(recencyCacheName);
+          await recency.put(
+            key,
+            new Response(null, { headers: { "X-Accessed-At": String(now) } }),
+          );
+          // Browser eviction can remove bodies without their metadata. Bound this
+          // cache independently, including when body storage never reaches pressure.
+          const records = await recency.keys();
+          for (const record of records.slice(
+            0,
+            Math.max(0, records.length - entryLimit),
+          ))
+            await recency.delete(record);
+        }),
+      )
       .catch(() => {
         if (this.persistedAt.get(key) === now) this.persistedAt.delete(key);
+      })
+      .finally(() => {
+        this.recencyWrites.delete(key);
       });
     this.writes = work;
     keepAlive(work);
   }
-  private async oldestKey(index: { sizes: Map<string, number> }) {
-    let oldest = index.sizes.keys().next().value;
+  private async evict(
+    cache: Cache,
+    index: { sizes: Map<string, number>; bytes: number },
+    size: number,
+  ) {
+    const needsSpace = () =>
+      index.sizes.size >= entryLimit || index.bytes + size > byteLimit;
+    if (!needsSpace()) return;
+    const keys = [...index.sizes.keys()];
+    let recency: Cache | undefined;
     try {
-      const recency = await this.storage.open(recencyCacheName);
-      let timestamp = Infinity;
+      recency = await this.storage.open(recencyCacheName);
+      const records = recency;
+      // Read/rank once per insertion, even if a large object evicts many files.
+      const timestamps = new Map(
+        await Promise.all(
+          keys.map(async (key): Promise<[string, number]> => {
+            const saved = await records.match(key);
+            const value = saved?.headers.get("X-Accessed-At") ?? "";
+            const accessed = Number(value);
+            const valid =
+              saved?.status === 200 &&
+              /^\d+$/u.test(value) &&
+              Number.isSafeInteger(accessed);
+            if (saved && !valid) await records.delete(key);
+            return [
+              key,
+              Math.max(this.touched.get(key) ?? 0, valid ? accessed : 0),
+            ];
+          }),
+        ),
+      );
       const ranks = new Map(
         [...this.touched.keys()].map((key, rank) => [key, rank]),
       );
-      const keys = [...index.sizes.keys()].sort(
-        (a, b) => (ranks.get(a) ?? -1) - (ranks.get(b) ?? -1),
+      keys.sort(
+        (a, b) =>
+          (timestamps.get(a) ?? 0) - (timestamps.get(b) ?? 0) ||
+          (ranks.get(a) ?? -1) - (ranks.get(b) ?? -1),
       );
-      for (const key of keys) {
-        const saved = await recency.match(key);
-        const accessed = Math.max(
-          this.touched.get(key) ?? 0,
-          Number(saved?.headers.get("X-Accessed-At")) || 0,
-        );
-        if (accessed < timestamp) {
-          timestamp = accessed;
-          oldest = key;
-        }
-      }
-      if (oldest !== undefined) await recency.delete(oldest);
       // Browser eviction and overlapping workers may leave orphaned metadata.
       for (const key of await recency.keys())
         if (!index.sizes.has(key.url)) await recency.delete(key);
     } catch {
       /* Storage failure falls back to insertion order. */
     }
-    return oldest;
+    for (const key of keys) {
+      if (!needsSpace()) break;
+      await cache.delete(key);
+      this.forget(key);
+      await recency?.delete(key).catch(() => {});
+    }
   }
   async respond(
     request: Request,
     url: URL,
     keepAlive: (work: Promise<void>) => void,
+    remote = false,
   ): Promise<Response> {
     // No offline fallback: logout, expiry, retraction and revoked access apply
     // equally to cached copies. The small info response never touches S3.
     const auth = await this.network(
       new URL(url.pathname.replace(/\/file$/u, "/info"), url),
       {
-        credentials: "same-origin",
+        credentials: "include",
         cache: "no-store",
         signal: request.signal,
       },
@@ -254,82 +345,97 @@ export class MediaCache {
     const output = headers(info, url.searchParams.get("download") === "true");
     const range = request.headers.get("Range");
     const key = new URL(url.pathname, url);
-    let cache: Cache | undefined;
+    const cache = await this.storage.open(cacheName);
     let reservation: Fill | undefined;
-    try {
-      cache = await this.storage.open(cacheName);
-      await waitForWrite(this.pending.get(key.href), request.signal);
-      let saved = await cache.match(key.href);
-      if (!saved && !range) {
-        // Reserve before the network await so simultaneous misses share the fill.
-        // Every waiter has already performed its own live authorization check.
-        const filling = this.fills.get(key.href);
-        if (filling) {
-          await waitForWrite(filling.done, request.signal);
-          request.signal.throwIfAborted();
-          saved = await cache.match(key.href);
-        } else if (info.size <= byteLimit) {
-          reservation = this.reserve(key.href, info.size);
-        }
+    let cancellation: ReturnType<typeof requestAbort> | undefined;
+    let saved = await this.read(cache, key.href, info);
+    if (!saved && !range) {
+      // Reserve before the network await so simultaneous misses share the fill.
+      // Every waiter has already performed its own live authorization check.
+      const filling = this.fills.get(key.href);
+      if (filling) {
+        await waitForFill(filling.done, request.signal);
+        request.signal.throwIfAborted();
+        saved = await this.read(cache, key.href, info);
+      } else if (info.size <= byteLimit) {
+        reservation = this.reserve(key.href, info.size);
       }
-      if (saved && !range) {
+    }
+    if (saved && !range) {
+      this.touch(key.href, keepAlive);
+      const size = saved.headers.get("Content-Length");
+      if (size) output.set("Content-Length", size);
+      const contentRange = saved.headers.get("Content-Range");
+      if (contentRange) output.set("Content-Range", contentRange);
+      return new Response(saved.body, {
+        status: contentRange ? 206 : 200,
+        headers: output,
+      });
+    }
+    // A fully cached object can satisfy later native player byte ranges.
+    if (range) {
+      const full = saved;
+      const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
+      if (full?.body && match && (match[1] || match[2])) {
         this.touch(key.href, keepAlive);
-        const size = saved.headers.get("Content-Length");
-        if (size) output.set("Content-Length", size);
-        const contentRange = saved.headers.get("Content-Range");
-        if (contentRange) output.set("Content-Range", contentRange);
-        return new Response(saved.body, {
-          status: contentRange ? 206 : 200,
-          headers: output,
-        });
+        const fullSize =
+          Number(full.headers.get("Content-Length")) || info.size;
+        const start = match[1]
+          ? Number(match[1])
+          : Math.max(0, fullSize - Number(match[2]));
+        const end =
+          match[1] && match[2]
+            ? Math.min(Number(match[2]), fullSize - 1)
+            : fullSize - 1;
+        if (
+          !Number.isSafeInteger(start) ||
+          !Number.isSafeInteger(end) ||
+          start > end ||
+          start >= fullSize
+        )
+          return new Response(null, {
+            status: 416,
+            headers: { "Content-Range": `bytes */${fullSize}` },
+          });
+        output.set("Content-Length", String(end - start + 1));
+        output.set("Content-Range", `bytes ${start}-${end}/${fullSize}`);
+        return new Response(
+          rangeStream(full.body, start, end, request.signal),
+          {
+            status: 206,
+            headers: output,
+          },
+        );
       }
-      // A fully cached object can satisfy later native player byte ranges.
-      if (range) {
-        const full = saved;
-        const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
-        if (full?.body && match && (match[1] || match[2])) {
-          this.touch(key.href, keepAlive);
-          const fullSize =
-            Number(full.headers.get("Content-Length")) || info.size;
-          const start = match[1]
-            ? Number(match[1])
-            : Math.max(0, fullSize - Number(match[2]));
-          const end =
-            match[1] && match[2]
-              ? Math.min(Number(match[2]), fullSize - 1)
-              : fullSize - 1;
-          if (
-            !Number.isSafeInteger(start) ||
-            !Number.isSafeInteger(end) ||
-            start > end ||
-            start >= fullSize
-          )
-            return new Response(null, {
-              status: 416,
-              headers: { "Content-Range": `bytes */${fullSize}` },
-            });
-          output.set("Content-Length", String(end - start + 1));
-          output.set("Content-Range", `bytes ${start}-${end}/${fullSize}`);
-          return new Response(
-            rangeStream(full.body, start, end, request.signal),
-            {
-              status: 206,
-              headers: output,
-            },
-          );
-        }
-      }
-    } catch {
-      /* Storage-disabled/private browsers still load from the network. */
     }
     try {
       request.signal.throwIfAborted();
-      const response = await this.network(url.href, {
-        credentials: "same-origin",
+      // Once admitted, a bounded whole-object fill survives a virtual row's
+      // cancellation. Remounts wait for its persistent bytes instead of restarting.
+      if (reservation) cancellation = fillCancellation(request.signal);
+      const signal = cancellation?.signal ?? request.signal;
+      let source = url.href;
+      if (remote) {
+        const link = new URL(url.pathname.replace(/\/file$/u, "/link"), url);
+        if (url.searchParams.get("download") === "true")
+          link.searchParams.set("download", "true");
+        const response = await this.network(link, {
+          credentials: "include",
+          cache: "no-store",
+          signal,
+        });
+        if (!response.ok)
+          return new Response(null, { status: response.status });
+        const value: unknown = await response.json();
+        if (!isFileLink(value, url.href)) return Response.error();
+        source = value.url;
+      }
+      const response = await this.network(source, {
+        credentials: remote ? "omit" : "same-origin",
         cache: "no-store",
         mode: "cors",
         headers: range ? { Range: range } : {},
-        signal: request.signal,
+        signal,
       });
       if (!response.ok || (response.status !== 200 && response.status !== 206))
         return response;
@@ -360,7 +466,6 @@ export class MediaCache {
         headers: output,
       });
       if (
-        cache &&
         reservation &&
         !range &&
         response.status === 200 &&
@@ -369,6 +474,7 @@ export class MediaCache {
       ) {
         const target = cache;
         const fill = reservation;
+        const deadline = cancellation;
         // Cache only whole objects: seeking cannot fill the cache with overlapping
         // fragments. Serialized writes and recency touches share one order.
         const copy = new Response(result.clone().body, { headers: output });
@@ -376,24 +482,18 @@ export class MediaCache {
         fill.size = size;
         reservation = undefined;
         const work = this.writes
-          .then(async () => {
-            const index = await this.accounting(target);
-            // Concurrent misses may already have filled this key.
-            await target.delete(key.href);
-            this.forget(key.href);
-            while (
-              index.sizes.size >= entryLimit ||
-              index.bytes + size > byteLimit
-            ) {
-              const oldest = await this.oldestKey(index);
-              if (oldest === undefined) break;
-              await target.delete(oldest);
-              this.forget(oldest);
-            }
-            await target.put(key.href, copy);
-            this.remember(key.href, size);
-            this.touch(key.href, keepAlive);
-          })
+          .then(() =>
+            maintain(async () => {
+              const index = await this.accounting(target);
+              // Concurrent misses may already have filled this key.
+              await target.delete(key.href);
+              this.forget(key.href);
+              await this.evict(target, index, size);
+              await target.put(key.href, copy);
+              this.remember(key.href, size);
+              this.touch(key.href, keepAlive);
+            }),
+          )
           .catch(() => {
             this.index = null;
             // Discard the tee branch if Cache rejects before reading its body.
@@ -402,17 +502,17 @@ export class MediaCache {
             /* Quota/eviction failures must not break a download. */
           });
         this.writes = work;
-        this.pending.set(key.href, work);
+        cancellation = undefined;
         keepAlive(
           work.finally(() => {
+            deadline?.dispose();
             fill.release();
-            if (this.pending.get(key.href) === work)
-              this.pending.delete(key.href);
           }),
         );
       }
       return result;
     } finally {
+      cancellation?.dispose();
       reservation?.release();
     }
   }

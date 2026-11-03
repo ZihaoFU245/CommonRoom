@@ -318,12 +318,40 @@ provides the S3 transport through rust-s3. Storage network calls run outside eng
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
 attachment preview state and acknowledgement-based publication; `api/media.ts` validates responses and direct-upload transport.
+`api/mediaFile.ts` shares canonical file parsing and signed-link validation between
+the page and worker without importing browser bootstrap or configuration state.
 Startup claims unreferenced tracked uploads before serving requests; cleanup sweeps
 immediately and daily by default, with short retries for incomplete work. Quota
 remains reserved until confirmed storage deletion. `mediaWorker.ts` intercepts only
-application media and managed avatar file GETs and uses `features/conversation/mediaCache.ts` for a
+application media and managed avatar file GETs, including cross-origin API files
+and UI-scoped top-level download navigations,
+and uses `features/conversation/mediaCache.ts` for a
 128-entry/256 MiB persistent byte cache with live metadata authorization and range
-support. Other API/static requests follow their normal network paths.
+support. Cache names remain stable across releases. Reads validate stored response
+status, body presence, length and content headers; incompatible entries are deleted
+and fetched again without migrations or buffering cached bodies for validation.
+`mediaController.ts` owns a single 15-second initialization handshake,
+including reclaiming uncontrolled pages after hard reload. `useFileUrl.ts` gates
+managed file controls on acknowledged worker control; confirmed readiness is
+read synchronously on warm mounts without waiting for an effect or another render.
+Controller changes invalidate readiness. No page-side signed-URL path remains.
+Other API/static requests follow their normal network paths.
+Cross-origin misses resolve authenticated `/link` URLs inside the worker and fetch
+storage without credentials; hits skip signing and storage entirely. Stable keys
+include the API origin and deployment path. Admitted whole-file fills survive
+row cancellation under the existing four-fill/256 MiB budget. A two-minute
+background deadline starts on cancellation; active downloads have no cache-fill
+deadline. Range requests bypass pending fills to avoid delaying playback.
+`mediaStatusCache.ts` separately shares up to 128 presentation metadata
+records and in-flight checks across virtual remounts; expiry and visibility resume
+refresh them. Login, logout, unauthorized API responses and server selection clear
+these records and abort their pending requests. Pending entries retain ownership
+until completion; at 128 pending checks, excess cold checks fail without starting
+more background requests. They never authorize cached bytes or provide offline file access.
+`ExternalImage.tsx` retains up to 128 intrinsic image sizes, with URL keys limited
+to 4 KiB, as layout hints across virtual remounts. Unknown sizes load eagerly;
+lazy images receive explicit measured width/height attributes. Size discovery
+uses the existing image load and adds no metadata or image-prefetch request.
 See [Media uploads](media-uploads.md).
 
 Attachment playback/previews live in the lazy `components/Attachment.tsx` chunk.
@@ -385,7 +413,8 @@ frame; a local blob preview covers upload and canonical image loading. Account a
 state stays mounted across Settings tabs.
 
 Media-cache recency rewrites are limited to once per object per minute within a
-worker lifetime, with a bounded in-memory timestamp map. Persisted eviction order
+worker lifetime, with bounded timestamp maps and at most 128 queued recency writes.
+Pending writes for the same object coalesce. Persisted eviction order
 is approximate LRU; every byte reuse still checks live `/info` authorization.
 Serialized cache maintenance builds an ordered size index lazily once per worker,
 then maintains its byte total on insertion, deletion and recency rewrites instead
@@ -393,6 +422,16 @@ of scanning every cached response on each insertion. Before insertion it reconci
 the live key list, reading sizes only for unfamiliar keys, so overlapping worker
 lifetimes and browser eviction cannot leave stale accounting indefinitely. Storage
 failures discard the index for rebuilding on the next write.
+With Web Locks, maintenance shares an origin-wide lock across workers/tabs so
+accounting, eviction and insertion cannot race past the disk budget. Without Web
+Locks, the per-instance serialized queue and reconciliation remain the fallback.
+Only insertions needing space rank eviction candidates: at most one timestamp
+read per retained object and one bounded sort, even when many objects are evicted.
+Warm byte reads use direct key lookup and stream responses without scanning or
+rewriting object bodies. Cached range reads stream/discard preceding chunks rather
+than allocating a whole-file buffer; seek work can still grow with the byte offset.
+The 256 MiB storage/fill accounting budgets do not cap total browser memory:
+decoded images, native players and browser-managed buffers are separate.
 
 Bottom-following intent survives temporary scroll-height growth from animated
 rows and delayed content. Wheel, touch, pointer and keyboard input cancel timeline

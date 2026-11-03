@@ -1,5 +1,6 @@
 import { serverBaseUrl } from "./server.ts";
 import { requestAbort } from "./requestAbort.ts";
+import { isFileLink, mediaFilePath, mediaFileUrl } from "./mediaFile.ts";
 export interface UploadTicket {
   media_id: string;
   upload: {
@@ -21,21 +22,6 @@ export interface CompletedMedia {
 export interface MediaInfo extends CompletedMedia {
   expires: number | null;
   expired: boolean;
-}
-export function isFileLink(value: unknown): value is { url: string } {
-  if (!record(value) || typeof value.url !== "string") return false;
-  try {
-    const url = new URL(value.url);
-    return (
-      (url.protocol === "https:" ||
-        (url.protocol === "http:" &&
-          new URL(serverBaseUrl()).protocol === "http:")) &&
-      !url.username &&
-      !url.password
-    );
-  } catch {
-    return false;
-  }
 }
 export function isMediaInfo(value: unknown): value is MediaInfo {
   return (
@@ -84,26 +70,12 @@ export function isUploadTicket(value: unknown): value is UploadTicket {
     )
   )
     return false;
-  try {
-    const url = new URL(upload.url);
-    return (
-      (url.protocol === "https:" ||
-        (url.protocol === "http:" &&
-          new URL(serverBaseUrl()).protocol === "http:")) &&
-      !url.username &&
-      !url.password
-    );
-  } catch {
-    return false;
-  }
+  return isFileLink(upload, serverBaseUrl());
 }
 export function mediaPath(path: unknown): { id: string; path: string } | null {
   if (typeof path !== "string") return null;
-  const match =
-    /^\/(?:[a-z0-9_-]+\/)*api\/media\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/file$/iu.exec(
-      path,
-    );
-  return match?.[1] ? { id: match[1], path } : null;
+  const parsed = mediaFilePath(path);
+  return parsed?.kind === "media" ? { id: parsed.id, path } : null;
 }
 export function isCompletedMedia(value: unknown): value is CompletedMedia {
   return (
@@ -236,38 +208,28 @@ export function attachmentLink(href: string, title: string, base: string) {
 
 /** Only canonical attachment URLs belonging to this application. */
 export function managedMediaLink(href: string, base: string) {
-  try {
-    const url = new URL(href, base);
-    const root = new URL(base);
-    const parsed = mediaPath(url.pathname);
-    return parsed &&
-      url.origin === root.origin &&
-      !url.username &&
-      !url.password &&
-      !url.search &&
-      !url.hash &&
-      url.pathname === new URL(`api/media/${parsed.id}/file`, root).pathname
-      ? parsed
-      : null;
-  } catch {
-    return null;
-  }
+  const parsed = mediaFileUrl(href, base);
+  return parsed?.kind === "media" &&
+    parsed.base === new URL(base).href &&
+    !parsed.url.search
+    ? { id: parsed.id, path: parsed.url.pathname }
+    : null;
 }
 
 export const previewLimit = 1024 * 1024;
-// Read a bounded document only after a click; original bytes stay in S3.
+// Read a bounded document only after a click, through the managed byte cache.
 export async function documentSource(
   path: string,
   signal: AbortSignal,
 ): Promise<string> {
+  const base = serverBaseUrl();
+  const file = mediaFileUrl(path, base);
+  if (file?.kind !== "media" || file.base !== base)
+    throw new Error("Invalid attachment URL.");
   const cancellation = requestAbort(15000, signal);
   try {
-    const response = await fetch(new URL(path, serverBaseUrl()), {
-      credentials:
-        new URL(path, serverBaseUrl()).origin ===
-        new URL(serverBaseUrl()).origin
-          ? "include"
-          : "omit",
+    const response = await fetch(file.url, {
+      credentials: "include",
       cache: "no-store",
       signal: cancellation.signal,
     });

@@ -8,7 +8,6 @@ import {
   attachmentLink,
   isCompletedMedia,
   isMediaInfo,
-  isFileLink,
   managedMediaLink,
   isUploadTicket,
   mediaMarkdown,
@@ -35,56 +34,20 @@ const ticket = {
   },
 };
 
-test("signed file links validate destinations and request fresh authorized download URLs", async (t) => {
-  const original = globalThis.document;
+test.before(() => {
   globalThis.document = { baseURI: "https://chat.example.com/commonroom/" };
-  t.after(() => {
-    globalThis.document = original;
-  });
-  for (const url of [
-    "javascript:alert(1)",
-    "data:text/html,test",
-    "https://user:password@storage.test/file",
-    "http://storage.test/file",
-    "not a URL",
-  ])
-    assert.equal(isFileLink({ url }), false, url);
-  const url = "https://storage.test/file?X-Amz-Signature=test";
-  assert.equal(isFileLink({ url }), true);
-  const requests = [];
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    requests.push({ url: String(url), options });
-    return Response.json({
-      url: "https://storage.test/file?X-Amz-Signature=test",
-    });
-  });
-  const signal = new AbortController().signal;
-  assert.deepEqual(await api.fileLink("media", id, true, signal), { url });
-  await api.fileLink("avatars", id, false, signal);
-  assert.equal(
-    requests[0].url,
-    `https://chat.example.com/commonroom/api/media/${id}/link?download=true`,
-  );
-  assert.equal(
-    requests[1].url,
-    `https://chat.example.com/commonroom/api/avatars/${id}/link`,
-  );
-  assert.equal(requests[0].options.credentials, "include");
-  assert.equal(requests[0].options.cache, "no-store");
 });
 
-test("signed document previews omit credentials when fetching storage bytes", async (t) => {
-  t.mock.method(globalThis, "fetch", async (_url, options) => {
-    assert.equal(options.credentials, "omit");
-    return new Response("remote preview");
-  });
-  assert.equal(
-    await documentSource(
+test("document previews reject direct storage links before sending a request", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch");
+  await assert.rejects(
+    documentSource(
       "https://storage.test/file?signature=test",
       new AbortController().signal,
     ),
-    "remote preview",
+    /Invalid attachment URL/u,
   );
+  assert.equal(fetch.mock.callCount(), 0);
 });
 
 test("media responses reject unsafe destinations and preserve base paths", () => {
@@ -144,7 +107,7 @@ test("media API sends cookies only to CommonRoom and validates completion", asyn
     hints: {},
   });
   assert.equal(calls[1].options.credentials, "include");
-  assert.equal(calls[1].options.cache, "no-store");
+  assert.equal(calls[1].options.cache, "default");
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ ...media, path: "https://evil.test" }));
   await assert.rejects(
@@ -282,14 +245,11 @@ test("document previews bound streaming bytes, reject invalid UTF-8, and release
         },
       }),
     );
-  await assert.rejects(
-    documentSource("/api/media/file", controller.signal),
-    /1 MiB/,
-  );
+  await assert.rejects(documentSource(media.path, controller.signal), /1 MiB/);
   assert.equal(cancelled, true);
   globalThis.fetch = async () => new Response(new Uint8Array([0xff]));
   await assert.rejects(
-    documentSource("/api/media/file", controller.signal),
+    documentSource(media.path, controller.signal),
     /encoded data/,
   );
   globalThis.fetch = async (_url, options) => {
@@ -298,7 +258,7 @@ test("document previews bound streaming bytes, reject invalid UTF-8, and release
     return new Response("<html>preview</html>");
   };
   assert.equal(
-    await documentSource("/api/media/file", controller.signal),
+    await documentSource(media.path, controller.signal),
     "<html>preview</html>",
   );
 });
