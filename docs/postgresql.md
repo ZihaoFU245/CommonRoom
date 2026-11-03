@@ -158,8 +158,7 @@ Optional `database.postgres_pool` settings tune the connection budget:
       "max_readers": 8,
       "max_writers": 8,
       "idle_timeout_seconds": 600
-    },
-    "history_cache": { "max_bytes": "32m", "max_messages": 10000 }
+    }
   }
 }
 ```
@@ -185,13 +184,13 @@ smaller connection budget; pool acquisition still times out after five seconds.
 Pool sizing does not cap total PostgreSQL or chat memory: PostgreSQL server memory
 settings and chat's history/cache limits must be considered separately.
 
-`database.history_cache` applies to both backends and defaults to 32 MiB of
-conservative page accounting and 10,000 message entries. `max_bytes` accepts binary
-`k`/`m`/`g` units from `4k` to `1g`; `max_messages` accepts 4–100,000. Four shards
-each receive one quarter of each budget, rounded down. The fixed 1,000-entry
-per-conversation limit, 256-page limit and separate 4,096-entry unread cache still
-apply. Response-held pages, metadata, SQLx and PostgreSQL allocations are additional
-memory. Recovery clears cached pages while retaining these configured limits.
+Application cache settings live under `server.cache`, independently of the
+backend. History defaults to 32 MiB, 10,000 message entries, 256 pages and 1,000
+entries per conversation; unread and snapshot budgets are configurable too.
+See [Cache configuration](cache.md#read-reuse-and-committed-writes) for the full
+configuration, validation ranges and migration from `database.history_cache`.
+Response-held pages, metadata, SQLx and PostgreSQL allocations use additional
+memory. Recovery clears cached pages while retaining configured limits.
 
 Su-only `/system configs` shows active configuration as Markdown-fenced JSON.
 `/system metrics` shows lifetime counters and effective cache limits, plus

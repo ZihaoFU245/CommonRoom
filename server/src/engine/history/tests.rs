@@ -1158,15 +1158,23 @@ fn each_cache_shard_enforces_its_share_of_bytes_pages_and_lru() {
     assert_eq!(cache.pages.len(), 256 / CACHE_SHARDS);
     assert_eq!(cache.bytes, 0);
     assert_eq!(cache.messages, 0);
+    cache.per_conversation = 2;
+    cache.insert(make("bounded".into(), 1, 3, 0));
+    assert!(!cache.pages.iter().any(|p| p.conversation == "bounded"));
+    assert_eq!(cache.metrics.conversation_evictions, 1);
 }
 #[test]
 fn configured_cache_limits_evict_pages_and_survive_recovery() {
     let mut engine = super::super::tests::engine();
     let history = engine.history_store().clone();
     history
-        .configure_cache(&crate::config::HistoryCacheConfig {
-            max_bytes: 32 * 1024,
-            max_messages: 8,
+        .configure_cache(&crate::config::CacheConfig {
+            history: crate::config::HistoryCacheConfig {
+                max_bytes: 32 * 1024,
+                max_messages: 8,
+                ..Default::default()
+            },
+            ..Default::default()
         })
         .unwrap();
     for _ in 0..6 {
@@ -1576,4 +1584,65 @@ fn bounded_page_lookup_benchmark() {
         cache.pages.len(),
         start.elapsed().as_nanos() / 100_000
     );
+}
+
+#[test]
+fn configured_page_conversation_and_unread_limits_are_enforced_and_recovered() {
+    let engine = super::super::tests::engine();
+    let history = engine.history_store();
+    history
+        .configure_cache(&crate::config::CacheConfig {
+            history: crate::config::HistoryCacheConfig {
+                max_pages: 8,
+                per_conversation: 2,
+                ..Default::default()
+            },
+            unread_entries: 8,
+            ..Default::default()
+        })
+        .unwrap();
+    let make = |conversation: &str| CachedPage {
+        conversation: conversation.into(),
+        revision: 1,
+        range: HistoryRange::default(),
+        messages: MessagePage::new(Vec::new(), Vec::new()),
+        bytes: 0,
+        before: false,
+        after: false,
+    };
+    {
+        let mut cache = history.cache[0].lock().unwrap();
+        for conversation in ["one", "two", "three"] {
+            cache.insert(make(conversation));
+        }
+        assert_eq!(cache.pages.len(), 2);
+        assert_eq!(cache.metrics.page_evictions, 1);
+        assert_eq!(cache.per_conversation, 2);
+    }
+    {
+        let mut cache = history.unread_cache[0].lock().unwrap();
+        for conversation in ["one", "two", "three"] {
+            cache.insert(
+                conversation,
+                "bob",
+                0,
+                1,
+                Unread {
+                    count: 1,
+                    first: Some(1),
+                    through: 1,
+                    oldest: 1,
+                    revision: 1,
+                },
+            );
+        }
+        assert_eq!(cache.recency.len(), 2);
+        assert_eq!(cache.evictions, 1);
+    }
+    history.reset_after_recovery().unwrap();
+    let stats = history.stats().unwrap();
+    assert_eq!(stats["page_limit"], 8);
+    assert_eq!(stats["per_conversation_limit"], 2);
+    assert_eq!(stats["unread_entry_limit"], 8);
+    assert_eq!(history.unread_cache[0].lock().unwrap().entry_limit, 2);
 }

@@ -274,3 +274,13 @@ async fn registered_parameter_routes_keep_their_base_path_and_bound_unknown_labe
     assert_eq!(stats["routes"].as_object().unwrap().len(), 2);
     assert!(!stats.to_string().contains("secret"));
 }
+
+#[test]
+fn histogram_boundaries_put_every_duration_in_exactly_one_bucket() {
+    assert_eq!(duration_bucket(0), 0);
+    for (index, limit) in DURATION_LIMITS_US.iter().enumerate() {
+        assert_eq!(duration_bucket(*limit), index);
+        assert_eq!(duration_bucket(*limit + 1), index + 1);
+    }
+    assert_eq!(duration_bucket(u64::MAX), 8);
+}

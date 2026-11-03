@@ -36,8 +36,8 @@ struct Route {
     server_errors: AtomicU64,
     total_us: AtomicU64,
     max_us: AtomicU64,
-    // Non-cumulative buckets: <=10ms, <=50ms, <=250ms, <=1s, <=5s, >5s.
-    duration_buckets: [AtomicU64; 6],
+    // Non-cumulative; one relaxed atomic increment per completed request.
+    duration_buckets: [AtomicU64; 9],
 }
 impl Route {
     fn snapshot(&self) -> Option<Value> {
@@ -77,6 +77,15 @@ impl Registry {
             .or_default();
         path
     }
+}
+pub(crate) const DURATION_LIMITS_US: [u64; 8] = [
+    500, 1_000, 5_000, 10_000, 50_000, 250_000, 1_000_000, 5_000_000,
+];
+fn duration_bucket(us: u64) -> usize {
+    DURATION_LIMITS_US
+        .iter()
+        .position(|limit| us <= *limit)
+        .unwrap_or(DURATION_LIMITS_US.len())
 }
 pub(crate) fn increment(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
@@ -177,10 +186,7 @@ impl Drop for Request {
             let us = u64::try_from(self.start.elapsed().as_micros()).unwrap_or(u64::MAX);
             add_duration(&route.total_us, us);
             route.max_us.fetch_max(us, Ordering::Relaxed);
-            let bucket = [10_000, 50_000, 250_000, 1_000_000, 5_000_000]
-                .iter()
-                .position(|limit| us <= *limit)
-                .unwrap_or(5);
+            let bucket = duration_bucket(us);
             increment(&route.duration_buckets[bucket]);
             increment(&route.completed);
         } else {

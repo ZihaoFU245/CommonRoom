@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+mod strict_json;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -36,6 +37,7 @@ pub struct ServerConfig {
     pub write_timeout_seconds: u64,
     pub request_timeout_seconds: u64,
     pub ordering_timeout_seconds: u64,
+    pub cache: CacheConfig,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -52,11 +54,13 @@ impl Default for ServerConfig {
             write_timeout_seconds: 30,
             request_timeout_seconds: 120,
             ordering_timeout_seconds: 5,
+            cache: CacheConfig::default(),
         }
     }
 }
 impl ServerConfig {
     fn validate(&self) -> Result<(), String> {
+        self.cache.validate()?;
         for (name, value, maximum) in [
             ("max_http_connections", self.max_http_connections, 16384),
             ("http_per_account", self.http_per_account, 256),
@@ -97,8 +101,6 @@ pub struct DatabaseConfig {
     pub backend: DatabaseBackend,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres_pool: Option<PostgresPoolConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub history_cache: Option<HistoryCacheConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,16 +109,68 @@ pub struct HistoryCacheConfig {
     #[serde(with = "byte_size")]
     pub max_bytes: u64,
     pub max_messages: usize,
+    pub max_pages: usize,
+    pub per_conversation: usize,
 }
 impl Default for HistoryCacheConfig {
     fn default() -> Self {
         Self {
             max_bytes: 32 * 1024 * 1024,
             max_messages: 10_000,
+            max_pages: 256,
+            per_conversation: 1000,
         }
     }
 }
 
+/// Application cache budgets, independent of the database backend. Restart required.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheConfig {
+    pub history: HistoryCacheConfig,
+    pub unread_entries: usize,
+    pub snapshots: SnapshotCacheConfig,
+}
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            history: HistoryCacheConfig::default(),
+            unread_entries: 4096,
+            snapshots: SnapshotCacheConfig::default(),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnapshotCacheConfig {
+    #[serde(with = "byte_size")]
+    pub max_bytes: u64,
+    pub max_entries: usize,
+}
+impl Default for SnapshotCacheConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: 32 * 1024 * 1024,
+            max_entries: 128,
+        }
+    }
+}
+impl CacheConfig {
+    fn validate(&self) -> Result<(), String> {
+        let history = &self.history;
+        if !(4096..=1024 * 1024 * 1024).contains(&history.max_bytes)
+            || !(4..=100_000).contains(&history.max_messages)
+            || !(4..=4096).contains(&history.max_pages)
+            || !(1..=100_000).contains(&history.per_conversation)
+            || !(4..=100_000).contains(&self.unread_entries)
+            || !(4096..=1024 * 1024 * 1024).contains(&self.snapshots.max_bytes)
+            || !(1..=4096).contains(&self.snapshots.max_entries)
+        {
+            return Err("server.cache requires history max_bytes 4k..1g, max_messages 4..100000, max_pages 4..4096, per_conversation 1..100000; unread_entries 4..100000; snapshots max_bytes 4k..1g and max_entries 1..4096.".into());
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PostgresPoolConfig {
@@ -146,12 +200,6 @@ impl DatabaseConfig {
             || !(1..=86_400).contains(&pool.idle_timeout_seconds)
         {
             return Err("database.postgres_pool requires 0 <= min_readers <= max_readers <= 64, positive max_readers, 1 <= max_writers <= 32 and 1 <= idle_timeout_seconds <= 86400.".into());
-        }
-        let cache = self.history_cache.clone().unwrap_or_default();
-        if !(4096..=1024 * 1024 * 1024).contains(&cache.max_bytes)
-            || !(4..=100_000).contains(&cache.max_messages)
-        {
-            return Err("database.history_cache requires 4k <= max_bytes <= 1g and 4 <= max_messages <= 100000.".into());
         }
         Ok(())
     }
@@ -303,6 +351,36 @@ impl Default for Config {
     }
 }
 impl Config {
+    /// Normalize the previous cache location before strict typed validation.
+    fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let strict_json::UniqueValue(mut value) =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let legacy = value
+            .get_mut("database")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|database| database.remove("history_cache"));
+        if let Some(legacy) = legacy.filter(|v| !v.is_null()) {
+            let root = value
+                .as_object_mut()
+                .ok_or("Configuration must be an object.")?;
+            let server = root
+                .entry("server")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or("server must be an object.")?;
+            let cache = server
+                .entry("cache")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or("server.cache must be an object.")?;
+            if cache.contains_key("history") {
+                return Err("Use only server.cache.history; remove database.history_cache when both are present.".into());
+            }
+            cache.insert("history".into(), legacy);
+        }
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
     /// Wildcard browser access still requires a concrete, supported web origin.
     pub(crate) fn allows_origin(&self, origin: &str) -> bool {
         valid_origin(origin, self.production)
@@ -315,8 +393,7 @@ impl Config {
     /// selected database/folder owner must be acquired before settings are saved.
     pub fn read_database(data: &std::path::Path) -> Result<DatabaseConfig, String> {
         match std::fs::read(data.join("config.json")) {
-            Ok(bytes) => serde_json::from_slice::<Self>(&bytes)
-                .map_err(|error| error.to_string())
+            Ok(bytes) => Self::parse(&bytes)
                 .and_then(|config| {
                     config.database.validate()?;
                     config.server.validate()?;
@@ -356,10 +433,7 @@ impl Config {
             Err(error) => return Err(error.to_string()),
         };
         let saved: Option<Self> = if let Some(bytes) = raw.as_ref() {
-            Some(
-                serde_json::from_slice(bytes)
-                    .map_err(|e| format!("Invalid data/config.json: {e}"))?,
-            )
+            Some(Self::parse(bytes).map_err(|e| format!("Invalid data/config.json: {e}"))?)
         } else {
             None
         };
@@ -624,6 +698,7 @@ mod tests {
             write_timeout_seconds: 20,
             request_timeout_seconds: 130,
             ordering_timeout_seconds: 2,
+            ..Default::default()
         };
         std::fs::write(&path, serde_json::json!({"server":limits}).to_string()).unwrap();
         assert_eq!(Config::load(dir.path()).unwrap().server, limits);
@@ -674,15 +749,77 @@ mod tests {
             assert!(Config::load(directory.path()).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
         }
-        let selected: DatabaseConfig = serde_json::from_value(
-            serde_json::json!({"history_cache":{"max_bytes":"8m","max_messages":2000}}),
+        let selected = Config::parse(
+            br#"{"database":{"history_cache":{"max_bytes":"8m","max_messages":2000}}}"#,
         )
         .unwrap();
-        selected.validate().unwrap();
-        assert_eq!(
-            serde_json::to_value(selected).unwrap()["history_cache"]["max_bytes"],
-            "8m"
+        selected.server.validate().unwrap();
+        let saved = serde_json::to_value(selected).unwrap();
+        assert_eq!(saved["server"]["cache"]["history"]["max_bytes"], "8m");
+        assert!(saved["database"].get("history_cache").is_none());
+    }
+    #[test]
+    fn duplicate_configuration_keys_are_rejected_before_migration_or_rewriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for raw in [
+            r#"{"server":{"io_jobs":8,"io_jobs":64}}"#,
+            r#"{"server":{},"server":{}}"#,
+            r#"{"server":{"cache":{"history":{"max_bytes":"8m","max_bytes":"32m"}}}}"#,
+            r#"{"database":{"history_cache":{"max_bytes":"8m","max_bytes":"32m"}}}"#,
+            r#"{"server":{"io_jobs":8,"io_\u006aobs":64}}"#,
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            let error = Config::read_database(directory.path()).unwrap_err();
+            assert!(error.contains("Duplicate configuration key"), "{error}");
+            assert!(Config::load(directory.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), raw.as_bytes());
+        }
+        let config = Config::parse(br#"{"database":{"history_cache":{"max_bytes":"8m"}},"server":{"cache":{"unread_entries":80}}}"#).unwrap();
+        assert_eq!(config.server.cache.history.max_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.server.cache.unread_entries, 80);
+    }
+    #[test]
+    fn server_cache_settings_validate_migrate_and_preserve_invalid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for cache in [
+            serde_json::json!({"history":{"max_bytes":"1k"}}),
+            serde_json::json!({"history":{"max_messages":3}}),
+            serde_json::json!({"history":{"max_pages":3}}),
+            serde_json::json!({"history":{"max_pages":4097}}),
+            serde_json::json!({"history":{"per_conversation":0}}),
+            serde_json::json!({"unread_entries":3}),
+            serde_json::json!({"snapshots":{"max_bytes":"2g"}}),
+            serde_json::json!({"snapshots":{"max_entries":0}}),
+            serde_json::json!({"unknown":1}),
+        ] {
+            let bytes = serde_json::to_vec(&serde_json::json!({"server":{"cache":cache}})).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(Config::read_database(directory.path()).is_err());
+            assert!(Config::load(directory.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let legacy = br#"{"database":{"history_cache":{"max_bytes":"8m","max_messages":2000}}}"#;
+        std::fs::write(&path, legacy).unwrap();
+        let selected = Config::read_database(directory.path()).unwrap();
+        let loaded = Config::load_for_database(directory.path(), &selected).unwrap();
+        assert_eq!(loaded.server.cache.history.max_bytes, 8 * 1024 * 1024);
+        assert_eq!(loaded.server.cache.unread_entries, 4096);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved["database"].get("history_cache").is_none());
+        assert_eq!(saved["server"]["cache"]["history"]["max_messages"], 2000);
+        assert!(
+            Config::parse(
+                br#"{"database":{"history_cache":{}},"server":{"cache":{"history":{}}}}"#
+            )
+            .is_err()
         );
+        let config = Config::parse(br#"{"server":{"cache":{"history":{"max_pages":20,"per_conversation":40},"unread_entries":80,"snapshots":{"max_bytes":"4m","max_entries":16}}}}"#).unwrap();
+        config.server.validate().unwrap();
+        assert_eq!(config.server.cache.history.max_pages, 20);
+        assert_eq!(config.server.cache.snapshots.max_entries, 16);
     }
     #[test]
     fn database_selection_defaults_legacy_configs_and_rejects_secrets_without_rewriting() {
@@ -839,7 +976,6 @@ mod tests {
             database: DatabaseConfig {
                 backend: DatabaseBackend::Postgres,
                 postgres_pool: None,
-                history_cache: None,
             },
             server: ServerConfig::default(),
             media: MediaConfig::default(),

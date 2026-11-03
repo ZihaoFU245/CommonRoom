@@ -43,8 +43,11 @@ The offline transfer contract explicitly requires HEAD SQLite v20 and checks the
 PostgreSQL v1 marker, retained data and unchanged source bytes. Other schema
 versions (including PostgreSQL v2) are rejected unchanged. Idle-pool coverage reclaims
 readers to zero while preserving the writer floor and dedicated ownership.
-Ordinary tests verify cache tuning survives recovery, invalid tuning preserves
-saved configuration, and pool acquisition diagnostics count successes/timeouts.
+Ordinary tests verify server cache migration/validation and duplicate-key rejection,
+configured page/unread/snapshot eviction, histogram boundaries, percentage and
+p95-bound reports, complete Markdown/text counters and empty timing samples.
+Cache tuning survives recovery, invalid tuning preserves saved configuration,
+and pool acquisition diagnostics count successes/timeouts.
 
 Cache publication contracts run on both backends and require committed native
 appends/edits/reactions to refresh warmed pages without another history read.

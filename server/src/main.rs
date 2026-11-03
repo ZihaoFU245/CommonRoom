@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_for_database(Path::new(&data_dir), &database)?;
     engine
         .history_store()
-        .configure_cache(&config.database.history_cache.clone().unwrap_or_default())?;
+        .configure_cache(&config.server.cache)?;
     let media = media::MediaStorage::from_config(config.production, config.s3.as_ref())?;
     if media.as_ref().is_some_and(|storage| {
         config
@@ -139,7 +139,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         password_jobs: Arc::new(tokio::sync::Semaphore::new(usize::try_from(
             limits.password_jobs,
         )?)),
-        snapshots: Default::default(),
+        snapshots: Arc::new(std::sync::Mutex::new(web::snapshots::SnapshotCache::new(
+            limits.cache.snapshots.clone(),
+        ))),
         mutations: Arc::new(web::mutations::Coordinator::new(
             std::time::Duration::from_secs(limits.ordering_timeout_seconds),
         )),

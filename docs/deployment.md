@@ -178,7 +178,7 @@ Limits are positive integers. Lowering an account or room limit preserves existi
 but blocks new creation until usage is below it. Lowering `max_messages` also trims
 retained history at the next start. The in-memory page caches default to 1,000 entries per
 conversation and 10,000 entries / 32 MiB globally, independently of `max_messages`.
-Tune global cache budgets with `database.history_cache` and PostgreSQL idle
+Tune global cache budgets with `server.cache.history` and PostgreSQL idle
 reclamation with `database.postgres_pool.idle_timeout_seconds`; see
 [PostgreSQL](postgresql.md#runtime-and-backups). Hard
 ceilings are 256 users, 1,024 rooms, and 1,000,000 retained messages; larger values are

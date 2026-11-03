@@ -15,6 +15,7 @@ struct Baseline {
 type Value = Arc<OnceCell<Result<Baseline, SnapshotError>>>;
 #[derive(Default)]
 pub struct SnapshotCache {
+    limits: crate::config::SnapshotCacheConfig,
     entries: HashMap<Key, (Value, usize)>,
     order: VecDeque<Key>,
     bytes: usize,
@@ -27,10 +28,17 @@ pub struct SnapshotCache {
     evictions: u64,
 }
 impl SnapshotCache {
+    pub(crate) fn new(limits: crate::config::SnapshotCacheConfig) -> Self {
+        Self {
+            limits,
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn stats(&self) -> serde_json::Value {
         serde_json::json!({"hits":self.hits,"misses":self.misses,"coalesced":self.coalesced,
             "builds":self.builds,"failures":self.failures,"incomplete":self.incomplete,"evictions":self.evictions,
-            "entries":self.entries.len(),"bytes":self.bytes,"entry_limit":128,"byte_limit":32*1024*1024})
+            "entries":self.entries.len(),"bytes":self.bytes,"entry_limit":self.limits.max_entries,"byte_limit":self.limits.max_bytes})
     }
     fn claim(&mut self, key: &Key) -> Value {
         if let Some((value, _)) = self.entries.get(key) {
@@ -67,7 +75,9 @@ impl SnapshotCache {
         self.trim();
     }
     fn trim(&mut self) {
-        while self.bytes > 32 * 1024 * 1024 || self.entries.len() > 128 {
+        while u64::try_from(self.bytes).unwrap_or(u64::MAX) > self.limits.max_bytes
+            || self.entries.len() > self.limits.max_entries
+        {
             if let Some(key) = self.order.pop_front() {
                 if let Some((_, size)) = self.entries.remove(&key) {
                     self.bytes -= size;
@@ -358,6 +368,32 @@ async fn cached<F: std::future::Future<Output = Result<(String, bool), SnapshotE
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn configured_snapshot_limits_evict_entries_and_oversized_frames() {
+        let app = crate::web::tests::login_test_app();
+        let stamp = app
+            .engine_read()
+            .unwrap()
+            .snapshot_stamp("alice", false)
+            .unwrap();
+        let mut cache = SnapshotCache::new(crate::config::SnapshotCacheConfig {
+            max_bytes: 4096,
+            max_entries: 1,
+        });
+        let first = ("alice".into(), false, stamp.clone(), 0, false);
+        let second = ("bob".into(), false, stamp, 0, false);
+        let value = cache.claim(&first);
+        cache.finish(&first, &value, 1024);
+        assert_eq!(cache.stats()["bytes"], 1024);
+        let value = cache.claim(&second);
+        assert!(!cache.entries.contains_key(&first));
+        assert_eq!(cache.stats()["evictions"], 1);
+        cache.finish(&second, &value, 4097);
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.stats()["bytes"], 0);
+        assert_eq!(cache.stats()["byte_limit"], 4096);
+        assert_eq!(cache.stats()["entry_limit"], 1);
+    }
     #[tokio::test]
     async fn cancelling_a_cache_builder_releases_waiters_and_allows_a_new_fill() {
         let app = crate::web::tests::login_test_app();

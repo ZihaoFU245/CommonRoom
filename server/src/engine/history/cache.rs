@@ -91,6 +91,8 @@ pub(super) struct Cache {
     pub(super) bytes: usize,
     pub(super) byte_limit: usize,
     pub(super) message_limit: usize,
+    pub(super) page_limit: usize,
+    pub(super) per_conversation: usize,
     pub(super) metrics: CacheMetrics,
 }
 impl Default for Cache {
@@ -106,6 +108,8 @@ impl Cache {
             bytes: 0,
             byte_limit,
             message_limit,
+            page_limit: 256 / CACHE_SHARDS,
+            per_conversation: ROOM_CACHE_MESSAGES,
             metrics: CacheMetrics::default(),
         }
     }
@@ -155,7 +159,7 @@ impl Cache {
             .filter(|p| p.conversation == id)
             .map(|p| p.messages.len())
             .sum::<usize>()
-            > ROOM_CACHE_MESSAGES
+            > self.per_conversation
         {
             if let Some(i) = self.pages.iter().position(|p| p.conversation == id) {
                 self.remove(i);
@@ -166,7 +170,7 @@ impl Cache {
         }
         while self.messages > self.message_limit
             || self.bytes > self.byte_limit
-            || self.pages.len() > 256 / CACHE_SHARDS
+            || self.pages.len() > self.page_limit
         {
             if self.bytes > self.byte_limit {
                 self.metrics.byte_evictions += 1;
@@ -186,8 +190,8 @@ pub(super) struct UnreadEntry {
     pub(super) unread: Unread,
     pub(super) used: u64,
 }
-#[derive(Default)]
 pub(super) struct UnreadCache {
+    pub(super) entry_limit: usize,
     pub(super) entries:
         std::collections::HashMap<String, std::collections::HashMap<String, UnreadEntry>>,
     pub(super) recency: BTreeMap<u64, (String, String)>,
@@ -196,6 +200,20 @@ pub(super) struct UnreadCache {
     pub(super) misses: u64,
     pub(super) evictions: u64,
     pub(super) carried: u64,
+}
+impl Default for UnreadCache {
+    fn default() -> Self {
+        Self {
+            entry_limit: UNREAD_ENTRIES_PER_SHARD,
+            entries: Default::default(),
+            recency: Default::default(),
+            clock: 0,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            carried: 0,
+        }
+    }
 }
 impl UnreadCache {
     pub(super) fn get(&mut self, id: &str, user: &str, read: u64, revision: u64) -> Option<Unread> {
@@ -247,7 +265,7 @@ impl UnreadCache {
             },
         );
         self.recency.insert(self.clock, (id.into(), user.into()));
-        while self.recency.len() > UNREAD_ENTRIES_PER_SHARD {
+        while self.recency.len() > self.entry_limit {
             if let Some((_, (id, user))) = self.recency.pop_first()
                 && let Some(users) = self.entries.get_mut(&id)
             {

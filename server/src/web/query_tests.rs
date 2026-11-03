@@ -94,14 +94,22 @@ async fn contract(mut app: App) {
         .await
         .unwrap();
     assert!(metrics.starts_with("# System metrics"));
-    assert!(metrics.contains("| `readers.open` |"));
+    assert!(metrics.contains("## Database pools"));
+    assert!(metrics.contains("## Reliability"));
+    assert!(metrics.contains("## Capacity utilization"));
+    assert!(metrics.contains("## HTTP route summary"));
+    assert!(metrics.contains("%"));
+    let raw_metrics = command(&app, "bob", None, "/sudo /system metrics --txt")
+        .await
+        .unwrap();
     for key in [
+        "readers.open",
         "io_jobs_limit",
         "admission.http.rejections.io",
         "admission.http.connections.peak",
         "ordering.metadata.completed",
     ] {
-        assert!(metrics.contains(&format!("| `{key}` |")), "{key}");
+        assert!(raw_metrics.contains(&format!("{key}:")), "{key}");
     }
     assert!(command(&app, "bob", None, "/system").await.is_err());
     assert!(
@@ -221,7 +229,7 @@ async fn system_accepts_global_command_grants_and_tracks_revocation() {
         command(&app, "alice", None, "/system metrics")
             .await
             .unwrap()
-            .contains("Snapshot cache")
+            .contains("Snapshot reuse rate")
     );
     assert!(
         command(&app, "alice", None, "/system configs")
