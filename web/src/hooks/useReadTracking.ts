@@ -281,15 +281,17 @@ export function useReadTracking({
     const readIdentity = identity;
     readBusy.current = true;
     try {
-      await api.read(view, through);
+      const acknowledged = await api.read(view, through).then(
+        () => true,
+        () => false,
+      );
+      if (!acknowledged) return; // Retry on the next snapshot, focus, or scroll.
       readSent.current.delete(readIdentity);
       readSent.current.set(readIdentity, through);
       if (readSent.current.size > 32) {
         const oldest = readSent.current.keys().next().value;
         if (oldest !== undefined) readSent.current.delete(oldest);
       }
-    } catch {
-      /* Retry on the next snapshot, focus, or scroll. */
     } finally {
       readBusy.current = false;
       if (readQueued.current && mounted.current) {

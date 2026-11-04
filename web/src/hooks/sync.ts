@@ -24,20 +24,22 @@ export function snapshotSync<T>(
       const started = generation;
       pending = Promise.resolve()
         .then(fetchSnapshot)
-        .then((snapshot) => {
-          if (
-            !active ||
-            generation !== started ||
-            (current !== undefined && isOlder(snapshot, current))
-          )
-            return;
-          current = snapshot;
-          generation++;
-          applySnapshot(snapshot, true);
-        })
-        .catch((error) => {
-          if (active && generation === started) onError(error);
-        })
+        .then(
+          (snapshot) => {
+            if (
+              !active ||
+              generation !== started ||
+              (current !== undefined && isOlder(snapshot, current))
+            )
+              return;
+            current = snapshot;
+            generation++;
+            applySnapshot(snapshot, true);
+          },
+          (error: unknown) => {
+            if (active && generation === started) onError(error);
+          },
+        )
         .finally(() => {
           pending = null;
         });

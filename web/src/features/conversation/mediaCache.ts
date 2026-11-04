@@ -11,6 +11,24 @@ const fillLimit = 4;
 // Bound cloned response bodies waiting for serialized Cache writes as well as disk use.
 const fillByteLimit = 256 * 1024 * 1024;
 
+// Cache maintenance is optional for a live response. Only browser storage and
+// background cancellation failures may be ignored; programming failures escape
+// through the worker event's lifetime promise.
+function ignoreStorageFailure(error: unknown): void {
+  if (
+    error instanceof DOMException &&
+    [
+      "SecurityError",
+      "QuotaExceededError",
+      "UnknownError",
+      "AbortError",
+      "TimeoutError",
+    ].includes(error.name)
+  )
+    return;
+  throw error;
+}
+
 // Coordinate disk budgets across worker replacement and other same-origin tabs.
 // Older/storage-limited browsers retain the instance's serialized write fallback.
 function maintain(work: () => Promise<void>): Promise<void> {
@@ -88,18 +106,23 @@ function metadata(value: unknown): value is Metadata {
 }
 // Cached bytes are disposable. Reject incompatible records without decoding or
 // buffering their bodies; current authorization supplies presentation headers.
-function cachedSize(response: Response): number | undefined {
+interface CachedFile {
+  body: ReadableStream<Uint8Array>;
+  size: number;
+}
+function cachedFile(response: Response): CachedFile | undefined {
   const length = response.headers.get("Content-Length") ?? "";
   const size = Number(length);
+  const body = response.body;
   return response.status === 200 &&
-    response.body !== null &&
+    body !== null &&
     /^[1-9]\d*$/u.test(length) &&
     Number.isSafeInteger(size) &&
     size <= byteLimit &&
     !!response.headers.get("Content-Type") &&
     !response.headers.has("Content-Range") &&
     !response.headers.has("Content-Encoding")
-    ? size
+    ? { body, size }
     : undefined;
 }
 function headers(info: Metadata, download: boolean): Headers {
@@ -117,6 +140,46 @@ function headers(info: Metadata, download: boolean): Headers {
     "Accept-Ranges": "bytes",
   });
 }
+/** Cache reads receive validated complete bytes, so range logic trusts their size. */
+function cachedResponse(
+  file: CachedFile,
+  output: Headers,
+  range: string | null,
+  signal: AbortSignal,
+): Response | undefined {
+  if (!range) {
+    output.set("Content-Length", String(file.size));
+    return new Response(file.body, { headers: output });
+  }
+  const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
+  if (!match || (!match[1] && !match[2])) return undefined;
+  const start = match[1]
+    ? Number(match[1])
+    : Math.max(0, file.size - Number(match[2]));
+  const end =
+    match[1] && match[2]
+      ? Math.min(Number(match[2]), file.size - 1)
+      : file.size - 1;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start > end ||
+    start >= file.size
+  ) {
+    file.body.cancel().catch(() => {});
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": `bytes */${file.size}` },
+    });
+  }
+  output.set("Content-Length", String(end - start + 1));
+  output.set("Content-Range", `bytes ${start}-${end}/${file.size}`);
+  return new Response(rangeStream(file.body, start, end, signal), {
+    status: 206,
+    headers: output,
+  });
+}
+
 export class MediaCache {
   private writes: Promise<void> = Promise.resolve();
   private readonly fills = new Map<string, Fill>();
@@ -159,24 +222,27 @@ export class MediaCache {
     return fill;
   }
   private async read(cache: Cache, key: string, info: Metadata) {
-    const valid = (response: Response) =>
-      cachedSize(response) !== undefined &&
-      response.headers.get("Content-Type") === info.content_type;
+    const decode = (response: Response) =>
+      response.headers.get("Content-Type") === info.content_type
+        ? cachedFile(response)
+        : undefined;
     let saved = await cache.match(key);
-    if (!saved || valid(saved)) return saved;
+    let file = saved && decode(saved);
+    if (!saved || file) return file;
     saved.body?.cancel().catch(() => {});
     // Recheck under the write lock: another worker may have replaced the record.
     const work = this.writes.then(() =>
       maintain(async () => {
         saved = await cache.match(key);
-        if (!saved || valid(saved)) return;
+        file = saved && decode(saved);
+        if (!saved || file) return;
         saved.body?.cancel().catch(() => {});
         await cache.delete(key);
         this.forget(key);
         await this.storage
           .open(recencyCacheName)
           .then((recency) => recency.delete(key))
-          .catch(() => {});
+          .catch(ignoreStorageFailure);
         saved = undefined;
       }),
     );
@@ -184,7 +250,7 @@ export class MediaCache {
       this.index = null;
     });
     await work;
-    return saved;
+    return file;
   }
   // Reconcile keys across overlapping worker lifetimes, reusing known sizes.
   // Listing keys is cheap compared with reading every cached response on insert.
@@ -196,7 +262,7 @@ export class MediaCache {
       if (size === undefined) {
         const saved = await cache.match(key);
         if (!saved) continue;
-        size = cachedSize(saved);
+        size = cachedFile(saved)?.size;
         saved.body?.cancel().catch(() => {});
         if (size === undefined) {
           await cache.delete(key);
@@ -260,13 +326,14 @@ export class MediaCache {
             await recency.delete(record);
         }),
       )
-      .catch(() => {
+      .catch((error: unknown) => {
         if (this.persistedAt.get(key) === now) this.persistedAt.delete(key);
+        ignoreStorageFailure(error);
       })
       .finally(() => {
         this.recencyWrites.delete(key);
       });
-    this.writes = work;
+    this.writes = work.catch(() => {});
     keepAlive(work);
   }
   private async evict(
@@ -312,15 +379,46 @@ export class MediaCache {
       // Browser eviction and overlapping workers may leave orphaned metadata.
       for (const key of await recency.keys())
         if (!index.sizes.has(key.url)) await recency.delete(key);
-    } catch {
+    } catch (error) {
+      ignoreStorageFailure(error);
       /* Storage failure falls back to insertion order. */
     }
     for (const key of keys) {
       if (!needsSpace()) break;
       await cache.delete(key);
       this.forget(key);
-      await recency?.delete(key).catch(() => {});
+      await recency?.delete(key).catch(ignoreStorageFailure);
     }
+  }
+  private async download(
+    url: URL,
+    remote: boolean,
+    range: string | null,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    let source = url.href;
+    if (remote) {
+      const link = new URL(url.pathname.replace(/\/file$/u, "/link"), url);
+      if (url.searchParams.get("download") === "true")
+        link.searchParams.set("download", "true");
+      const response = await this.network(link, {
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      });
+      if (!response.ok) return new Response(null, { status: response.status });
+      const value: unknown = await response.json();
+      if (!isFileLink(value, url.href))
+        throw new TypeError("Invalid attachment download URL.");
+      source = value.url;
+    }
+    return this.network(source, {
+      credentials: remote ? "omit" : "same-origin",
+      cache: "no-store",
+      mode: "cors",
+      headers: range ? { Range: range } : {},
+      signal,
+    });
   }
   async respond(
     request: Request,
@@ -340,7 +438,8 @@ export class MediaCache {
     );
     if (!auth.ok) return new Response(null, { status: auth.status });
     const info: unknown = await auth.json();
-    if (!metadata(info)) return Response.error();
+    if (!metadata(info))
+      throw new TypeError("Invalid attachment metadata response.");
     if (info.expired === true) return new Response(null, { status: 410 });
     const output = headers(info, url.searchParams.get("download") === "true");
     const range = request.headers.get("Range");
@@ -361,52 +460,13 @@ export class MediaCache {
         reservation = this.reserve(key.href, info.size);
       }
     }
-    if (saved && !range) {
-      this.touch(key.href, keepAlive);
-      const size = saved.headers.get("Content-Length");
-      if (size) output.set("Content-Length", size);
-      const contentRange = saved.headers.get("Content-Range");
-      if (contentRange) output.set("Content-Range", contentRange);
-      return new Response(saved.body, {
-        status: contentRange ? 206 : 200,
-        headers: output,
-      });
-    }
-    // A fully cached object can satisfy later native player byte ranges.
-    if (range) {
-      const full = saved;
-      const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
-      if (full?.body && match && (match[1] || match[2])) {
+    if (saved) {
+      const hit = cachedResponse(saved, output, range, request.signal);
+      if (hit) {
         this.touch(key.href, keepAlive);
-        const fullSize =
-          Number(full.headers.get("Content-Length")) || info.size;
-        const start = match[1]
-          ? Number(match[1])
-          : Math.max(0, fullSize - Number(match[2]));
-        const end =
-          match[1] && match[2]
-            ? Math.min(Number(match[2]), fullSize - 1)
-            : fullSize - 1;
-        if (
-          !Number.isSafeInteger(start) ||
-          !Number.isSafeInteger(end) ||
-          start > end ||
-          start >= fullSize
-        )
-          return new Response(null, {
-            status: 416,
-            headers: { "Content-Range": `bytes */${fullSize}` },
-          });
-        output.set("Content-Length", String(end - start + 1));
-        output.set("Content-Range", `bytes ${start}-${end}/${fullSize}`);
-        return new Response(
-          rangeStream(full.body, start, end, request.signal),
-          {
-            status: 206,
-            headers: output,
-          },
-        );
+        return hit;
       }
+      saved.body.cancel().catch(() => {});
     }
     try {
       request.signal.throwIfAborted();
@@ -414,29 +474,7 @@ export class MediaCache {
       // cancellation. Remounts wait for its persistent bytes instead of restarting.
       if (reservation) cancellation = fillCancellation(request.signal);
       const signal = cancellation?.signal ?? request.signal;
-      let source = url.href;
-      if (remote) {
-        const link = new URL(url.pathname.replace(/\/file$/u, "/link"), url);
-        if (url.searchParams.get("download") === "true")
-          link.searchParams.set("download", "true");
-        const response = await this.network(link, {
-          credentials: "include",
-          cache: "no-store",
-          signal,
-        });
-        if (!response.ok)
-          return new Response(null, { status: response.status });
-        const value: unknown = await response.json();
-        if (!isFileLink(value, url.href)) return Response.error();
-        source = value.url;
-      }
-      const response = await this.network(source, {
-        credentials: remote ? "omit" : "same-origin",
-        cache: "no-store",
-        mode: "cors",
-        headers: range ? { Range: range } : {},
-        signal,
-      });
+      const response = await this.download(url, remote, range, signal);
       if (!response.ok || (response.status !== 200 && response.status !== 206))
         return response;
       let contentRange = response.headers.get("Content-Range");
@@ -494,14 +532,15 @@ export class MediaCache {
               this.touch(key.href, keepAlive);
             }),
           )
-          .catch(() => {
+          .catch((error: unknown) => {
             this.index = null;
             // Discard the tee branch if Cache rejects before reading its body.
             // Otherwise the continuing download can buffer into an unused copy.
             if (!copy.bodyUsed) copy.body?.cancel().catch(() => {});
             /* Quota/eviction failures must not break a download. */
+            ignoreStorageFailure(error);
           });
-        this.writes = work;
+        this.writes = work.catch(() => {});
         cancellation = undefined;
         keepAlive(
           work.finally(() => {

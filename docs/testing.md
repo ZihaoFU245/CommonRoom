@@ -237,6 +237,12 @@ wrapper and requires the new file's own loading/status state.
 Cache work-count tests cap recency write backlog under slow storage, rank bulk
 evictions once per retained entry, bound pending status ownership and cancel it
 on identity reset, and serialize competing workers' byte-budget maintenance.
+Error-boundary tests distinguish browser security/quota failures from unexpected
+exceptions, retain HTTP error codes/retryability, and reject unexpected parser
+failures. Subscriber/application failures must not trigger transport backoff or
+resend acknowledged preferences. Unexpected cache writer failures remain observable
+without poisoning later fills. Server contracts preserve serialized error classes
+and reject metrics reads from poisoned admission state.
 Cross-origin browser scenarios repeat credentialed `/api/me` reads beyond the
 default five-second preflight lifetime and require one OPTIONS request while each
 actual GET remains authenticated. Rust CORS tests require max-age only on accepted

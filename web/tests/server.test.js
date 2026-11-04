@@ -66,7 +66,7 @@ test("server selection persists per UI deployment and directs credentialed API r
   globalThis.document.baseURI = "https://ui.example.com/other/";
   assert.equal(savedServerUrl(), "https://ui.example.com/other/");
   globalThis.localStorage.setItem = () => {
-    throw new Error("denied");
+    throw new DOMException("denied", "SecurityError");
   };
   assert.throws(() => saveServerUrl("chat.example.com"), /could not be saved/);
 });

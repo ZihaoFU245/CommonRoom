@@ -27,9 +27,7 @@ impl Engine {
         user: &str,
         id: &str,
     ) -> Result<Vec<(String, String)>, EngineError> {
-        let target = self
-            .bot_target(user, id, Action::Read)
-            .map_err(EngineError::from)?;
+        let target = self.bot_target(user, id, Action::Read)?;
         if !self.allows(Some(user), &target.scope, Action::Send)
             || !self.allows(Some(user), &target.scope, Action::Members)
         {

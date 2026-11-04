@@ -72,7 +72,7 @@ async function connect(): Promise<void> {
         if (cancellation.signal.aborted) return;
         registration = value;
         claim();
-      }, fail)
+      })
       .catch(fail);
     await ready;
   } finally {

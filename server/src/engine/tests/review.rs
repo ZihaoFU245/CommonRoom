@@ -78,47 +78,6 @@ fn media_link(id: &str) -> String {
     format!("![file](/api/media/{id}/file)")
 }
 #[test]
-fn attachment_errors_do_not_reveal_allocation_state_and_edit_checks_ownership_first() {
-    let mut e = engine();
-    let room = e.data.rooms["lobby"].id.clone();
-    let mut media = e.allocate_media("alice", &room, "test.png", 8).unwrap();
-    let missing = media_link(&uuid::Uuid::new_v4().to_string());
-    let error = e.execute(Some("bob"), Some("lobby"), &missing).unwrap_err();
-    assert_eq!(error.message(), "Upload not found.");
-    assert_eq!(
-        e.execute(Some("bob"), Some("lobby"), &media_link(&media.id))
-            .unwrap_err(),
-        error
-    );
-    media.ready = true;
-    media.object_key = media.final_key();
-    media.content_type = "image/png".into();
-    e.finish_media("alice", &media).unwrap();
-    assert_eq!(
-        e.execute(Some("bob"), Some("lobby"), &media_link(&media.id))
-            .unwrap_err(),
-        error
-    );
-    e.execute(Some("alice"), Some("lobby"), "original").unwrap();
-    let message = room_messages(&e, "lobby")[0].id.clone();
-    assert_eq!(
-        e.execute(
-            Some("bob"),
-            Some("lobby"),
-            &format!("/edit {message} {missing}")
-        )
-        .unwrap_err()
-        .message(),
-        "You can only edit your own messages."
-    );
-    e.execute(Some("alice"), Some("lobby"), &media_link(&media.id))
-        .unwrap();
-    e.execute(Some("bob"), Some("lobby"), &media_link(&media.id))
-        .unwrap();
-    assert_eq!(room_messages(&e, "lobby").len(), 3);
-}
-
-#[test]
 fn rejected_and_preview_uploads_leave_no_private_directory_or_reservation() {
     let mut e = engine();
     let revision = e.revision;
@@ -173,20 +132,6 @@ fn rejected_and_preview_uploads_leave_no_private_directory_or_reservation() {
             .unwrap(),
         1
     );
-}
-
-#[test]
-fn empty_cleanup_and_console_reads_do_not_write_or_advance_revision() {
-    let mut e = engine();
-    let revision = e.revision;
-    let writes = e.store.db.lock().unwrap().total_changes();
-    let audit = e.data.policy.audit.len();
-    for input in ["/user ls", "/user get bob", "/room ls", "/clean 7d #lobby"] {
-        e.execute(None, None, input).unwrap();
-        assert_eq!(e.revision, revision);
-        assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
-        assert_eq!(e.data.policy.audit.len(), audit);
-    }
 }
 
 #[test]

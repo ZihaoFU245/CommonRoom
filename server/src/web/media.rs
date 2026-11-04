@@ -27,9 +27,6 @@ fn storage(app: &App) -> Result<std::sync::Arc<crate::media::MediaStorage>, ApiE
 fn invalid(message: &str) -> ApiError {
     error(StatusCode::BAD_REQUEST, message)
 }
-fn unavailable() -> ApiError {
-    error(StatusCode::SERVICE_UNAVAILABLE, "Media worker unavailable.")
-}
 
 /// Explicit service caller. Browser handlers cannot opt into machine authentication
 /// merely by receiving an Authorization header.
@@ -54,12 +51,8 @@ impl Access {
             Self::Browser(access) => auth::identity(engine, config, access)
                 .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired session.")),
             Self::Bot { context, operation } => {
-                context
-                    .permits(engine, operation, crate::bots::auth::Scope::Global)
-                    .map_err(|cause| error(cause.status(), &cause.message))?;
-                context
-                    .user(engine)
-                    .map_err(|cause| error(cause.status(), &cause.message))
+                context.permits(engine, operation, crate::bots::auth::Scope::Global)?;
+                context.user(engine).map_err(ApiError::from)
             }
         }
     }
@@ -67,18 +60,14 @@ impl Access {
 impl Identity {
     pub(super) fn permit_conversation(&self, engine: &Engine, id: &str) -> Result<(), ApiError> {
         if let Access::Bot { context, operation } = &self.access {
-            context
-                .permits(
-                    engine,
-                    operation,
-                    crate::bots::auth::Scope::Conversation(id),
-                )
-                .map_err(|cause| error(cause.status(), &cause.message))?;
+            context.permits(
+                engine,
+                operation,
+                crate::bots::auth::Scope::Conversation(id),
+            )?;
             if *operation == "media_upload" {
                 for op in ["read", "send"] {
-                    context
-                        .permits(engine, op, crate::bots::auth::Scope::Conversation(id))
-                        .map_err(|cause| error(cause.status(), &cause.message))?;
+                    context.permits(engine, op, crate::bots::auth::Scope::Conversation(id))?;
                 }
             }
         }
@@ -90,11 +79,7 @@ impl Identity {
     ) -> Result<Option<&'a std::collections::BTreeSet<String>>, ApiError> {
         match &self.access {
             Access::Browser(_) => Ok(None),
-            Access::Bot { context, .. } => Ok(context
-                .metadata(engine)
-                .map_err(|cause| error(cause.status(), &cause.message))?
-                .conversations
-                .as_ref()),
+            Access::Bot { context, .. } => Ok(context.metadata(engine)?.conversations.as_ref()),
         }
     }
 }
@@ -144,9 +129,7 @@ async fn native_media<T: Send + 'static>(
     + Send
     + 'static,
 ) -> Result<T, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     let access = access.clone();
     super::admission::spawn_io(permit, async move {
@@ -162,8 +145,7 @@ async fn native_media<T: Send + 'static>(
         })
         .await
     })
-    .await
-    .map_err(|_| unavailable())?
+    .await?
 }
 async fn owner(
     app: &App,
@@ -190,9 +172,7 @@ enum MediaMutation {
     Abandon(String),
 }
 async fn mutate(app: &App, access: &Access, mutation: MediaMutation) -> Result<(), ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     let access = access.clone();
     super::admission::spawn_io(permit, async move {
@@ -242,17 +222,14 @@ async fn mutate(app: &App, access: &Access, mutation: MediaMutation) -> Result<(
         app.with_conversation(&ordering, move |engine| verify_identity(&identity, engine))
             .await
     })
-    .await
-    .map_err(|_| unavailable())?
+    .await?
 }
 async fn reserve(
     app: &App,
     identity: Identity,
     input: Upload,
 ) -> Result<crate::engine::media::Media, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     super::admission::spawn_io(permit, async move {
         let id = app
@@ -308,8 +285,7 @@ async fn reserve(
         })
         .await
     })
-    .await
-    .map_err(|_| unavailable())?
+    .await?
 }
 fn media_json(app: &App, media: &crate::engine::media::Media) -> Json<serde_json::Value> {
     Json(
@@ -328,9 +304,7 @@ pub(crate) async fn config_as(
     State(app): State<App>,
     access: Access,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
         store.health().await?;
@@ -343,8 +317,7 @@ pub(crate) async fn config_as(
         })
         .await
     })
-    .await
-    .map_err(|_| unavailable())?
+    .await?
 }
 
 pub(crate) async fn allocate_as(
@@ -352,9 +325,7 @@ pub(crate) async fn allocate_as(
     access: Access,
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     let worker = app.clone();
     let (storage, identity, input) = super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&worker, access).await?;
@@ -379,8 +350,7 @@ pub(crate) async fn allocate_as(
         store.health().await?;
         Ok::<_, ApiError>((storage, identity, input))
     })
-    .await
-    .map_err(|_| unavailable())??;
+    .await??;
     // Live probe deliberately preserves rejection before reserving offline uploads.
     storage
         .check_reachable()
@@ -605,7 +575,7 @@ where
         work(store).await.map_err(String::from)
     })
     .await
-    .map_err(|_| "Cleanup worker unavailable.")?
+    .map_err(crate::engine::EngineError::unavailable)?
 }
 async fn delete_media(
     app: App,

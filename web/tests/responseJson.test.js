@@ -17,6 +17,17 @@ test("JSON reads preserve split Unicode and reject invalid JSON", async () => {
   assert.equal(await responseJson(new Response("bad gateway")), null);
 });
 
+test("unexpected parser failures propagate instead of becoming malformed JSON", async (t) => {
+  const failure = new Error("Unexpected parser failure");
+  t.mock.method(JSON, "parse", () => {
+    throw failure;
+  });
+  await assert.rejects(
+    responseJson(new Response("{}")),
+    (error) => error === failure,
+  );
+});
+
 test("JSON byte limits cancel declared and chunked oversized bodies before parsing", async () => {
   let cancelled = 0;
   const body = () =>

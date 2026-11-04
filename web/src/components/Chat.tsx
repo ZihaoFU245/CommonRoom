@@ -1,3 +1,4 @@
+import { readStorage, writeStorage } from "../api/browserStorage.ts";
 import { UserCards } from "./UserCard.tsx";
 import { resolveDisplayNames } from "../features/preferences/displayNames.ts";
 import { DisplayNamesContext } from "./DisplayNamesContext.ts";
@@ -88,20 +89,12 @@ export function Chat({
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const [menu, setMenu] = useState(() => {
-    try {
-      const saved = localStorage.getItem("commonroom-sidebar-open");
-      if (saved === "true" || saved === "false") return saved === "true";
-    } catch {
-      // Use the responsive default when browser storage is unavailable.
-    }
+    const saved = readStorage("commonroom-sidebar-open");
+    if (saved === "true" || saved === "false") return saved === "true";
     return window.matchMedia("(min-width: 701px)").matches;
   });
   useEffect(() => {
-    try {
-      localStorage.setItem("commonroom-sidebar-open", String(menu));
-    } catch {
-      // Navigation remains usable when browser storage is unavailable.
-    }
+    writeStorage("commonroom-sidebar-open", String(menu));
   }, [menu]);
   const menuButton = useRef<HTMLButtonElement>(null);
   const animatedLayout = useRef<HTMLDivElement>(null);

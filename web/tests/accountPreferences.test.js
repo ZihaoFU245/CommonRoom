@@ -8,6 +8,7 @@ import {
   preferenceValue,
   preferenceError,
   receivePreferences,
+  subscribePreferences,
 } from "../src/features/preferences/account.ts";
 
 function fixture(t) {
@@ -45,6 +46,28 @@ function cloud() {
     return { values: { ...values }, sync: { instance: "server", revision } };
   };
 }
+
+test("listener failures after acknowledgement do not retry committed preferences", async (t) => {
+  fixture(t);
+  const transport = cloud();
+  let writes = 0;
+  await connectPreferences("alice", async (patch, initialize) => {
+    if (!initialize) writes++;
+    return transport(patch, initialize);
+  });
+  changePreference("theme", "dark");
+  const failure = new Error("Broken subscriber");
+  const unsubscribe = subscribePreferences(() => {
+    throw failure;
+  });
+  t.after(unsubscribe);
+  await assert.rejects(flushPreferences(), (error) => error === failure);
+  unsubscribe();
+  await flushPreferences();
+  assert.equal(writes, 1);
+  assert.equal(preferenceValue("theme", ""), "dark");
+  assert.equal(preferenceError(), "");
+});
 
 test("first device seeds local settings; subsequent login pulls cloud values and fills only unset fields", async (t) => {
   const local = fixture(t);
@@ -136,7 +159,7 @@ test("blocked local storage still seeds defaults and receives server updates", a
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     get() {
-      throw Error("blocked");
+      throw new DOMException("blocked", "SecurityError");
     },
   });
   await connectPreferences("alice", cloud());

@@ -161,7 +161,7 @@ pub(super) async fn message_context(
     headers: HeaderMap,
     Query(input): Query<MessageContextQuery>,
 ) -> Result<Json<Value>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_async(&app, &headers).await?;
@@ -200,7 +200,7 @@ pub(super) async fn commands(
     headers: HeaderMap,
     Query(input): Query<CommandsQuery>,
 ) -> Result<Json<Value>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_async(&app, &headers).await?;
@@ -233,7 +233,7 @@ pub(super) async fn command(
     Json(input): Json<CommandInput>,
 ) -> Result<Json<Value>, Error> {
     let key = super::api::idempotency_key(&headers)?;
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         command_write::execute(&app, headers, input, key)
@@ -264,7 +264,7 @@ pub(super) async fn command_receipt(
     if !super::models::valid_id(&key) {
         return Err(Error::new(Code::InvalidRequest, "Invalid receipt key."));
     }
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_async(&app, &headers).await?;

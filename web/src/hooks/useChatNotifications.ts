@@ -1,3 +1,4 @@
+import { readStorage } from "../api/browserStorage.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useAccountPreference } from "./useAccountPreference.ts";
 import { errorMessage } from "../api/protocol.ts";
@@ -6,13 +7,9 @@ import { toggleMentionNotifications } from "../features/preferences/notification
 export function useChatNotifications(
   append: (command: string, result: string, error: boolean) => string,
 ) {
-  const [desired, setDesired] = useAccountPreference("notifications", () => {
-    try {
-      return String(localStorage.getItem("commonroom-notifications") === "on");
-    } catch {
-      return "false";
-    }
-  });
+  const [desired, setDesired] = useAccountPreference("notifications", () =>
+    String(readStorage("commonroom-notifications") === "on"),
+  );
   const [permission, setPermission] = useState(
     () =>
       typeof Notification !== "undefined" &&

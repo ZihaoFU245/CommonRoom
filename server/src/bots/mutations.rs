@@ -17,7 +17,7 @@ pub(super) async fn message(
     input: models::MessageInput,
     key: String,
 ) -> Result<Value, Error> {
-    let admission = app.io_permit().map_err(Error::storage)?;
+    let admission = app.io_permit()?;
     tokio::spawn(async move {
         let _admission = admission;
         if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
@@ -99,7 +99,7 @@ pub(super) async fn reaction(
     reaction: String,
     active: bool,
 ) -> Result<Value, Error> {
-    let admission = app.io_permit().map_err(Error::storage)?;
+    let admission = app.io_permit()?;
     tokio::spawn(async move {
         let _admission = admission;
         if !models::valid_id(&message_id) {
@@ -172,7 +172,7 @@ pub(super) async fn read(
     through: u64,
     acknowledge: bool,
 ) -> Result<Value, Error> {
-    let admission = app.io_permit().map_err(Error::storage)?;
+    let admission = app.io_permit()?;
     tokio::spawn(async move {
         let _admission = admission;
         if through > 9_007_199_254_740_991 {

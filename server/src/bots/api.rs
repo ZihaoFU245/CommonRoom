@@ -84,7 +84,7 @@ fn authenticate(app: &App, headers: &HeaderMap) -> Result<Context, Error> {
     Context::authenticate(app, headers)
 }
 async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let context = app
@@ -119,7 +119,7 @@ async fn history(
     headers: HeaderMap,
     Query(input): Query<HistoryQuery>,
 ) -> Result<Json<Value>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         history_value(&app, headers, input).await
@@ -301,7 +301,7 @@ async fn credential(
     headers: HeaderMap,
     Json(input): Json<models::CredentialInput>,
 ) -> Result<Json<Value>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_issuer_async(&app, &headers).await?;
@@ -337,7 +337,7 @@ async fn conversation(
     headers: HeaderMap,
     Json(input): Json<models::ConversationInput>,
 ) -> Result<Json<Value>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let context = Context::authenticate_async(&app, &headers).await?;
@@ -409,7 +409,7 @@ pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, Error> {
     }
 }
 async fn schema(State(app): State<App>, headers: HeaderMap) -> Result<Json<Value>, Error> {
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let _context = Context::authenticate_async(&app, &headers).await?;

@@ -10,6 +10,21 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
+
+test("snapshot application failures propagate without becoming transport failures", async () => {
+  const failure = new Error("Broken snapshot application");
+  let fail = true;
+  const sync = snapshotSync(
+    async () => ({}),
+    () => {
+      if (fail) throw failure;
+    },
+    () => assert.fail("application failures must not enter network recovery"),
+  );
+  await assert.rejects(sync.refresh(), (error) => error === failure);
+  fail = false;
+  await sync.refresh();
+});
 test("resuming replaces stale conversations with every joined room and private peer", async () => {
   let state = { rooms: [{ name: "one" }], private_peers: [] };
   const fresh = {

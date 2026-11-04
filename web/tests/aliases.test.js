@@ -83,7 +83,7 @@ test("malformed and unavailable browser storage is handled", () => {
   globalThis.localStorage = {
     getItem: () => '{"/good":"/ls","bad":42}',
     setItem: () => {
-      throw new Error("Unavailable");
+      throw new DOMException("Unavailable", "SecurityError");
     },
   };
   assert.deepEqual(loadAliases(), { "/good": "/ls" });
@@ -93,7 +93,7 @@ test("malformed and unavailable browser storage is handled", () => {
   );
   globalThis.localStorage = {
     getItem: () => {
-      throw new Error("Unavailable");
+      throw new DOMException("Unavailable", "SecurityError");
     },
   };
   assert.deepEqual(loadAliases(), {});
@@ -117,7 +117,7 @@ test("settings and slash commands share alias updates and persistent removal", (
     assert.throws(() => setAlias({}, name, "room ls"));
   assert.throws(() => setAlias({}, "rooms", ""));
   globalThis.localStorage.setItem = () => {
-    throw new Error("Unavailable");
+    throw new DOMException("Unavailable", "SecurityError");
   };
   assert.throws(
     () => removeAlias(changed, "/rooms"),

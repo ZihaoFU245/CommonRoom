@@ -32,7 +32,7 @@ test("initial and post-login snapshots honor saved opt-in, including blocked sto
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     get() {
-      throw new Error("Storage blocked");
+      throw new DOMException("Storage blocked", "SecurityError");
     },
   });
   assert.equal(await loadInitialAccount(), account);

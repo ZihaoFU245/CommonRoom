@@ -160,7 +160,7 @@ pub(crate) async fn login(
         .map_err(|message| error(StatusCode::BAD_REQUEST, message))?;
     // Admit password work before reserving attempts. Busy workers must not spend
     // the caller's allowance, and login never occupies the general HTTP pool.
-    let permit = app.password_permit().map_err(ApiError::from)?;
+    let permit = app.password_permit()?;
     let reservation = app
         .attempts
         .lock()
@@ -173,7 +173,10 @@ pub(crate) async fn login(
         // overshoot a limit. Cancelled HTTP futures still finish this bookkeeping.
         let outcome = match &result {
             Ok(_) => Some(true),
-            Err(ApiError(StatusCode::UNAUTHORIZED, _)) => Some(false),
+            Err(ApiError {
+                status: StatusCode::UNAUTHORIZED,
+                ..
+            }) => Some(false),
             // Infrastructure/conflict errors release this reservation without
             // clearing failures accumulated by other login attempts.
             Err(_) => None,
@@ -187,8 +190,7 @@ pub(crate) async fn login(
         }
         result
     })
-    .await
-    .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Login worker unavailable."))?
+    .await?
 }
 fn login_state_unavailable() -> ApiError {
     error(
@@ -218,13 +220,7 @@ async fn login_inner(
         let expected = expected.clone();
         move || verify_login_password(&password, expected.as_deref())
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Password worker unavailable.",
-        )
-    })?;
+    .await?;
     if !valid {
         let event = crate::engine::AuthEvent::new(
             Some(&input.username),
@@ -323,9 +319,7 @@ pub(crate) async fn logout(
     let client = peer.map(|axum::Extension(ConnectInfo(peer))| {
         client_ip(&app.config, peer.ip(), &headers).unwrap_or_else(|_| peer.ip().to_canonical())
     });
-    let permit = app
-        .io_permit()
-        .map_err(|message| error(StatusCode::SERVICE_UNAVAILABLE, &message))?;
+    let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
         if let Some(token) = token(&app.config, &headers).map(str::to_owned) {
             let ordering = app.mutations.metadata().await?;
@@ -365,19 +359,11 @@ pub(crate) async fn logout(
         );
         Ok(response)
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Logout worker unavailable.",
-        )
-    })?
+    .await?
 }
 pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
     check_read_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
         let value = super::snapshots::value_async(&app, &headers, false)
             .await
@@ -393,13 +379,7 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
         )
             .into_response())
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Snapshot worker unavailable.",
-        )
-    })?
+    .await?
 }
 
 pub(crate) async fn session_status(
@@ -407,20 +387,12 @@ pub(crate) async fn session_status(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     check_read_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
         let _identity = authenticated_identity(&app, &headers).await?;
         Ok(Json(json!({"ok":true})))
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Session worker unavailable.",
-        )
-    })?
+    .await?
 }
 
 #[cfg(test)]

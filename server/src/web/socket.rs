@@ -129,13 +129,7 @@ impl Presence {
             let old = self.user.clone();
             let current = current.clone();
             tokio::task::spawn_blocking(move || app.update_presence(Some(&old), Some(&current)))
-                .await
-                .map_err(|_| {
-                    error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Presence worker unavailable.",
-                    )
-                })?
+                .await?
                 .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
         }
         self.user.clone_from(&current);
@@ -373,9 +367,9 @@ pub(crate) async fn connection(
                 }
                 match presence.authenticate(&headers).await {
                     Ok(current) => user = current,
-                    Err(cause) if retryable(cause.0) => {
+                    Err(cause) if retryable(cause.status) => {
                         recovery.schedule(&[]);
-                        tracing::warn!(status = %cause.0, "Socket heartbeat authentication deferred");
+                        tracing::warn!(status = %cause.status, "Socket heartbeat authentication deferred");
                     }
                     Err(_) => break,
                 }
@@ -402,8 +396,8 @@ pub(crate) async fn connection(
                 let validated = authorize_activity(&app, &headers, old, id).await;
                 let (current, allowed) = match validated {
                     Ok(value) => value,
-                    Err(cause) if retryable(cause.0) => {
-                        tracing::warn!(status = %cause.0, "Socket activity skipped");
+                    Err(cause) if retryable(cause.status) => {
+                        tracing::warn!(status = %cause.status, "Socket activity skipped");
                         continue;
                     }
                     Err(_) => break,
@@ -426,7 +420,7 @@ pub(crate) async fn connection(
                 }
                 user = match presence.authenticate_command(&headers).await {
                     Ok(user) => user,
-                    Err(cause) if retryable(cause.0) => {
+                    Err(cause) if retryable(cause.status) => {
                         recovery.schedule(&[]);
                         // Do not discard a command whose acknowledgement the
                         // caller is awaiting. Report its normal retryable error.

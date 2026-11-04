@@ -14,9 +14,7 @@ pub(super) enum Update {
     ),
 }
 pub(super) async fn update(app: &App, access: Access, update: Update) -> Result<bool, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     super::admission::spawn_io(permit, async move {
         let (identity, store) = super::media::native_context(&app, access).await?;
@@ -99,11 +97,5 @@ pub(super) async fn update(app: &App, access: Access, update: Update) -> Result<
         })
         .await
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Profile worker unavailable.",
-        )
-    })?
+    .await?
 }

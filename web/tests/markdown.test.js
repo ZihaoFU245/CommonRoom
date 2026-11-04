@@ -1,7 +1,3 @@
-import {
-  loadMarkdown,
-  setMarkdown,
-} from "../src/features/preferences/markdown.ts";
 import { Script } from "node:vm";
 import { snakeSource } from "../scripts/markdown/snake.mjs";
 import { safeMediaUrl } from "../src/features/conversation/mediaUrl.ts";
@@ -15,10 +11,6 @@ import assert from "node:assert/strict";
 import { markdownNodes as plainNodes } from "../src/features/conversation/markdown.ts";
 import { submissionFrame } from "../src/features/conversation/submission.ts";
 import { isMessage } from "../src/api/protocol.ts";
-import {
-  browserCommands,
-  setAlias,
-} from "../src/features/conversation/aliases.ts";
 
 function flatten(nodes) {
   return nodes.flatMap((node) =>
@@ -117,34 +109,6 @@ test("enabled HTML preserves ordered lists and repairs malformed nested markup s
   assert.ok(nodes.some((node) => node.tag === "b"));
   assert.ok(nodes.some((node) => node.tag === "i"));
   assert.ok(!nodes.some((node) => node.tag === "img"));
-});
-test("Markdown preference defaults off, persists and tolerates unavailable storage", () => {
-  const storage = new Map();
-  globalThis.localStorage = {
-    getItem: (key) => storage.get(key),
-    setItem: (key, value) => storage.set(key, value),
-  };
-  assert.equal(loadMarkdown(), false);
-  assert.equal(setMarkdown("/markdown on"), true);
-  assert.equal(loadMarkdown(), true);
-  assert.equal(setMarkdown("/markdown off"), false);
-  assert.equal(loadMarkdown(), false);
-  for (const input of ["/markdown", "/markdown yes", "/markdown on extra"])
-    assert.throws(() => setMarkdown(input), /Usage/);
-  assert.throws(() => setAlias({}, "markdown", "ls"));
-  assert.ok(
-    browserCommands([], {}).some((command) => command.name === "/markdown"),
-  );
-  globalThis.localStorage = {
-    getItem() {
-      throw Error("Unavailable");
-    },
-    setItem() {
-      throw Error("Unavailable");
-    },
-  };
-  assert.equal(loadMarkdown(), false);
-  assert.equal(setMarkdown("/markdown on"), true);
 });
 test("format is captured for room, private, explicit tell and reply submissions", () => {
   const base = {

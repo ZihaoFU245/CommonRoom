@@ -56,51 +56,56 @@ export class BotCommandCache {
     const request = { key, controller: new AbortController() };
     this.request = request;
     this.fetch(request.controller.signal)
-      .then((result) => {
-        if (
-          this.stopped ||
-          request.controller.signal.aborted ||
-          this.request !== request
-        )
-          return;
-        this.entries.clear();
-        for (const { conversation_id: id, bots } of result.conversations) {
-          const members = conversations.get(id);
-          if (members !== undefined) this.entries.set(id, { members, bots });
-        }
-        const signature = JSON.stringify(result);
-        this.refreshDelay =
-          this.completedKey === key && this.signature === signature
-            ? Math.min(this.refreshDelay * 2, 15 * 60_000)
-            : BOT_COMMAND_REFRESH_MS;
-        this.signature = signature;
-        this.completedKey = key;
-        this.nextRefresh = Date.now() + this.refreshDelay;
-        this.retryAfter = 0;
-        this.failures = 0;
-        this.changed();
-      })
-      .catch((error: unknown) => {
-        if (
-          this.stopped ||
-          request.controller.signal.aborted ||
-          this.request !== request
-        )
-          return;
-        this.failures++;
-        this.retryAfter =
-          Date.now() +
-          Math.min(30_000 * 2 ** Math.min(this.failures - 1, 4), 300_000);
-        if (
-          error instanceof ApiError &&
-          [401, 403, 404].includes(error.status)
-        ) {
+      .then(
+        (result) => {
+          if (
+            this.stopped ||
+            request.controller.signal.aborted ||
+            this.request !== request
+          )
+            return;
           this.entries.clear();
+          for (const { conversation_id: id, bots } of result.conversations) {
+            const members = conversations.get(id);
+            if (members !== undefined) this.entries.set(id, { members, bots });
+          }
+          const signature = JSON.stringify(result);
+          this.refreshDelay =
+            this.completedKey === key && this.signature === signature
+              ? Math.min(this.refreshDelay * 2, 15 * 60_000)
+              : BOT_COMMAND_REFRESH_MS;
+          this.signature = signature;
+          this.completedKey = key;
+          this.nextRefresh = Date.now() + this.refreshDelay;
+          this.retryAfter = 0;
+          this.failures = 0;
           this.changed();
-        }
-      })
+        },
+        (error: unknown) => {
+          if (
+            this.stopped ||
+            request.controller.signal.aborted ||
+            this.request !== request
+          )
+            return;
+          this.failures++;
+          this.retryAfter =
+            Date.now() +
+            Math.min(30_000 * 2 ** Math.min(this.failures - 1, 4), 300_000);
+          if (
+            error instanceof ApiError &&
+            [401, 403, 404].includes(error.status)
+          ) {
+            this.entries.clear();
+            this.changed();
+          }
+        },
+      )
       .finally(() => {
         if (this.request === request) this.request = undefined;
+      })
+      .catch((error: unknown) => {
+        console.error("Bot command update failed", error);
       });
   }
   stop() {

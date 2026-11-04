@@ -26,77 +26,50 @@ pub(crate) async fn execute_input(
     let app = app.clone();
     let headers = headers.clone();
     let user = user.to_owned();
-    let input = Input {
-        id: input.id,
-        markdown: input.markdown,
-        room: input.room.clone(),
-        text: input.text.clone(),
-    };
-    let inner = sudo_command(&input.text)
-        .map_err(String::from)?
-        .unwrap_or(&input.text);
-    let execution = crate::commands::execution(inner);
-    if execution == crate::commands::Execution::Cleanup {
-        return super::admission::spawn_io(permit, async move {
-            super::cleanup_commands::execute(&app, headers, user, input)
-                .await
-                .map_err(String::from)
-        })
-        .await
-        .map_err(|_| "Command worker unavailable.")?;
-    }
-    if execution == crate::commands::Execution::Message {
-        return super::admission::spawn_io(permit, async move {
-            execute_message(&app, headers, user, input)
-                .await
-                .map_err(String::from)
-        })
-        .await
-        .map_err(|_| "Command worker unavailable.")?;
-    }
-    if super::query_commands::supports(&input.text).map_err(String::from)? {
-        return super::admission::spawn_io(permit, async move {
-            super::query_commands::execute(&app, headers, user, input)
-                .await
-                .map_err(String::from)
-        })
-        .await
-        .map_err(|_| "Command worker unavailable.")?;
-    }
-    if let Some(request) = credentials::parse(&input).map_err(String::from)? {
-        return super::admission::spawn_io(permit, async move {
-            credentials::execute(&app, headers, user, request)
-                .await
-                .map_err(String::from)
-        })
-        .await
-        .map_err(|_| "Command worker unavailable.")?;
-    }
-    if crate::engine::native_metadata_command(
-        sudo_command(&input.text)
-            .map_err(String::from)?
-            .unwrap_or(&input.text),
-    ) {
-        return super::admission::spawn_io(permit, async move {
-            super::metadata_commands::execute(&app, headers, user, input)
-                .await
-                .map_err(String::from)
-        })
-        .await
-        .map_err(|_| "Command worker unavailable.")?;
-    }
-    super::admission::spawn_io(permit, async move {
-        let (_, reply) = capture(&app, headers, user.clone(), &input, {
-            let view = input.room.clone();
-            move |engine, text| engine.reject_command(Some(&user), view.as_deref(), text)
-        })
-        .await
-        .map_err(String::from)?;
-        Ok((reply, None))
-    })
+    let input = input.clone();
+    super::admission::spawn_io(
+        permit,
+        async move { dispatch(&app, headers, user, input).await },
+    )
     .await
-    .map_err(|_| "Command worker unavailable.")?
+    .map_err(EngineError::unavailable)?
+    .map_err(String::from)
 }
+
+// Keep domain errors typed until execute_input renders the socket reply.
+async fn dispatch(
+    app: &App,
+    headers: HeaderMap,
+    user: String,
+    input: Input,
+) -> Result<(String, Option<Change>), EngineError> {
+    let inner = sudo_command(&input.text)?.unwrap_or(&input.text);
+    match crate::commands::execution(inner) {
+        crate::commands::Execution::Cleanup => {
+            return super::cleanup_commands::execute(app, headers, user, input).await;
+        }
+        crate::commands::Execution::Message => {
+            return execute_message(app, headers, user, input).await;
+        }
+        _ => {}
+    }
+    if super::query_commands::supports(&input.text)? {
+        return super::query_commands::execute(app, headers, user, input).await;
+    }
+    if let Some(request) = credentials::parse(&input)? {
+        return credentials::execute(app, headers, user, request).await;
+    }
+    if crate::engine::native_metadata_command(inner) {
+        return super::metadata_commands::execute(app, headers, user, input).await;
+    }
+    let (_, reply) = capture(app, headers, user.clone(), &input, {
+        let view = input.room.clone();
+        move |engine, text| engine.reject_command(Some(&user), view.as_deref(), text)
+    })
+    .await?;
+    Ok((reply, None))
+}
+
 enum PreparedWrite {
     Message(Box<crate::engine::PendingMessage>),
     History(crate::engine::PendingHistory),
@@ -360,7 +333,7 @@ async fn commit_write(
                 .await;
         }
     };
-    let media = pending.media_records().await.map_err(EngineError::from)?;
+    let media = pending.media_records().await?;
     let pending = if media.is_empty() {
         pending
     } else {

@@ -159,3 +159,30 @@ test("unchanged directories back off polling and version frames still refresh im
   );
   cache.stop();
 });
+
+test("subscriber failures are reported without entering network backoff", async (t) => {
+  const failure = new Error("Broken subscriber");
+  const reports = t.mock.method(console, "error", () => {});
+  let requests = 0;
+  const cache = new BotCommandCache(
+    async () => {
+      requests++;
+      return directory("a");
+    },
+    () => {
+      throw failure;
+    },
+  );
+  const rooms = new Map([["a", "members"]]);
+  cache.refresh(rooms, new Map());
+  await settle();
+  cache.refresh(rooms, new Map([["a", 1]]));
+  await settle();
+  assert.equal(
+    requests,
+    2,
+    "catalogue invalidation is not suppressed as a network outage",
+  );
+  assert.equal(reports.mock.calls[0].arguments[1], failure);
+  cache.stop();
+});

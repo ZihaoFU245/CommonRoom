@@ -56,14 +56,19 @@ export function useMediaUploads(
     const request = new AbortController();
     api
       .mediaConfig(request.signal)
-      .then((config) => {
-        if (!request.signal.aborted) {
-          setEnabled(config.enabled);
-          setMaxSize(config.max_size);
-        }
-      })
-      .catch(() => {
-        /* Hide upload controls when configuration is unavailable. */
+      .then(
+        (config) => {
+          if (!request.signal.aborted) {
+            setEnabled(config.enabled);
+            setMaxSize(config.max_size);
+          }
+        },
+        () => {
+          /* Hide upload controls when configuration is unavailable. */
+        },
+      )
+      .catch((error: unknown) => {
+        console.error("Upload configuration update failed", error);
       });
     return () => request.abort();
   }, [serverInstance]);

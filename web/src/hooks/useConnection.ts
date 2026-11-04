@@ -45,6 +45,9 @@ export function useConnection(
     let resumeTimer: ReturnType<typeof setTimeout> | undefined;
     let awaitingBaseline = true;
     let attempts = 0;
+    const reportApplicationError = (error: unknown) => {
+      console.error("Snapshot application failed", error);
+    };
     const handleSyncError = (error: unknown) => {
       if (isUnauthorized(error)) {
         stopped = true;
@@ -100,7 +103,7 @@ export function useConnection(
             !awaitingBaseline &&
             socket.current?.readyState === WebSocket.OPEN
           )
-            sync.refresh().catch(handleSyncError);
+            sync.refresh().catch(reportApplicationError);
         }, 100);
       }
     };
@@ -171,7 +174,7 @@ export function useConnection(
         } else if (data.kind === "conversation") {
           const next = applyConversation(currentState.current, data);
           if (!next) {
-            sync.refresh().catch(handleSyncError);
+            sync.refresh().catch(reportApplicationError);
             return;
           }
           sync.receive(next, false);

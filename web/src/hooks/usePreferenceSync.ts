@@ -17,7 +17,9 @@ export function usePreferenceSync(state: Snapshot): string {
   }, [state.preferences, state.sync]);
   useEffect(() => {
     const retry = () => {
-      flushPreferences().catch(() => {});
+      flushPreferences().catch((error: unknown) => {
+        console.error("Preference update failed", error);
+      });
     };
     const timer = window.setInterval(retry, 5000);
     window.addEventListener("online", retry);

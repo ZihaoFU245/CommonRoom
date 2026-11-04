@@ -9,6 +9,11 @@ import {
 } from "../features/conversation/attachments.ts";
 import { hasMessageContent } from "../features/conversation/messageContent.ts";
 import { useCompositionGuard } from "../hooks/useCompositionGuard.ts";
+// The upload hook presents request failures. Only unexpected action failures
+// reach this event boundary.
+function reportUploadFailure(error: unknown) {
+  console.error("Attachment upload failed", error);
+}
 interface Props {
   mediaUpload?: {
     enabled: boolean;
@@ -90,7 +95,7 @@ export function Composer({
     const file = clipboardAttachment(event.clipboardData);
     if (!file) return;
     event.preventDefault();
-    mediaUpload.start(file).catch(() => undefined);
+    mediaUpload.start(file).catch(reportUploadFailure);
   }
   return (
     <div class="composer-area">
@@ -186,7 +191,7 @@ export function Composer({
             <button
               type="button"
               onClick={() => {
-                mediaUpload.retry?.().catch(() => undefined);
+                mediaUpload.retry?.().catch(reportUploadFailure);
               }}
             >
               Retry upload
@@ -235,7 +240,7 @@ export function Composer({
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
-                  if (file) mediaUpload.start(file).catch(() => undefined);
+                  if (file) mediaUpload.start(file).catch(reportUploadFailure);
                 }}
               />
             </label>

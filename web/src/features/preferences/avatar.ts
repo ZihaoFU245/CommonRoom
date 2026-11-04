@@ -16,7 +16,8 @@ export function avatarSource(
       !url.password
     )
       return url.href;
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
     /* Invalid profile values have no avatar. */
   }
   return undefined;

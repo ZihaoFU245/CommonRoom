@@ -200,7 +200,7 @@ fn poisoned_engine_refuses_access_instead_of_reusing_partial_state() {
         header::COOKIE,
         HeaderValue::from_static("chat_session=fixture"),
     );
-    let ApiError(status, _) = auth::authenticate(&app, &headers).unwrap_err();
+    let ApiError { status, .. } = auth::authenticate(&app, &headers).unwrap_err();
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(app.engine.is_poisoned());
 }
@@ -257,8 +257,8 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
     let error = auth::me(axum::extract::State(app.clone()), headers.clone())
         .await
         .unwrap_err();
-    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(error.1.0.to_string().contains("restart the service"));
+    assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(error.message.contains("restart the service"));
     assert!(
         snapshots::value(&app, &headers, false)
             .unwrap_err()
@@ -496,7 +496,7 @@ async fn login_accepts_unicode_names_and_rejects_disabled_and_missing_accounts()
         if succeeds {
             assert_eq!(result.unwrap().status(), StatusCode::OK);
         } else {
-            assert_eq!(result.unwrap_err().0, StatusCode::UNAUTHORIZED);
+            assert_eq!(result.unwrap_err().status, StatusCode::UNAUTHORIZED);
         }
     }
 }
@@ -540,7 +540,7 @@ async fn login_throttling_separates_verified_clients_and_ignores_spoofing() {
         )
         .await
         .unwrap_err()
-        .0
+        .status
     }
     for _ in 0..10 {
         assert_eq!(

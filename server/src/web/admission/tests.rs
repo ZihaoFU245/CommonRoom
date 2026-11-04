@@ -1,4 +1,19 @@
 use super::*;
+
+#[test]
+#[allow(clippy::panic)]
+fn poisoned_admission_cannot_report_a_healthy_zero_count() {
+    let admission = Admission::default();
+    let result = std::panic::catch_unwind(|| {
+        let _state = admission.state.lock().unwrap();
+        panic!("Injected admission failure");
+    });
+    assert!(result.is_err());
+    assert!(
+        matches!(admission.stats(), Err(crate::engine::EngineError::Unavailable(message)) if message.contains("restart"))
+    );
+}
+
 #[tokio::test]
 async fn spawned_commands_reuse_their_http_reservation() {
     let admission = Arc::new(Admission::default());
@@ -33,7 +48,10 @@ fn avatar_budget_is_bounded_account_scoped_and_recovers_after_its_window() {
         admission.profile_change_at("alice", now).unwrap();
     }
     assert_eq!(
-        admission.profile_change_at("alice", now).unwrap_err().0,
+        admission
+            .profile_change_at("alice", now)
+            .unwrap_err()
+            .status,
         axum::http::StatusCode::TOO_MANY_REQUESTS
     );
     admission.profile_change_at("bob", now).unwrap();
@@ -173,7 +191,7 @@ async fn spawned_handlers_reuse_capture_and_recheck_revoked_sessions() {
             let identity = super::super::auth::authenticated_identity(&app, &headers).await.unwrap();
             assert_eq!(identity.user, "alice");
             app.engine().unwrap().logout("alice").unwrap();
-            assert!(matches!(super::super::auth::authenticated_identity(&app, &headers).await, Err(error) if error.0 == axum::http::StatusCode::UNAUTHORIZED));
+            assert!(matches!(super::super::auth::authenticated_identity(&app, &headers).await, Err(error) if error.status == axum::http::StatusCode::UNAUTHORIZED));
         }).await.unwrap();
     }).await;
 }
@@ -193,14 +211,14 @@ async fn configured_admission_limits_and_rejections_are_reported() {
     let replacement = admission.socket("alice".into(), Profile::Browser).unwrap();
     first.cancelled().await;
     assert!(admission.socket("bob".into(), Profile::Browser).is_err());
-    let stats = admission.stats();
+    let stats = admission.stats().unwrap();
     assert_eq!(stats["http_active"], 1);
     assert_eq!(stats["http"]["rejections"]["account"], 1);
     assert_eq!(stats["http"]["rejections"]["socket"], 1);
     assert_eq!(stats["http"]["socket_replacements"], 1);
     drop((http, first, replacement));
-    assert_eq!(admission.stats()["http_active"], 0);
-    assert_eq!(admission.stats()["browser_sockets_available"], 1);
+    assert_eq!(admission.stats().unwrap()["http_active"], 0);
+    assert_eq!(admission.stats().unwrap()["browser_sockets_available"], 1);
 }
 
 #[tokio::test]

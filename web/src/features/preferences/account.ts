@@ -1,5 +1,9 @@
+import {
+  readStorage,
+  readStorageJson,
+  writeStorage,
+} from "../../api/browserStorage.ts";
 import { serverBaseUrl } from "../../api/server.ts";
-import { defaultSeeds } from "./palette.ts";
 import { loadFonts, loadSeeds, loadTheme } from "./settings.ts";
 import {
   loadLatex,
@@ -62,14 +66,7 @@ function cacheKey(id: string): string {
 }
 function cache(): void {
   if (!active) return;
-  try {
-    localStorage.setItem(
-      cacheKey(active.id),
-      JSON.stringify(active.state.values),
-    );
-  } catch {
-    /* Server settings remain authoritative without browser storage. */
-  }
+  writeStorage(cacheKey(active.id), JSON.stringify(active.state.values));
 }
 export function receivePreferences(state: PreferenceState): void {
   if (!active) return;
@@ -94,18 +91,20 @@ export async function flushPreferences(): Promise<void> {
   session.pending = {};
   session.sending = sent;
   try {
-    const state = await session.transport(sent, false);
-    if (active !== session) return;
+    // Only transport rejection restores the pending patch. A listener or cache
+    // failure after acknowledgement must not resend an already committed write.
+    const state = await session.transport(sent, false).catch(() => {
+      if (active !== session) return undefined;
+      session.pending = { ...sent, ...session.pending };
+      session.sending = {};
+      session.error = "Settings could not sync. Retrying when connected.";
+      notify();
+      return undefined;
+    });
+    if (!state || active !== session) return;
     session.sending = {};
     session.error = "";
     receivePreferences(state);
-  } catch {
-    if (active !== session) return;
-    session.pending = { ...sent, ...session.pending };
-    session.sending = {};
-    session.error = "Settings could not sync. Retrying when connected.";
-    notify();
-    return;
   } finally {
     session.busy = false;
   }
@@ -118,25 +117,19 @@ export function changePreference(key: string, value: string): void {
   // Coalesce slider/color input into one bounded patch.
   const session = active;
   setTimeout(() => {
-    if (active === session) flushPreferences().catch(() => {});
+    if (active === session)
+      flushPreferences().catch((error: unknown) => {
+        console.error("Preference update failed", error);
+      });
   }, 150);
 }
 
 function localValues(): Record<string, string> {
-  let fonts = { chat: 16, ui: 14 };
-  let seeds = { ...defaultSeeds };
-  let theme = "system";
-  let external = false;
-  let notifications = false;
-  try {
-    fonts = loadFonts(localStorage);
-    seeds = loadSeeds(localStorage);
-    theme = loadTheme(localStorage);
-    external = localStorage.getItem("commonroom-external-avatars") === "true";
-    notifications = localStorage.getItem("commonroom-notifications") === "on";
-  } catch {
-    /* Use validated defaults when storage is blocked. */
-  }
+  const fonts = loadFonts();
+  const seeds = loadSeeds();
+  const theme = loadTheme();
+  const external = readStorage("commonroom-external-avatars") === "true";
+  const notifications = readStorage("commonroom-notifications") === "on";
   return {
     theme,
     "palette.base": seeds.base,
@@ -163,18 +156,12 @@ export async function connectPreferences(
   disconnectPreferences();
   const attempt = generation;
   const local = localValues();
-  try {
-    const cached: unknown = JSON.parse(
-      localStorage.getItem(cacheKey(id)) ?? "null",
-    );
-    if (typeof cached === "object" && cached !== null) {
-      for (const [key, value] of Object.entries(cached)) {
-        if (Object.hasOwn(local, key) && typeof value === "string")
-          local[key] = value;
-      }
+  const cached = readStorageJson(cacheKey(id));
+  if (typeof cached === "object" && cached !== null) {
+    for (const [key, value] of Object.entries(cached)) {
+      if (Object.hasOwn(local, key) && typeof value === "string")
+        local[key] = value;
     }
-  } catch {
-    /* Legacy values seed a newly used account. */
   }
   const state = await transport(local, true);
   if (attempt !== generation)

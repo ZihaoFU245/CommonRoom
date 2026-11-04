@@ -25,10 +25,22 @@ import type {
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  readonly code: string | undefined;
+  readonly retryable: boolean | undefined;
+  constructor(status: number, message: string, details?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    const fields =
+      details !== null && typeof details === "object" ? details : undefined;
+    this.code =
+      fields && "code" in fields && typeof fields.code === "string"
+        ? fields.code
+        : undefined;
+    this.retryable =
+      fields && "retryable" in fields && typeof fields.retryable === "boolean"
+        ? fields.retryable
+        : undefined;
   }
 }
 export function isUnauthorized(error: unknown) {
@@ -78,6 +90,7 @@ async function request<T>(
         value === null
           ? `Server request failed (${response.status}).`
           : responseError(value),
+        value,
       );
     if (!validate(value))
       throw new Error(

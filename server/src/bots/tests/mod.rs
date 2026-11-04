@@ -1099,7 +1099,7 @@ async fn reconnect_session_check_authenticates_without_building_history() {
         web::auth::session_status(State(app), headers)
             .await
             .unwrap_err()
-            .0,
+            .status,
         StatusCode::UNAUTHORIZED
     );
 }

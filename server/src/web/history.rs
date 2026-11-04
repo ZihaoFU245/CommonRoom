@@ -21,9 +21,7 @@ pub(crate) async fn history(
     Query(input): Query<HistoryQuery>,
 ) -> Result<Json<crate::engine::History>, ApiError> {
     check_read_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     // Detach accepted work from request cancellation so admission remains held
     // until both metadata checks and the native async read have finished.
     super::admission::spawn_io(permit, async move {
@@ -35,7 +33,7 @@ pub(crate) async fn history(
             around: input.around,
             limit: input.limit,
         };
-        range.validate().map_err(ApiError::from)?;
+        range.validate()?;
         let (user, id, revision, store) = app
             .inspect_engine({
                 let headers = headers.clone();
@@ -45,8 +43,7 @@ pub(crate) async fn history(
                         super::auth::identity(engine, config, &headers).ok_or_else(|| {
                             error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
                         })?;
-                    let (_, id, revision) =
-                        engine.conversation(&user, &view).map_err(ApiError::from)?;
+                    let (_, id, revision) = engine.conversation(&user, &view)?;
                     Ok((user, id, revision, engine.history_store().clone()))
                 }
             })
@@ -54,14 +51,11 @@ pub(crate) async fn history(
         let mut page = store
             .page_checked_async(&id, revision, range, &input.view)
             .await
-            .map_err(crate::engine::EngineError::from)
-            .map_err(ApiError::from)?;
+            .map_err(crate::engine::EngineError::from)?;
         app.inspect_engine(move |engine, config| -> Result<_, ApiError> {
             let current = super::auth::identity(engine, config, &headers)
                 .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))?;
-            let (_, current_id, _) = engine
-                .conversation(&current, &input.view)
-                .map_err(ApiError::from)?;
+            let (_, current_id, _) = engine.conversation(&current, &input.view)?;
             if current != user || current_id != id {
                 return Err(error(
                     StatusCode::CONFLICT,
@@ -76,13 +70,7 @@ pub(crate) async fn history(
         })
         .await
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "History worker unavailable.",
-        )
-    })?
+    .await?
 }
 
 #[derive(Deserialize)]
@@ -96,9 +84,7 @@ pub(crate) async fn read(
     Json(input): Json<Read>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     check_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
         let id = app
             .inspect_engine({
@@ -116,11 +102,7 @@ pub(crate) async fn read(
                 }
             })
             .await?;
-        let ordering = app
-            .mutations
-            .conversation(id.clone())
-            .await
-            .map_err(ApiError::from)?;
+        let ordering = app.mutations.conversation(id.clone()).await?;
         let config = app.config.clone();
         let cursor = app
             .with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
@@ -138,13 +120,13 @@ pub(crate) async fn read(
                     .map_err(ApiError::from)
             })
             .await?;
-        if !cursor.retained().await.map_err(ApiError::from)? {
+        if !cursor.retained().await? {
             return Err(error(
                 StatusCode::BAD_REQUEST,
                 "Message is no longer in this conversation.",
             ));
         }
-        cursor.save().await.map_err(ApiError::from)?;
+        cursor.save().await?;
         let changes = app.changes.clone();
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
             let user = cursor.user.clone();
@@ -155,8 +137,7 @@ pub(crate) async fn read(
         })
         .await
     })
-    .await
-    .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Read worker unavailable."))?
+    .await?
 }
 
 #[cfg(test)]

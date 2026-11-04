@@ -16,9 +16,7 @@ pub(crate) async fn set(
     Json(input): Json<Input>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
         let (identity, store) = media::native_context(&app, media::Access::Browser(headers)).await?;
         let ordering = app.mutations.metadata().await?;
@@ -43,7 +41,7 @@ pub(crate) async fn set(
             media::verify_identity(&identity, engine)?;
             Ok(Json(json!({"values":engine.preferences(&identity.user), "sync": engine.preference_sync()})))
         }).await
-    }).await.map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Preferences worker unavailable."))?
+    }).await?
 }
 
 #[cfg(test)]

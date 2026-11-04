@@ -70,7 +70,7 @@ impl Command {
                     "password_jobs_limit":app.config.server.password_jobs,
                     "max_http_connections":app.config.server.max_http_connections,
                     "collected_at_unix_seconds":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                    "admission":app.admission.stats(), "ordering":app.mutations.stats()});
+                    "admission":app.admission.stats()?, "ordering":app.mutations.stats()});
                 Ok(if self == Self::MetricsText {
                     render_metrics_text(&cache, &pools, &snapshots, &runtime)
                 } else {

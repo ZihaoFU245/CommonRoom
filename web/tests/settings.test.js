@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { beforeEach, default as test } from "node:test";
 import { defaultSeeds } from "../src/features/preferences/palette.ts";
 import {
   loadMarkdownHtml,
@@ -19,150 +19,170 @@ import {
   seedSettings,
   themeSetting,
 } from "../src/features/preferences/settings.ts";
-test("HTML rendering defaults off, requires explicit opt-in and survives refresh", () => {
-  const storage = new Map();
-  globalThis.localStorage = {
-    getItem: (key) => storage.get(key),
-    setItem: (key, value) => storage.set(key, value),
+import {
+  loadLatex,
+  saveLatex,
+  loadNameColors,
+  saveNameColors,
+  loadNameBorders,
+  saveNameBorders,
+  loadMessageBars,
+  saveMessageBars,
+  loadMessageBarOpacity,
+  saveMessageBarOpacity,
+} from "../src/features/preferences/formatting.ts";
+import {
+  loadMarkdown,
+  saveMarkdown,
+  setMarkdown,
+} from "../src/features/preferences/markdown.ts";
+import {
+  browserCommands,
+  setAlias,
+} from "../src/features/conversation/aliases.ts";
+
+let entries;
+let storage;
+beforeEach((t) => {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+  entries = new Map();
+  storage = {
+    getItem: (key) => entries.get(key) ?? null,
+    setItem: (key, value) => entries.set(key, value),
   };
-  assert.equal(loadMarkdownHtml(), false);
-  saveMarkdownHtml(true);
-  assert.equal(loadMarkdownHtml(), true);
-  saveMarkdownHtml(false);
-  assert.equal(loadMarkdownHtml(), false);
-  globalThis.localStorage.getItem = () => "true";
-  assert.equal(loadMarkdownHtml(), false);
-  globalThis.localStorage = {
-    getItem() {
-      throw Error("Unavailable");
-    },
-    setItem() {
-      throw Error("Unavailable");
-    },
-  };
-  assert.equal(loadMarkdownHtml(), false);
-  assert.doesNotThrow(() => saveMarkdownHtml(true));
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage,
+  });
+  t.after(() => {
+    if (descriptor)
+      Object.defineProperty(globalThis, "localStorage", descriptor);
+    else delete globalThis.localStorage;
+  });
 });
-test("font preferences survive refresh and reset within independent size limits", () => {
-  let saved = null;
-  const storage = {
-    getItem: () => saved,
-    setItem: (_, value) => {
-      saved = value;
-    },
+
+test("formatting opt-ins default off, persist independently and require explicit on", () => {
+  const preferences = [
+    [loadMarkdown, saveMarkdown],
+    [loadMarkdownHtml, saveMarkdownHtml],
+    [loadLatex, saveLatex],
+    [loadNameColors, saveNameColors],
+    [loadNameBorders, saveNameBorders],
+    [loadMessageBars, saveMessageBars],
+  ];
+  assert.deepEqual(
+    preferences.map(([load]) => load()),
+    preferences.map(() => false),
+  );
+  for (const [index, [, save]] of preferences.entries()) {
+    save(true);
+    assert.deepEqual(
+      preferences.map(([load]) => load()),
+      preferences.map((_, other) => other <= index),
+    );
+  }
+  for (const [index, [, save]] of preferences.entries()) {
+    save(false);
+    assert.deepEqual(
+      preferences.map(([load]) => load()),
+      preferences.map((_, other) => other > index),
+    );
+  }
+  for (const key of entries.keys()) entries.set(key, "true");
+  assert.deepEqual(
+    preferences.map(([load]) => load()),
+    preferences.map(() => false),
+  );
+});
+
+test("Markdown settings and the reserved slash command share one preference", () => {
+  saveMarkdown(true);
+  assert.equal(setMarkdown("/markdown off"), false);
+  assert.equal(loadMarkdown(), false);
+  assert.equal(setMarkdown("/markdown on"), true);
+  assert.equal(loadMarkdown(), true);
+  for (const input of ["/markdown", "/markdown yes", "/markdown on extra"])
+    assert.throws(() => setMarkdown(input), /Usage/);
+  assert.throws(() => setAlias({}, "markdown", "ls"));
+  assert.ok(
+    browserCommands([], {}).some((command) => command.name === "/markdown"),
+  );
+});
+
+test("retired HTML opt-ins cannot enable HTML rendering or get read", () => {
+  entries.set("commonroom-markdown-html-code", "on");
+  const reads = [];
+  storage.getItem = (key) => {
+    reads.push(key);
+    return entries.get(key) ?? null;
   };
+  assert.equal(loadMarkdownHtml(), false);
+  assert.deepEqual(reads, ["commonroom-markdown-html"]);
+});
+
+test("font preferences persist, reset and normalize invalid sizes independently", () => {
   assert.deepEqual(loadFonts(storage), defaultFonts);
   saveFonts(storage, { chat: 22, ui: 17 });
   assert.deepEqual(loadFonts(storage), { chat: 22, ui: 17 });
   assert.deepEqual(fontSettings({ chat: 100, ui: 3 }), { chat: 24, ui: 12 });
   saveFonts(storage, defaultFonts);
   assert.deepEqual(loadFonts(storage), defaultFonts);
+  for (const invalid of ["broken", '{"chat":null,"ui":"huge"}']) {
+    entries.set("commonroom-fonts", invalid);
+    assert.deepEqual(loadFonts(storage), defaultFonts);
+  }
 });
-test("malformed or unavailable browser storage keeps the interface usable", () => {
-  assert.deepEqual(loadFonts({ getItem: () => "broken" }), defaultFonts);
-  assert.deepEqual(
-    loadFonts({ getItem: () => '{"chat":null,"ui":"huge"}' }),
-    defaultFonts,
-  );
-  const blocked = {
-    getItem: () => {
-      throw Error();
-    },
-    setItem: () => {
-      throw Error();
-    },
-  };
-  assert.deepEqual(loadFonts(blocked), defaultFonts);
-  assert.doesNotThrow(() => saveFonts(blocked, { chat: 20, ui: 16 }));
-});
-test("theme preference defaults to the system and survives refresh", () => {
-  let saved = null;
-  const storage = {
-    getItem: () => saved,
-    setItem: (_, value) => {
-      saved = value;
-    },
-  };
+
+test("themes persist, invalid choices follow the system and pinned choices override it", () => {
   assert.equal(loadTheme(storage), defaultTheme);
-  for (const choice of ["light", "dark", "system"]) {
+  for (const choice of ["light", "dark", "system", "custom"]) {
     saveTheme(storage, choice);
     assert.equal(loadTheme(storage), choice);
   }
-});
-test("unusable stored themes fall back to following the system", () => {
-  assert.equal(themeSetting(null), defaultTheme);
-  assert.equal(themeSetting(7), defaultTheme);
-  assert.equal(loadTheme({ getItem: () => "midnight" }), defaultTheme);
-  const blocked = {
-    getItem: () => {
-      throw Error();
-    },
-    setItem: () => {
-      throw Error();
-    },
-  };
-  assert.equal(loadTheme(blocked), defaultTheme);
-  assert.doesNotThrow(() => saveTheme(blocked, "dark"));
-});
-test("a pinned theme overrides the system and System follows it", () => {
+  for (const invalid of [null, 7, "midnight"])
+    assert.equal(themeSetting(invalid), defaultTheme);
+  entries.set("commonroom-theme", "midnight");
+  assert.equal(loadTheme(storage), defaultTheme);
   assert.equal(resolvesToDark("dark", false), true);
   assert.equal(resolvesToDark("light", true), false);
   assert.equal(resolvesToDark("system", true), true);
   assert.equal(resolvesToDark("system", false), false);
 });
-test("custom palette seeds survive refresh and expand on the way in", () => {
-  let saved = null;
-  const storage = {
-    getItem: () => saved,
-    setItem: (_, value) => {
-      saved = value;
-    },
-  };
+
+test("palette seeds persist and normalize without discarding the other seed", () => {
   assert.deepEqual(loadSeeds(storage), defaultSeeds);
   saveSeeds(storage, { base: "#123456", accent: "#ABCDEF" });
   assert.deepEqual(loadSeeds(storage), { base: "#123456", accent: "#abcdef" });
   saveSeeds(storage, { base: "#abc", accent: "#DeF" });
   assert.deepEqual(loadSeeds(storage), { base: "#aabbcc", accent: "#ddeeff" });
-});
-test("one unusable seed does not discard the other", () => {
   assert.deepEqual(seedSettings({ base: "nonsense", accent: "#112233" }), {
     base: defaultSeeds.base,
     accent: "#112233",
   });
-  assert.deepEqual(loadSeeds({ getItem: () => '{"base":1,"accent":[]}' }), {
-    ...defaultSeeds,
-  });
-  const blocked = {
-    setItem: () => {
-      throw Error();
-    },
-  };
-  assert.doesNotThrow(() =>
-    saveSeeds(blocked, { base: "#000000", accent: "#ffffff" }),
-  );
+  entries.set("commonroom-palette", '{"base":1,"accent":[]}');
+  assert.deepEqual(loadSeeds(storage), defaultSeeds);
 });
 
-test("retired media preferences do not enable HTML or get read", () => {
-  const reads = [];
-  globalThis.localStorage = {
-    getItem: (key) => {
-      reads.push(key);
-      return null;
-    },
-  };
-  assert.equal(loadMarkdownHtml(), false);
-  assert.deepEqual(reads, ["commonroom-markdown-html"]);
-});
-
-test("retired HTML code opt-in cannot enable unified HTML rendering", () => {
-  const storage = new Map([["commonroom-markdown-html-code", "on"]]);
-  globalThis.localStorage = {
-    getItem: (key) => storage.get(key),
-    setItem: (key, value) => storage.set(key, value),
-  };
-  assert.equal(loadMarkdownHtml(), false);
-  saveMarkdownHtml(true);
-  assert.equal(loadMarkdownHtml(), true);
-  saveMarkdownHtml(false);
-  assert.equal(loadMarkdownHtml(), false);
+test("message bar opacity persists, clamps values and defaults invalid storage to 50%", () => {
+  assert.equal(loadMessageBarOpacity(), 50);
+  for (const value of [0, 20, 50, 100]) {
+    saveMessageBarOpacity(value);
+    assert.equal(loadMessageBarOpacity(), value);
+  }
+  for (const [stored, expected] of [
+    ["", 50],
+    ["garbage", 50],
+    ["NaN", 50],
+    ["Infinity", 50],
+    ["-10", 0],
+    ["200", 100],
+  ]) {
+    entries.set("commonroom-message-bar-opacity", stored);
+    assert.equal(loadMessageBarOpacity(), expected, stored);
+  }
+  saveMessageBarOpacity(NaN);
+  assert.equal(loadMessageBarOpacity(), 50);
 });

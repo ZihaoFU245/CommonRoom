@@ -1,3 +1,8 @@
+import {
+  readStorage,
+  readStorageJson,
+  writeStorage,
+} from "../../api/browserStorage.ts";
 import type { Fonts } from "../../api/protocol.ts";
 import { defaultSeeds, parseHex } from "./palette.ts";
 export const defaultFonts = { chat: 16, ui: 14 };
@@ -12,21 +17,15 @@ export function fontSettings(input: unknown): Fonts {
       : defaultFonts[key];
   return { chat: size("chat", 14, 24), ui: size("ui", 12, 18) };
 }
-export function loadFonts(storage: Pick<Storage, "getItem">) {
-  try {
-    return fontSettings(
-      JSON.parse(storage.getItem("commonroom-fonts") || "null"),
-    );
-  } catch {
-    return { ...defaultFonts };
-  }
+export function loadFonts(storage?: Pick<Storage, "getItem">) {
+  return fontSettings(readStorageJson("commonroom-fonts", storage));
 }
 export function saveFonts(storage: Pick<Storage, "setItem">, value: Fonts) {
-  try {
-    storage.setItem("commonroom-fonts", JSON.stringify(fontSettings(value)));
-  } catch {
-    /* Font controls still work when browser storage is unavailable. */
-  }
+  writeStorage(
+    "commonroom-fonts",
+    JSON.stringify(fontSettings(value)),
+    storage,
+  );
 }
 
 /** Appearance chosen in this browser: follow the system, or pin one theme. */
@@ -37,19 +36,11 @@ export function themeSetting(input: unknown): Theme {
     ? input
     : defaultTheme;
 }
-export function loadTheme(storage: Pick<Storage, "getItem">) {
-  try {
-    return themeSetting(storage.getItem("commonroom-theme"));
-  } catch {
-    return defaultTheme;
-  }
+export function loadTheme(storage?: Pick<Storage, "getItem">) {
+  return themeSetting(readStorage("commonroom-theme", storage));
 }
 export function saveTheme(storage: Pick<Storage, "setItem">, value: Theme) {
-  try {
-    storage.setItem("commonroom-theme", themeSetting(value));
-  } catch {
-    /* The theme control still works when browser storage is unavailable. */
-  }
+  writeStorage("commonroom-theme", themeSetting(value), storage);
 }
 /** A pinned choice wins; "system" defers to the operating system preference. */
 export function resolvesToDark(theme: Theme, systemDark: boolean) {
@@ -71,19 +62,13 @@ export function seedSettings(input: unknown): Seeds {
     accent: parseHex(value["accent"]) ?? defaultSeeds.accent,
   };
 }
-export function loadSeeds(storage: Pick<Storage, "getItem">) {
-  try {
-    return seedSettings(
-      JSON.parse(storage.getItem("commonroom-palette") || "null"),
-    );
-  } catch {
-    return { ...defaultSeeds };
-  }
+export function loadSeeds(storage?: Pick<Storage, "getItem">) {
+  return seedSettings(readStorageJson("commonroom-palette", storage));
 }
 export function saveSeeds(storage: Pick<Storage, "setItem">, value: unknown) {
-  try {
-    storage.setItem("commonroom-palette", JSON.stringify(seedSettings(value)));
-  } catch {
-    /* Custom colors still work when browser storage is unavailable. */
-  }
+  writeStorage(
+    "commonroom-palette",
+    JSON.stringify(seedSettings(value)),
+    storage,
+  );
 }

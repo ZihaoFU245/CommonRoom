@@ -1,3 +1,4 @@
+import { readStorage, writeStorage } from "../../api/browserStorage.ts";
 import type { Command } from "../../api/protocol.ts";
 
 export const markdownCommand: Command = {
@@ -41,11 +42,7 @@ export const markdownManual = `# /markdown
 - Each sent message keeps its own format, including after refresh; /markdown on|off does not change earlier messages.`;
 const key = "commonroom.markdown";
 export function loadMarkdown(): boolean {
-  try {
-    return localStorage.getItem(key) === "on";
-  } catch {
-    return false;
-  }
+  return readStorage(key) === "on";
 }
 export function setMarkdown(input: string): boolean {
   if (!/^\/markdown (on|off)$/u.test(input))
@@ -54,10 +51,6 @@ export function setMarkdown(input: string): boolean {
   return saveMarkdown(enabled);
 }
 export function saveMarkdown(enabled: boolean): boolean {
-  try {
-    localStorage.setItem(key, enabled ? "on" : "off");
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
+  writeStorage(key, enabled ? "on" : "off");
   return enabled;
 }

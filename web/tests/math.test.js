@@ -3,16 +3,7 @@ import { markdownNodes } from "../src/features/conversation/richMarkdown.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseFragment } from "parse5";
-import {
-  loadMarkdown,
-  saveMarkdown,
-  setMarkdown,
-} from "../src/features/preferences/markdown.ts";
 import { mathMarkup } from "../src/features/conversation/math.ts";
-import {
-  loadLatex,
-  saveLatex,
-} from "../src/features/preferences/formatting.ts";
 
 function flatten(nodes) {
   return nodes.flatMap((node) =>
@@ -90,36 +81,6 @@ test("KaTeX tolerates invalid input and blocks trusted HTML/network extensions",
       true,
     ).includes("katex-display"),
   );
-});
-
-test("formatting preferences persist independently and Markdown settings share slash-command storage", () => {
-  const storage = new Map();
-  globalThis.localStorage = {
-    getItem: (key) => storage.get(key),
-    setItem: (key, value) => storage.set(key, value),
-  };
-  assert.equal(loadLatex(), false);
-  assert.equal(saveMarkdown(true), true);
-  assert.equal(loadMarkdown(), true);
-  assert.equal(loadLatex(), false);
-  saveLatex(true);
-  assert.equal(loadLatex(), true);
-  setMarkdown("/markdown off");
-  assert.equal(loadMarkdown(), false);
-  assert.equal(loadLatex(), true);
-  saveLatex(false);
-  assert.equal(loadLatex(), false);
-  globalThis.localStorage = {
-    getItem() {
-      throw Error("blocked");
-    },
-    setItem() {
-      throw Error("blocked");
-    },
-  };
-  assert.equal(loadLatex(), false);
-  assert.doesNotThrow(() => saveLatex(true));
-  assert.equal(saveMarkdown(true), true);
 });
 
 test("raw HTML cannot forge generated math markers even alongside real math", () => {

@@ -29,13 +29,30 @@ fn media_permissions_ownership_and_reference_transactions() {
     for size in [0, e.media.config.max_size + 1] {
         assert!(e.allocate_media("alice", &room, "file", size).is_err());
     }
-    let media = ready(&e, "alice", &room);
+    let mut media = e.allocate_media("alice", &room, "photo.png", 8).unwrap();
+    let missing = format!("![file](/api/media/{}/file)", uuid::Uuid::new_v4());
+    let error = e.execute(Some("bob"), Some("lobby"), &missing).unwrap_err();
+    assert_eq!(error.message(), "Upload not found.");
+    assert_eq!(
+        e.execute(
+            Some("bob"),
+            Some("lobby"),
+            &format!("![file](/api/media/{}/file)", media.id),
+        )
+        .unwrap_err(),
+        error
+    );
+    media.ready = true;
+    media.object_key = media.final_key();
+    media.content_type = "image/png".into();
+    e.finish_media("alice", &media).unwrap();
     assert!(e.media_owner("bob", &media.id).is_err());
     assert!(e.readable_media("alice", &media.id).is_err());
     let before = e.data.clone();
-    assert!(
+    assert_eq!(
         e.execute(Some("bob"), Some("lobby"), &link(&media))
-            .is_err()
+            .unwrap_err(),
+        error
     );
     assert!(e.data == before);
     assert!(room_messages(&e, "lobby").is_empty());
@@ -50,6 +67,16 @@ fn media_permissions_ownership_and_reference_transactions() {
     e.execute(Some("bob"), Some("lobby"), &link(&media))
         .unwrap();
     let first = room_messages(&e, "lobby")[0].id.clone();
+    assert_eq!(
+        e.execute(
+            Some("bob"),
+            Some("lobby"),
+            &format!("/edit {first} {missing}"),
+        )
+        .unwrap_err()
+        .message(),
+        "You can only edit your own messages."
+    );
     e.execute(Some("alice"), Some("lobby"), &format!("/retract {first}"))
         .unwrap();
     assert!(e.readable_media("bob", &media.id).is_ok());

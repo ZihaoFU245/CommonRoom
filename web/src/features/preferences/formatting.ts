@@ -1,3 +1,4 @@
+import { readStorage, writeStorage } from "../../api/browserStorage.ts";
 const latexKey = "commonroom-markdown-latex";
 const nameColorsKey = "commonroom-name-colors";
 const messageBarsKey = "commonroom-message-bars";
@@ -5,66 +6,34 @@ const messageBarOpacityKey = "commonroom-message-bar-opacity";
 const nameBordersKey = "commonroom-name-borders";
 
 export function loadLatex(): boolean {
-  try {
-    return localStorage.getItem(latexKey) === "on";
-  } catch {
-    return false;
-  }
+  return readStorage(latexKey) === "on";
 }
 
 export function saveLatex(enabled: boolean): void {
-  try {
-    localStorage.setItem(latexKey, enabled ? "on" : "off");
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
+  writeStorage(latexKey, enabled ? "on" : "off");
 }
 
 export function loadMessageBars(): boolean {
-  try {
-    return localStorage.getItem(messageBarsKey) === "on";
-  } catch {
-    return false;
-  }
+  return readStorage(messageBarsKey) === "on";
 }
 
 export function saveMessageBars(enabled: boolean): void {
-  try {
-    localStorage.setItem(messageBarsKey, enabled ? "on" : "off");
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
+  writeStorage(messageBarsKey, enabled ? "on" : "off");
 }
 
 export function loadNameBorders(): boolean {
-  try {
-    return localStorage.getItem(nameBordersKey) === "on";
-  } catch {
-    return false;
-  }
+  return readStorage(nameBordersKey) === "on";
 }
 
 export function saveNameBorders(enabled: boolean): void {
-  try {
-    localStorage.setItem(nameBordersKey, enabled ? "on" : "off");
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
+  writeStorage(nameBordersKey, enabled ? "on" : "off");
 }
 
 export function loadNameColors(): boolean {
-  try {
-    return localStorage.getItem(nameColorsKey) === "on";
-  } catch {
-    return false;
-  }
+  return readStorage(nameColorsKey) === "on";
 }
 export function saveNameColors(enabled: boolean): void {
-  try {
-    localStorage.setItem(nameColorsKey, enabled ? "on" : "off");
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
+  writeStorage(nameColorsKey, enabled ? "on" : "off");
 }
 
 const defaultMessageBarOpacity = 50;
@@ -74,22 +43,11 @@ function normalizeMessageBarOpacity(value: number): number {
     : defaultMessageBarOpacity;
 }
 export function loadMessageBarOpacity(): number {
-  try {
-    const value = localStorage.getItem(messageBarOpacityKey);
-    return value?.trim()
-      ? normalizeMessageBarOpacity(Number(value))
-      : defaultMessageBarOpacity;
-  } catch {
-    return defaultMessageBarOpacity;
-  }
+  const value = readStorage(messageBarOpacityKey);
+  return value?.trim()
+    ? normalizeMessageBarOpacity(Number(value))
+    : defaultMessageBarOpacity;
 }
 export function saveMessageBarOpacity(value: number): void {
-  try {
-    localStorage.setItem(
-      messageBarOpacityKey,
-      String(normalizeMessageBarOpacity(value)),
-    );
-  } catch {
-    /* Keep the session preference when storage is unavailable. */
-  }
+  writeStorage(messageBarOpacityKey, String(normalizeMessageBarOpacity(value)));
 }

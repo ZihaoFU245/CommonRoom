@@ -215,7 +215,7 @@ async fn value(
     let app = app.clone();
     let context = context.clone();
     let old_user = old_user.to_owned();
-    let permit = app.io_permit().map_err(Error::storage)?;
+    let permit = app.io_permit()?;
     let mut routed = std::mem::take(interests);
     let (user, frames, routed) = tokio::spawn(async move {
         let _permit = permit;

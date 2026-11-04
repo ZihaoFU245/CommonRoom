@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { useAccountPreference } from "./useAccountPreference.ts";
 import { applyAppearance } from "../features/preferences/appearance.ts";
-import { defaultSeeds } from "../features/preferences/palette.ts";
 import {
-  defaultTheme,
   loadSeeds,
   loadTheme,
   themeSetting,
@@ -12,13 +10,7 @@ import {
 } from "../features/preferences/settings.ts";
 
 export function useTheme() {
-  const [local] = useState(() => {
-    try {
-      return { theme: loadTheme(localStorage), seeds: loadSeeds(localStorage) };
-    } catch {
-      return { theme: defaultTheme, seeds: defaultSeeds };
-    }
-  });
+  const [local] = useState(() => ({ theme: loadTheme(), seeds: loadSeeds() }));
   const [choice, setChoice] = useAccountPreference("theme", local.theme);
   const [base, setBase] = useAccountPreference(
     "palette.base",

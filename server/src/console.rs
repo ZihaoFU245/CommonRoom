@@ -70,7 +70,7 @@ pub(crate) async fn execute(app: &App, line: String) -> Result<Option<Output>, E
     if line.trim().is_empty() {
         return Ok(None);
     }
-    let permit = app.io_permit().map_err(EngineError::Unavailable)?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     tokio::spawn(async move {
         let _permit = permit;

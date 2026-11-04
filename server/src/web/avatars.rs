@@ -39,9 +39,7 @@ pub(crate) async fn allocate_as(
     access: Access,
     Json(input): Json<Upload>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let permit = app.io_permit()?;
     let worker = app.clone();
     let (storage, media) = super::admission::spawn_io(permit, async move {
         let (identity, _) = super::media::native_context(&worker, access).await?;
@@ -72,13 +70,7 @@ pub(crate) async fn allocate_as(
             .await?;
         Ok::<_, ApiError>((storage, media))
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Avatar worker unavailable.",
-        )
-    })??;
+    .await??;
     let url = storage
         .upload_url_with_hints(&media.id, media.size, HeaderMap::new())
         .await
@@ -173,9 +165,7 @@ async fn owner(
     access: &Access,
     id: String,
 ) -> Result<crate::engine::media::Media, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     let access = access.clone();
     super::admission::spawn_io(permit, async move {
@@ -188,22 +178,14 @@ async fn owner(
         })
         .await
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Avatar worker unavailable.",
-        )
-    })?
+    .await?
 }
 async fn readable(
     app: &App,
     access: &Access,
     id: String,
 ) -> Result<crate::engine::media::Media, ApiError> {
-    let permit = app
-        .io_permit()
-        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let permit = app.io_permit()?;
     let app = app.clone();
     let access = access.clone();
     super::admission::spawn_io(permit, async move {
@@ -267,13 +249,7 @@ async fn readable(
             "Avatar visibility changed; retry shortly.",
         ))
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Avatar worker unavailable.",
-        )
-    })?
+    .await?
 }
 
 #[cfg(test)]

@@ -80,6 +80,35 @@ test("HTTP client preserves base paths, cookies, cancellation and validates resp
     (error) => error instanceof ApiError && error.status === 502,
   );
 });
+test("HTTP errors retain structured codes and explicit retry policy", async (t) => {
+  httpFixture(t);
+  for (const [status, details] of [
+    [
+      409,
+      { error: "Conversation changed.", code: "conflict", retryable: true },
+    ],
+    [500, { error: "Internal failure.", code: "internal", retryable: false }],
+    [403, { error: "Access denied." }],
+    [503, { error: "Unavailable.", code: 1, retryable: "yes" }],
+  ]) {
+    globalThis.fetch = async () => Response.json(details, { status });
+    await assert.rejects(api.session(), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, status);
+      assert.equal(error.message, details.error);
+      assert.equal(
+        error.code,
+        typeof details.code === "string" ? details.code : undefined,
+      );
+      assert.equal(
+        error.retryable,
+        typeof details.retryable === "boolean" ? details.retryable : undefined,
+      );
+      return true;
+    });
+  }
+});
+
 test("outbound frames retain the request ID and Unicode text", () => {
   let raw;
   const frame = { id: 1, room: "room", text: "@bob 你好 👋" };

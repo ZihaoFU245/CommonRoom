@@ -10,7 +10,7 @@ mod preferences;
 pub(crate) mod principal;
 mod profiles;
 mod query_commands;
-pub(crate) use error::ApiError;
+pub(crate) use error::{ApiError, error};
 mod bot_commands;
 mod cleanup_commands;
 pub(crate) mod commands;
@@ -92,7 +92,7 @@ impl App {
             crate::engine::EngineError::Unavailable("Password workers busy; retry shortly.".into())
         })
     }
-    pub fn io_permit(&self) -> Result<admission::IoPermit, String> {
+    pub fn io_permit(&self) -> Result<admission::IoPermit, crate::engine::EngineError> {
         admission::io_permit(&self.io_jobs, &self.admission.metrics)
     }
 
@@ -234,32 +234,6 @@ impl App {
     fn engine_api(&self) -> Result<mutations::EngineGuard<'_>, ApiError> {
         self.engine().map_err(ApiError::from)
     }
-}
-pub(crate) fn error(code: StatusCode, message: &str) -> ApiError {
-    use crate::engine::EngineError;
-    let typed = match code {
-        StatusCode::BAD_REQUEST => Some(EngineError::Invalid(message.into())),
-        StatusCode::NOT_FOUND => Some(EngineError::NotFound(message.into())),
-        StatusCode::FORBIDDEN => Some(EngineError::Forbidden(message.into())),
-        StatusCode::CONFLICT => Some(EngineError::Conflict(message.into())),
-        StatusCode::SERVICE_UNAVAILABLE => Some(EngineError::Unavailable(message.into())),
-        StatusCode::INTERNAL_SERVER_ERROR => Some(EngineError::Internal(message.into())),
-        _ => None,
-    };
-    if let Some(error) = typed {
-        return error.into();
-    }
-    let name = match code {
-        StatusCode::UNAUTHORIZED => "unauthorized",
-        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
-        _ => "request_failed",
-    };
-    ApiError(
-        code,
-        Json(
-            json!({ "error": message, "code":name, "retryable":code == StatusCode::TOO_MANY_REQUESTS }),
-        ),
-    )
 }
 
 pub fn router(app: App) -> Router {

@@ -48,7 +48,10 @@ async fn contract(app: App, db: crate::engine::database::Connection, postgres: b
     reject_events(&db, postgres, true);
     assert!(matches!(
         attempt(&app, "native-password").await,
-        Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, _))
+        Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            ..
+        })
     ));
     assert!(app.engine_read().unwrap().data.sessions == before);
     assert_eq!(app.engine_read().unwrap().revision, revision);
@@ -80,7 +83,10 @@ async fn contract(app: App, db: crate::engine::database::Connection, postgres: b
     reject_events(&db, postgres, true);
     assert!(matches!(
         sign_out(&app, &cookie).await,
-        Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, _))
+        Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            ..
+        })
     ));
     assert_eq!(
         app.engine_read().unwrap().session(token).as_deref(),
@@ -97,7 +103,10 @@ async fn contract(app: App, db: crate::engine::database::Connection, postgres: b
     assert!(matches!(notices.try_recv().unwrap(), Change::Account(user) if user=="alice"));
     assert!(matches!(
         attempt(&app, "wrong-password").await,
-        Err(ApiError(StatusCode::UNAUTHORIZED, _))
+        Err(ApiError {
+            status: StatusCode::UNAUTHORIZED,
+            ..
+        })
     ));
     assert_eq!(
         sign_out(&app, &cookie).await.unwrap().status(),

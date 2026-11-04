@@ -25,7 +25,8 @@ export function mediaFileUrl(href: string, base?: string) {
       !url.hash
       ? { ...path, url, base: new URL(path.basePath, url).href }
       : null;
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
     return null;
   }
 }
@@ -78,7 +79,8 @@ export function isFileLink(
       !url.username &&
       !url.password
     );
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
     return false;
   }
 }

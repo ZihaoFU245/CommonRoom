@@ -102,7 +102,8 @@ export function mediaMarkdown(
       mediaPath(media.path)?.id !== media.media_id
     )
       return null;
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
     return null;
   }
   const label = media.filename.replace(/[\\[\]<>\r\n]/gu, "_");

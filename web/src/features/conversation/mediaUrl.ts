@@ -18,7 +18,8 @@ export function safeMediaUrl(value: string): boolean {
       !!url.hostname &&
       !value.includes("\\")
     );
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
     return false;
   }
 }

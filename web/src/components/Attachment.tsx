@@ -87,6 +87,11 @@ export function Attachment({
       if (!controller.signal.aborted) setBusy(false);
     }
   }
+  function preview() {
+    open().catch((failure: unknown) => {
+      console.error("Attachment preview failed", failure);
+    });
+  }
   useEffect(() => {
     if (playback.resume)
       player.current?.play().catch(() => {
@@ -149,12 +154,7 @@ export function Attachment({
   const status = error ? (
     <p role="status">
       {error}{" "}
-      <button
-        type="button"
-        onClick={() => {
-          open().catch(() => undefined);
-        }}
-      >
+      <button type="button" onClick={preview}>
         Retry
       </button>
     </p>
@@ -208,7 +208,7 @@ export function Attachment({
           allowRender={context?.allowHtml ?? false}
           textStatus={source === null ? status : undefined}
           onModeChange={(mode) => {
-            if (mode && source === null) open().catch(() => undefined);
+            if (mode && source === null) preview();
           }}
         >
           {source === null ? (

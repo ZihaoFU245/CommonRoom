@@ -41,35 +41,42 @@ export function ManagedAttachment({
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    async function check(refresh = false) {
-      try {
-        const media = await api.mediaStatus(id, controller.signal, refresh);
-        if (controller.signal.aborted) return;
-        setChecked({ id, info: media });
-        clearTimeout(timer);
-        if (!media.expired && media.expires !== null) {
-          // Recheck long lifetimes without overflowing the browser timer limit.
-          timer = setTimeout(
-            () => {
-              check(true).catch(() => undefined);
-            },
-            Math.min(
-              2_147_483_647,
-              Math.max(1000, media.expires * 1000 - Date.now() + 100),
-            ),
-          );
-        }
-      } catch {
-        // A network or access error must not be mislabeled as expiry.
-        if (!controller.signal.aborted)
-          setChecked((previous) => (previous?.id === id ? previous : { id }));
-      }
+    function check(refresh = false) {
+      if (controller.signal.aborted) return;
+      api
+        .mediaStatus(id, controller.signal, refresh)
+        .then(
+          (media) => {
+            if (controller.signal.aborted) return;
+            setChecked({ id, info: media });
+            clearTimeout(timer);
+            if (!media.expired && media.expires !== null) {
+              // Recheck long lifetimes without overflowing the browser timer limit.
+              timer = setTimeout(
+                () => check(true),
+                Math.min(
+                  2_147_483_647,
+                  Math.max(1000, media.expires * 1000 - Date.now() + 100),
+                ),
+              );
+            }
+          },
+          () => {
+            // A failed metadata read must not be mislabeled as expiry.
+            if (!controller.signal.aborted)
+              setChecked((previous) =>
+                previous?.id === id ? previous : { id },
+              );
+          },
+        )
+        .catch((error: unknown) => {
+          console.error("Attachment status update failed", error);
+        });
     }
     function resume() {
-      if (document.visibilityState === "visible")
-        check(true).catch(() => undefined);
+      if (document.visibilityState === "visible") check(true);
     }
-    check().catch(() => undefined);
+    check();
     document.addEventListener("visibilitychange", resume);
     return () => {
       controller.abort();

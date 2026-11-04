@@ -211,7 +211,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes sho
   visible anchor and live arrivals can resume merging into the loaded window.
 - `features/conversation/` contains pure ordering, date, mention, and unread helpers. `features/preferences/` contains account preference synchronization and notification helpers.
 - `features/conversation/math.ts` renders untrusted LaTeX with bounded KaTeX settings. `components/Math.tsx` rebuilds that generated markup as Preact nodes and CSSOM styles under the chat CSP; message-supplied HTML never uses this trusted path. The Markdown token converter creates math nodes independently of HTML; generated nodes survive safe HTML filtering. Preferences shares the `/markdown` sending state and stores the separate LaTeX display preference locally.
-- Markdown sending preferences/manuals live in the dependency-free `features/preferences/markdown.ts`. The message renderer uses a shared async loader without suspending virtual rows: plain-text chats do not load Markdown-it. Basic Markdown images use validated URLs and passive nodes. TeX tokenization and KaTeX are separate optional chunks; Security options and math default off.
+- Markdown sending preferences/manuals live in the lightweight `features/preferences/markdown.ts`. The message renderer uses a shared async loader without suspending virtual rows: plain-text chats do not load Markdown-it. Basic Markdown images use validated URLs and passive nodes. TeX tokenization and KaTeX are separate optional chunks; Security options and math default off.
 - Account shows the profile card and an inline username editor. Security owns the expandable password editor and the account-wide Allow HTML option, defaulting off. Account editors animate with auto-animate, clear drafts on cancellation or section changes, and close after successful commands. Every HTML portion requires a Render HTML click and uses the same isolated `MarkdownFrame.tsx` preview, including passive HTML. Mixed messages render surrounding Markdown normally; `htmlFragments.ts` extracts HTML with token positions and balanced tag boundaries, retaining inline formatting, math and literal code. Adjacent HTML/CSS/script portions share a viewer. Each HTML portion starts as a compact Show text / Render HTML cover. Show text toggles a scrollable source panel capped at 400px; both panels use the shared message-content height animation and scroll anchoring. With Allow HTML off, `HtmlSource.tsx` displays the same bounded source panel directly. Reduced motion skips the animation. Full HTML documents bypass Markdown indentation parsing; fenced/code-span examples remain literal.
 - `HtmlMarkdownGate.tsx` loads the optional HTML source converter on demand and retains source on failures. `richMarkdown.ts` converts mixed Markdown/HTML for the frame; the sanitizer remains a pure helper rather than a separate display path. `MessageList` bounds independent fragment choices to the current history window, resets all fragment choices on edits/settings/conversation changes and memoizes state across scrolling. ResizeObserver keeps virtual heights current.
 - `markdown-frame.html` is a single generated static resource with an inline bootstrap compiled from `markdownFrame.ts`. Vite exposes its content-versioned URL, and Nginx serves it with a dedicated CSP and immutable caching. It has no bundle/font/CSS subrequests. Each selected preview is an iframe with only `sandbox="allow-scripts"`; same-origin access, forms, popups and top navigation remain disabled. A one-shot parent message supplies the source; the frame applies a leading CSP again before executing the HTML. It reports bounded heights via source-checked messages and ResizeObserver, without polling. Frames unmount outside the virtual window; remounts use the browser's cached shell and restart the selected preview. No hidden frame pool or persistent game state is kept.
@@ -494,11 +494,26 @@ test-only. Policy/audit serialization retains its existing transactional layout.
 Engine domain, authorization, command, persistence and history operations retain
 `EngineError` classes. SQLite/filesystem/serialization failures are sanitized at
 source; transports map classes centrally instead of guessing a status from the
-operation. The history pager retains its checked range/revision error type and
+operation. Browser errors retain typed status/message fields until HTTP response
+serialization; bot adapters consume those fields directly. Admission rejects with
+a typed unavailable error, and worker join failures share one HTTP conversion.
+The browser API client preserves validated `code` and `retryable` fields, including
+explicit non-retryable failures. The command dispatcher owns one accepted worker
+and formats an error only at the socket reply boundary.
+The history pager retains its checked range/revision error type and
 converts it explicitly. Native bot commands preserve failure classes through their
 receipt transaction. Browser command frames and console output format errors only
 at the final text boundary. Hidden policy/catalogue resources return the same
 failure class for missing and inaccessible targets.
+
+`api/browserStorage.ts` owns optional local persistence. It handles browser
+security/quota exceptions and invalid saved JSON without catching preference
+normalization or rendering failures. Preference sync, snapshot refresh and bot
+catalogue refresh separate transport failures from application callbacks;
+acknowledged writes are not retried when a subscriber fails. Unexpected background
+application errors are reported. Media storage maintenance tolerates expected
+storage/cancellation failures while exposing programming failures through the
+worker event promise and keeping the next write queue usable.
 
 Avatar changes broadcast a stable-account invalidation and render compact profile
 frames. Owned visibility plans capture allowed conversation IDs; historical-author

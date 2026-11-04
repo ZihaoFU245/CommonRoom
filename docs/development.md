@@ -225,6 +225,15 @@ Node/Deno development and bot-worker requirements remain separate.
 - Write application web code in `.ts`/`.tsx`. Keep strict null/index/optional-property checks, explicit return paths, switch fallthrough checks, and unused/unreachable-code checks enabled. Use `unknown` at JSON boundaries, validate it, then narrow to a protocol type. Avoid `any`, non-null assertions, unchecked protocol casts, `@ts-ignore`, and disabling checks to make a build pass.
 - `pnpm --dir web typecheck` explicitly uses TypeScript 7 via the `@typescript/native` alias. The separate `typescript` 6 dependency supplies the supported compiler API for type-aware ESLint. Keep both lockfile versions compatible with their tooling; the default bare `tsc` executable belongs to the API dependency. ESLint rejects unsafe assignments/returns, unhandled promises, asynchronous callbacks used as void handlers, and non-null assertions. Handle promises with `await` or an explicit rejection handler; `void promise` does not bypass the rule.
 - Declare component props and type DOM refs/events. Keep rendering components separate from connection, history, and command state. Prefer pure feature helpers and focused hooks.
+- Validate untrusted HTTP, socket and stored data at their owning boundary, then
+  use the validated values in normal logic. Keep errors typed until the transport
+  or UI action presents them. Catch only around the operation whose failure can
+  actually be recovered; application callbacks must not enter network retry paths.
+  Cleanup may preserve a primary error, but unexpected background failures must
+  remain observable. Optional local storage goes through `api/browserStorage.ts`:
+  security/quota errors use defaults, malformed JSON is discarded, and unrelated
+  exceptions propagate. Do not wrap rendering or preference normalization in
+  storage fallbacks.
 - Preserve current UI conventions: the light theme uses background `#fcfcfc` and accent
   `#1924be`; the dark theme uses background `#070708` and accent `#878787`. Chat stays
   left-aligned with browser-local dates and Unicode message text. Themed surfaces read

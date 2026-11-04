@@ -172,58 +172,60 @@ export function outputMarkdown(
     return result;
   // History may contain arbitrary user text, including Markdown and fences.
   if (command === "/history") return `## History\n\n${codeBlock(result)}`;
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(result);
-    if (value !== null && typeof value === "object") {
-      if (
-        command === "/bot" &&
-        parts[1] === "token" &&
-        parts[2] === "ls" &&
-        Array.isArray(value)
-      ) {
-        return `## Bot credentials\n\n${
-          value
-            .map((item: unknown) => {
-              if (!item || typeof item !== "object" || Array.isArray(item))
-                return "";
-              return Object.entries(item)
-                .map(([key, field]: [string, unknown]) => {
-                  const text =
-                    field === null
-                      ? key === "expires"
-                        ? "No expiry"
-                        : "Account-wide"
-                      : (key === "created" || key === "expires") &&
-                          typeof field === "number"
-                        ? messageDate(field).full
-                        : Array.isArray(field)
-                          ? field
-                              .map((entry: unknown) => String(entry))
-                              .join(", ")
-                          : typeof field === "string"
-                            ? field
-                            : JSON.stringify(field);
-                  return `- **${literal(key)}:** ${inlineCode(text)}`;
-                })
-                .join("\n");
-            })
-            .filter(Boolean)
-            .join("\n\n---\n\n") || "None."
-        }`;
-      }
-      const metadataScope =
-        parts[4] ??
-        (/^(?:#|@global$)/u.test(parts[3] ?? "") ? parts[3] : undefined);
-      const title =
-        command === "/user" && parts[1] === "get"
-          ? `User metadata for ${parts[2] === "@all" ? "all users" : parts[2]} ${scopeLabel(metadataScope)}`
-          : "Result";
-      if (command === "/user" && parts[1] === "get")
-        return `## ${literal(title)}\n\n${metadataList(value)}`;
-      return `## ${literal(title)}\n\n${codeBlock(JSON.stringify(value, null, 2), "json")}`;
-    }
-  } catch {
+    value = JSON.parse(result);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     // Ordinary acknowledgements and lists are text.
+  }
+  if (value !== null && typeof value === "object") {
+    if (
+      command === "/bot" &&
+      parts[1] === "token" &&
+      parts[2] === "ls" &&
+      Array.isArray(value)
+    ) {
+      return `## Bot credentials\n\n${
+        value
+          .map((item: unknown) => {
+            if (!item || typeof item !== "object" || Array.isArray(item))
+              return "";
+            return Object.entries(item)
+              .map(([key, field]: [string, unknown]) => {
+                const text =
+                  field === null
+                    ? key === "expires"
+                      ? "No expiry"
+                      : "Account-wide"
+                    : (key === "created" || key === "expires") &&
+                        typeof field === "number"
+                      ? messageDate(field).full
+                      : Array.isArray(field)
+                        ? field
+                            .map((entry: unknown) => String(entry))
+                            .join(", ")
+                        : typeof field === "string"
+                          ? field
+                          : JSON.stringify(field);
+                return `- **${literal(key)}:** ${inlineCode(text)}`;
+              })
+              .join("\n");
+          })
+          .filter(Boolean)
+          .join("\n\n---\n\n") || "None."
+      }`;
+    }
+    const metadataScope =
+      parts[4] ??
+      (/^(?:#|@global$)/u.test(parts[3] ?? "") ? parts[3] : undefined);
+    const title =
+      command === "/user" && parts[1] === "get"
+        ? `User metadata for ${parts[2] === "@all" ? "all users" : parts[2]} ${scopeLabel(metadataScope)}`
+        : "Result";
+    if (command === "/user" && parts[1] === "get")
+      return `## ${literal(title)}\n\n${metadataList(value)}`;
+    return `## ${literal(title)}\n\n${codeBlock(JSON.stringify(value, null, 2), "json")}`;
   }
   if ((command === "/user" && parts[1] === "ls") || command === "/members")
     return listing(

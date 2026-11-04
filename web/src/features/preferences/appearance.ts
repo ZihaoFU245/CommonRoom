@@ -1,7 +1,6 @@
 import { controlMotion } from "./motion.ts";
-import { defaultSeeds, derivePalette, paletteTokens } from "./palette.ts";
+import { derivePalette, paletteTokens } from "./palette.ts";
 import {
-  defaultTheme,
   loadSeeds,
   loadTheme,
   resolvesToDark,
@@ -54,13 +53,5 @@ export function applyAppearance(
  */
 export function bootAppearance() {
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  try {
-    applyAppearance(
-      loadTheme(localStorage),
-      systemDark,
-      loadSeeds(localStorage),
-    );
-  } catch {
-    applyAppearance(defaultTheme, systemDark, { ...defaultSeeds });
-  }
+  applyAppearance(loadTheme(), systemDark, loadSeeds());
 }

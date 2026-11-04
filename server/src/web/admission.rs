@@ -48,20 +48,26 @@ impl Admission {
             metrics: Arc::default(),
         }
     }
-    pub fn stats(&self) -> serde_json::Value {
+    pub fn stats(&self) -> Result<serde_json::Value, crate::engine::EngineError> {
         let active_http = self
             .state
             .lock()
-            .map(|state| state.http.values().sum::<usize>())
-            .unwrap_or(0);
-        serde_json::json!({"http_active":active_http,
+            .map_err(|_| {
+                crate::engine::EngineError::Unavailable(
+                    "Admission state unavailable; restart the service.".into(),
+                )
+            })?
+            .http
+            .values()
+            .sum::<usize>();
+        Ok(serde_json::json!({"http_active":active_http,
             "http_per_account_limit":self.limits.http_per_account,
             "browser_sockets_available":self.browser.available_permits(),
             "browser_sockets_limit":self.limits.browser_sockets,
             "bot_sockets_available":self.bot.available_permits(),
             "bot_sockets_limit":self.limits.bot_sockets,
             "sockets_per_account_limit":self.limits.sockets_per_account,
-            "http":self.metrics.stats()})
+            "http":self.metrics.stats()}))
     }
 }
 pub(crate) struct SocketLease {
@@ -89,10 +95,10 @@ pub(crate) struct IoPermit {
 pub(crate) fn io_permit(
     pool: &Arc<Semaphore>,
     metrics: &Arc<super::metrics::Metrics>,
-) -> Result<IoPermit, String> {
+) -> Result<IoPermit, crate::engine::EngineError> {
     let global = pool.clone().try_acquire_owned().map_err(|_| {
         super::metrics::increment(&metrics.io_rejections);
-        "Server busy; retry shortly."
+        crate::engine::EngineError::Unavailable("Server busy; retry shortly.".into())
     })?;
     super::metrics::increment(&metrics.io_accepted);
     let active = metrics
@@ -337,13 +343,7 @@ pub(crate) async fn http(
     let resolved = match resolved {
         Ok(Some(resolved)) => resolved,
         Ok(None) => return next.run(request).await,
-        Err(_) => {
-            return super::error(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "Admission worker unavailable.",
-            )
-            .into_response();
-        }
+        Err(error) => return error.into_response(),
     };
     let lease = match app.admission.http(resolved.principal.account().to_owned()) {
         Ok(lease) => lease,

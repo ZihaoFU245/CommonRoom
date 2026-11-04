@@ -121,23 +121,34 @@ test("repeated full and range hits persist small recency records without rewriti
   assert.equal((await f.load(instance)).status, 403);
   assert.equal(f.puts(), writes, "recency must not rewrite attachment bytes");
 });
-test("immutable bytes survive reloads, queries share bytes and authorization stays live", async () => {
-  const f = fixture();
-  assert.equal(
-    await (await f.load(new MediaCache(f.storage, f.network))).text(),
-    "abcdef",
-  );
-  await Promise.all(f.work);
-  const reload = new MediaCache(f.storage, f.network);
-  assert.equal(await (await f.load(reload, "?playback=2")).text(), "abcdef");
-  const download = await f.load(reload, "?download=true");
-  assert.match(download.headers.get("Content-Disposition"), /^attachment;/);
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
-  assert.equal(f.calls.filter((call) => call.url.endsWith("/info")).length, 3);
-  f.deny();
-  assert.equal((await f.load(reload)).status, 403);
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
-});
+for (const kind of ["media", "avatars"]) {
+  test(`${kind} bytes survive reloads, share query variants and recheck authorization`, async () => {
+    const f = fixture(path.replace("api/media/", `api/${kind}/`));
+    assert.equal(
+      await (await f.load(new MediaCache(f.storage, f.network))).text(),
+      "abcdef",
+    );
+    await Promise.all(f.work);
+    const reload = new MediaCache(f.storage, f.network);
+    assert.equal(await (await f.load(reload, "?playback=2")).text(), "abcdef");
+    const download = await f.load(reload, "?download=true");
+    assert.match(download.headers.get("Content-Disposition"), /^attachment;/);
+    assert.equal(
+      f.calls.filter((call) => !call.url.endsWith("/info")).length,
+      1,
+    );
+    assert.equal(
+      f.calls.filter((call) => call.url.endsWith("/info")).length,
+      3,
+    );
+    f.deny();
+    assert.equal((await f.load(reload)).status, 403);
+    assert.equal(
+      f.calls.filter((call) => !call.url.endsWith("/info")).length,
+      1,
+    );
+  });
+}
 test("incompatible cached records are deleted and refetched without migrations", async () => {
   const cases = [
     { status: 206 },
@@ -297,32 +308,11 @@ test("default browser fetch is invoked without a class-instance receiver", async
   await Promise.all(f.work);
 });
 
-test("persistent cache evicts old entries rather than growing without bounds", async () => {
-  const f = fixture();
-  const instance = new MediaCache(f.storage, f.network);
-  let first;
-  for (let index = 0; index < 129; index++) {
-    const url = new URL(
-      path.replace(
-        /d5cd8a44-d8b7-4c63-91fe-3cc63f106178/u,
-        `d5cd8a44-d8b7-4c63-91fe-${String(index).padStart(12, "0")}`,
-      ),
-    );
-    first ??= url.href;
-    await (
-      await instance.respond(new Request(url), url, (work) => f.work.push(work))
-    ).arrayBuffer();
-    await Promise.all(f.work);
-  }
-  assert.equal(f.saved.size, 128);
-  assert.equal(f.saved.has(first), false);
-});
-
-test("cache hits protect recently viewed objects from eviction", async () => {
+test("cache entry limits evict the oldest object and warm hits protect recent objects", async () => {
   const f = fixture();
   const instance = new MediaCache(f.storage, f.network);
   const urls = Array.from(
-    { length: 129 },
+    { length: 130 },
     (_, index) =>
       new URL(
         path.replace(
@@ -338,11 +328,14 @@ test("cache hits protect recently viewed objects from eviction", async () => {
     await Promise.all(f.work);
   }
   for (const url of urls.slice(0, 128)) await load(url);
-  await load(urls[0]);
   await load(urls[128]);
   assert.equal(f.saved.size, 128);
-  assert.equal(f.saved.has(urls[0].href), true);
-  assert.equal(f.saved.has(urls[1].href), false);
+  assert.equal(f.saved.has(urls[0].href), false);
+  await load(urls[1]);
+  await load(urls[129]);
+  assert.equal(f.saved.size, 128);
+  assert.equal(f.saved.has(urls[1].href), true);
+  assert.equal(f.saved.has(urls[2].href), false);
 });
 
 test("bulk byte eviction reads recency once per entry instead of once per removed object", async () => {
@@ -481,20 +474,6 @@ test("actual network Content-Length wins over info and cached ranges use that le
   assert.equal(await range.text(), "cd");
 });
 
-test("managed avatar bytes reuse the cache after reload but removal and logout deny reuse", async () => {
-  const avatar = path.replace("api/media/", "api/avatars/");
-  const f = fixture(avatar);
-  const first = new MediaCache(f.storage, f.network);
-  assert.equal(await (await f.load(first)).text(), "abcdef");
-  await Promise.all(f.work);
-  const reload = new MediaCache(f.storage, f.network);
-  assert.equal(await (await f.load(reload)).text(), "abcdef");
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
-  f.deny();
-  assert.equal((await f.load(reload)).status, 403);
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
-});
-
 test("cache accounting reuses response sizes and enforces byte limits after restart", async () => {
   const f = fixture();
   const bytes = 150 * 1024 * 1024;
@@ -538,7 +517,7 @@ test("failed recency writes preserve bytes and external eviction stays bounded",
   await Promise.all(f.work);
   const cache = await f.storage.open("commonroom-media-recency");
   t.mock.method(cache, "put", () => {
-    throw new Error("quota");
+    throw new DOMException("quota", "QuotaExceededError");
   });
   now += 60000;
   assert.equal(await (await f.load(instance)).text(), "abcdef");
@@ -550,6 +529,33 @@ test("failed recency writes preserve bytes and external eviction stays bounded",
   );
   assert.equal(await (await f.load(instance)).text(), "abcdef");
   f.saved.clear();
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
+  await Promise.all(f.work);
+  assert.equal(f.saved.size, 1);
+});
+
+test("unexpected cache writer failures surface without poisoning later fills", async (t) => {
+  const f = fixture();
+  const cache = await f.storage.open("commonroom-media");
+  const put = cache.put;
+  const failure = new Error("Broken cache writer");
+  let fail = true;
+  t.mock.method(cache, "put", (...args) => {
+    if (fail) {
+      fail = false;
+      throw failure;
+    }
+    return put(...args);
+  });
+  const instance = new MediaCache(f.storage, f.network);
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
+  const results = await Promise.allSettled(f.work);
+  assert.ok(
+    results.some(
+      (result) => result.status === "rejected" && result.reason === failure,
+    ),
+  );
+  f.work.length = 0;
   assert.equal(await (await f.load(instance)).text(), "abcdef");
   await Promise.all(f.work);
   assert.equal(f.saved.size, 1);
@@ -859,88 +865,74 @@ test("a cancelled consumer leaves only a bounded background fill", async (t) => 
   assert.equal(f.saved.size, 1, "the expired fill releases its reservation");
 });
 
-test("cold-fill admission bounds concurrent cache copies and releases slots", async () => {
-  const f = fixture();
-  const instance = new MediaCache(f.storage, f.network);
-  const cache = await f.storage.open();
-  const put = cache.put;
-  let release;
-  const gate = new Promise((resolve) => {
-    release = resolve;
-  });
-  cache.put = async (...args) => {
-    await gate;
-    return put(...args);
-  };
-  const urls = Array.from(
-    { length: 16 },
-    (_, index) =>
-      new URL(
-        path.replace("06178/file", `${String(index).padStart(5, "0")}/file`),
+for (const { label, size, count, admitted } of [
+  { label: "entry count", size: 6, count: 16, admitted: 4 },
+  {
+    label: "byte reservations",
+    size: 150 * 1024 * 1024,
+    count: 2,
+    admitted: 1,
+  },
+]) {
+  test(`cold-fill ${label} bounds cache copies and releases reservations`, async () => {
+    const f = fixture();
+    const instance = new MediaCache(f.storage, async (url) =>
+      String(url).endsWith("/info")
+        ? Response.json({
+            size,
+            content_type: "image/png",
+            filename: "test.png",
+          })
+        : new Response("abcdef", {
+            headers: { "Content-Length": String(size) },
+          }),
+    );
+    const cache = await f.storage.open();
+    const put = cache.put;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    cache.put = async (...args) => {
+      await gate;
+      return put(...args);
+    };
+    const urls = Array.from(
+      { length: count },
+      (_, index) =>
+        new URL(
+          path.replace("06178/file", `${String(index).padStart(5, "0")}/file`),
+        ),
+    );
+    const responses = await Promise.all(
+      urls.map((url) =>
+        instance.respond(new Request(url), url, (work) => f.work.push(work)),
       ),
-  );
-  const responses = await Promise.all(
-    urls.map((url) =>
-      instance.respond(new Request(url), url, (work) => f.work.push(work)),
-    ),
-  );
-  await Promise.all(responses.map((response) => response.text()));
-  assert.equal(
-    f.puts(),
-    0,
-    "network downloads remain usable while cache writes wait",
-  );
-  release();
-  await Promise.all(f.work);
-  assert.equal(f.puts(), 4, "only four response copies can await cache writes");
-  const url = new URL(path.replace("06178/file", "99999/file"));
-  await (
-    await instance.respond(new Request(url), url, (work) => f.work.push(work))
-  ).text();
-  await Promise.all(f.work);
-  assert.equal(f.puts(), 5, "completed fills return their admission slots");
-});
-
-test("cold-fill byte reservations bound large copies independently of entry count", async () => {
-  const f = fixture();
-  const size = 150 * 1024 * 1024;
-  const instance = new MediaCache(f.storage, async (url, _options) =>
-    String(url).endsWith("/info")
-      ? Response.json({
-          size,
-          content_type: "image/png",
-          filename: "large.png",
-        })
-      : new Response("abcdef", { headers: { "Content-Length": String(size) } }),
-  );
-  const cache = await f.storage.open();
-  const put = cache.put;
-  let release;
-  const gate = new Promise((resolve) => {
-    release = resolve;
+    );
+    assert.deepEqual(
+      await Promise.all(responses.map((response) => response.text())),
+      urls.map(() => "abcdef"),
+    );
+    assert.equal(
+      f.puts(),
+      0,
+      "downloads remain usable while cache writes wait",
+    );
+    release();
+    await Promise.all(f.work);
+    assert.equal(f.puts(), admitted, label);
+    const url = new URL(path.replace("06178/file", "99999/file"));
+    await (
+      await instance.respond(new Request(url), url, (work) => f.work.push(work))
+    ).text();
+    await Promise.all(f.work);
+    assert.equal(
+      f.puts(),
+      admitted + 1,
+      "completed fills return their reservations",
+    );
   });
-  cache.put = async (...args) => {
-    await gate;
-    return put(...args);
-  };
-  const urls = [
-    new URL(path),
-    new URL(path.replace("06178/file", "00000/file")),
-  ];
-  const responses = await Promise.all(
-    urls.map((url) =>
-      instance.respond(new Request(url), url, (work) => f.work.push(work)),
-    ),
-  );
-  await Promise.all(responses.map((response) => response.text()));
-  release();
-  await Promise.all(f.work);
-  assert.equal(
-    f.puts(),
-    1,
-    "two 150 MiB copies must not enter a 256 MiB fill budget",
-  );
-});
+}
 
 test("a cancelled fill waiter exits without cancelling another caller's download", async () => {
   const f = fixture();

@@ -151,7 +151,7 @@ pub(super) async fn execute(
         }
     })
     .await
-    .map_err(|_| EngineError::Unavailable("Password worker unavailable.".into()))??;
+    .map_err(EngineError::unavailable)??;
     let passwd = request.passwd;
     let ordering = app.mutations.metadata().await?;
     let (reply, pending) = app

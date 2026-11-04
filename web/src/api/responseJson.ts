@@ -30,7 +30,8 @@ export async function responseJson(response: Response): Promise<unknown> {
   }
   try {
     return JSON.parse(parts.join("")) as unknown;
-  } catch {
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     return null;
   }
 }

@@ -33,9 +33,7 @@ pub(crate) async fn get(
             "Invalid command directory cursor.",
         ));
     }
-    let permit = app
-        .io_permit()
-        .map_err(|e| error(StatusCode::SERVICE_UNAVAILABLE, &e))?;
+    let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
         let identity = super::auth::authenticated_identity(&app, &headers).await?;
@@ -97,11 +95,5 @@ pub(crate) async fn get(
         })
         .await
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Command metadata worker unavailable.",
-        )
-    })?
+    .await?
 }

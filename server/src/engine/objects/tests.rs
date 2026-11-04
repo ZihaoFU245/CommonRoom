@@ -222,16 +222,29 @@ fn metadata_persists_and_read_commands_do_not_write() {
     e.provision("alice", "hash".into(), true, false).unwrap();
     e.execute(None, None, "/user set alice label saved")
         .unwrap();
+    e.execute(Some("alice"), None, "/new room lobby").unwrap();
     drop(e);
-    let e = Engine::open(&path).unwrap();
+    let mut e = Engine::open(&path).unwrap();
+    let revision = e.revision;
     let writes = e.store.db.lock().unwrap().total_changes();
+    let audit = e.data.policy.audit.len();
     let result = e
         .read_command(Some("alice"), None, "/user get @all")
         .unwrap()
         .unwrap();
     assert!(result.contains("saved"));
     assert!(!result.contains("hash"));
-    assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
+    for input in [
+        "/user ls",
+        "/user get alice",
+        "/room ls",
+        "/clean 7d #lobby",
+    ] {
+        e.execute(None, None, input).unwrap();
+        assert_eq!(e.revision, revision);
+        assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
+        assert_eq!(e.data.policy.audit.len(), audit);
+    }
 }
 #[test]
 fn room_owner_can_invite_with_implicit_or_explicit_scope_and_errors_use_public_syntax() {

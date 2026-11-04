@@ -15,9 +15,7 @@ pub(crate) async fn set_display_name(
     Json(input): Json<DisplayNameInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
-    let permit = app
-        .io_permit()
-        .map_err(|cause| error(StatusCode::SERVICE_UNAVAILABLE, &cause))?;
+    let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
         let (identity, store) =
             media::native_context(&app, media::Access::Browser(headers)).await?;
@@ -50,13 +48,7 @@ pub(crate) async fn set_display_name(
         })
         .await
     })
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Display name worker unavailable.",
-        )
-    })?
+    .await?
 }
 
 #[cfg(test)]

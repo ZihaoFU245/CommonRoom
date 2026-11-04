@@ -1,3 +1,4 @@
+import { readStorageJson, writeStorage } from "../../api/browserStorage.ts";
 import { markdownCommand } from "../preferences/markdown.ts";
 import type { Command } from "../../api/protocol.ts";
 import { redactCommand } from "./console.ts";
@@ -104,15 +105,11 @@ function validAlias(a: string, b: unknown): b is string {
 }
 const key = "commonroom.command-aliases";
 export function loadAliases(): Aliases {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return Object.fromEntries(
-      Object.entries(value).filter(([a, b]) => validAlias(a, b)),
-    );
-  } catch {
-    return {};
-  }
+  const value = readStorageJson(key);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([a, b]) => validAlias(a, b)),
+  );
 }
 export function saveAlias(aliases: Aliases, input: string): Aliases {
   const match = input.match(/^\/alias\s+(\S+)\s+(.+)$/u);
@@ -132,21 +129,15 @@ export function setAlias(
       "Use a single command name and a command target; /alias, /sudo and /markdown cannot be remapped.",
     );
   const next = { ...aliases, [a]: b };
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-  } catch {
+  if (!writeStorage(key, JSON.stringify(next)))
     throw new Error("Could not save aliases in this browser.");
-  }
   return next;
 }
 export function removeAlias(aliases: Aliases, name: string): Aliases {
   const next = { ...aliases };
   delete next[name];
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-  } catch {
+  if (!writeStorage(key, JSON.stringify(next)))
     throw new Error("Could not save aliases in this browser.");
-  }
   return next;
 }
 export function expandAlias(input: string, aliases: Aliases): string {

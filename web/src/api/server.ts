@@ -1,5 +1,6 @@
 /** Server addresses are directory URLs so API paths retain the selected prefix. */
 import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
+import { readStorage, writeStorage } from "./browserStorage.ts";
 let selectedServer: string | undefined;
 
 export function serverBaseUrl(): string {
@@ -12,8 +13,9 @@ export function normalizeServerUrl(value: string): string {
   let url: URL;
   try {
     url = new URL(input.includes("://") ? input : `https://${input}`);
-  } catch {
-    throw new Error("Enter a valid server URL.");
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    throw new TypeError("Enter a valid server URL.");
   }
   if (
     !["https:", "http:"].includes(url.protocol) ||
@@ -23,7 +25,7 @@ export function normalizeServerUrl(value: string): string {
     url.search ||
     url.hash
   )
-    throw new Error(
+    throw new TypeError(
       "Use an HTTP or HTTPS URL without credentials, a query, or a fragment.",
     );
   url.pathname = `${url.pathname.replace(/\/+$/u, "")}/`;
@@ -35,20 +37,19 @@ function storageKey(): string {
 }
 
 export function savedServerUrl(): string {
+  const saved = readStorage(storageKey());
   try {
-    const saved = localStorage.getItem(storageKey());
     if (saved) return normalizeServerUrl(saved);
-  } catch {
-    /* A blocked store or invalid old value falls back to this deployment. */
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    /* Invalid saved URLs fall back to this deployment. */
   }
   return new URL(".", document.baseURI).href;
 }
 
 export function saveServerUrl(value: string): string {
   const url = normalizeServerUrl(value || new URL(".", document.baseURI).href);
-  try {
-    localStorage.setItem(storageKey(), url);
-  } catch {
+  if (!writeStorage(storageKey(), url)) {
     throw new Error(
       "Browser storage is unavailable. The server URL could not be saved.",
     );

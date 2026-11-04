@@ -437,7 +437,8 @@ export function parseFrame(raw: string): ServerFrame | null {
   let value: unknown;
   try {
     value = JSON.parse(raw);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     return null;
   }
   if (isSnapshot(value)) return value;
