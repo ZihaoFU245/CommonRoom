@@ -170,6 +170,7 @@ export interface BotActivity {
   draft?: string;
 }
 export type ServerFrame =
+  | { kind: "media" }
   | BotActivity
   | AvatarUpdate
   | { kind: "bot_commands"; conversation_id: string }
@@ -443,6 +444,7 @@ export function parseFrame(raw: string): ServerFrame | null {
   }
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
+  if (value.kind === "media") return { kind: "media" };
   if (
     value.kind === "activity" &&
     typeof value.conversation_id === "string" &&

@@ -66,7 +66,8 @@ function fixture() {
   };
   const rect = { width: 300, height: 30, top: 100, bottom: 130 };
   let painted = 30,
-    explicit = false;
+    explicit = false,
+    restoring = false;
   const animations = [];
   const hook = useContentResizeMotion();
   hook.content.current = {
@@ -76,7 +77,8 @@ function fixture() {
   hook.panel.current = {
     dataset: {},
     getBoundingClientRect: () => ({ ...rect, height: painted }),
-    closest: () => viewport,
+    closest: (selector) =>
+      selector === ".message-list" ? viewport : restoring ? {} : null,
     animate(frames, options) {
       const events = new Map();
       const animation = {
@@ -119,6 +121,9 @@ function fixture() {
     },
     paint(height) {
       painted = height;
+    },
+    restoring(value) {
+      restoring = value;
     },
     explicit(value) {
       explicit = value;
@@ -256,6 +261,25 @@ test("content still animates away from the bottom without a follow frame loop", 
     assert.equal(f.viewport.scrollTop, 0);
     f.animations[0].finish();
     assert.equal(f.animations[0].cancelled, true);
+  } finally {
+    f.close();
+  }
+});
+
+test("restored virtual content skips loading motion and keeps its final size as the next baseline", () => {
+  const f = fixture();
+  try {
+    f.restoring(true);
+    f.resize(210);
+    assert.equal(f.animations.length, 0);
+    f.restoring(false);
+    f.resize(210);
+    assert.equal(f.animations.length, 0);
+    f.resize(240);
+    assert.deepEqual(
+      f.animations[0].frames.map((frame) => frame.height),
+      ["210px", "240px"],
+    );
   } finally {
     f.close();
   }

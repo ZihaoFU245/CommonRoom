@@ -174,6 +174,15 @@ export function useMediaUploads(
     release();
     setStatus("");
   }
+  function select(media: CompletedMedia) {
+    if (controller.current || currentAttachment.current) return;
+    allocated.current = null;
+    const value = { media, preview: null };
+    currentAttachment.current = value;
+    setAttachment(value);
+    setError("");
+    setStatus("Library asset ready.");
+  }
   return {
     enabled,
     maxSize,
@@ -184,6 +193,7 @@ export function useMediaUploads(
     start,
     cancel,
     published,
+    select,
     retry: retryFile ? () => start(retryFile) : undefined,
   };
 }

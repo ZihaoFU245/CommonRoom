@@ -10,9 +10,10 @@ pub(in crate::engine::database) async fn initialize(
     let version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut *db)
         .await?;
-    if version != 0 && version != 19 && version != i64::from(SQLITE_SCHEMA_VERSION) {
+    if version != 0 && version != 19 && version != 20 && version != i64::from(SQLITE_SCHEMA_VERSION)
+    {
         return Err(Error::InvalidRequest(
-            "Unsupported database schema; only v19 upgrades and current v20 are supported.",
+            "Unsupported database schema; only v19/v20 upgrades and current v21 are supported.",
         ));
     }
     if version == 0 {
@@ -24,31 +25,35 @@ pub(in crate::engine::database) async fn initialize(
             ));
         }
     }
-    if version == 19 {
+    if version == 19 || version == 20 {
         let mut tx = db.begin().await?;
-        let state: String = sqlx::query_scalar("SELECT json FROM state WHERE id=1")
-            .fetch_one(&mut *tx)
-            .await?;
-        let state = upgrade_credentials(&state)?;
-        let mut metadata: crate::engine::Data = serde_json::from_str(&state)
-            .map_err(|_| Error::InvalidData("Invalid legacy state; upgrade cancelled.".into()))?;
-        for (name, json) in sqlx::query_as::<_, (String, String)>(
-            "SELECT key,json FROM entities WHERE kind='account'",
-        )
-        .fetch_all(&mut *tx)
-        .await?
-        {
-            let account = serde_json::from_str(&json).map_err(|_| {
-                Error::InvalidData("Invalid legacy account; upgrade cancelled.".into())
+        if version == 19 {
+            let state: String = sqlx::query_scalar("SELECT json FROM state WHERE id=1")
+                .fetch_one(&mut *tx)
+                .await?;
+            let state = upgrade_credentials(&state)?;
+            let mut metadata: crate::engine::Data = serde_json::from_str(&state).map_err(|_| {
+                Error::InvalidData("Invalid legacy state; upgrade cancelled.".into())
             })?;
-            metadata.users.insert(name, account);
+            for (name, json) in sqlx::query_as::<_, (String, String)>(
+                "SELECT key,json FROM entities WHERE kind='account'",
+            )
+            .fetch_all(&mut *tx)
+            .await?
+            {
+                let account = serde_json::from_str(&json).map_err(|_| {
+                    Error::InvalidData("Invalid legacy account; upgrade cancelled.".into())
+                })?;
+                metadata.users.insert(name, account);
+            }
+            crate::bots::models::validate(&metadata).map_err(Error::InvalidData)?;
+            sqlx::query("UPDATE state SET json=?1 WHERE id=1")
+                .bind(state)
+                .execute(&mut *tx)
+                .await?;
         }
-        crate::bots::models::validate(&metadata).map_err(Error::InvalidData)?;
-        sqlx::query("UPDATE state SET json=?1 WHERE id=1")
-            .bind(state)
-            .execute(&mut *tx)
-            .await?;
-        (&mut *tx).execute("PRAGMA user_version=20").await?;
+        (&mut *tx).execute(include_str!("library.sql")).await?;
+        (&mut *tx).execute("PRAGMA user_version=21").await?;
         tx.commit().await?;
     }
     (&mut *db)
@@ -57,6 +62,7 @@ pub(in crate::engine::database) async fn initialize(
     if version == 0 {
         let mut tx = db.begin().await?;
         (&mut *tx).execute(include_str!("schema.sql")).await?;
+        (&mut *tx).execute(include_str!("library.sql")).await?;
         sqlx::query("INSERT INTO state(id,json) VALUES(1,?1)")
             .bind(state)
             .execute(&mut *tx)

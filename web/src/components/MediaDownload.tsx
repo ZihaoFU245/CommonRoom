@@ -1,6 +1,5 @@
 import type { ComponentChildren } from "preact";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
-import { mediaDownloadUrl } from "../api/mediaFile.ts";
 
 /** Downloads stream through the same authorized byte cache as displayed media. */
 export function MediaDownload({
@@ -12,14 +11,12 @@ export function MediaDownload({
   children: ComponentChildren;
   className?: string;
 }) {
-  const file = useFileUrl(href);
+  const file = useFileUrl(href, { download: true });
   return (
     <>
       <a
         class={className}
-        href={
-          file.url ? mediaDownloadUrl(file.url, document.baseURI) : undefined
-        }
+        href={file.url}
         target="_blank"
         rel="noopener noreferrer"
         aria-disabled={!file.url}

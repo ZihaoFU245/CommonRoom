@@ -14,6 +14,7 @@ import {
 // Use an installed browser and an isolated profile; no backend or account data.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const remote = process.argv[2] === "--remote-server";
+const plainHttp = remote && process.argv[3] === "http";
 const candidates = process.env.CHROME_BIN
   ? [process.env.CHROME_BIN]
   : [
@@ -49,6 +50,7 @@ try {
       root,
       configFile: resolve(root, "vite.config.ts"),
       logLevel: "error",
+      ...(plainHttp ? { mode: "development" } : {}),
       build: { outDir },
     });
     const serving = await preview({
@@ -89,7 +91,8 @@ try {
       root,
       address.port,
       process.argv[3] === "*",
-      process.argv[3] === "same-origin",
+      plainHttp || process.argv[3] === "same-origin",
+      plainHttp,
     );
   browser = spawn(
     executable,
@@ -200,7 +203,7 @@ try {
       );
     }
   } else {
-    const deadline = Date.now() + 45000;
+    const deadline = Date.now() + 90000;
     let result;
     while (Date.now() < deadline) {
       const evaluation = await command(

@@ -1,4 +1,4 @@
--- PostgreSQL v1 representation of SQLite HEAD v20. JSON stays text to preserve
+-- PostgreSQL v1 representation of SQLite HEAD v21. JSON stays text to preserve
 -- serialized payloads and no-op comparisons across an offline transfer.
 CREATE TABLE chat_schema(id BIGINT PRIMARY KEY CHECK(id=1), version BIGINT NOT NULL);
 INSERT INTO chat_schema VALUES(1,1);
@@ -88,6 +88,34 @@ CREATE INDEX media_due_expiry ON media(expires,created) WHERE deleted=0 AND dele
 CREATE INDEX media_due_orphan ON media(unreferenced,created) WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL;
 CREATE INDEX media_staging_due ON media(staging_attempt,created) WHERE staging_clean=0;
 CREATE INDEX media_tombstone ON media(created) WHERE deleted=1 AND staging_clean=1;
+CREATE TABLE library_owners(account_id TEXT NOT NULL,media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,PRIMARY KEY(account_id,media_id));
+CREATE INDEX library_owners_media ON library_owners(media_id,account_id);
+CREATE TABLE library_entries(account_id TEXT NOT NULL,media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,position BIGINT NOT NULL,PRIMARY KEY(account_id,media_id));
+CREATE INDEX library_entries_media ON library_entries(media_id,account_id);
+CREATE UNIQUE INDEX library_entries_order ON library_entries(account_id,position);
+CREATE TABLE library_recents(account_id TEXT NOT NULL,media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,used BIGINT NOT NULL,PRIMARY KEY(account_id,media_id));
+CREATE INDEX library_recents_order ON library_recents(account_id,used DESC,media_id);
+CREATE TABLE library_storage(id BIGINT PRIMARY KEY CHECK(id=1),bytes BIGINT NOT NULL CHECK(bytes>=0),objects BIGINT NOT NULL CHECK(objects>=0));
+INSERT INTO library_storage VALUES(1,0,0);
+CREATE INDEX media_library_backlog ON media(COALESCE(unreferenced,created)) WHERE conversation='@library' AND (deleting=1 OR deleted=1) AND (deleted=0 OR staging_clean=0);
+CREATE FUNCTION chat_library_storage() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+ old_bytes BIGINT := 0;
+ old_objects BIGINT := 0;
+ new_bytes BIGINT := 0;
+ new_objects BIGINT := 0;
+BEGIN
+ IF TG_OP!='INSERT' THEN old_bytes := (CASE WHEN OLD.conversation='@library' AND OLD.deleted=0 AND OLD.deleting=1 THEN OLD.size ELSE 0 END + CASE WHEN OLD.conversation='@library' AND OLD.staging_clean=0 AND (OLD.deleting=1 OR OLD.deleted=1) THEN OLD.size ELSE 0 END); old_objects := (CASE WHEN OLD.conversation='@library' AND OLD.deleted=0 AND OLD.deleting=1 THEN 1 ELSE 0 END + CASE WHEN OLD.conversation='@library' AND OLD.staging_clean=0 AND (OLD.deleting=1 OR OLD.deleted=1) THEN 1 ELSE 0 END); END IF;
+ IF TG_OP!='DELETE' THEN new_bytes := (CASE WHEN NEW.conversation='@library' AND NEW.deleted=0 AND NEW.deleting=1 THEN NEW.size ELSE 0 END + CASE WHEN NEW.conversation='@library' AND NEW.staging_clean=0 AND (NEW.deleting=1 OR NEW.deleted=1) THEN NEW.size ELSE 0 END); new_objects := (CASE WHEN NEW.conversation='@library' AND NEW.deleted=0 AND NEW.deleting=1 THEN 1 ELSE 0 END + CASE WHEN NEW.conversation='@library' AND NEW.staging_clean=0 AND (NEW.deleting=1 OR NEW.deleted=1) THEN 1 ELSE 0 END); END IF;
+ IF old_bytes!=new_bytes OR old_objects!=new_objects THEN
+  UPDATE library_storage SET bytes=bytes+new_bytes-old_bytes,objects=objects+new_objects-old_objects WHERE id=1;
+ END IF;
+ RETURN NULL;
+END;
+$$;
+CREATE TRIGGER library_storage_insert AFTER INSERT ON media FOR EACH ROW EXECUTE FUNCTION chat_library_storage();
+CREATE TRIGGER library_storage_update AFTER UPDATE OF conversation,size,deleting,deleted,staging_clean ON media FOR EACH ROW EXECUTE FUNCTION chat_library_storage();
+CREATE TRIGGER library_storage_delete AFTER DELETE ON media FOR EACH ROW EXECUTE FUNCTION chat_library_storage();
 CREATE FUNCTION chat_media_reference_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  UPDATE media SET unreferenced=coalesce(unreferenced,floor(extract(epoch FROM clock_timestamp()))::bigint)

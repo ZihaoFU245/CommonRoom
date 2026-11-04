@@ -42,6 +42,7 @@ export function useContentResizeMotion() {
       // Explicit folding owns its own animation and footer pin. Width changes
       // should reflow immediately, rather than replaying every mounted message.
       if (
+        clip.closest("[data-layout-restoring]") !== null ||
         folding ||
         finishingFold ||
         Math.abs(before.width - next.width) > 0.5 ||

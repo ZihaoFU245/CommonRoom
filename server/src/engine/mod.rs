@@ -35,6 +35,10 @@ mod media_store;
 pub(crate) use media_store::MediaStore;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "tests/library.rs"]
+pub(crate) mod library_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "tests/media.rs"]
 mod media_tests;
 pub(crate) use history_write::PendingHistory;

@@ -221,17 +221,64 @@ fn populate(e: &mut Engine) -> crate::bots::models::MessageInput {
 #[test]
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
 fn postgres_sqlite_migration_preserves_every_table_and_retries() {
-    assert_eq!(SQLITE_SCHEMA_VERSION, 20);
+    assert_eq!(SQLITE_SCHEMA_VERSION, 21);
     assert_eq!(POSTGRES_SCHEMA_VERSION, 1);
     let fixture = PostgresFixture::new();
     let source = tempfile::tempdir().unwrap();
     let path = source.path().join("chat.sqlite");
     let mut e = Engine::open(&path).unwrap();
     let request = populate(&mut e);
+    let library = crate::engine::library_tests::upload(&e, "alice");
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("![sticker](/api/media/{}/file)", library.id),
+    )
+    .unwrap();
+    let room = e.data.rooms["lobby"].id.clone();
+    let bob = e.active_account_id("bob").unwrap().to_owned();
+    for action in [LibraryAction::Save, LibraryAction::Acquire] {
+        runtime::block_on(e.media_store().library_action(&LibraryWrite {
+            account: &bob,
+            id: &library.id,
+            source: Some(&room),
+            action,
+            confirm_last: false,
+            quota: e.library_quota("bob"),
+            config: &crate::config::MediaConfig::default(),
+        }))
+        .unwrap()
+        .unwrap();
+    }
+    // Transfer preserves legacy recent ordering values without rewriting SQLite.
+    e.store
+        .db
+        .lock()
+        .unwrap()
+        .execute("UPDATE library_recents SET used=9000000000", [])
+        .unwrap();
+    let retired = crate::engine::library_tests::upload(&e, "alice");
+    runtime::block_on(e.media_store().library_action(&LibraryWrite {
+        account: e.active_account_id("alice").unwrap(),
+        id: &retired.id,
+        source: None,
+        action: LibraryAction::Release,
+        confirm_last: true,
+        quota: e.library_quota("alice"),
+        config: &crate::config::MediaConfig::default(),
+    }))
+    .unwrap()
+    .unwrap();
     assert!(Engine::migrate_sqlite(&path, &fixture.url).is_err()); // active owner
     let expected_data = e.data.clone();
     let expected_cursors = e.store.read_positions.clone();
-    let expected_history = serde_json::to_value(e.history("bob", "lobby").unwrap()).unwrap();
+    let mut expected_history = serde_json::to_value(e.history("bob", "lobby").unwrap()).unwrap();
+    // Display-name cache versions contain the process instance; migration/reopen
+    // must preserve the values and history, rather than that transient version.
+    expected_history["message_display_names"]
+        .as_object_mut()
+        .unwrap()
+        .remove("version");
     drop(e);
     let original = std::fs::read(&path).unwrap();
     {
@@ -244,7 +291,7 @@ fn postgres_sqlite_migration_preserves_every_table_and_retries() {
         );
     }
     let report = Engine::migrate_sqlite(&path, &fixture.url).unwrap();
-    assert_eq!(report.rows.len(), 14);
+    assert_eq!(report.rows.len(), 18);
     assert!(report.rows.values().all(|rows| *rows > 0));
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let mut pg = Engine::open_postgres(&fixture.url).unwrap();
@@ -259,10 +306,12 @@ fn postgres_sqlite_migration_preserves_every_table_and_retries() {
     );
     assert!(pg.data == expected_data);
     assert_eq!(pg.store.read_positions, expected_cursors);
-    assert_eq!(
-        serde_json::to_value(pg.history("bob", "lobby").unwrap()).unwrap(),
-        expected_history
-    );
+    let mut actual_history = serde_json::to_value(pg.history("bob", "lobby").unwrap()).unwrap();
+    actual_history["message_display_names"]
+        .as_object_mut()
+        .unwrap()
+        .remove("version");
+    assert_eq!(actual_history, expected_history);
     assert_eq!(pg.session("persisted-session").as_deref(), Some("bob"));
     assert!(
         pg.send_bot_message("helper", &request, Some("send-key"))
@@ -290,6 +339,25 @@ fn postgres_sqlite_migration_preserves_every_table_and_retries() {
         .unwrap();
     pg.execute(Some("alice"), Some("lobby"), "new post-migration message")
         .unwrap();
+    pg.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("![sticker](/api/media/{}/file)", library.id),
+    )
+    .unwrap();
+    assert_eq!(
+        pg.store
+            .db
+            .lock()
+            .unwrap()
+            .query_row::<i64, _, _>(
+                "SELECT used FROM library_recents WHERE media_id=$1",
+                params![&library.id],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        9_000_000_001
+    );
     assert!(pg.data.next_sequence > expected_data.next_sequence);
     pg.execute(
         Some("alice"),
@@ -318,7 +386,7 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
     let path = source.path().join("chat.sqlite");
     assert!(Engine::migrate_sqlite(&path, "invalid-target").is_err());
     assert!(!path.exists());
-    for version in [18, 19, 21] {
+    for version in [18, 19, 20, 22] {
         let db = Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE IF NOT EXISTS marker(value TEXT);")
             .unwrap();
@@ -329,7 +397,7 @@ fn migration_rejects_unsupported_source_without_connecting_or_rewriting() {
         assert!(
             Engine::migrate_sqlite(&path, "invalid-target")
                 .unwrap_err()
-                .contains("v20")
+                .contains("v21")
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }

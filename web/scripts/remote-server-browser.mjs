@@ -1,4 +1,4 @@
-// Production-mode browser integration. All keys, accounts and files are disposable.
+// HTTP debug and production HTTPS integration. All fixture data is disposable.
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -56,6 +56,7 @@ export async function startRemoteServer(
   vitePort,
   wildcard = false,
   sameOrigin = false,
+  plainHttp = false,
 ) {
   const work = await mkdtemp(join(tmpdir(), "commonroom-remote-browser-"));
   const servers = [];
@@ -112,18 +113,24 @@ export async function startRemoteServer(
       key: await readFile(join(work, "key.pem")),
       cert: await readFile(join(work, "cert.pem")),
     };
-    const ui = httpsServer(tls, (req, res) => {
+    const publicServer = (handler) =>
+      plainHttp ? httpServer(handler) : httpsServer(tls, handler);
+    const scheme = plainHttp ? "http" : "https";
+    const ui = publicServer((req, res) => {
       // Never send this isolated browser's default bootstrap to an existing dev backend.
       if (sameOrigin && req.url.startsWith("/server/")) {
         apiRequests.push({ method: req.method, path: req.url });
-        proxy(apiPort, true)(req, res);
+        // Match auto/debug.sh's preview: HTTP GETs lack browser Fetch Metadata.
+        if (plainHttp && !req.headers.origin && !req.headers["sec-fetch-site"])
+          req.headers.origin = uiOrigin;
+        proxy(apiPort, !plainHttp)(req, res);
       } else if (req.url.startsWith("/api/")) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Please log in." }));
       } else proxy(vitePort)(req, res);
     });
     track(ui);
-    const uiOrigin = `https://ui.test:${await listen(ui)}`;
+    const uiOrigin = `${scheme}://ui.test:${await listen(ui)}`;
     const objects = new Map();
     const storageRequests = [];
     const storageHandler = async (req, res) => {
@@ -208,15 +215,15 @@ export async function startRemoteServer(
         res.destroy(error);
       });
     });
-    const publicStorage = httpsServer(tls, (req, res) => {
+    const publicStorage = publicServer((req, res) => {
       storageHandler(req, res).catch((error) => {
         res.destroy(error);
       });
     });
     track(internalStorage, publicStorage);
     const internalStorageOrigin = `http://127.0.0.1:${await listen(internalStorage)}`;
-    const storageOrigin = `https://store.test:${await listen(publicStorage)}`;
-    const apiProxy = httpsServer(tls, (req, res) => {
+    const storageOrigin = `${scheme}://${plainHttp ? "ui.test" : "store.test"}:${await listen(publicStorage)}`;
+    const apiProxy = publicServer((req, res) => {
       apiRequests.push({ method: req.method, path: req.url });
       proxy(apiPort, true)(req, res);
     });
@@ -242,7 +249,7 @@ export async function startRemoteServer(
     apiProxy.on("upgrade", upgrade);
     if (sameOrigin) ui.on("upgrade", upgrade);
     track(apiProxy);
-    const apiOrigin = `https://api.test:${await listen(apiProxy)}`;
+    const apiOrigin = `${scheme}://api.test:${await listen(apiProxy)}`;
     const base = `${sameOrigin ? uiOrigin : apiOrigin}/server/`;
     const data = join(work, "data");
     await mkdir(data);
@@ -250,7 +257,7 @@ export async function startRemoteServer(
     await writeFile(
       join(data, "config.json"),
       JSON.stringify({
-        production: true,
+        production: !plainHttp,
         origins: wildcard ? ["*"] : [uiOrigin],
         bind: "127.0.0.1:0",
         base_url: "/server/",
@@ -296,6 +303,13 @@ export async function startRemoteServer(
       "/user new alice remote-test-password admin\n/user new bob other-test-password user\n/room new files\n/room add alice #files\n",
     );
     await until(() => logs.includes("alice added to #files"), "accounts");
+    if (plainHttp) {
+      child.stdin.write("/room new other\n/room add alice #other\n");
+      await until(
+        () => logs.includes("alice added to #other"),
+        "HTTP second room",
+      );
+    }
     const direct = `http://127.0.0.1:${apiPort}/server/`;
     let cookie;
     async function api(path, body) {
@@ -411,6 +425,8 @@ export async function startRemoteServer(
       storageRequests,
       apiRequests,
       sameOrigin,
+      plainHttp,
+      png,
       mediaPaths: [
         image.path,
         new URL(`api/avatars/${avatar.media_id}/file`, base).pathname,
@@ -477,6 +493,10 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   await evaluate(
     '[...document.querySelectorAll(".room-link")].find((element)=>element.textContent.includes("files")).click()',
   );
+  if (fixture.plainHttp) {
+    await runHttpDebug({ command, fixture, events, evaluate, wait });
+    return;
+  }
   await wait(
     '[...document.querySelectorAll("a")].some((anchor)=>anchor.textContent==="remote-note.txt" && anchor.href.includes("media-download"))',
     "attachment history",
@@ -785,5 +805,168 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   );
   console.log(
     `PASS real HTTPS ${fixture.sameOrigin ? "same-origin" : "cross-site"} server: settings, login, WSS, messages, avatar, image, audio, HTML preview, upload, cached downloads, cold/warm hard reload and logout`,
+  );
+}
+
+async function runHttpDebug({ fixture, events, evaluate, wait }) {
+  assert.equal(
+    await evaluate("window.isSecureContext"),
+    false,
+    "non-loopback HTTP must exercise the actual browser restrictions",
+  );
+  assert.equal(await evaluate("typeof crypto.randomUUID"), "undefined");
+  assert.equal(await evaluate("typeof navigator.serviceWorker"), "undefined");
+  await wait(
+    '[...document.querySelectorAll(".message-markdown img")].some(image => image.complete && image.naturalWidth === 1)',
+    "HTTP inline image",
+  );
+  await wait(
+    '[...document.querySelectorAll(".user-avatar")].some(image => !image.hidden && image.complete && image.naturalWidth === 1)',
+    "HTTP avatar",
+  );
+  assert.equal(
+    await evaluate('document.body.textContent.includes("Retry image")'),
+    false,
+  );
+  assert.equal(
+    new URL(fixture.url).hostname,
+    new URL(fixture.storageOrigin).hostname,
+  );
+  assert.notEqual(
+    new URL(fixture.url).port,
+    new URL(fixture.storageOrigin).port,
+  );
+  const imagePath = fixture.mediaPaths[0];
+  const imageLink = imagePath.replace(/\/file$/u, "/link");
+  const imageInfo = imagePath.replace(/\/file$/u, "/info");
+  const links = () =>
+    fixture.apiRequests.filter((request) => request.path === imageLink).length;
+  const auth = () =>
+    fixture.apiRequests.filter((request) => request.path === imageInfo).length;
+  const reads = () =>
+    fixture.storageRequests.filter(
+      (request) => request.method === "GET" && request.origin === fixture.url,
+    ).length;
+  const before = { links: links(), auth: auth(), reads: reads() };
+  for (let pass = 0; pass < 3; pass++) {
+    await evaluate(
+      '[...document.querySelectorAll(".room-link")].find(button => button.textContent.includes("other")).click()',
+    );
+    await wait(
+      '!document.querySelector(".message-markdown img")',
+      "old image unmounted",
+    );
+    await evaluate(
+      '[...document.querySelectorAll(".room-link")].find(button => button.textContent.includes("files")).click()',
+    );
+    await wait(
+      '[...document.querySelectorAll(".message-markdown img")].some(image => image.src.startsWith("blob:") && image.complete && image.naturalWidth === 1)',
+      "HTTP image restored from memory",
+    );
+  }
+  assert.equal(
+    reads(),
+    before.reads,
+    "repeated row remounts cannot download storage again",
+  );
+  assert.equal(
+    links(),
+    before.links,
+    "cached images do not request another signature",
+  );
+  assert.ok(
+    auth() >= before.auth + 3,
+    "each remount checks current server authorization",
+  );
+
+  await evaluate(
+    '[...document.querySelectorAll(".html-gate button")].find(button => button.textContent === "Show text").click()',
+  );
+  await wait(
+    'document.body.textContent.includes("Remote preview verified")',
+    "HTTP HTML text preview",
+  );
+  await wait('!!document.querySelector("audio[src]")', "HTTP audio source");
+  await evaluate('document.querySelector("audio").play()');
+  await wait(
+    'document.querySelector("audio").currentTime > 0',
+    "HTTP audio playback",
+  );
+  await wait(
+    `[...document.querySelectorAll("a")].some(anchor => anchor.textContent === "remote-note.txt" && new URL(anchor.href).origin === ${JSON.stringify(fixture.storageOrigin)})`,
+    "HTTP direct download link",
+  );
+  await evaluate(
+    '[...document.querySelectorAll("a")].find(anchor => anchor.textContent === "remote-note.txt").click()',
+  );
+  await until(
+    () =>
+      events.some(
+        (event) =>
+          event.method === "Browser.downloadProgress" &&
+          event.params.state === "completed",
+      ),
+    "HTTP native download",
+  );
+  assert.deepEqual(
+    await readFile(join(fixture.work, "downloads", "remote-note.txt")),
+    fixture.noteBytes,
+  );
+  await evaluate(
+    'const transfer = new DataTransfer(); transfer.items.add(new File(["Debug upload verified"], "debug-upload.txt", {type:"text/plain"})); const input = document.querySelector(".composer input[type=file]"); input.files = transfer.files; input.dispatchEvent(new Event("change", {bubbles:true}));',
+  );
+  await wait(
+    'document.querySelector(".media-upload-status")?.textContent.includes("Attachment ready")',
+    "HTTP attachment upload",
+  );
+  await evaluate('document.querySelector(".composer").requestSubmit()');
+  await wait(
+    '[...document.querySelectorAll(".message-markdown a")].some(anchor => anchor.textContent === "debug-upload.txt")',
+    "HTTP upload message",
+  );
+  await evaluate(`document.querySelector('[aria-label="Settings"]').click()`);
+  await wait(
+    `!!document.querySelector('[aria-label="Change avatar"]')`,
+    "avatar settings",
+  );
+  await evaluate(
+    `document.querySelector('[aria-label="Change avatar"]').click()`,
+  );
+  await wait('!!document.querySelector(".avatar-menu")', "avatar upload menu");
+  await evaluate(
+    `const avatarTransfer = new DataTransfer(); avatarTransfer.items.add(new File([Uint8Array.from(atob(${JSON.stringify(fixture.png.toString("base64"))}), c => c.charCodeAt(0))], "debug-avatar.png", {type:"image/png"})); const avatarInput = document.querySelector(".avatar-settings input[type=file]"); avatarInput.files = avatarTransfer.files; avatarInput.dispatchEvent(new Event("change", {bubbles:true}));`,
+  );
+  await wait(
+    '[...document.querySelectorAll(".avatar-crop button")].some(button => button.textContent === "Confirm and upload" && !button.disabled)',
+    "HTTP avatar crop",
+  );
+  await evaluate(
+    '[...document.querySelectorAll(".avatar-crop button")].find(button => button.textContent === "Confirm and upload").click()',
+  );
+  await wait(
+    'document.querySelector(".avatar-settings")?.textContent.includes("Avatar updated.")',
+    "HTTP avatar allocation/PUT/completion without randomUUID",
+  );
+  await wait(
+    '[...document.querySelectorAll(".account-avatar img")].some(image => !image.hidden && image.complete && image.naturalWidth === 256)',
+    "uploaded HTTP avatar displays",
+  );
+  assert.ok(
+    fixture.apiRequests.some(
+      (request) =>
+        request.method === "POST" &&
+        request.path === "/server/api/avatars/uploads",
+    ),
+  );
+  assert.ok(
+    fixture.storageRequests.filter((request) => request.method === "PUT")
+      .length >= 2,
+  );
+  assert.ok(
+    fixture.storageRequests.every((request) => !request.cookie),
+    "storage never receives chat cookies",
+  );
+  console.log(
+    "PASS real non-loopback HTTP debug: login, WS, images, avatars, HTML, audio, downloads, attachment upload and avatar crop/upload without secure-context APIs",
   );
 }

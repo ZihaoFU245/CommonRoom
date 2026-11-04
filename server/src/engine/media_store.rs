@@ -18,6 +18,44 @@ impl Engine {
     }
 }
 impl MediaStore {
+    pub(crate) async fn library_saved(&self, id: &str, account: &str) -> Result<bool, EngineError> {
+        Ok(self.database.library_saved(id, account).await?)
+    }
+
+    pub(crate) async fn library_source(
+        &self,
+        id: &str,
+        conversations: &[String],
+    ) -> Result<Option<String>, EngineError> {
+        Ok(self.database.library_source(id, conversations).await?)
+    }
+    pub(crate) async fn library_access(
+        &self,
+        id: &str,
+        account: &str,
+        conversations: &[String],
+    ) -> Result<bool, EngineError> {
+        Ok(self
+            .database
+            .library_access(id, account, conversations)
+            .await?)
+    }
+    pub(crate) async fn library_page(
+        &self,
+        request: &database::LibraryList<'_>,
+    ) -> Result<database::LibraryPage, EngineError> {
+        Ok(self.database.library_page(request, &self.config).await?)
+    }
+    pub(crate) async fn library_action(
+        &self,
+        request: &database::LibraryWrite<'_>,
+    ) -> Result<bool, EngineError> {
+        let result = self
+            .database
+            .media_write(&MediaWrite::Library(*request))
+            .await?;
+        Ok(result.affected > 0)
+    }
     pub(crate) async fn health(&self) -> Result<(), EngineError> {
         Ok(self.database.ensure_available_async().await?)
     }
@@ -25,6 +63,14 @@ impl MediaStore {
         Ok(self.database.stored_media(id).await?)
     }
     pub(crate) async fn ready(&self, media: &Media) -> Result<(), EngineError> {
+        if media.conversation == "@library"
+            && !matches!(
+                media.content_type.as_str(),
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+            )
+        {
+            return Err("Library assets must be raster images or GIFs.".into());
+        }
         let at = now();
         let media = media.completed_record(at)?;
         self.database

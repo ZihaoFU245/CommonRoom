@@ -44,7 +44,7 @@ export function Attachment({
     position: 0,
     resume: false,
   });
-  const file = useFileUrl(href, playback.version);
+  const file = useFileUrl(href, { version: playback.version });
   const request = useRef<AbortController | null>(null);
   const player = useRef<HTMLMediaElement | null>(null);
   const failures = useRef(0);
@@ -75,7 +75,7 @@ export function Attachment({
           "Preview is limited to 1 MiB. Download this file instead.",
         );
       if (!file.url) throw new Error("File is still loading. Try again.");
-      setSource(await documentSource(file.url, controller.signal));
+      setSource(await documentSource(href, controller.signal, file.url));
     } catch (failure) {
       if (!controller.signal.aborted)
         setError(
@@ -129,6 +129,7 @@ export function Attachment({
     // The authenticated file endpoint supplies verified MIME and live access
     // checks. Native controls can wait for Play without a metadata request.
     src: file.url,
+    ...(file.crossOrigin ? { crossOrigin: file.crossOrigin } : {}),
     controls: true,
     preload: "none" as const,
     onLoadedMetadata: loaded,

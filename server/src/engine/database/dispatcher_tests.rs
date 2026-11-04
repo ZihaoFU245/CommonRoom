@@ -39,7 +39,7 @@ fn pool_diagnostics_count_acquisition_timeouts_and_successes() {
 }
 
 #[test]
-fn sqlite_head_v20_opens_without_a_postgres_index_upgrade() {
+fn sqlite_head_v21_opens_without_a_postgres_index_upgrade() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("chat.sqlite");
     let mut engine = Engine::open(&path).unwrap();
@@ -58,7 +58,7 @@ fn sqlite_head_v20_opens_without_a_postgres_index_upgrade() {
     assert_eq!(
         db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        20
+        21
     );
     assert_eq!(
         db.query_row::<u64, _, _>(
@@ -69,6 +69,77 @@ fn sqlite_head_v20_opens_without_a_postgres_index_upgrade() {
         .unwrap(),
         0
     );
+}
+
+#[test]
+fn sqlite_v20_library_upgrade_preserves_history_and_rolls_back_on_failure() {
+    for fail in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chat.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine
+            .provision("alice", "hash".into(), true, false)
+            .unwrap();
+        engine
+            .execute(None, None, "/room new library-test")
+            .unwrap();
+        engine
+            .execute(None, None, "/room add alice #library-test")
+            .unwrap();
+        engine
+            .execute(Some("alice"), Some("library-test"), "preserved history")
+            .unwrap();
+        let data = engine.data.clone();
+        let history =
+            serde_json::to_value(engine.history("alice", "library-test").unwrap().messages)
+                .unwrap();
+        drop(engine);
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("DROP TRIGGER library_storage_insert; DROP TRIGGER library_storage_update; DROP TRIGGER library_storage_delete; DROP TABLE library_storage; DROP TABLE library_recents; DROP TABLE library_entries; DROP TABLE library_owners; DROP INDEX media_library_backlog; PRAGMA user_version=20;").unwrap();
+        if fail {
+            db.execute_batch("CREATE TABLE library_entries(marker TEXT);")
+                .unwrap();
+        }
+        drop(db);
+        if fail {
+            let before = std::fs::read(&path).unwrap();
+            assert!(Engine::open(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                20
+            );
+            assert_eq!(
+                db.query_row::<u64, _, _>(
+                    "SELECT count(*) FROM sqlite_master WHERE name='library_owners'",
+                    [],
+                    |r| r.get(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            let engine = Engine::open(&path).unwrap();
+            assert!(engine.data == data);
+            assert_eq!(
+                serde_json::to_value(engine.history("alice", "library-test").unwrap().messages)
+                    .unwrap(),
+                history
+            );
+            drop(engine);
+            // A second open must not rerun the upgrade.
+            let engine = Engine::open(&path).unwrap();
+            let db = engine.store.db.lock().unwrap();
+            assert_eq!(
+                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap(),
+                21
+            );
+            assert_eq!(db.query_row::<u64, _, _>("SELECT count(*) FROM sqlite_master WHERE name IN ('library_owners','library_entries','library_recents')", [], |r| r.get(0)).unwrap(), 3);
+        }
+    }
 }
 
 #[test]
@@ -436,6 +507,7 @@ fn native_message_rejects_stale_revision_without_overwriting_the_commit() {
     message.edited = true;
     let room = &engine.data.rooms["lobby"];
     let request = MessageWrite {
+        library_recent_limit: 50,
         conversation: &room.id,
         kind: "room",
         key: "lobby",
@@ -454,6 +526,7 @@ fn native_message_rejects_stale_revision_without_overwriting_the_commit() {
     let mut stale = message.clone();
     stale.text = "stale overwrite".into();
     let request = MessageWrite {
+        library_recent_limit: 50,
         message: &stale,
         ..request
     };
@@ -512,6 +585,7 @@ fn postgres_message_writes_progress_on_independent_connections_and_rows() {
     let database = engine.store.db.clone();
     let first_job = std::thread::spawn(move || {
         database.save_message_blocking(&MessageWrite {
+            library_recent_limit: 50,
             conversation: &first.0,
             kind: "room",
             key: "one",
@@ -546,6 +620,7 @@ fn postgres_message_writes_progress_on_independent_connections_and_rows() {
         .store
         .db
         .save_message_blocking(&MessageWrite {
+            library_recent_limit: 50,
             conversation: &second.0,
             kind: "room",
             key: "two",
@@ -780,6 +855,7 @@ fn append_allocation_contract(engine: &mut Engine) {
         created: crate::engine::now(),
     };
     let request = MessageWrite {
+        library_recent_limit: 50,
         conversation: &room.id,
         kind: "room",
         key: "allocation",
@@ -817,6 +893,7 @@ fn append_allocation_contract(engine: &mut Engine) {
     // allocation as part of the same transaction, including the receipt.
     assert!(matches!(
         engine.store.db.save_message_blocking(&MessageWrite {
+            library_recent_limit: 50,
             receipt: None,
             ..request
         }),
@@ -831,6 +908,7 @@ fn append_allocation_contract(engine: &mut Engine) {
         .unwrap();
     assert_eq!(counter, committed.sequence);
     let request = MessageWrite {
+        library_recent_limit: 50,
         expected_revision: Some(committed.revision),
         revision: committed.revision + 1,
         receipt: None,
@@ -896,6 +974,7 @@ fn postgres_append_counter_prevents_later_commits_skipping_an_uncommitted_cursor
     let database = engine.store.db.clone();
     let job = std::thread::spawn(move || {
         database.save_message_blocking(&MessageWrite {
+            library_recent_limit: 50,
             conversation: &id,
             kind: "room",
             key: "ordered",
@@ -964,6 +1043,7 @@ fn postgres_cancelled_append_rolls_back_without_blocking_lease_return() {
     runtime::run(async move {
         let job = tokio::spawn(async move {
             database.save_message(&MessageWrite {
+        library_recent_limit: 50,
                 conversation: &cancelled_id,
                 kind: "room",
                 key: "cancel",
@@ -995,6 +1075,7 @@ fn postgres_cancelled_append_rolls_back_without_blocking_lease_return() {
         .store
         .db
         .save_message_blocking(&MessageWrite {
+            library_recent_limit: 50,
             conversation: &id,
             kind: "room",
             key: "cancel",
@@ -1122,6 +1203,7 @@ fn postgres_receipt_capacity_is_atomic_across_independent_conversations() {
             let account = account.clone();
             std::thread::spawn(move || {
                 database.save_message_blocking(&MessageWrite {
+                    library_recent_limit: 50,
                     conversation: &id,
                     kind: "room",
                     key: &key,
@@ -1393,7 +1475,7 @@ fn sqlite_v19_bot_credentials_upgrade_atomically_and_preserve_worker_scopes() {
         let legacy = state.to_string();
         db.execute("UPDATE state SET json=?1 WHERE id=1", [&legacy])
             .unwrap();
-        db.execute_batch("PRAGMA user_version=19;").unwrap();
+        db.execute_batch("DROP TRIGGER library_storage_insert; DROP TRIGGER library_storage_update; DROP TRIGGER library_storage_delete; DROP TABLE library_storage; DROP TABLE library_recents; DROP TABLE library_entries; DROP TABLE library_owners; DROP INDEX media_library_backlog; PRAGMA user_version=19;").unwrap();
         if failure == Some("write") {
             db.execute_batch("CREATE TRIGGER reject_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         }

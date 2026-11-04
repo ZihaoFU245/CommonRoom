@@ -50,6 +50,34 @@ test("document previews reject direct storage links before sending a request", a
   assert.equal(fetch.mock.callCount(), 0);
 });
 
+test("HTTP document previews use authorized resolved sources without sending cookies to storage", async (t) => {
+  const original = serverBaseUrl();
+  const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => null, setItem() {} },
+  });
+  saveServerUrl("http://api.test/commonroom/");
+  t.after(() => {
+    saveServerUrl(original);
+    if (storage) Object.defineProperty(globalThis, "localStorage", storage);
+    else delete globalThis.localStorage;
+  });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(String(url), "http://store.test/object?signature=authorized");
+    assert.equal(options.credentials, "omit");
+    return new Response("debug preview");
+  });
+  assert.equal(
+    await documentSource(
+      media.path,
+      new AbortController().signal,
+      "http://store.test/object?signature=authorized",
+    ),
+    "debug preview",
+  );
+});
+
 test("media responses reject unsafe destinations and preserve base paths", () => {
   assert.ok(isCompletedMedia(media));
   assert.ok(isUploadTicket(ticket));

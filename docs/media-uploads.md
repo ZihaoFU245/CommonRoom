@@ -133,7 +133,16 @@ reuse those bytes. Full cached objects serve byte ranges locally. Only complete
 entries. Cache hits refresh eviction recency. The cache holds at most 128 entries/256 MiB;
 larger responses stream normally, and browser eviction can require another
 download. Unavailable Cache Storage fails the read instead of silently switching
-to uncached downloads. Cache Storage retains local downloaded copies across
+to uncached downloads. The exception is a plain HTTP UI without service-worker
+support (LAN/Tailscale debugging): images, avatars and sticker thumbnails use the
+same cache engine with bounded in-memory Blob storage. Warm remounts check live
+`/info` and reuse bytes without another signature or storage GET. Image fills
+survive virtual unmounts; consumer object URLs are revoked on cleanup. This cache
+is lost on page reload. Other file controls resolve authenticated `/link` responses
+and use direct storage URLs. Downloads use signed attachment disposition; text
+previews fetch storage without credentials. This HTTP path has no persistent byte
+cache and no offline authorization fallback.
+Cache Storage retains local downloaded copies across
 sessions, for same-origin and cross-origin APIs; keys include the API origin and
 deployment path. At most four whole-file fills, reserving up to 256 MiB, can
 continue through row unmounts with a two-minute deadline starting at cancellation,
@@ -348,7 +357,7 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite HEAD is v20, with an atomic v19 credential upgrade. Other SQLite versions
+SQLite HEAD is v21, with atomic v19/v20 upgrades for library tables and the v19 credential conversion. Other SQLite versions
 are rejected unchanged; PostgreSQL has an independent current schema.
 
 ```sh
@@ -425,6 +434,119 @@ to keep only the validated allocation hints, dropping arbitrary staging metadata
 Hints never set trusted MIME, authorization, size, quota, retention, object paths
 or download response headers; normal server verification remains authoritative.
 
+## Personal media library
+
+The sticker-face SVG beside the composer upload button opens an anchored popup
+with animated entry/exit and a compact icon-only Emoji/Sticker switch floating
+over the bottom of its scrollable content. The browser remembers the last-used
+mode per server/account across reopening and page reloads. The emoji
+view has small Recent and Smileys & people headings above scrollable grids, with
+no category toolbar or search field. Emoji selection inserts at the text cursor
+and keeps the picker open. The bundled Unicode 16.0 catalogue supplies the emoji;
+up to 50 recent emoji are stored per server/account in this browser. Escape, an outside click, or the trigger closes the popup, and
+reduced-motion preferences skip the animations. Mode changes and removal
+confirmation fade in and out over the short control timing; outgoing controls
+are inert while fading.
+
+Sticker browsing stacks Recent and Collections (saved stickers) with independent
+pagination. Collections lists media in saved order, oldest first, so new uploads
+and saves append at the end. Empty Recent sections and empty emoji recents are hidden. Collections
+keeps its upload control even when it has no media. Owned assets have no separate
+section, so uploading does not create a duplicate owned grid.
+Previews use tightly packed, borderless rows with widths proportional to each
+image's natural aspect ratio. Portraits and landscapes keep their full contents;
+there is no padded square around each image. Intrinsic aspect ratios are retained
+in a bounded browser-memory layout cache across picker remounts, without extra
+metadata or image-prefetch requests. The picker content scrolls with its scrollbar hidden. Sticker list metadata is
+cached in browser memory for up to one minute (at most 24 pages), scoped by server
+and account. Tab switches and reopening show cached lists immediately while
+revalidating in the background. Media changes and reconnection invalidate the
+cache. Cache-miss loading stays inside the scrollable content; the popup shell
+and mode switch stay in place. On a cold load, only “Loading stickers…” is
+shown until both metadata lists settle. Later pagination preserves the other
+section and the upload control. Media bytes retain their private cache and access
+checks. A
+square `+` upload placeholder follows the media in the Collections grid,
+using the next available cell (to the right when there is room), even when empty.
+An upload immediately inserts a local preview tile with a circular uploading indicator
+and an icon-only cancel control, replacing text upload hints. Preview motion
+coordinates additions, exits, row wrapping, resizing and reordering. Additions,
+resizing, reordering and image fades take 120 ms; deletion fades and their
+reflow retain 180 ms. Unchanged layout notifications do not restart animations.
+Interrupted transitions resume from their current painted positions. Removed
+previews fade outside the flex layout so they cannot displace the upload control.
+Reduced motion skips these effects and cancels effects already running. Existing
+tiles stay visible during metadata refresh. Completion preserves the upload tile
+and shows its local image until the authorized server thumbnail has loaded;
+local preview URLs are released afterward. Successful uploads stop showing upload
+progress immediately, including when their saved entry belongs to a later page.
+They remain usable on the current page until normal pagination or removal; loading
+the canonical entry deduplicates the temporary preview.
+Unavailable saved stickers remain as named placeholders with a remove action,
+so users can free collection slots. A small themed Edit button beside Collections
+switches to editing; Done returns to browsing. Only while editing does each sticker
+expose its top-left manipulation control on hover or visible keyboard focus
+(always visible on touch devices). Browsing keeps these controls hidden and out
+of the keyboard and accessibility navigation.
+Opening the picker focuses its shell, so queued media cannot cause an unhovered
+remove control to reveal automatically. Its left
+circular button removes the sticker; its right `+` button acquires ownership,
+charging the asset's full size to account storage. The acquisition tooltip shows
+that byte cost. Owned assets show only a single circular remove button; borrowed unavailable assets
+keep acquisition disabled. Both
+circles use the current theme's surface and accent colors. Borrowed entries remove immediately. Owned stickers
+release the current user's ownership and remove the saved/recent entry; final
+ownership requires a centered floating confirmation above the inert sticker content
+and explicit confirmation that the sticker becomes
+permanently unavailable for everyone, including existing messages. A concurrent
+change to the last owner also requires confirmation. Keep sticker returns keyboard
+focus to the original remove button. If the item disappeared or was deleted,
+focus returns to Edit. The picker contains no quota
+panel. **Settings → Account** shows media storage usage and quota with an icon-only
+refresh button. Its last fetched usage is cached per server/account in browser
+memory and remains visible during refresh; new results update the number and
+animate the usage bar in place, respecting reduced motion. Nonzero usage has a
+small minimum visible marker even when its true fraction is below one screen
+pixel; the numeric usage and accessible progress value remain exact. Upload PNG/JPEG/GIF/WebP/AVIF files into the library; the server
+verifies MIME through the existing media pipeline. Selecting an asset reuses its
+ID and bytes in the ordinary message path. A message's **Add to collection** action
+borrows without adding ownership. Saved media shows **Saved** instead of an add
+action; membership is read from the server after refresh and library changes.
+Both collection states share the same control footprint. Virtualized message rows
+retain their previously measured height while attachment access checks or image loads are pending
+on remount, through the shared timeline layout code; media remains hidden until
+reauthorized. **Acquire** adds an independent full-size quota
+charge. The library API supports hiding an entry without releasing ownership; the
+picker remove control performs both steps for owned stickers.
+
+Ownership, saved entries and current conversation references authorize reads
+independently. Owners protect an available file even without messages or a picker
+entry. Message references and borrowers do not protect a retired file from physical
+cleanup. Ordinary media abandonment cannot remove a completed library asset.
+Account deletion releases its ownerships; another owner's asset remains available.
+Administrators can remove an asset globally through the library API. See
+[Library protocol](protocol.md#personal-media-library) for endpoints and errors.
+
+These restart-required `media` configuration fields are independent of byte quota:
+
+| Field | Default | Accepted range |
+| --- | --- | --- |
+| `library_limit` | 1,000 saved entries/account | 1–10,000 |
+| `library_owned_limit` | 1,000 ownerships/account | 1–10,000 |
+| `library_recent_limit` | 50 distinct recent IDs/account | 1–100 |
+| `library_cleanup_bytes` | `"1g"` (1 GiB) | 1–1,000,000,000,000,000 bytes |
+| `library_cleanup_objects` | 10,000 tracked final/staging keys | 1–1,000,000 |
+
+Pending uploads reserve count slots as well as existing pending/byte budgets.
+Reaching either deployment cleanup threshold pauses new library allocations;
+borrowing, acquisition, reuse and release remain available. Releases and accepted
+uploads may increase the backlog after admission stops, so thresholds provide
+backpressure rather than a hard bucket ceiling. Tracked final/staging keys retain
+conservative byte reservations until confirmed deletion, including on failure or
+restart. The library list API exposes backlog size/count, oldest pending timestamp
+and paused status for operators. Transactional derived counters and an oldest-item
+index keep admission independent of a scan of the asset catalogue.
+
 ## Account avatars
 
 Avatar uploads share this private bucket, signing, quota/rate limits and cleanup
@@ -439,7 +561,11 @@ rectangle is never uploaded. Final files use `avatars/<account-id>/<upload-id>`;
 include `avatars/*` in storage credentials and backups and exclude it from expiry
 lifecycle rules. Saved avatars have permanent retention, remain protected during
 startup/daily cleanup, and stop receiving new download URLs when replaced or
-removed. Browser loads and updates propagate through the public avatar projection
+removed. Uploaded avatars count toward the account media quota. Removing or
+replacing one releases its profile reference immediately, but its bytes remain
+charged until background storage deletion succeeds. The cleanup interval defaults
+to 24 hours; failed storage deletion retains the charge for retry. Browser loads
+and updates propagate through the public avatar projection
 in snapshots. External HTTPS avatar URLs work even with storage disabled.
 See [Protocol](protocol.md#user-avatars).
 

@@ -44,6 +44,7 @@ impl Interests {
                 .as_ref()
                 .is_some_and(|id| !notice.targets(id))
             && !notice.has_catalogues()
+            && !notice.has_media()
         {
             return true;
         }
@@ -171,7 +172,7 @@ impl Events {
             self.pending.push_back(Change::All);
             metadata = metadata.catalogues_only();
         }
-        if has_metadata && (!all || metadata.has_catalogues()) {
+        if has_metadata && (!all || metadata.has_catalogues() || metadata.has_media()) {
             self.pending
                 .push_back(Change::Metadata(std::sync::Arc::new(metadata)));
         }

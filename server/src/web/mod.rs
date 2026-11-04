@@ -17,6 +17,7 @@ pub(crate) mod commands;
 mod deadline_io;
 pub(crate) mod history;
 pub(crate) mod http_server;
+mod library;
 pub(crate) mod login_limits;
 pub(crate) mod media;
 pub(crate) mod mutations;
@@ -52,6 +53,7 @@ pub enum Change {
     Read(String),
     Account(String),
     Avatar(String),
+    Media(Option<String>),
     Conversation(String),
     BotCommands(String),
     BotCatalogues(Arc<std::collections::BTreeSet<String>>),
@@ -252,6 +254,8 @@ pub fn router(app: App) -> Router {
         .route(path("/api/avatars/{id}/file"), get(avatars::download))
         .route(path("/api/avatars/{id}/link"), get(avatars::link))
         .route(path("/api/media/config"), get(media::config))
+        .route(path("/api/library"), get(library::list))
+        .route(path("/api/library/{id}"), post(library::change))
         .route(path("/api/media/uploads"), post(media::allocate))
         .route(
             path("/api/media/uploads/{id}/complete"),

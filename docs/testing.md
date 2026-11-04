@@ -21,7 +21,7 @@ container delete chat-postgres-test
 ```
 
 Wait for PostgreSQL readiness before running tests. These contracts exercise
-SQLite transfer of all 14 tables, unchanged source bytes, target rollback on a
+SQLite transfer of all 18 tables, unchanged source bytes, target rollback on a
 checksum mismatch, rejection of active/nonempty/unsupported targets, preserved
 password hashes/sessions/retry receipts/cursors, Unicode and embedded NUL text,
 media lifecycle and download revalidation, native command/message failure rollback,
@@ -39,7 +39,7 @@ reaction-heavy page before decoding, complete reaction users in either direction
 and pagination progress for a single oversized message. Bulk-deletion EXPLAIN
 requires exactly one retention trigger invocation per statement; partial/full
 multi-conversation deletes preserve counts/oldest and roll back atomically.
-The offline transfer contract explicitly requires HEAD SQLite v20 and checks the
+The offline transfer contract explicitly requires HEAD SQLite v21 and checks the
 PostgreSQL v1 marker, retained data and unchanged source bytes. Other schema
 versions (including PostgreSQL v2) are rejected unchanged. Idle-pool coverage reclaims
 readers to zero while preserving the writer floor and dedicated ownership.
@@ -196,6 +196,16 @@ installed Chrome/Chromium are required. All processes and temporary files are
 cleaned up on completion. Pass a test-name
 substring to isolate a cold-browser scenario, for example
 `rtk pnpm --dir web test:browser 'history navigation starts unread'`.
+`rtk pnpm --dir web test:browser --remote-server http --built` builds the debug
+bundle and runs a real non-loopback HTTP UI/API/storage fixture with
+`production=false`. Chrome must expose neither service workers nor `randomUUID`.
+It verifies image/avatar display, repeated row unmount/remount with no additional
+storage GET or image signing, bounded HTML preview, audio, downloads, attachment
+upload and actual avatar crop/allocation/PUT/completion. UI and HTTP storage share
+one hostname on different ports. In-memory cache tests retain per-use authorization,
+coalesced cancelled fills, 128-entry eviction, deployment isolation and object-URL
+cleanup. HTTPS browser
+contracts continue to verify worker control and cached bytes separately.
 Unread-entry checks ensure the unread shortcut stays hidden at the boundary and
 appears when scrolling above it.
 
@@ -273,7 +283,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover HEAD SQLite v20 initialization and restart, lazy history loading, state/cursor preservation, unchanged v20 reopen, atomic v19-to-v20 credential upgrades, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover HEAD SQLite v21 initialization and restart, lazy history loading, state/cursor preservation, unchanged v21 reopen, atomic v19/v20-to-v21 library/credential upgrades, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -400,7 +410,7 @@ Boundary tests cover direct versus group syntax, additive revoke behavior, scope
 named after groups, malformed requests, su-only delegation and protected accounts,
 partial-authority invitations/group assignment, cross-target command borrowing,
 message ownership and identity reuse, private visibility, read-only controls,
-cleanup constraints, persistence failures, HEAD SQLite v20 initialization and restart and rejection of unsupported schemas.
+cleanup constraints, persistence failures, HEAD SQLite v21 initialization and restart and rejection of unsupported schemas.
 
 A deterministic password-job test queues hashing behind a blocking worker, then
 revokes the action or command, promotes the target to su (active or disabled),
@@ -1063,7 +1073,7 @@ root-to-room authority inheritance, ordinary-admin revocation, cross-room and
 cross-account isolation, bulk/protected-target atomicity, non-color metadata denial,
 owner transfer, restart/rename/regrant behavior and failed-write rollback.
 SQLite startup tests reject unsupported schemas unchanged and verify the supported
-v19-to-v20 credential upgrade atomically. HTTP tests reject set/reset/no-op room writes after
+v19-to-v21 credential upgrade atomically. HTTP tests reject set/reset/no-op room writes after
 revocation without metadata/version changes or notifications, while root writes remain
 available without global grants. Browser coverage keeps root settings available and
 filters room choices using own/any grants, including live revocation fallback.
@@ -1206,7 +1216,7 @@ account-directory grants. Account-wide and browser-session coverage is retained.
 
 Issuer/worker regressions cover issuer-only exchange, mandatory worker expiry,
 issuance-time account permission checks, worker delegation denial and deletion of
-all bot credentials. SQLite v19-to-v20 tests cover exact scope preservation,
+all bot credentials. SQLite v19-to-v21 tests cover exact scope preservation,
 restart, malformed legacy metadata and atomic rollback after a rejected write.
 PostgreSQL transfer fixtures include both credential kinds. Browser command-cache
 tests require one logical directory load across 200 conversations, 120-second refresh, immediate
@@ -1252,3 +1262,36 @@ snapshots, including bulk writes and subsequent membership revocation. Manual
 `bounded_page_lookup_benchmark` and `inspection_scheduling_benchmark` tests report
 bounded-cache and contention dispatch timings without brittle timing assertions.
 Command catalogue changes must pass `rtk proxy python3 auto/command-reference.py --check`.
+
+## Media library contracts
+
+`library_` Rust tests cover shared identity with multiple owners and borrowers,
+idempotent charges/entries, source access loss, hidden ownership, explicit final
+release, retirement without resurrection, account deletion, quotas and cleanup
+backpressure. Browser HTTP contracts exercise real allocation/completion against
+mock storage, authorized save/acquire, cross-conversation reuse of the same ID,
+placeholder metadata, denied new links and concurrent final-release/acquisition.
+The PostgreSQL lifecycle contract runs against an isolated opt-in test database.
+The SQLite-to-PostgreSQL v1 transfer fixture includes multiple library owners,
+entries, recents and retired media with derived cleanup counters, and verifies
+all 18 copied/derived tables while preserving source bytes.
+
+`rtk pnpm --dir web test:browser 'media library'` exercises the actual picker,
+independent hidden ownership, last-owner confirmation (including a stale owner
+count), reuse without allocation/abandonment, source-aware message saving and live
+replacement of mounted media after retirement. It also checks removable retired
+entries, acquisition success and quota-error retry, disabled acquisition for owners
+and unavailable assets, and the elliptical control geometry in light/dark themes.
+SQLite and PostgreSQL recency contracts seed tied legacy timestamps ahead of the
+wall clock, then require new and repeated uses to retain their exact commit order.
+Transfer coverage verifies those legacy values survive and subsequent uses advance
+them on PostgreSQL v1. Picker browser regressions also check Edit/Done keyboard gating, stable preview
+and Add identity through upload completion and pagination, row wrapping and
+reordering, interrupted resize continuity, exit cleanup, and live reduced-motion
+changes, plus inert crossfades for mode switching and removal confirmation.
+Upload cases cover a full first page, immediately usable completed previews on
+later pages, canonical-page deduplication and removal before paging. Confirmation
+cases require focus restoration to the original remove button or Edit after the
+trigger disappears or deletion succeeds.
+The ordinary web suite validates
+bounded list responses, canonical paths, cookie handling and explicit confirmation.

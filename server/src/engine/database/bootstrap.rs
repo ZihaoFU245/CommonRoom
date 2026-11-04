@@ -2,7 +2,7 @@
 use super::{Backend, Connection, Error, Handle, Result, postgres, runtime, sqlite};
 use sqlx::Connection as _;
 
-pub(crate) const SQLITE_SCHEMA_VERSION: u32 = 20;
+pub(crate) const SQLITE_SCHEMA_VERSION: u32 = 21;
 pub(crate) const POSTGRES_SCHEMA_VERSION: u32 = 1;
 pub(crate) const POSTGRES_SCHEMA: &str = include_str!("postgres/schema.sql");
 
@@ -30,6 +30,15 @@ impl Connection {
         let result = match &mut *self.backend.borrow_mut() {
             Backend::Postgres(db) => runtime::run(postgres::bootstrap::require_empty(db)),
             _ => Err(Error::Conversion("PostgreSQL target requires PostgreSQL")),
+        };
+        self.checked(result)
+    }
+    pub(crate) fn release_postgres_owner(&self) -> Result<()> {
+        let result = match &mut *self.backend.borrow_mut() {
+            Backend::Postgres(db) => runtime::run(postgres::bootstrap::release_owner(db)),
+            _ => Err(Error::Conversion(
+                "PostgreSQL ownership requires PostgreSQL",
+            )),
         };
         self.checked(result)
     }

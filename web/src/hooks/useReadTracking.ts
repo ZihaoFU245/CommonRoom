@@ -82,6 +82,16 @@ export function useReadTracking({
       unread?.first,
       unread?.count ?? 0,
     );
+    const unreadOffset =
+      unreadTarget === undefined
+        ? undefined
+        : virtualTimeline.current?.offsetForSequence?.(unreadTarget);
+    // A measurement correction can leave a sliver of the preceding row at the
+    // top. The unread target is already in view and needs no jump shortcut.
+    const unreadVisible =
+      unreadOffset !== undefined &&
+      unreadOffset >= 0 &&
+      unreadOffset < viewport.clientHeight;
     setNavigation((previous) => {
       const bottom =
         away &&
@@ -94,6 +104,7 @@ export function useReadTracking({
       const unreadAhead =
         away &&
         unreadTarget !== undefined &&
+        !unreadVisible &&
         (sequence === undefined || sequence < unreadTarget);
       return previous.identity === identity &&
         previous.bottom === bottom &&

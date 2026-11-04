@@ -44,6 +44,25 @@ const TABLES: &[Table] = &[
         ],
         ["id"]
     ),
+    Table {
+        derived: true,
+        ..table!("library_storage", ["id", "bytes", "objects"], ["id"])
+    },
+    table!(
+        "library_owners",
+        ["account_id", "media_id"],
+        ["account_id", "media_id"]
+    ),
+    table!(
+        "library_entries",
+        ["account_id", "media_id", "position"],
+        ["account_id", "media_id"]
+    ),
+    table!(
+        "library_recents",
+        ["account_id", "media_id", "used"],
+        ["account_id", "media_id"]
+    ),
     table!(
         "messages",
         ["conversation", "sequence", "json"],
@@ -213,6 +232,10 @@ pub(crate) fn transfer_sqlite(
     validate_metadata(&transaction)?;
     validate_sequence(&transaction)?;
     transaction.commit()?;
+    // Closing a PostgreSQL socket sends Terminate without an acknowledgement;
+    // its server-side session can briefly outlive close(). Release explicitly
+    // and await the acknowledgement before an immediate first server startup.
+    destination.release_postgres_owner()?;
     // Read-only source transaction and lock are released after target commit.
     drop(snapshot);
     drop(lock);
@@ -224,8 +247,8 @@ fn select_table(table: &Table, postgres: bool) -> String {
         .keys
         .iter()
         .map(|key| {
-            let number =
-                *key == "sequence" || *key == "id" && matches!(table.name, "state" | "counters");
+            let number = *key == "sequence"
+                || *key == "id" && matches!(table.name, "state" | "counters" | "library_storage");
             if number {
                 (*key).into()
             } else {

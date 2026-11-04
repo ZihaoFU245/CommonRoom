@@ -19,9 +19,11 @@ export function Avatar({
   preview?: string;
 }) {
   const [external] = useExternalAvatars();
-  const source = useFileUrl(
+  const file = useFileUrl(
     preview ?? avatarSource(url, serverBaseUrl(), external),
-  ).url;
+    { image: true },
+  );
+  const source = file.url;
   const [shown, setShown] = useState<{
     source: string;
     name: string;
@@ -49,6 +51,7 @@ export function Avatar({
               key={`${name}:${image}`}
               class={`user-avatar${large ? " large" : ""}`}
               src={image}
+              {...(file.crossOrigin ? { crossOrigin: file.crossOrigin } : {})}
               alt={decorative ? "" : `${name}'s avatar`}
               aria-hidden={decorative ? "true" : undefined}
               width={large ? 72 : 28}

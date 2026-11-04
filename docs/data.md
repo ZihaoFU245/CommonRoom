@@ -9,18 +9,21 @@ and worker files, but chat accounts/history live in PostgreSQL.
 
 ## Database compatibility
 
-SQLite HEAD is **v20**. Empty databases initialize as v20. Startup upgrades v19
-transactionally by assigning explicit `issuer` or `worker` kinds to bot credentials;
-worker operations, expiry and conversation scopes are preserved. Malformed legacy
-credentials or a failed write roll back both metadata and the schema marker.
-Other versions and unversioned existing databases are rejected before journal,
-schema or data changes. Back up v19 before upgrading; older binaries cannot open v20.
+SQLite HEAD is **v21**. Empty databases initialize as v21. Startup upgrades v20
+transactionally with independent media-library ownership, saved entries, bounded
+recents and derived cleanup accounting. The v19 upgrade adds these same tables
+and assigns explicit `issuer` or `worker` kinds to bot credentials in one
+transaction; worker operations, expiry and conversation scopes are preserved.
+Malformed legacy credentials or a failed schema/metadata write roll back the
+entire upgrade, including the schema marker. Other versions and unversioned
+existing databases are rejected before journal, schema or data changes. Back up
+v19/v20 before upgrading; older binaries cannot open v21.
 
 PostgreSQL is unpublished and uses its own **v1** schema marker. Fixes are folded
 directly into this unused format. Empty targets initialize transactionally with
 all current indexes and statement-level deletion retention. Existing targets must
 match current v1; historical WIP versions have no upgrade path and unsupported
-schema markers are rejected unchanged. HEAD SQLite v20 transfers read-only
+schema markers are rejected unchanged. HEAD SQLite v21 transfers read-only
 into current PostgreSQL v1.
 
 The offline SQLite-to-PostgreSQL transfer is always maintained from **HEAD SQLite
@@ -79,7 +82,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary opens the current v20 schema and upgrades v19 as described above. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary opens the current v21 schema and upgrades v19/v20 as described above. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -152,10 +155,10 @@ modify it. A separately deployed agent keeps its own local data folder.
 Bot credential JSON requires `kind` (`issuer` or `worker`). Operator-issued
 issuer credentials have null conversation/operation scopes and can only issue
 workers. Workers require explicit operations and expiry; conversation scope is
-an array or null for account-wide delegation. SQLite v19-to-v20 startup conversion
+an array or null for account-wide delegation. SQLite v19-to-v21 startup conversion
 infers the kind from the previous operation scopes. PostgreSQL v1 uses this current
 format in place; historical WIP PostgreSQL metadata is not upgraded. Latest SQLite
-v20-to-PostgreSQL v1 transfer preserves both kinds and their metadata unchanged.
+v21-to-PostgreSQL v1 transfer preserves both kinds and their metadata unchanged.
 The operation set includes `media_upload`, `profile` and `create`; older binaries
 may reject these operations and cannot read the new required credential kind.
 
@@ -185,7 +188,7 @@ and authenticated status semantics. These outcomes may include private text.
 
 The optional SimpleBot worker uses local Deno KV in `simpleBot/data/agent.kv`
 (`BOT_STORAGE` overrides the path; `CHAT_DATA` moves the default directory),
-independently of server SQLite schema v20 and the minimal reference worker.
+independently of server SQLite schema v21 and the minimal reference worker.
 Deno runs it with `--unstable-kv`. Old `checkpoint.json` and `BOT_STATE` are
 ignored; no legacy checkpoint migration is performed.
 
@@ -193,7 +196,7 @@ KV format v2 stores account binding, input scan cursors, revisions, accepted
 message versions, tasks, tick sessions/continuations, durable jobs, command
 outcomes and the delivery outbox. Opening validated v1 worker data upgrades its
 format marker atomically while retaining existing tasks, payloads and retry
-keys; unsupported versions are rejected. This does not change server schema v20.
+keys; unsupported versions are rejected. This does not change server schema v21.
 Saved v1 group decisions (including silence), batch membership and pending
 outbox keys recover without fresh inference. KV v2 adds an optional per-task
 `replyHash` marking the input version with a committed final response plan;
@@ -261,6 +264,35 @@ deletion. This additive JSON field requires no SQL schema change.
 Media cleanup uses partial/covering indexes, retry timestamps and a reference
 removal trigger. SQL ready/expiry/deletion columns are authoritative when loading.
 
+Library assets use `media.conversation='@library'` and permanent object keys.
+`library_owners` and `library_entries` are independent unique `(account_id,media_id)`
+relationships; account IDs survive rename. Saved entries have an indexed,
+account-local insertion position: uploads and saves append at the end, and
+pagination uses that position rather than the random media ID. This is part of
+the current draft schema in place; it adds no version or migration path.
+Verified upload completion creates the
+initial owner and saved entry atomically. Ownership-aware account usage combines
+ordinary media reservations with every available library ownership's full size;
+final-release refunds do not wait for object deletion. `library_recents` holds
+bounded distinct IDs and grants neither access nor retention. Its `used` integer
+is an account-local increasing order, assigned inside the message transaction;
+it is not a wall-clock timestamp. New uses advance past existing values, including
+legacy second timestamps, so tied timestamps or clock changes cannot evict the
+newest use. This needs no schema change: SQLite remains v21 (with the existing
+v19/v20 upgrades) and PostgreSQL remains v1. The read-only SQLite-to-PostgreSQL
+transfer preserves these values exactly.
+
+Final release and global administrative removal durably set the media deletion
+state before cleanup; neither saved entries nor message references can revive it.
+Saved unavailable entries and retained messages keep metadata for placeholders.
+Ownership protects available assets from orphan cleanup even with no messages or
+picker entry. Account deletion releases ownerships and removes private library
+rows in batches inside the account transaction. Assets with remaining owners stay
+available. Cleanup counters in `library_storage` are derived transactionally by
+backend media triggers; a partial index supplies the oldest pending deletion.
+The offline transfer copies all library relationships and verifies the rebuilt
+counter alongside the other tables.
+
 ## Account metadata
 
 Each account entity stores `metadata`, a map from `@global` or stable room ID to
@@ -309,7 +341,7 @@ Su and authorized sudo bypass cleanup permissions and metadata limits.
 
 Account-wide settings use `metadata["@global"]["preferences.<key>"]` string
 values in the existing account JSON. No SQL layout or schema version changes are
-required: SQLite remains v20 and unpublished PostgreSQL remains v1. Existing
+required: SQLite remains v21 and unpublished PostgreSQL remains v1. Existing
 accounts begin with these keys absent. Absent values remain unset until a device
 logs in; that login atomically fills each missing key from its local settings,
 including validated defaults. Later logins pull established server values.
@@ -339,7 +371,7 @@ The optional `color` metadata key names one of 16 fixed palette colors. `@global
 account's default; a stable room ID branch overrides it in that room. Private conversations
 use the global value. Writers reject other values, and the key is rejected in private branches. Like
 other metadata, colors follow renames and are removed with their room or account. These values
-use existing account JSON without layout changes. Policy capabilities use the current v20 schema.
+use existing account JSON without layout changes. Policy capabilities use the current v21 schema.
 
 ## Avatars
 
@@ -347,13 +379,13 @@ The optional `metadata["@global"]["avatar"]` is an HTTPS image URL or a canonica
 `/api/avatars/<id>/file` link. Only this profile key has a self-service HTTP writer;
 ordinary metadata mutations still require su. The writer preserves other metadata
 and rolls back failed persistence. These values use existing account JSON and
-media rows, so color values need no layout change; policy capabilities use the current v20 schema.
+media rows, so color values need no layout change; policy capabilities use the current v21 schema.
 
 Uploaded avatars use media records with conversation `@avatar` and permanent
 retention. Immutable file bytes live at `avatars/<stable-account-id>/<upload-id>`
 in private S3. Metadata references protect them during startup/daily cleanup. Each cleanup SQL
 statement builds one uncorrelated, non-null reference list, avoiding a per-media-row
-account JSON scan without changing schema v20. Disabled accounts intentionally keep
+account JSON scan without changing schema v21. Disabled accounts intentionally keep
 those references so their avatar returns on re-enable; their images are unreadable
 while disabled. Replacing/removing the avatar or deleting its account releases the
 reference.

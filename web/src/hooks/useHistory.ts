@@ -412,14 +412,12 @@ export function useHistory(
         );
     },
     loadLatest: () => {
-      cancelRequest();
-      paused.current = false;
       setJump(undefined);
-      setLoaded(null);
-      current.current = null;
-      cache.current.delete(active.current);
-      lastRange.current = { range: {} };
-      setRetry((value) => value + 1);
+      // Start the fetch immediately. A queued synchronization effect can still
+      // see the old window and restore it if we only invalidate the cache.
+      fetchPage({}).catch((error: unknown) =>
+        setHistoryError(errorMessage(error)),
+      );
     },
     loadSequence: (sequence: number) => {
       paused.current = false;

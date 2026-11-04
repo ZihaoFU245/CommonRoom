@@ -97,7 +97,7 @@ console and bot responses retain the complete Markdown report.
 Bot command receipts retain the system authority used to issue a report. Both
 replay and receipt lookup recheck that authority, so revoked command/sudo access cannot
 retrieve an earlier report. The authority marker is stored in the receipt JSON.
-SQLite HEAD is v20 (with the v19
+SQLite HEAD is v21 (with the v19
 credential upgrade); PostgreSQL remains at its independent v1 schema.
 
 `/system configs` shows configuration only. `/system metrics` reports cumulative

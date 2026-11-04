@@ -180,6 +180,12 @@ function cachedResponse(
   });
 }
 
+// Native Cache Storage on secure pages, or bounded tab-local storage on HTTP.
+export type MediaCacheStore = Pick<Cache, "match" | "put" | "delete" | "keys">;
+export interface MediaCacheStorage {
+  open(name: string): Promise<MediaCacheStore>;
+}
+
 export class MediaCache {
   private writes: Promise<void> = Promise.resolve();
   private readonly fills = new Map<string, Fill>();
@@ -188,10 +194,10 @@ export class MediaCache {
   private readonly persistedAt = new Map<string, number>();
   private readonly recencyWrites = new Set<string>();
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
-  private readonly storage: CacheStorage;
+  private readonly storage: MediaCacheStorage;
   private readonly network: typeof fetch;
   constructor(
-    storage: CacheStorage,
+    storage: MediaCacheStorage,
     network: typeof fetch = (...args) => fetch(...args),
   ) {
     this.storage = storage;
@@ -221,7 +227,7 @@ export class MediaCache {
     this.fillingBytes += size;
     return fill;
   }
-  private async read(cache: Cache, key: string, info: Metadata) {
+  private async read(cache: MediaCacheStore, key: string, info: Metadata) {
     const decode = (response: Response) =>
       response.headers.get("Content-Type") === info.content_type
         ? cachedFile(response)
@@ -254,7 +260,7 @@ export class MediaCache {
   }
   // Reconcile keys across overlapping worker lifetimes, reusing known sizes.
   // Listing keys is cheap compared with reading every cached response on insert.
-  private async accounting(cache: Cache) {
+  private async accounting(cache: MediaCacheStore) {
     const sizes = new Map<string, number>();
     let bytes = 0;
     for (const key of await cache.keys()) {
@@ -337,7 +343,7 @@ export class MediaCache {
     keepAlive(work);
   }
   private async evict(
-    cache: Cache,
+    cache: MediaCacheStore,
     index: { sizes: Map<string, number>; bytes: number },
     size: number,
   ) {
@@ -345,7 +351,7 @@ export class MediaCache {
       index.sizes.size >= entryLimit || index.bytes + size > byteLimit;
     if (!needsSpace()) return;
     const keys = [...index.sizes.keys()];
-    let recency: Cache | undefined;
+    let recency: MediaCacheStore | undefined;
     try {
       recency = await this.storage.open(recencyCacheName);
       const records = recency;

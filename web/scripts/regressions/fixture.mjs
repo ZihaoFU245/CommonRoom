@@ -1,4 +1,5 @@
 import { LoginServerSettings } from "../../src/components/LoginServerSettings.tsx";
+import { libraryRegressions } from "./library.mjs";
 import { savedServerUrl, saveServerUrl } from "../../src/api/server.ts";
 import { UserCards } from "../../src/components/UserCard.tsx";
 import { UserCardTrigger } from "../../src/components/UserCardTrigger.tsx";
@@ -47,6 +48,18 @@ import "../../src/style.css";
 
 const tests = document.querySelector("#tests");
 const results = [];
+// Settings use a healthy, empty media library unless a case supplies its own.
+api.library = async () => ({
+  items: [],
+  next_cursor: null,
+  usage: 0,
+  quota: 1073741824,
+  cleanup_bytes: 0,
+  cleanup_objects: 0,
+  oldest_cleanup: null,
+  uploads_paused: false,
+});
+
 const testFilter = new URLSearchParams(location.search).get("test");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function check(condition, message) {
@@ -1618,6 +1631,13 @@ await test("unread shortcut hides at its target and returns only above it", asyn
     sequence = 80;
     p.current.updateNavigation();
     await until(() => p.current.showJumpToUnread);
+    context.virtualTimeline.current.offsetForSequence = () => 16;
+    p.current.updateNavigation();
+    await until(() => !p.current.showJumpToUnread);
+    context.virtualTimeline.current.offsetForSequence = () =>
+      viewport.clientHeight + 1;
+    p.current.updateNavigation();
+    await until(() => p.current.showJumpToUnread);
   } finally {
     p.close();
   }
@@ -1936,7 +1956,25 @@ for (const width of [1100, 360]) {
       await sleep(180);
       check(
         !button("Jump to unread ↓"),
-        `entry at the first unread message does not offer a redundant unread jump: ${JSON.stringify({ offset: rowOffset(120), top: tests.querySelector(".message-list")?.scrollTop })}`,
+        `entry at the first unread message does not offer a redundant unread jump: ${JSON.stringify(
+          {
+            offset: rowOffset(120),
+            top: tests.querySelector(".message-list")?.scrollTop,
+            height: tests.querySelector(".message-list")?.clientHeight,
+            first: [...tests.querySelectorAll("[data-sequence]")]
+              .filter(
+                (node) =>
+                  node.getBoundingClientRect().bottom >
+                  tests.querySelector(".message-list").getBoundingClientRect()
+                    .top,
+              )
+              .slice(0, 2)
+              .map((node) => ({
+                sequence: node.dataset.sequence,
+                offset: rowOffset(Number(node.dataset.sequence)),
+              })),
+          },
+        )}`,
       );
       check(
         !button("Older messages") &&
@@ -2009,6 +2047,20 @@ for (const width of [1100, 360]) {
       button("Jump to bottom ↓").click();
       await until(
         () => rowOffset(300) < viewport.clientHeight && rowOffset(300) > -100,
+        () =>
+          JSON.stringify({
+            offset: rowOffset(300),
+            top: viewport.scrollTop,
+            height: viewport.clientHeight,
+            extent: viewport.scrollHeight,
+            heading: tests.querySelector(".conversation h1")?.textContent,
+            hash: location.hash,
+            notices: tests.querySelector(".history-notices")?.textContent,
+            requests: requests.slice(-5),
+            rows: [...viewport.querySelectorAll("[data-sequence]")].map(
+              (node) => node.dataset.sequence,
+            ),
+          }),
       );
       await sleep(450);
       check(!button("Jump to bottom ↓"), "bottom shortcut hides after arrival");
@@ -5231,6 +5283,8 @@ await test("room selection preserves fragments and restores the default view wit
     else localStorage.setItem("commonroom-sidebar-open", sidebar);
   }
 });
+
+await libraryRegressions({ test, tests, until, check, sleep, empty });
 
 document.querySelector("#results").textContent = JSON.stringify(
   results,

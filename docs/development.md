@@ -60,8 +60,15 @@ Remote debug uses plain HTTP; browser features requiring a secure context, such
 as service workers, are unavailable. The debug preview supplies the configured
 origin for API GETs to that host when browsers omit both Origin and Fetch Metadata.
 Explicit origin/metadata headers still pass through for backend validation.
-`--with-s3` still uses a loopback public storage URL, so remote media needs a
-separately reachable storage setup.
+On this HTTP UI, images/avatars/sticker thumbnails share a bounded in-memory byte
+cache because service workers are unavailable. Warm remounts recheck server access
+without downloading storage again; a page reload starts a cold cache. Other media
+uses authenticated signed-link requests and direct storage loads. Avatar upload IDs use
+`crypto.getRandomValues()` when the secure-context-only `randomUUID()` is absent.
+With `--network HOST --with-s3`, storage links point to `http://HOST:19000`.
+Start RustFS with the matching `./auto/start-s3.sh --network HOST` in another
+terminal so that port is reachable from the browser. Rebuild with
+`./auto/build.sh debug` after client changes; `debug.sh` only runs existing artifacts.
 
 Start dependencies in separate terminals before enabling them:
 
@@ -247,12 +254,14 @@ Node/Deno development and bot-worker requirements remain separate.
 - Small controls, settings reveals and menus use `controlMotion` from
   `web/src/features/preferences/motion.ts` (120 ms, ease-out). `applyAppearance`
   writes the matching CSS motion variables before rendering; the stylesheet keeps
-  first-paint fallbacks. Message and preview motion retain their separate 180 ms
-  timing. Respect reduced motion and clean up animation controllers/listeners.
+  first-paint fallbacks. Message and content-preview motion retain their separate
+  180 ms timing. Sticker-library additions, reordering, resizing and image fades
+  use 120 ms; deletion and its reflow retain 180 ms. Respect reduced motion and
+  clean up animation controllers/listeners.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep all SQL, schemas, connection/session and COPY mechanics in the independent SQLite/PostgreSQL modules under `engine/database/`. Shared `engine/storage/` coordinates typed operations and committed publication; `engine/history/` owns shared caches. Avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.
 - Preserve password masking, session revocation, per-conversation retention, monotonically advancing read cursors, and tab-local command output. Never log credentials or message bodies.
-- Preserve compatibility with existing HEAD-schema `data/`. Published schema changes need a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). SQLite startup supports fresh/HEAD v20 and an atomic v19-to-v20 credential upgrade. PostgreSQL is unused and unpublished: modify its independent current v1 schema directly, without historical WIP upgrades. Unsupported schema versions are rejected unchanged. Always maintain a read-only HEAD SQLite → current PostgreSQL transfer; PostgreSQL changes must not force a SQLite migration.
+- Preserve compatibility with existing HEAD-schema `data/`. Published schema changes need a version increment, explicit compatibility/rejection tests, rollback behavior, and an update to [Data](data.md). SQLite startup supports fresh/HEAD v21 and atomic v19/v20-to-v21 upgrades (library tables plus the v19 credential conversion). PostgreSQL is unused and unpublished: modify its independent current v1 schema directly, without historical WIP upgrades. Unsupported schema versions are rejected unchanged. Always maintain a read-only HEAD SQLite → current PostgreSQL transfer; PostgreSQL changes must not force a SQLite migration.
 - Use `cargo fmt` and the web Prettier scripts. Update the relevant guides when paths, commands, protocol, configuration, or deployment behavior changes.
 
 ## Adding a feature

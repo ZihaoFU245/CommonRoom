@@ -29,6 +29,7 @@ pub(crate) struct MessageReceipt<'a> {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct MessageWrite<'a> {
+    pub(crate) library_recent_limit: u64,
     pub(crate) conversation: &'a str,
     pub(crate) kind: &'a str,
     pub(crate) key: &'a str,

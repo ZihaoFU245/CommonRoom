@@ -22,12 +22,19 @@ export interface CompletedMedia {
 export interface MediaInfo extends CompletedMedia {
   expires: number | null;
   expired: boolean;
+  library?: boolean;
+  saved?: boolean;
+  unavailable?: boolean;
 }
 export function isMediaInfo(value: unknown): value is MediaInfo {
   return (
     isCompletedMedia(value) &&
     record(value) &&
     typeof value.expired === "boolean" &&
+    (value.library === undefined || typeof value.library === "boolean") &&
+    (value.saved === undefined || typeof value.saved === "boolean") &&
+    (value.unavailable === undefined ||
+      typeof value.unavailable === "boolean") &&
     (value.expires === null ||
       (typeof value.expires === "number" &&
         Number.isSafeInteger(value.expires) &&
@@ -222,15 +229,23 @@ export const previewLimit = 1024 * 1024;
 export async function documentSource(
   path: string,
   signal: AbortSignal,
+  resolvedUrl?: string,
 ): Promise<string> {
   const base = serverBaseUrl();
   const file = mediaFileUrl(path, base);
   if (file?.kind !== "media" || file.base !== base)
     throw new Error("Invalid attachment URL.");
+  // The file hook resolves an authorized signed URL when HTTP has no worker.
+  const sourceUrl = resolvedUrl ? new URL(resolvedUrl, base) : file.url;
+  if (!isFileLink({ url: sourceUrl.href }, base))
+    throw new Error("Invalid attachment source URL.");
+  const managed =
+    sourceUrl.origin === file.url.origin &&
+    sourceUrl.pathname === file.url.pathname;
   const cancellation = requestAbort(15000, signal);
   try {
-    const response = await fetch(file.url, {
-      credentials: "include",
+    const response = await fetch(sourceUrl, {
+      credentials: managed ? "include" : "omit",
       cache: "no-store",
       signal: cancellation.signal,
     });

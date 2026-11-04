@@ -8,6 +8,7 @@ pub(crate) struct MetadataNotice {
     all: bool,
     accounts: BTreeSet<String>,
     catalogues: BTreeSet<String>,
+    media: bool,
 }
 impl MetadataNotice {
     pub(crate) fn all() -> Self {
@@ -25,14 +26,19 @@ impl MetadataNotice {
     pub(crate) fn has_catalogues(&self) -> bool {
         !self.catalogues.is_empty()
     }
+    pub(crate) fn has_media(&self) -> bool {
+        self.media
+    }
     pub(crate) fn merge(&mut self, other: &Self) {
         self.all |= other.all;
         self.accounts.extend(other.accounts.iter().cloned());
         self.catalogues.extend(other.catalogues.iter().cloned());
+        self.media |= other.media;
     }
     pub(crate) fn catalogues_only(&self) -> Self {
         Self {
             catalogues: self.catalogues.clone(),
+            media: self.media,
             ..Default::default()
         }
     }
@@ -112,6 +118,7 @@ impl MetadataNotice {
         ) {
             let previous = before.users.and_then(|users| users.get(&key));
             let current = data.users.get(&key);
+            notice.media |= previous.is_some() && current.is_none();
             if previous == current {
                 continue;
             }

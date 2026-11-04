@@ -5,6 +5,7 @@ import { AccountEditor } from "./settings/AccountEditor.tsx";
 import { AppearanceSettings } from "./settings/AppearanceSettings.tsx";
 import { FormattingSettings } from "./settings/FormattingSettings.tsx";
 import { SecuritySettings } from "./settings/SecuritySettings.tsx";
+import { StickerSettings } from "./settings/StickerSettings.tsx";
 import type { SettingsProps } from "./settings/types.ts";
 
 const tabs = {
@@ -66,13 +67,16 @@ export function Settings(props: SettingsProps) {
             <AvatarSettings state={state} />
           </div>
           {tab === "account" ? (
-            <AccountEditor
-              key="account"
-              state={state}
-              pending={props.pending}
-              onAccountCommand={props.onAccountCommand}
-              section="account"
-            />
+            <>
+              <AccountEditor
+                key="account"
+                state={state}
+                pending={props.pending}
+                onAccountCommand={props.onAccountCommand}
+                section="account"
+              />
+              <StickerSettings key={state.username} account={state.username} />
+            </>
           ) : tab === "security" ? (
             <SecuritySettings {...props} />
           ) : tab === "preferences" ? (

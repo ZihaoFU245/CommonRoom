@@ -175,3 +175,24 @@ test("pending metadata ownership is bounded and clearing aborts its retained req
     "capacity recovers after clearing",
   );
 });
+
+test("library mutations invalidate cached membership and availability", async (t) => {
+  setup(t);
+  let saved = false;
+  let unavailable = false;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url).includes("/info"))
+      return Response.json({ ...info, library: true, saved, unavailable });
+    return Response.json({ ok: true });
+  });
+  const load = () => api.mediaStatus(id, new AbortController().signal);
+  assert.equal((await load()).saved, false);
+  saved = true;
+  await api.libraryChange(id, "save", "room-id");
+  assert.equal(api.cachedMediaStatus(id), undefined);
+  assert.equal((await load()).saved, true);
+  unavailable = true;
+  await api.libraryChange(id, "release", undefined, true);
+  assert.equal(api.cachedMediaStatus(id), undefined);
+  assert.equal((await load()).unavailable, true);
+});

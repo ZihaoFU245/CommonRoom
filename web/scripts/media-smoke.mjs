@@ -578,6 +578,69 @@ try {
   );
   // Restart with the daily interval: recent verified-but-unsent bytes must be
   // preserved on startup, while referenced objects and sessions remain usable.
+  // A shared library object has independent owners and entries, and survives
+  // without message references across startup orphan cleanup.
+  const libraryTicket = await (
+    await request("/api/media/uploads", alice, {
+      conversation_id: "@library",
+      filename: "sticker.png",
+      size: avatarBytes.length,
+    })
+  ).json();
+  assert.equal(
+    (
+      await fetch(libraryTicket.upload.url, {
+        method: "PUT",
+        headers: libraryTicket.upload.headers,
+        body: avatarBytes,
+      })
+    ).status,
+    200,
+  );
+  const libraryMedia = await (
+    await request(
+      `/api/media/uploads/${libraryTicket.media_id}/complete`,
+      alice,
+      {},
+    )
+  ).json();
+  const libraryFile = libraryMedia.path.replace("/commonroom", "");
+  const libraryAction = (cookie, action, confirm_last = false) =>
+    request(`/api/library/${libraryMedia.media_id}`, cookie, {
+      action,
+      confirm_last,
+    });
+  assert.equal((await request(libraryFile, bob)).status, 404);
+  await send(`![sticker](${libraryMedia.path})`);
+  assert.equal((await libraryAction(bob, "save")).status, 200);
+  const borrowed = await (await request("/api/library", bob)).json();
+  const borrowedItem = borrowed.items.find(
+    (item) => item.media_id === libraryMedia.media_id,
+  );
+  assert.equal(borrowedItem.owned, false);
+  assert.equal((await libraryAction(bob, "acquire")).status, 200);
+  assert.equal((await libraryAction(bob, "acquire")).status, 200);
+  const owned = await (await request("/api/library?owned=true", bob)).json();
+  assert.equal(owned.usage, borrowed.usage + avatarBytes.length);
+  assert.equal(
+    owned.items.find((item) => item.media_id === libraryMedia.media_id)
+      .owner_count,
+    2,
+  );
+  assert.equal((await libraryAction(alice, "remove")).status, 200);
+  assert.ok(
+    (await (await request("/api/library?owned=true", alice)).json()).items.some(
+      (item) => item.media_id === libraryMedia.media_id,
+    ),
+  );
+  const libraryHistory = await (
+    await request("/api/history?view=files", alice)
+  ).json();
+  await send(
+    `/retract ${libraryHistory.messages.find((message) => message.text.includes(libraryMedia.media_id)).id}`,
+  );
+  assert.equal((await libraryAction(alice, "release")).status, 200);
+  assert.equal((await request(libraryFile, bob)).status, 307);
   const orphanTicket = await (
     await request("/api/media/uploads", alice, {
       conversation_id: conversation,
@@ -617,6 +680,26 @@ try {
     200,
     "Restart preserves completed uploads during their pending grace period",
   );
+  assert.equal(
+    (await request(libraryFile, bob)).status,
+    307,
+    "Library ownership survives startup cleanup without message references",
+  );
+  assert.equal((await libraryAction(bob, "release")).status, 409);
+  assert.equal((await libraryAction(bob, "release", true)).status, 200);
+  assert.equal(
+    (await request(libraryFile, bob)).status,
+    404,
+    "Final release immediately revokes new storage reads",
+  );
+  const unavailable = await (
+    await request(
+      `/api/media/${libraryMedia.media_id}/info?include_expired=true`,
+      bob,
+    )
+  ).json();
+  assert.equal(unavailable.unavailable, true);
+  assert.equal((await libraryAction(bob, "acquire")).status, 404);
   assert.equal(
     (await request(`/api/media/${retainedMedia.media_id}/info`, bob)).status,
     200,
@@ -720,7 +803,7 @@ try {
     404,
   );
   console.log(
-    "Media smoke passed: avatars (private upload, ownership, immutable bytes, restart, replacement/removal), RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
+    "Media smoke passed: shared library ownership, borrowing, restart and final-release revocation; avatars (private upload, ownership, immutable bytes, restart, replacement/removal), RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
   );
 } finally {
   for (const ws of sockets) ws.terminate();

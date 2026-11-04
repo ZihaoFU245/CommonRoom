@@ -28,6 +28,7 @@ import { OutgoingPane } from "./OutgoingPane.tsx";
 import { Settings } from "./Settings.tsx";
 import { BotProgress } from "./BotProgress.tsx";
 import { Composer } from "./Composer.tsx";
+import { LibrarySourceContext } from "./LibrarySourceContext.ts";
 import { MessageList } from "./MessageList.tsx";
 import { useConnection } from "../hooks/useConnection.ts";
 import { useBotCommands } from "../hooks/useBotCommands.ts";
@@ -626,36 +627,40 @@ export function Chat({
                 <button onClick={() => retryHistory()}>Retry history</button>
               </div>
             )}
-            <MessageList
-              messageBars={messageBars}
-              avatars={state.avatars}
-              motionScope={
-                state.private_access[selected]?.id ??
-                state.rooms.find((room) => room.name === selected)?.id ??
-                selected
-              }
-              revision={unread?.revision ?? 0}
-              historyReady={historyReady}
-              atBottom={atBottom}
-              debug={commands.debug}
-              allowHtml={allowHtml}
-              latex={latex}
-              permissions={commands.permissions}
-              commands={commands.serverCommands}
-              entries={entries}
-              username={state.username}
-              pending={pending}
-              unreadBoundary={unreadBoundary}
-              onReact={handleReact}
-              onEdit={handleEdit}
-              onReply={handleReply}
-              onDelete={handleDelete}
-              loadSequence={handleLoadSequence}
-              virtualTimeline={virtualTimeline}
-              historyElement={historyElement}
-              end={end}
-              onScroll={handleScroll}
-            />
+            <LibrarySourceContext.Provider
+              value={room?.id ?? state.private_access[selected]?.id}
+            >
+              <MessageList
+                messageBars={messageBars}
+                avatars={state.avatars}
+                motionScope={
+                  state.private_access[selected]?.id ??
+                  state.rooms.find((room) => room.name === selected)?.id ??
+                  selected
+                }
+                revision={unread?.revision ?? 0}
+                historyReady={historyReady}
+                atBottom={atBottom}
+                debug={commands.debug}
+                allowHtml={allowHtml}
+                latex={latex}
+                permissions={commands.permissions}
+                commands={commands.serverCommands}
+                entries={entries}
+                username={state.username}
+                pending={pending}
+                unreadBoundary={unreadBoundary}
+                onReact={handleReact}
+                onEdit={handleEdit}
+                onReply={handleReply}
+                onDelete={handleDelete}
+                loadSequence={handleLoadSequence}
+                virtualTimeline={virtualTimeline}
+                historyElement={historyElement}
+                end={end}
+                onScroll={handleScroll}
+              />
+            </LibrarySourceContext.Provider>
             <BotProgress
               activities={botActivities.filter(
                 (item) =>
@@ -670,6 +675,7 @@ export function Chat({
               restore={commands.restoreOutgoing}
             />
             <Composer
+              account={state.username}
               mediaUpload={commands.mediaUpload}
               canWrite={commands.permissions.includes("w:message.create")}
               minimumComposerHeight={minimumComposerHeight}

@@ -10,6 +10,7 @@ function fixture(t) {
   const originals = {
     HTMLElement: globalThis.HTMLElement,
     ResizeObserver: globalThis.ResizeObserver,
+    MutationObserver: globalThis.MutationObserver,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
     window: globalThis.window,
@@ -26,6 +27,13 @@ function fixture(t) {
     constructor(key) {
       this.dataset = { virtualKey: key };
       this.height = 100;
+      this.style = {};
+    }
+    querySelector() {
+      return null;
+    }
+    querySelectorAll() {
+      return [];
     }
     getBoundingClientRect() {
       reads++;
@@ -47,6 +55,10 @@ function fixture(t) {
       addEventListener() {},
       removeEventListener() {},
     }),
+  };
+  globalThis.MutationObserver = class {
+    observe() {}
+    disconnect() {}
   };
   globalThis.ResizeObserver = class {
     constructor(callback) {

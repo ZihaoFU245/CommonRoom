@@ -91,7 +91,7 @@ shows bot names, labels and kinds, then inserts the credential ID. These hints
 are filtered by the same account/credential grants and protected-su checks as
 revocation and refresh after issuance, rename and revocation.
 Deleting the bot removes all issuer and worker credentials and retry receipts.
-Credentials persist across restart. SQLite v19 upgrades to v20 atomically to add
+Credentials persist across restart. SQLite v19 upgrades to v21 atomically to add
 explicit credential kinds; PostgreSQL retains its current unpublished v1 marker.
 Never log credentials or message bodies.
 
@@ -179,6 +179,14 @@ no Origin header. Existing production ingress rules apply.
 | Own avatar set/upload/complete | `profile` |
 | Own global name color | `profile` |
 | Own room name color | `profile` and that room's conversation ID |
+
+Library assets use the same v1 media retrieval routes. Conversation-scoped workers
+can read a library asset only through a retained reference in an allowed readable
+conversation; independent account ownership or a saved library entry cannot widen
+the token's scope. Scoped sends may reuse an asset already referenced in the target
+conversation, and cannot publish a hidden asset solely because the account owns
+it. Account-wide workers retain the account's independent library access. Library
+membership/ownership management remains on browser session routes.
 
 `profile` explicitly delegates the bot account's own global appearance, even on a
 conversation-scoped token. It does not authorize another account's profile or

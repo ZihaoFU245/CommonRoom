@@ -11,6 +11,11 @@ pub(crate) struct MediaAllocation<'a> {
     pub(crate) private: Option<(&'a str, String)>,
 }
 pub(crate) enum MediaWrite<'a> {
+    Library(super::library::LibraryWrite<'a>),
+    LibraryAllocate {
+        allocation: MediaAllocation<'a>,
+        config: &'a crate::config::MediaConfig,
+    },
     Allocate(MediaAllocation<'a>),
     AvatarAllocate {
         allocation: MediaAllocation<'a>,

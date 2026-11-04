@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api } from "../src/api/client.ts";
+import { httpImageCache } from "../src/features/conversation/httpImageCache.ts";
 import {
   startMediaCache,
   ensureMediaCache,
@@ -14,6 +15,106 @@ const registration = mockHooks();
 const { useMediaUploads } = await import("../src/hooks/useMediaUploads.ts");
 const { useFileUrl } = await import("../src/hooks/useFileUrl.ts");
 registration.deregister();
+
+test("LAN HTTP resolves fresh media, avatar and download links without requiring a worker", async (t) => {
+  const descriptors = Object.fromEntries(
+    ["document", "navigator", "localStorage"].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { baseURI: "http://ui.test/chat/" },
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {},
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => null, setItem() {} },
+  });
+  const originalBase = serverBaseUrl();
+  saveServerUrl("http://api.test/server/");
+  const local = createHookHarness();
+  t.after(() => {
+    for (const slot of local.slots) slot?.cleanup?.();
+    saveServerUrl(originalBase);
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  const calls = [];
+  let denied = false;
+  t.mock.method(api, "fileLink", async (href, signal, download) => {
+    calls.push({ href, signal, download });
+    if (denied) throw new Error("Attachment not found.");
+    return {
+      url: `http://store.test/object?signature=${calls.length}&download=${download}`,
+    };
+  });
+  function draw(kind = "media", download = false, image = false) {
+    useHarness(local);
+    const result = useFileUrl(
+      `http://api.test/server/api/${kind}/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file`,
+      { download, image },
+    );
+    while (local.effects.length) local.effects.shift()();
+    return result;
+  }
+  assert.equal(draw().url, undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(draw().url, /^http:\/\/store.test\/object/u);
+  assert.equal(draw().crossOrigin, "anonymous");
+  draw().retry();
+  draw();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 2, "retry resolves a fresh signed URL");
+  assert.equal(draw("avatars").url, undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(draw("avatars").url);
+  draw("media", true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.at(-1).download, true);
+  assert.match(draw("media", true).url, /download=true/u);
+  denied = true;
+  draw("media", true).retry();
+  draw("media", true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const rejected = draw("media", true);
+  assert.equal(rejected.url, undefined);
+  assert.equal(rejected.error, "Attachment not found.");
+  const revoke = t.mock.method(URL, "revokeObjectURL");
+  let finish;
+  t.mock.method(
+    httpImageCache,
+    "load",
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  draw("media", false, true);
+  const imageUrl = URL.createObjectURL(new Blob(["image"]));
+  finish(imageUrl);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(draw("media", false, true).url, imageUrl);
+  draw("avatars", false, true);
+  assert.ok(
+    revoke.mock.calls.some(({ arguments: args }) => args[0] === imageUrl),
+    "changing rows releases their object URLs while keeping shared bytes",
+  );
+  const late = URL.createObjectURL(new Blob(["late image"]));
+  draw("avatars", false, false);
+  finish(late);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(
+    revoke.mock.calls.some(({ arguments: args }) => args[0] === late),
+    "a late image cannot leak a URL after its consumer unmounts",
+  );
+});
 
 test("managed file hooks wait for cache control and never resolve direct storage links", async (t) => {
   const descriptors = Object.fromEntries(

@@ -31,10 +31,14 @@ pub(super) async fn message(
             .with_conversation(&permit, {
                 let context = context.clone();
                 let input = input.clone();
-                move |engine| {
+                move |engine| -> Result<_, Error> {
                     let user = super::api::admit(engine, &context)?;
                     context.permits(engine, "send", crate::bots::auth::Scope::Conversation(&input.conversation_id))?;
-                    engine.prepare_append(&user, &input)
+                    let mut pending = engine.prepare_append(&user, &input)?;
+                    if context.metadata(engine)?.conversations.is_some() {
+                        pending.restrict_library_to_conversation();
+                    }
+                    Ok(pending)
                 }
             })
             .await?;

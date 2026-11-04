@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHookHarness, mockHooks, useHarness } from "./helpers/hooks.js";
 import { api, ApiError } from "../src/api/client.ts";
+import { mediaStatusCache } from "../src/features/conversation/mediaStatusCache.ts";
 import { createRequestLifecycle } from "../src/features/conversation/requestLifecycle.ts";
 const registration = mockHooks();
 const { useConnection } = await import("../src/hooks/useConnection.ts");
@@ -41,6 +42,7 @@ function fixture(t) {
     refreshes = [],
     snapshots = [],
     checks = [],
+    mediaUpdates = [],
     timers = new Map(),
     listeners = new Map();
   let serial = 0,
@@ -62,6 +64,11 @@ function fixture(t) {
   }
   globalThis.WebSocket = Socket;
   globalThis.window = {
+    dispatchEvent(event) {
+      mediaUpdates.push(event.type);
+      listeners.get(event.type)?.(event);
+      return true;
+    },
     addEventListener: (name, handler) => listeners.set(name, handler),
     removeEventListener() {},
   };
@@ -146,6 +153,7 @@ function fixture(t) {
     listeners,
     refreshes,
     snapshots,
+    mediaUpdates,
     failRefresh(error) {
       refreshError = error;
     },
@@ -166,6 +174,21 @@ function fixture(t) {
     },
   };
 }
+test("media invalidations refresh viewers without changing conversation state", async (t) => {
+  const h = fixture(t);
+  t.after(() => mediaStatusCache.clear());
+  h.baseline();
+  await mediaStatusCache.load("library-item", async () => ({ saved: true }));
+  const before = h.snapshots.length;
+  h.sockets.at(-1).onmessage({ data: '{"kind":"media"}' });
+  assert.equal(mediaStatusCache.peek("library-item"), undefined);
+  assert.deepEqual(h.mediaUpdates, [
+    "commonroom-library-change",
+    "commonroom-library-change",
+  ]);
+  assert.equal(h.snapshots.length, before);
+  assert.equal(h.refreshes.length, 0);
+});
 test("reconnect backoff starts before a slow session check completes", async (t) => {
   const h = fixture(t);
   h.sockets[0].close();

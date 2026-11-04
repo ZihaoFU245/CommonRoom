@@ -40,8 +40,8 @@ Startup initializes an empty schema transactionally; an existing application sch
 must match PostgreSQL schema v1. PostgreSQL is not deployed yet, so fixes are
 incorporated directly into v1, including statement-level deletion retention.
 There are no historical WIP upgrade paths; unsupported schema versions are
-rejected unchanged. SQLite HEAD is v20, with a v19 startup upgrade for explicit bot credential kinds.
-The offline transfer requires v20 and preserves issuer/worker credential metadata. See [Data](data.md#database-compatibility).
+rejected unchanged. SQLite HEAD is v21, with v19/v20 startup upgrades for library tables and the v19 bot credential conversion.
+The offline transfer requires v21 and preserves issuer/worker credential metadata. See [Data](data.md#database-compatibility).
 The PostgreSQL representation has its own schema marker and indexed
 JSONB projections alongside the original JSON text; the two database files/formats
 are not interchangeable.
@@ -103,14 +103,14 @@ reset, account recreation or message renumbering.
 The command:
 
 1. Acquires the SQLite server's ownership lock and opens the source read-only at
-   HEAD SQLite v20. It checks integrity, foreign keys and metadata before importing.
+   HEAD SQLite v21. It checks integrity, foreign keys and metadata before importing.
 2. Acquires PostgreSQL ownership and requires an empty target schema.
 3. Creates the PostgreSQL schema and streams base rows using binary `COPY` inside
    one transaction. It retains accounts/password hashes, sessions, policy, bots,
    message JSON, reactions, revisions, global sequences, read positions, both
    kinds of retry receipts, audit/authentication events and media metadata.
 4. Rebuilds account references and retained-message counters using PostgreSQL
-   triggers, and compares row counts plus typed, ordered checksums for all 14
+   triggers, and compares row counts plus typed, ordered checksums for all 18
    application tables. Restores authentication/audit identity sequences.
 5. Commits only after verification, then prints per-table verified row counts.
 

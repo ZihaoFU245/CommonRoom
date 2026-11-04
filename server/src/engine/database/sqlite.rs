@@ -2,6 +2,7 @@
 pub(super) mod bootstrap;
 pub(super) mod cursors;
 pub(super) mod history;
+pub(super) mod library;
 pub(super) mod media;
 pub(super) mod messages;
 pub(super) mod metadata;

@@ -204,7 +204,7 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes sho
 - `hooks/useFonts.ts` and `useComposerResize.ts` own presentation preferences and input sizing.
 - `CollapsibleMessage.tsx` caps long rendered message bodies at a 256px top preview with small borderless Show more / Show less controls and directional SVG arrows, including fenced code and plain text. `useMessageExpansionMotion.ts` starts the height animation before changing expansion state. `messageExpansion.ts` gives very long messages 420ms, spending 80% of that time revealing the visible viewport portion before completing the offscreen height; short expansions and collapses use 300ms. Collapse pins the visible footer so text compacts from above while following messages stay fixed; manual input releases that anchor. Virtual timeline anchoring yields while a panel carries `data-message-resizing`, keeping its measurements current. Reduced motion changes height without animating. Natural-content ResizeObserver measurements handle delayed Markdown/media and width changes. MessageList retains expansion within the current conversation window across virtual row remounts, clearing it on edits, eviction or conversation switches. Editors remain fully visible.
 - `hooks/useMessageEditorLayout.ts` owns inline editor sizing, focus, animation, and last-message scroll anchoring; `ConsoleMessage.tsx` owns rendering and edit interactions.
-- `hooks/useContentResizeMotion.ts` animates delayed message-body size changes (images, video metadata, lazy Markdown/math, attachment status and HTML/frame previews) with the timeline's 180ms ease-out timing. It observes an inner natural wrapper and animates the outer wrapper, including the fold control, without resize feedback. Bottom-following transitions temporarily own scroll placement and let virtual measurements update without competing anchoring; manual input releases the pin. Reading older messages retains the virtual message anchor. Explicit Show more / Show less motion takes precedence; width changes, initial mounts, offscreen content and reduced motion do not replay the transition. Interrupted loads retarget from the painted height. HTML covers use this common message transition instead of a second nested height animation.
+- `hooks/useContentResizeMotion.ts` animates delayed message-body size changes (images, video metadata, lazy Markdown/math, attachment status and HTML/frame previews) with the timeline's 180ms ease-out timing. It observes an inner natural wrapper and animates the outer wrapper, including the fold control, without resize feedback. Bottom-following transitions temporarily own scroll placement and let virtual measurements update without competing anchoring; manual input releases the pin. Reading older messages retains the virtual message anchor. Explicit Show more / Show less motion takes precedence; width changes, initial mounts, offscreen content and reduced motion do not replay the transition. Interrupted loads retarget from the painted height. Virtual rows retain their last measured height while remounted asynchronous content resolves; the shared resize hook skips reveal animations during this restoration, and the reservation is released after nested resize observers settle. HTML covers use this common message transition instead of a second nested height animation.
 - `hooks/useTimelineMotion.ts` animates live message arrivals, retractions and edits with transform/opacity effects on mounted rows. It preserves both row and text positions when grouping or date headers change, fading incoming/outgoing headers. It waits for synchronous virtual measurements before painting, shares the editor's 180 ms ease-out timing, and keeps temporary inert exit copies outside virtual sizing and read tracking. Short histories temporarily extend the paint clip into unused viewport space without adding scroll range. Conversation identity, history readiness and revision changes prevent animations during initial loading, paging and view switches. Animation frames stop when the transition finishes; scrolling updates cached positions without geometry reads.
 - `useHistory` distinguishes background revision refreshes from initial loading and explicit paging; refreshing an existing window does not insert a loading bar or move the conversation viewport.
   A jump target is cleared after its page commits, so later refreshes follow the
@@ -228,7 +228,7 @@ HTTP snapshots return 503 and browser sockets send an error frame before closing
 
 This layout scales feature development by putting each change in its owning module. Preserve the single state owner and add modules when a responsibility becomes distinct. Extra crates, generic repositories, or a global frontend state framework are not required to add ordinary features.
 
-`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. SQLite HEAD is v20; v19 upgrades atomically to explicit bot credential kinds. Unpublished PostgreSQL uses its independent v1 schema and has no historical WIP upgrade path. HEAD SQLite always transfers read-only into current PostgreSQL. Deletion retention aggregates once per statement/conversation. Unsupported schema markers are rejected unchanged.
+`max_messages` is a disk retention limit per room/private pair (default 1,000), independent of cache capacity. Raising retention does not raise cache budgets. Startup loads entities, policy, sessions and read cursors, not retained message bodies. SQLite HEAD is v21; v20 gains library tables, and v19 gains those tables plus explicit bot credential kinds atomically. Unpublished PostgreSQL uses its independent v1 schema and has no historical WIP upgrade path. HEAD SQLite always transfers read-only into current PostgreSQL. Deletion retention aggregates once per statement/conversation. Unsupported schema markers are rejected unchanged.
 
 The server creates cache pages lazily: at most 1,000 cached message entries per conversation, 256 pages, and default global budgets of 10,000 entries and 32 MiB of conservative payload accounting. `server.cache` tunes history bytes/messages/pages/per-conversation limits, unread entries and serialized snapshot limits at startup. These are cache budgets, not a promise about total process RSS; response copies, SQLite caches, metadata and temporary maintenance work also use memory. Unread results have a separate bounded 4,096-entry revision/cursor cache. Both caches use four conversation-hashed mutex shards; each shard receives one quarter of the global message, byte, page and unread-entry budgets. One hot shard cannot borrow another shard’s allowance. Recovery retains configured limits. Grant-authorized `/system configs` shows configuration and `/system metrics` shows lifetime cache counters, hit rates, shard occupancy and pool acquisition statistics as Markdown. Metrics use existing cache locks/counters without periodic profiling or logging; see [Cache metrics](cache.md).
 
@@ -313,7 +313,7 @@ background cleanup orchestration. `engine/media.rs` owns scoped authorization,
 scoped user metadata limits and configured quotas. `engine/media_store.rs` and
 owned media plans coordinate typed lifecycle operations; independent SQLite and
 PostgreSQL modules under `engine/database/` own media SQL, transactional message
-references, deletion claims and SQLite schema v20. `media.rs`
+references, deletion claims and SQLite schema v21. `media.rs`
 provides the S3 transport through rust-s3. Storage network calls run outside engine
 guards. Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
@@ -334,7 +334,17 @@ and fetched again without migrations or buffering cached bodies for validation.
 including reclaiming uncontrolled pages after hard reload. `useFileUrl.ts` gates
 managed file controls on acknowledged worker control; confirmed readiness is
 read synchronously on warm mounts without waiting for an effect or another render.
-Controller changes invalidate readiness. No page-side signed-URL path remains.
+Controller changes invalidate readiness. On non-loopback HTTP where the browser
+provides no service-worker API, `httpImageCache.ts` adapts the same `MediaCache`
+engine to tab-local Blob storage for inline images, avatars and sticker thumbnails.
+The existing 128-entry/256-MiB eviction and four-fill budgets still apply. Every
+remount rechecks live `/info`; warm hits skip signing and storage GETs. Admitted
+fills survive row cancellation, and each consumer revokes its own object URL on
+cleanup. Other media, native downloads and bounded text previews resolve signed
+links and stream storage directly. No signed URL is persisted and there is no
+offline authorization fallback. HTTP image bytes are lost on reload; HTTPS uses
+persistent Cache Storage instead. HTTPS/loopback worker startup and cache failures
+remain visible rather than taking this HTTP-only path.
 Other API/static requests follow their normal network paths.
 Cross-origin misses resolve authenticated `/link` URLs inside the worker and fetch
 storage without credentials; hits skip signing and storage entirely. Stable keys
@@ -345,7 +355,8 @@ deadline. Range requests bypass pending fills to avoid delaying playback.
 `mediaStatusCache.ts` separately shares up to 128 presentation metadata
 records and in-flight checks across virtual remounts; expiry and visibility resume
 refresh them. Login, logout, unauthorized API responses and server selection clear
-these records and abort their pending requests. Pending entries retain ownership
+these records and abort their pending requests, as do successful library mutations
+and socket media invalidations. Pending entries retain ownership
 until completion; at 128 pending checks, excess cold checks fail without starting
 more background requests. They never authorize cached bytes or provide offline file access.
 `ExternalImage.tsx` retains up to 128 intrinsic image sizes, with URL keys limited
@@ -353,6 +364,59 @@ to 4 KiB, as layout hints across virtual remounts. Unknown sizes load eagerly;
 lazy images receive explicit measured width/height attributes. Size discovery
 uses the existing image load and adds no metadata or image-prefetch request.
 See [Media uploads](media-uploads.md).
+
+`web/library.rs` adapts browser library lists and mutations; `engine/media_store.rs`
+awaits typed native library requests. The SQLite/PostgreSQL `library.rs` modules
+own indexed relationships, quota reads and retirement transactions. Mutations hold
+an asset permit and the shared metadata fence; PostgreSQL locks the submitting
+account before the asset row to serialize quota checks across assets. Message
+reference admission locks/rechecks the same durable asset state before commit.
+Only initial upload completion inserts ownership plus picker membership together.
+Ordinary attachment reservations also include library charges in account usage.
+
+Library cleanup admission reads transactional `library_storage` counters instead
+of scanning the asset catalogue. Media triggers update these derived counters on
+retirement and confirmed deletion; a partial index finds the oldest backlog item.
+Storage deletion remains outside engine guards and asset ownership transactions.
+The composer loads the picker with its own bundle so the first click opens it
+without an intermediate loading surface. Sticker requests and their loading status
+stay inside the Stickers tab.
+`useLibraryPopover.ts` owns picker placement, animation and dismissal cleanup;
+`useLibraryActions.ts` owns save/acquire/remove state and final-owner confirmation.
+`LibraryStickerTile.tsx` renders available media or removable unavailable metadata
+and the themed remove/acquire capsule for borrowed assets or a single remove control
+for owned assets. The picker shows Recent and Collections, retaining loaded tiles
+during revalidation. Collections owns the upload control and pending local preview;
+its grid packs borderless previews into rows using their natural aspect ratios,
+with bounded browser-memory layout hints and no additional metadata requests.
+`useLibraryMotion.ts` coordinates preview insertion, removal, reordering,
+row wrapping and delayed image-size changes in one layout pass. Additions,
+reordering and resizing take 120 ms; deletion fades and their reflow retain 180 ms. It animates painted
+boxes rather than flex dimensions; inert exit copies stay outside the live grid.
+Interrupted changes resume from the current animation progress. Unchanged
+measurements preserve running effects instead of restarting their duration;
+geometry reads are batched before animation writes. Reduced-motion
+changes cancel active effects and remove exit copies. Upload completion retains
+the pending tile's key and local image until the authorized thumbnail loads;
+preview URLs are then released. Completed uploads remain usable as temporary
+entries when their saved position lies beyond the current page. The canonical
+page deduplicates them; explicit collection pagination clears temporary entries.
+Successful removal also removes the temporary entry. Pagination preserves the
+other section and Add.
+A small Edit/Done toggle beside Collections enables manipulation controls across
+both sections; browsing keeps them inert and hidden, including on touch devices.
+Mode changes and removal confirmation use short opacity crossfades in fixed
+containers, independent of row layout; outgoing controls are inert. Removal
+confirmation floats centrally above inert picker content. Cancelling restores
+focus to its remove button; deletion or a missing trigger returns focus to Edit.
+Saved entries paginate by indexed insertion position, while ownership lists retain
+media-ID order. Optional picker persistence uses the shared
+browser-storage boundary. `useLibraryPage.ts` fetches one bounded page at a time;
+there is no unused search aggregation path.
+The browser receives an identifier-free `media` invalidation after library changes;
+membership and ordinary ownership changes target only that account, while
+potential retirement refreshes other viewers. Account-deletion metadata carries
+this invalidation even to independent borrowers outside the metadata audience.
 
 Attachment playback/previews live in the lazy `components/Attachment.tsx` chunk.
 The Markdown renderer recognizes only local media link hints; clicking Play or
@@ -553,7 +617,7 @@ cached avatar projections. Self-service avatar APIs use compact profile events.
 Identity, membership and policy changes invalidate authority templates. The global policy revision is a version of
 captured authority, not a promise that unrelated clients receive every server mutation.
 
-SQLite uses schema v20. Borrowed persistence
+SQLite uses schema v21. Borrowed persistence
 projections serialize metadata without cloning policy/bot maps or constructing
 empty-history domain objects. Owned pending messages supply browser and bot mutations. Production and test
 command adapters use the same prepare/commit/publication operations; there is no

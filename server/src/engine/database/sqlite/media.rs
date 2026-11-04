@@ -9,9 +9,9 @@ use super::super::{
 use crate::engine::media::Media;
 use sqlx::SqliteConnection;
 
-pub(crate) const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=?1) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)\n            ) ORDER BY cleanup_attempt,created LIMIT ?3";
+pub(crate) const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE NOT EXISTS(SELECT 1 FROM library_entries WHERE media_id=media.id) AND deleted=1 AND staging_clean=1 AND created<?1 AND (conversation!='@library' OR ready=0 OR NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=?1) AND (conversation!='@library' OR ready=0 OR NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND (conversation!='@library' OR ready=0 OR NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)\n            ) ORDER BY cleanup_attempt,created LIMIT ?3";
 
 pub(in crate::engine::database) async fn apply(
     db: &mut SqliteConnection,
@@ -20,6 +20,12 @@ pub(in crate::engine::database) async fn apply(
     let mut result = WriteResult::default();
     result.changed = match request {
         MediaWrite::Allocate(request) => allocate(db, request).await?,
+        MediaWrite::LibraryAllocate { allocation, config } => {
+            super::library::reserve_checks(db, &allocation.media.uploader, config).await?;
+            allocate(db, allocation).await?
+        }
+
+        MediaWrite::Library(request) => super::library::apply(db, request).await?,
         MediaWrite::AvatarAllocate {
             allocation,
             pending_ttl,
@@ -31,10 +37,15 @@ pub(in crate::engine::database) async fn apply(
         MediaWrite::Ready { media, at } => {
             let json = serde_json::to_string(media)
                 .map_err(|_| Error::Conversion("Cannot serialize media record"))?;
-            let changed = sqlx::query("UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation='@avatar' THEN ?3 ELSE published END WHERE id=?1 AND uploader=?5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
-                .bind(media.expires.map(number).transpose()?).bind(&media.uploader).execute(db).await?.rows_affected();
+            let changed = sqlx::query("UPDATE media SET ready=1,json=?2,unreferenced=?3,expires=?4,published=CASE WHEN conversation IN ('@avatar','@library') THEN ?3 ELSE published END WHERE id=?1 AND uploader=?5 AND ready=0 AND deleting=0 AND deleted=0").bind(&media.id).bind(json).bind(number(*at)?)
+                .bind(media.expires.map(number).transpose()?).bind(&media.uploader).execute(&mut *db).await?.rows_affected();
             if changed != 1 {
                 return Err(Error::Conflict("Upload changed; retry completion."));
+            }
+            let mut changed = changed;
+            if media.conversation == "@library" {
+                changed += sqlx::query("INSERT INTO library_owners(account_id,media_id) VALUES(?1,?2)").bind(&media.uploader).bind(&media.id).execute(&mut *db).await?.rows_affected();
+                changed += sqlx::query("INSERT INTO library_entries(account_id,media_id,position) SELECT ?1,?2,COALESCE(MAX(position),0)+1 FROM library_entries WHERE account_id=?1").bind(&media.uploader).bind(&media.id).execute(&mut *db).await?.rows_affected();
             }
             changed
         }
@@ -143,7 +154,12 @@ async fn tombstones(db: &mut SqliteConnection, before: u64) -> Result<u64> {
 async fn allocate(db: &mut SqliteConnection, request: &MediaAllocation<'_>) -> Result<u64> {
     let (bytes,pending,recent): (i64,i64,i64) = sqlx::query_as("SELECT COALESCE(SUM(CASE WHEN deleted=0 THEN size ELSE 0 END),0),COALESCE(SUM(deleted=0 AND published IS NULL),0),COALESCE(SUM(created>?2),0) FROM media WHERE uploader=?1")
         .bind(&request.media.uploader).bind(number(request.at.saturating_sub(60))?).fetch_one(&mut *db).await?;
-    if unsigned(bytes)?.saturating_add(request.media.size) > request.quota {
+    let _ = bytes;
+    if super::library::usage(db, &request.media.uploader)
+        .await?
+        .saturating_add(request.media.size)
+        > request.quota
+    {
         return Err(Error::InvalidRequest(
             "Upload byte quota reached; remove attachments or wait for cleanup.",
         ));

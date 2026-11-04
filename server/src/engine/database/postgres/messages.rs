@@ -193,6 +193,16 @@ async fn reconcile(
     if !editing && ids.is_empty() {
         return Ok(0);
     }
+    if !ids.is_empty() {
+        // Edits in independent conversations do not share the append counter.
+        // Serialize recent inserts and trimming per account before locking any
+        // asset, so concurrent uses cannot exceed the configured recent limit.
+        sqlx::query("SELECT pg_advisory_xact_lock(1128808789,hashtext($1)) WHERE EXISTS(SELECT 1 FROM media WHERE id=ANY($2) AND conversation='@library')")
+            .bind(actor)
+            .bind(ids.iter().cloned().collect::<Vec<_>>())
+            .execute(&mut *db)
+            .await?;
+    }
     let sequence = number(request.message.sequence)?;
     let previous: BTreeSet<String> = if editing {
         sqlx::query_scalar(
@@ -208,12 +218,41 @@ async fn reconcile(
         BTreeSet::new()
     };
     for id in ids.difference(&previous) {
-        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media WHERE id=$1 AND conversation=$2 AND ready=1 AND deleting=0 AND deleted=0 AND (expires IS NULL OR expires>$4) AND (uploader=$3 OR EXISTS(SELECT 1 FROM message_media WHERE media_id=$1 AND conversation=$2)) FOR UPDATE)")
-            .bind(id).bind(request.conversation).bind(actor).bind(number(request.at)?)
-            .fetch_one(&mut *db).await?;
-        if !valid {
-            return Err(Error::MissingMedia);
+        let library: Option<bool> = sqlx::query_scalar(
+            r#"
+            SELECT conversation='@library'
+            FROM media
+            WHERE id=$1 AND ready=1 AND deleting=0 AND deleted=0
+              AND (expires IS NULL OR expires>$4)
+              AND (
+                (conversation=$2 AND (
+                  uploader=$3 OR EXISTS(
+                    SELECT 1 FROM message_media
+                    WHERE media_id=$1 AND conversation=$2
+                  )
+                ))
+                OR (conversation='@library' AND (
+                  EXISTS(SELECT 1 FROM library_owners WHERE media_id=$1 AND account_id=$3)
+                  OR EXISTS(SELECT 1 FROM library_entries WHERE media_id=$1 AND account_id=$3)
+                  OR EXISTS(SELECT 1 FROM message_media WHERE media_id=$1 AND conversation=$2)
+                ))
+              ) FOR UPDATE
+            "#,
+        )
+        .bind(id)
+        .bind(request.conversation)
+        .bind(actor)
+        .bind(number(request.at)?)
+        .fetch_optional(&mut *db)
+        .await?;
+        let library = library.ok_or(Error::MissingMedia)?;
+        if library {
+            super::library::record_recent(db, actor, id).await?;
         }
+    }
+    // The retained recent IDs grant no access and do not protect object storage.
+    if !ids.is_subset(&previous) {
+        sqlx::query("DELETE FROM library_recents WHERE account_id=$1 AND media_id IN (SELECT media_id FROM library_recents WHERE account_id=$1 ORDER BY used DESC,media_id LIMIT 1000000 OFFSET $2)").bind(actor).bind(number(request.library_recent_limit)?).execute(&mut *db).await?;
     }
     let mut changed = 0;
     for id in previous.difference(&ids) {

@@ -1,10 +1,18 @@
 import expiredAttachmentIcon from "../assets/attachment-expired.svg?no-inline";
 import type { ComponentChildren } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useContext, useEffect, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import type { MediaInfo } from "../api/media.ts";
+import { LibrarySourceContext } from "./LibrarySourceContext.ts";
+import { errorMessage } from "../api/protocol.ts";
 
-function ExpiredAttachment({ filename }: { filename: string }) {
+function ExpiredAttachment({
+  filename,
+  unavailable = false,
+}: {
+  filename: string;
+  unavailable?: boolean;
+}) {
   return (
     <span class="attachment-expired" role="status">
       <img
@@ -20,7 +28,9 @@ function ExpiredAttachment({ filename }: { filename: string }) {
         <span class="attachment-expired-name" dir="auto">
           {filename}
         </span>
-        <span class="attachment-expired-label">Attachment expired</span>
+        <span class="attachment-expired-label">
+          {unavailable ? "Media unavailable" : "Attachment expired"}
+        </span>
       </span>
     </span>
   );
@@ -38,16 +48,24 @@ export function ManagedAttachment({
   const current = checked?.id === id ? checked : undefined;
   const info = current?.info ?? api.cachedMediaStatus(id);
   const loading = !current && !info;
+  const source = useContext(LibrarySourceContext);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(info?.saved === true);
+  const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
+    let revision = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     function check(refresh = false) {
       if (controller.signal.aborted) return;
+      const currentRevision = ++revision;
       api
         .mediaStatus(id, controller.signal, refresh)
         .then(
           (media) => {
-            if (controller.signal.aborted) return;
+            if (controller.signal.aborted || currentRevision !== revision)
+              return;
+            setSaved(media.saved === true);
             setChecked({ id, info: media });
             clearTimeout(timer);
             if (!media.expired && media.expires !== null) {
@@ -63,7 +81,7 @@ export function ManagedAttachment({
           },
           () => {
             // A failed metadata read must not be mislabeled as expiry.
-            if (!controller.signal.aborted)
+            if (!controller.signal.aborted && currentRevision === revision)
               setChecked((previous) =>
                 previous?.id === id ? previous : { id },
               );
@@ -78,18 +96,60 @@ export function ManagedAttachment({
     }
     check();
     document.addEventListener("visibilitychange", resume);
+    window.addEventListener("commonroom-library-change", resume);
     return () => {
       controller.abort();
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("commonroom-library-change", resume);
     };
   }, [id]);
-  if (info?.expired) return <ExpiredAttachment filename={info.filename} />;
-  if (loading)
-    return (
-      <span class="attachment-loading" role="status">
-        Loading attachment…
-      </span>
-    );
-  return children;
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      await api.libraryChange(id, "save", source);
+    } catch (failure) {
+      setError(errorMessage(failure));
+      return;
+    } finally {
+      setSaving(false);
+    }
+    setSaved(true);
+    window.dispatchEvent(new Event("commonroom-library-change"));
+  }
+  return (
+    <span
+      class={loading ? "attachment-loading" : "managed-attachment"}
+      data-layout-pending={loading ? "" : undefined}
+    >
+      {info?.expired ? (
+        <ExpiredAttachment filename={info.filename} />
+      ) : info?.unavailable ? (
+        <ExpiredAttachment filename={info.filename} unavailable />
+      ) : loading ? (
+        <span role="status">Loading attachment…</span>
+      ) : (
+        <>
+          {children}
+          {info?.library && source && (
+            <span class="library-save">
+              <button
+                type="button"
+                disabled={saving || saved}
+                onClick={() => {
+                  save().catch((failure: unknown) => {
+                    console.error("Library save update failed", failure);
+                  });
+                }}
+              >
+                {saved ? "Saved" : "Add to collection"}
+              </button>
+              {error && <span role="status">{error}</span>}
+            </span>
+          )}
+        </>
+      )}
+    </span>
+  );
 }

@@ -23,6 +23,8 @@ async fn bearer_authentication_is_confined_to_bot_routes_including_base_paths() 
             ("GET", "api/avatars/missing/info"),
             ("GET", "api/avatars/missing/file"),
             ("GET", "api/media/config"),
+            ("GET", "api/library"),
+            ("POST", "api/library/missing"),
             ("POST", "api/media/uploads"),
             ("POST", "api/media/uploads/missing/complete"),
             ("POST", "api/media/uploads/missing/abandon"),
@@ -92,6 +94,65 @@ async fn bearer_authentication_is_confined_to_bot_routes_including_base_paths() 
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_workers_cannot_launder_independent_library_access_into_messages() {
+    let (app, token) = fixture();
+    let id = conversation(&app);
+    let media = {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(None, None, "/grant helper #support w:media.upload")
+            .unwrap();
+        crate::engine::library_tests::upload(&engine, "helper")
+    };
+    let scoped = scoped_worker(
+        &app,
+        "library-scoped",
+        &[&id],
+        &["read", "send", "media_upload"],
+    )
+    .await;
+    assert_eq!(
+        request(
+            &app,
+            Some(&scoped),
+            "GET",
+            &format!("/api/bot/v1/media/{}/info", media.id),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let text = format!("![sticker](/api/media/{}/file)", media.id);
+    let input = json!({"conversation_id":id,"text":text,"markdown":true});
+    assert_eq!(
+        send(&app, &scoped, "library-rejected", input.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, message) = send(&app, &token, "library-published", input.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{message}");
+    // Once visible through an allowed retained message, ordinary scoped reuse is valid.
+    assert_eq!(
+        send(&app, &scoped, "library-reused", input).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&scoped),
+            "GET",
+            &format!("/api/bot/v1/media/{}/info", media.id),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

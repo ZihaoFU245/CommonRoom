@@ -4,9 +4,18 @@ let script: URL | undefined;
 let pending: Promise<void> | undefined;
 let confirmed: ServiceWorker | null = null;
 
-/** Start once per document; managed files never take an uncached loading path. */
+/** Service workers are unavailable on non-loopback HTTP, including Tailscale. */
+export function directMediaRequired(): boolean {
+  return (
+    new URL(document.baseURI).protocol === "http:" &&
+    (typeof navigator === "undefined" || !navigator.serviceWorker)
+  );
+}
+
+/** Start once per document; HTTP without workers uses authorized signed links. */
 export function startMediaCache(url: URL): void {
   script = url;
+  if (directMediaRequired()) return;
   ensureMediaCache().catch(() => {
     // File controls surface initialization errors when media is requested.
   });

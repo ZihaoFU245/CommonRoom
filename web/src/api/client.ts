@@ -3,7 +3,10 @@ import type { PreferenceState } from "../features/preferences/account.ts";
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { responseJson } from "./responseJson.ts";
 import { requestAbort } from "./requestAbort.ts";
+import { isFileLink, mediaFileUrl } from "./mediaFile.ts";
 import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
+import { isLibraryPage } from "./library.ts";
+import type { LibraryAction, LibraryView } from "./library.ts";
 import {
   isUploadTicket,
   isCompletedMedia,
@@ -130,6 +133,17 @@ function isPreferences(value: unknown): value is PreferenceState {
 }
 
 export const api = {
+  fileLink: (href: string, signal: AbortSignal, download = false) => {
+    const base = serverBaseUrl();
+    const file = mediaFileUrl(href, base);
+    if (file?.base !== base) throw new Error("Invalid managed file URL.");
+    return request(
+      `${file.kind}/${encodeURIComponent(file.id)}/link${download ? "?download=true" : ""}`,
+      (value): value is { url: string } => isFileLink(value, base),
+      undefined,
+      signal,
+    );
+  },
   preferences: (values: Record<string, string | null>, initialize: boolean) =>
     request("preferences", isPreferences, { values, initialize }),
   setDisplayName: (value: string | null, room?: string) =>
@@ -173,6 +187,27 @@ export const api = {
       refresh,
     );
   },
+  library: (view: LibraryView, after: string, signal: AbortSignal) =>
+    request(
+      `library?owned=${view === "owned"}&recent=${view === "recent"}&after=${encodeURIComponent(after)}`,
+      isLibraryPage,
+      undefined,
+      signal,
+    ),
+  libraryChange: (
+    id: string,
+    action: LibraryAction,
+    source?: string,
+    confirmLast = false,
+  ) =>
+    request(`library/${encodeURIComponent(id)}`, isOk, {
+      action,
+      source_conversation: source ?? null,
+      confirm_last: confirmLast,
+    }).then((result) => {
+      mediaStatusCache.clear();
+      return result;
+    }),
   mediaConfig: (signal: AbortSignal) =>
     request("media/config", isMediaConfig, undefined, signal),
   allocateMedia: (

@@ -291,6 +291,12 @@ pub struct MediaConfig {
     pub user_quota: u64,
     pub pending_limit: u64,
     pub allocations_per_minute: u64,
+    pub library_limit: u64,
+    pub library_owned_limit: u64,
+    pub library_recent_limit: u64,
+    #[serde(with = "byte_size")]
+    pub library_cleanup_bytes: u64,
+    pub library_cleanup_objects: u64,
 }
 impl Default for MediaConfig {
     fn default() -> Self {
@@ -303,11 +309,24 @@ impl Default for MediaConfig {
             user_quota: 1024 * 1024 * 1024,
             pending_limit: 8,
             allocations_per_minute: 30,
+            library_limit: 1000,
+            library_owned_limit: 1000,
+            library_recent_limit: 50,
+            library_cleanup_bytes: 1024 * 1024 * 1024,
+            library_cleanup_objects: 10000,
         }
     }
 }
 impl MediaConfig {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if !(1..=10000).contains(&self.library_limit)
+            || !(1..=10000).contains(&self.library_owned_limit)
+            || !(1..=100).contains(&self.library_recent_limit)
+            || !(1..=1_000_000_000_000_000).contains(&self.library_cleanup_bytes)
+            || !(1..=1_000_000).contains(&self.library_cleanup_objects)
+        {
+            return Err("Invalid media library configuration: library_limit/library_owned_limit 1..10000, library_recent_limit 1..100, library_cleanup_bytes 1..1000000000000000, library_cleanup_objects 1..1000000 required.".into());
+        }
         if self.max_size == 0
             || self.max_size > 5_000_000_000
             || (self.max_age != -1 && !(1..=315360000).contains(&self.max_age))
@@ -1133,6 +1152,11 @@ mod media_config_tests {
             serde_json::json!({"pending_limit":0}),
             serde_json::json!({"allocations_per_minute":0}),
             serde_json::json!({"user_quota":1}),
+            serde_json::json!({"library_limit":0}),
+            serde_json::json!({"library_owned_limit":10001}),
+            serde_json::json!({"library_recent_limit":101}),
+            serde_json::json!({"library_cleanup_bytes":0}),
+            serde_json::json!({"library_cleanup_objects":0}),
         ] {
             let raw = serde_json::json!({"media":media}).to_string();
             let path = dir.path().join("config.json");

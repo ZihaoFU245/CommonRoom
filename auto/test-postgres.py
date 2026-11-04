@@ -200,7 +200,7 @@ def main():
                     process = None
                 assert hashlib.sha256(path.read_bytes()).digest() == original
                 with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
-                    assert db.execute("PRAGMA user_version").fetchone()[0] == 20
+                    assert db.execute("PRAGMA user_version").fetchone()[0] == 21
                 print("Passed: real-binary SQLite provisioning, verified migration, preserved session/password, PostgreSQL HTTP startup/restart/shutdown, second-owner config protection, unchanged SQLite source, configured admission/deadlines/runtime metrics")
         except BaseException:
             if process is not None:

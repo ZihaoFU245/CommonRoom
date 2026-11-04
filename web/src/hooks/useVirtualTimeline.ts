@@ -12,6 +12,7 @@ import {
 export interface VirtualTimelineHandle {
   anchor: () => number | undefined;
   position: () => { sequence: number; offset: number } | undefined;
+  offsetForSequence?: (sequence: number) => number | undefined;
   scrollToSequence: (
     sequence: number,
     offset?: number,
@@ -48,6 +49,41 @@ export function useVirtualTimeline(
   const scrollMotion = useRef<TimelineScrollMotion | null>(null);
   const renderedWindow = useRef<{ start: number; end: number } | null>(null);
   const [viewport, setViewport] = useState({ start: 0, end: 0, height: 600 });
+  // Async children can remount during scrolling. Retain this row's existing
+  // measurement until their loading placeholders resolve; scrolling/anchoring
+  // stays owned here instead of each media component keeping its own cache.
+  const restorationFrames = useRef(new Map<HTMLElement, number>());
+  function preservePendingHeight(element: HTMLElement) {
+    const key = element.dataset.virtualKey;
+    const height = key ? sizes.current.get(key) : undefined;
+    const pending =
+      element.querySelector("[data-layout-pending]") !== null ||
+      [...element.querySelectorAll("img")].some((image) => !image.complete);
+    if (height && pending) {
+      const frame = restorationFrames.current.get(element);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      restorationFrames.current.delete(element);
+      element.style.minHeight = `${height}px`;
+      element.dataset.layoutRestoring = "";
+    } else if (element.dataset.layoutRestoring !== undefined) {
+      if (restorationFrames.current.has(element)) return;
+      // Let nested ResizeObservers see the restoration marker before releasing
+      // the reservation. They must not replay the original loading animation.
+      restorationFrames.current.set(
+        element,
+        requestAnimationFrame(() => {
+          restorationFrames.current.set(
+            element,
+            requestAnimationFrame(() => {
+              restorationFrames.current.delete(element);
+              element.style.minHeight = "";
+              delete element.dataset.layoutRestoring;
+            }),
+          );
+        }),
+      );
+    }
+  }
   function updateViewport(top: number, height: number) {
     viewportTop.current = top;
     const next = virtualWindow(currentOffsets.current, top, height);
@@ -97,6 +133,15 @@ export function useVirtualTimeline(
               offset: (offsets[index] ?? 0) - top,
             }
           : undefined;
+      },
+      offsetForSequence: (sequence) => {
+        const index = entries.findIndex(
+          (entry) =>
+            entry.kind === "message" && entry.message.sequence === sequence,
+        );
+        return index < 0
+          ? undefined
+          : (offsets[index] ?? 0) - (container.current?.scrollTop ?? 0);
       },
       isScrolling: () => scrollMotion.current?.active ?? false,
       cancelScroll: () => scrollMotion.current?.cancel(),
@@ -208,6 +253,7 @@ export function useVirtualTimeline(
   useLayoutEffect(() => {
     const element = container.current;
     if (!element) return;
+    const pendingRestorations = restorationFrames.current;
     const motion = new TimelineScrollMotion(element, () =>
       updateViewport(element.scrollTop, element.clientHeight),
     );
@@ -228,6 +274,18 @@ export function useVirtualTimeline(
         updateViewport(element.scrollTop, element.clientHeight),
       );
     };
+    const updatePendingRows = () => {
+      for (const row of observed.current) preservePendingHeight(row);
+    };
+    const contentChanges = new MutationObserver(updatePendingRows);
+    element.addEventListener("load", updatePendingRows, true);
+    element.addEventListener("error", updatePendingRows, true);
+    contentChanges.observe(element, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-layout-pending"],
+    });
     const resize = new ResizeObserver(refresh);
     resize.observe(element);
     observer.current = new ResizeObserver((records) => {
@@ -258,9 +316,15 @@ export function useVirtualTimeline(
       preference.removeEventListener("change", reduceMotion);
       cancelAnimationFrame(frame);
       resize.disconnect();
+      contentChanges.disconnect();
+      element.removeEventListener("load", updatePendingRows, true);
+      element.removeEventListener("error", updatePendingRows, true);
       observer.current?.disconnect();
       observer.current = null;
       observed.current.clear();
+      for (const frame of pendingRestorations.values())
+        cancelAnimationFrame(frame);
+      pendingRestorations.clear();
       element.removeEventListener("scroll", refresh);
     };
   }, [container]);
@@ -281,12 +345,18 @@ export function useVirtualTimeline(
       ) ?? [],
     );
     for (const element of observed.current) {
-      if (!liveElements.has(element)) currentObserver.unobserve(element);
+      if (!liveElements.has(element)) {
+        currentObserver.unobserve(element);
+        const frame = restorationFrames.current.get(element);
+        if (frame !== undefined) cancelAnimationFrame(frame);
+        restorationFrames.current.delete(element);
+      }
     }
     let changed = false;
     rowMeasurements.current.scrollTop = container.current?.scrollTop ?? 0;
     for (const element of liveElements) {
       const key = element.dataset.virtualKey;
+      preservePendingHeight(element);
       const rect = element.getBoundingClientRect();
       rowMeasurements.current.rects.set(element, rect);
       const height = rect.height;

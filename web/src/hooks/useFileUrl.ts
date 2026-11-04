@@ -1,28 +1,67 @@
 import { useEffect, useState } from "preact/hooks";
-import { mediaFileUrl } from "../api/mediaFile.ts";
+import { mediaDownloadUrl, mediaFileUrl } from "../api/mediaFile.ts";
+import { api } from "../api/client.ts";
+import { httpImageCache } from "../features/conversation/httpImageCache.ts";
 import { serverBaseUrl } from "../api/server.ts";
 import { errorMessage } from "../api/protocol.ts";
 import {
   ensureMediaCache,
   mediaCacheReady,
+  directMediaRequired,
 } from "../features/conversation/mediaController.ts";
 
-/** Managed files use one cache pipeline, including after a hard reload. */
-export function useFileUrl(href: string | undefined, version = 0) {
+/** Workers cache managed files; HTTP images share bounded authorized memory bytes. */
+export function useFileUrl(
+  href: string | undefined,
+  {
+    version = 0,
+    download = false,
+    image = false,
+  }: {
+    version?: number;
+    download?: boolean;
+    image?: boolean;
+  } = {},
+) {
   const base = serverBaseUrl();
   const parsed = href ? mediaFileUrl(href, base) : null;
   const file = parsed?.base === base ? parsed : null;
   const [attempt, setAttempt] = useState(0);
-  const [result, setResult] = useState<{ key: string; error: string }>();
-  const key = JSON.stringify([file?.url.href, version, attempt]);
+  const [result, setResult] = useState<{
+    key: string;
+    error: string;
+    url?: string;
+  }>();
+  const key = JSON.stringify([
+    file?.url.href,
+    version,
+    attempt,
+    download,
+    image,
+  ]);
   const managed = !!file;
   const ready = mediaCacheReady();
+  const direct = directMediaRequired();
+  const managedUrl = file?.url.href;
   useEffect(() => {
-    if (!managed || ready) return;
+    if (!managedUrl || (!direct && ready)) return;
     let mounted = true;
-    ensureMediaCache().then(
-      () => {
-        if (mounted) setResult({ key, error: "" });
+    let objectUrl: string | undefined;
+    const controller = new AbortController();
+    const loading = direct
+      ? image
+        ? httpImageCache.load(managedUrl, controller.signal)
+        : api
+            .fileLink(managedUrl, controller.signal, download)
+            .then((link) => link.url)
+      : ensureMediaCache().then(() => undefined);
+    loading.then(
+      (url) => {
+        if (url?.startsWith("blob:")) {
+          objectUrl = url;
+          if (!mounted) URL.revokeObjectURL(url);
+        }
+        if (mounted) setResult({ key, error: "", ...(url ? { url } : {}) });
       },
       (error: unknown) => {
         if (mounted) setResult({ key, error: errorMessage(error) });
@@ -30,15 +69,24 @@ export function useFileUrl(href: string | undefined, version = 0) {
     );
     return () => {
       mounted = false;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [managed, ready, key]);
-  const error = !ready && result?.key === key ? result.error : "";
-  const source = ready ? file?.url : undefined;
-  if (source && (version || attempt))
-    source.searchParams.set("retry", `${version}:${attempt}`);
+  }, [managedUrl, ready, direct, download, image, key]);
+  const current = result?.key === key ? result : undefined;
+  const error = direct || !ready ? (current?.error ?? "") : "";
+  const source = direct ? current?.url : ready ? file?.url.href : undefined;
+  const url = source ? new URL(source) : undefined;
+  if (url && !direct && (version || attempt))
+    url.searchParams.set("retry", `${version}:${attempt}`);
   return {
-    url: file ? source?.href : href,
+    url: managed
+      ? url && download && !direct
+        ? mediaDownloadUrl(url.href, document.baseURI)
+        : url?.href
+      : href,
     error,
+    crossOrigin: direct && managed ? ("anonymous" as const) : undefined,
     retry: () => setAttempt((value) => value + 1),
   };
 }

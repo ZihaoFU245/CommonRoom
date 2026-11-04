@@ -79,6 +79,56 @@ pub(crate) struct DownloadTicket {
 }
 
 impl Engine {
+    pub(crate) fn validate_library_upload(&self, user: &str, size: u64) -> Result<(), EngineError> {
+        if !self.active(user) {
+            return Err(EngineError::Forbidden("Account unavailable.".into()));
+        }
+        let max_size = self
+            .metadata_value(user, &Scope::Server, "media.max_size")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(self.media.config.max_size)
+            .min(self.media.config.max_size);
+        if size == 0 || size > max_size {
+            return Err("Library upload exceeds the configured media size limit.".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn library_quota(&self, user: &str) -> u64 {
+        self.metadata_value(user, &Scope::Server, "media.user_quota")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(self.media.config.user_quota)
+            .min(self.media.config.user_quota)
+    }
+    pub(crate) fn authorize_library_source(
+        &self,
+        user: &str,
+        conversation: &str,
+    ) -> Result<(), EngineError> {
+        self.media_scope(user, conversation, MediaAccess::Read)?;
+        Ok(())
+    }
+    pub(crate) fn library_read_scopes(&self, user: &str) -> Vec<String> {
+        self.data
+            .rooms
+            .values()
+            .filter(|room| {
+                self.require(Some(user), &Scope::Room(room.id.clone()), Action::Read)
+                    .is_ok()
+            })
+            .map(|room| room.id.clone())
+            .chain(
+                self.data
+                    .private
+                    .values()
+                    .filter(|chat| {
+                        self.require(Some(user), &Scope::Private(chat.id.clone()), Action::Read)
+                            .is_ok()
+                    })
+                    .map(|chat| chat.id.clone()),
+            )
+            .collect()
+    }
+
     pub(crate) fn configure_media(&mut self, config: crate::config::MediaConfig) {
         self.media.config = config;
     }
@@ -204,6 +254,13 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.require(Some(user), scope, Action::Read)?;
         self.require(Some(user), scope, Action::Send)?;
+        if media.conversation == "@library" {
+            if !referenced || !media.ready || media.deleting || media.deleted {
+                return Err(EngineError::NotFound("Library asset unavailable.".into()));
+            }
+            self.media_allowance(user, scope, media.size, None)?;
+            return Ok(());
+        }
         let conversation = match scope {
             Scope::Room(id) | Scope::Private(id) => id,
             _ => return Err(EngineError::NotFound("Upload not found.".into())),
@@ -305,8 +362,22 @@ impl Engine {
     }
 
     #[cfg(test)]
-    pub(crate) fn media_owner(&self, user: &str, id: &str) -> Result<Media, EngineError> {
+    fn media_read_record(&self, user: &str, id: &str) -> Result<(Media, bool), EngineError> {
         let (media, attached) = self.stored_media_with_reference(id)?;
+        let attached = if media.conversation == "@library" {
+            database::block_on_storage(self.store.db.library_access(
+                id,
+                self.principal_id(Some(user)).unwrap_or(""),
+                &self.library_read_scopes(user),
+            ))??
+        } else {
+            attached
+        };
+        Ok((media, attached))
+    }
+    #[cfg(test)]
+    pub(crate) fn media_owner(&self, user: &str, id: &str) -> Result<Media, EngineError> {
+        let (media, attached) = self.media_read_record(user, id)?;
         self.authorize_media_owner(user, &media, attached)?;
         Ok(media)
     }
@@ -324,8 +395,12 @@ impl Engine {
         {
             return Err(EngineError::NotFound("Upload not found.".into()));
         }
-        let scope = self.media_scope(user, &media.conversation, MediaAccess::Upload)?;
-        self.media_allowance(user, &scope, media.size, Some(media.max_age))?;
+        if media.conversation == "@library" {
+            self.validate_library_upload(user, media.size)?;
+        } else {
+            let scope = self.media_scope(user, &media.conversation, MediaAccess::Upload)?;
+            self.media_allowance(user, &scope, media.size, Some(media.max_age))?;
+        }
         if media.deleting
             || media.deleted
             || media.expires.is_some_and(|t| t <= now())
@@ -351,7 +426,7 @@ impl Engine {
         user: &str,
         id: &str,
     ) -> Result<DownloadTicket, EngineError> {
-        let (media, attached) = self.stored_media_with_reference(id)?;
+        let (media, attached) = self.media_read_record(user, id)?;
         self.prepare_media_download_record(user, media, attached)
     }
     pub(crate) fn prepare_media_download_record(
@@ -373,7 +448,7 @@ impl Engine {
         user: &str,
         ticket: &DownloadTicket,
     ) -> Result<(), EngineError> {
-        let (current, attached) = self.stored_media_with_reference(&ticket.media.id)?;
+        let (current, attached) = self.media_read_record(user, &ticket.media.id)?;
         self.validate_media_download_record(user, ticket, &current, attached)
     }
     pub(crate) fn validate_media_download_record(
@@ -398,13 +473,13 @@ impl Engine {
     }
     #[cfg(test)]
     pub(crate) fn media_info(&self, user: &str, id: &str) -> Result<Media, EngineError> {
-        let (media, attached) = self.stored_media_with_reference(id)?;
+        let (media, attached) = self.media_read_record(user, id)?;
         self.authorize_media_read(user, &media, attached, true)?;
         Ok(media)
     }
     #[cfg(test)]
     pub(crate) fn readable_media(&self, user: &str, id: &str) -> Result<Media, EngineError> {
-        let (media, attached) = self.stored_media_with_reference(id)?;
+        let (media, attached) = self.media_read_record(user, id)?;
         self.authorize_media_read(user, &media, attached, false)?;
         Ok(media)
     }
@@ -415,6 +490,15 @@ impl Engine {
         attached: bool,
         include_expired: bool,
     ) -> Result<(), EngineError> {
+        if media.conversation == "@library" {
+            if !self.active(user)
+                || !attached
+                || (!include_expired && (!media.ready || media.deleting || media.deleted))
+            {
+                return Err(EngineError::NotFound("Library asset unavailable.".into()));
+            }
+            return Ok(());
+        }
         self.media_scope(user, &media.conversation, MediaAccess::Read)?;
         let expired = media.expires.is_some_and(|time| time <= now());
         if !attached

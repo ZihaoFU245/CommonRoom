@@ -13,6 +13,15 @@ pub(in crate::engine::database) async fn acquire_owner(db: &mut PgConnection) ->
     }
     Ok(())
 }
+pub(in crate::engine::database) async fn release_owner(db: &mut PgConnection) -> Result<()> {
+    let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock(1128808788::bigint)")
+        .fetch_one(db)
+        .await?;
+    if !released {
+        return Err(Error::Conflict("PostgreSQL transfer ownership was lost."));
+    }
+    Ok(())
+}
 pub(in crate::engine::database) async fn require_empty(db: &mut PgConnection) -> Result<()> {
     let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind IN ('r','p','v','m','S','f'))")
         .fetch_one(db).await?;

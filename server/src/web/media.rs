@@ -125,7 +125,14 @@ async fn native_media<T: Send + 'static>(
     access: &Access,
     id: String,
     missing: &'static str,
-    inspect: impl FnOnce(&Engine, &Identity, crate::engine::media::Media, bool) -> Result<T, ApiError>
+    include_saved: bool,
+    inspect: impl FnOnce(
+        &Engine,
+        &Identity,
+        crate::engine::media::Media,
+        bool,
+        bool,
+    ) -> Result<T, ApiError>
     + Send
     + 'static,
 ) -> Result<T, ApiError> {
@@ -134,14 +141,58 @@ async fn native_media<T: Send + 'static>(
     let access = access.clone();
     super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
+        let _ordering = app.mutations.conversation(format!("@asset:{id}")).await?;
         let (media, attached) = store
             .load(&id)
             .await
             .map_err(|cause| super::error::hidden(cause, missing))?;
+        let attached = if media.conversation == "@library" {
+            let (scopes, independent) = app
+                .inspect_engine({
+                    let identity = identity.clone();
+                    move |engine, _| -> Result<_, ApiError> {
+                        verify_identity(&identity, engine)?;
+                        let independent = match &identity.access {
+                            Access::Browser(_) => true,
+                            Access::Bot { context, .. } => {
+                                context.metadata(engine)?.conversations.is_none()
+                            }
+                        };
+                        Ok((
+                            engine
+                                .library_read_scopes(&identity.user)
+                                .into_iter()
+                                .filter(|id| identity.permit_conversation(engine, id).is_ok())
+                                .collect::<Vec<_>>(),
+                            independent,
+                        ))
+                    }
+                })
+                .await?;
+            store
+                .library_access(
+                    &id,
+                    if independent { &identity.account } else { "" },
+                    &scopes,
+                )
+                .await?
+        } else {
+            attached
+        };
+        let saved = if include_saved
+            && media.conversation == "@library"
+            && matches!(&identity.access, Access::Browser(_))
+        {
+            store.library_saved(&id, &identity.account).await?
+        } else {
+            false
+        };
         app.inspect_engine(move |engine, _| {
             verify_identity(&identity, engine)?;
-            identity.permit_conversation(engine, &media.conversation)?;
-            inspect(engine, &identity, media, attached)
+            if media.conversation != "@library" {
+                identity.permit_conversation(engine, &media.conversation)?;
+            }
+            inspect(engine, &identity, media, attached, saved)
         })
         .await
     })
@@ -157,7 +208,11 @@ async fn owner(
         access,
         id,
         "Upload not found.",
-        |engine, identity, media, attached| {
+        false,
+        |engine, identity, media, attached, _saved| {
+            if media.conversation == "@library" {
+                identity.permit_conversation(engine, "@library")?;
+            }
             engine.authorize_media_owner(&identity.user, &media, attached)?;
             Ok(media)
         },
@@ -212,6 +267,11 @@ async fn mutate(app: &App, access: &Access, mutation: MediaMutation) -> Result<(
         let _object_lock = match mutation {
             MediaMutation::Ready(media, lock) => {
                 store.ready(&media).await?;
+                if media.conversation == "@library" {
+                    let _ = app
+                        .changes
+                        .send(Change::Media(Some(identity.account.clone())));
+                }
                 Some(lock)
             }
             MediaMutation::Abandon(id) => {
@@ -427,20 +487,28 @@ pub(crate) async fn info_as(
     Path(id): Path<String>,
     Query(options): Query<MediaInfoQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let media = native_media(
+    let (media, saved) = native_media(
         &app,
         &access,
         id,
         "Attachment not found.",
-        move |engine, identity, media, attached| {
+        true,
+        move |engine, identity, media, attached, saved| {
             engine
                 .authorize_media_read(&identity.user, &media, attached, options.include_expired)
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))?;
-            Ok(media)
+            Ok((media, saved))
         },
     )
     .await?;
     let Json(mut value) = media_json(&app, &media);
+    if media.conversation == "@library" {
+        value["library"] = json!(true);
+        if matches!(access, Access::Browser(_)) {
+            value["saved"] = json!(saved);
+        }
+        value["unavailable"] = json!(!media.ready || media.deleting || media.deleted);
+    }
     value["expires"] = json!(media.expires);
     value["expired"] = json!(
         media
@@ -477,7 +545,8 @@ async fn download_url_as(
         &access,
         id,
         "Attachment not found.",
-        |engine, identity, media, attached| {
+        false,
+        |engine, identity, media, attached, _saved| {
             engine
                 .prepare_media_download_record(&identity.user, media, attached)
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))
@@ -496,7 +565,8 @@ async fn download_url_as(
         &access,
         ticket.media.id.clone(),
         "Attachment not found.",
-        move |engine, identity, current, attached| {
+        false,
+        move |engine, identity, current, attached, _saved| {
             engine
                 .validate_media_download_record(&identity.user, &ticket, &current, attached)
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))

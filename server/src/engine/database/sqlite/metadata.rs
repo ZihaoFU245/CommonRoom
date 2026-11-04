@@ -42,6 +42,7 @@ pub(in crate::engine::database) async fn apply(
             MetadataOp::Audit(entries) => audit(db, entries).await?,
             MetadataOp::AppendAudit(entry) => append_audit(db, entry).await?,
             MetadataOp::RemoveAccountReceipts { account } => {
+                result.changed += super::library::remove_account(db, account).await?;
                 let changed = sqlx::query("DELETE FROM bot_receipts WHERE account_id=?1").bind(account).execute(&mut *db).await?.rows_affected();
                 changed + sqlx::query("DELETE FROM bot_command_receipts WHERE account_id=?1").bind(account).execute(&mut *db).await?.rows_affected()
             }

@@ -57,7 +57,12 @@ Each read checks live `/info` with credentials; only a byte-cache miss resolves
 UI-scoped `media-download?file=...` navigation through the same cache. Managed
 controls wait for worker control after startup and hard reload; initialization
 failure shows an error instead of taking a direct storage path. This avoids
-credentialed cross-origin redirect chains.
+credentialed cross-origin redirect chains. For plain HTTP without service-worker
+support, the page caches inline image/avatar/sticker bytes in bounded memory.
+Every reuse still checks authenticated `/info`; only cold misses resolve `/link`
+and fetch storage. Other media uses authenticated `/link` requests and direct signed
+storage URLs. Download links request `download=true`; text previews fetch storage
+without credentials. This debug path has no persistent byte cache across reloads.
 The app does not persist signed URLs in preferences or localStorage.
 
 Login throttling uses the client address from the configured `set_real_ip_from`
@@ -396,6 +401,64 @@ be served from a complete cached object. Every range still checks `/info` so
 access revocations take effect immediately. Expired metadata stops cache reuse
 with 410 and never fetches storage. Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
 for bounds, full-object caching and initialization behavior.
+
+## Personal media library
+
+The browser uses the same session/origin checks and private media URLs as ordinary
+attachments. `POST /api/media/uploads` also accepts `conversation_id: "@library"`
+for a personal permanent raster image/GIF. This requires an active account and
+respects global media size/quota/rate limits; conversation media/send permissions
+are checked when sending. Completion atomically adds the initial ownership and
+saved library entry. Repeated completion cannot add another charge or entry.
+Ordinary expiring attachments cannot be converted through library actions.
+
+- `GET /api/library?owned=false&recent=false&after=&limit=50` lists saved entries.
+  `owned=true` lists ownerships, including assets hidden from the picker;
+  `recent=true` selects the separately bounded recent list. Library/owned pages
+  use the returned opaque `next_cursor` as `after`; `limit` accepts 1–100.
+  Saved entries are ordered by collection insertion, oldest first; their cursor is
+  a nonnegative integer position encoded as a string. Ownership pages retain
+  media-ID order and media-ID cursors. Invalid collection cursors return 400.
+  Recents return one
+  bounded list without a continuation cursor and grant no independent access.
+- Responses contain `items`, `next_cursor` (string or null), account `usage` and
+  `quota` in bytes, plus deployment `cleanup_bytes`, `cleanup_objects`,
+  `oldest_cleanup` (Unix seconds or null), and `uploads_paused`. Cleanup budgets
+  conservatively reserve tracked final/staging keys until deletion is confirmed;
+  they do not measure the bucket's untracked objects.
+- Each item contains `media_id`, `filename`, `content_type`, `size`, `available`,
+  `owned`, `saved` and `owner_count`. A saved unavailable item remains removable.
+- `POST /api/library/{id}` accepts `{action,source_conversation?,confirm_last?}`.
+  Actions are `save` (borrow), `acquire`, `remove` (hide saved and recent entries), `release` (one's own
+  ownership), and administrator-only `delete` (global removal). Save/acquire
+  require current saved/owned access or an authorized retained message. An
+  explicit source is reauthorized; if omitted, current readable retained
+  references are checked. A media ID alone grants no access.
+- Success is `{ok:true}`. Final release without `confirm_last:true` returns 409
+  and preserves ownership. Invalid quota/count limits return 400, unavailable or
+  inaccessible assets return 404, and non-administrator global removal returns
+  403. Retry operations never duplicate an entry, charge or refund.
+
+Removing a saved entry preserves ownership; releasing ownership preserves an
+existing saved entry. Every owner pays the asset's full size once. The last
+release/global removal atomically retires the asset and refunds ownership quota,
+while background deletion can retry independently. Acquisition cannot resurrect a
+retired asset. Retained messages remain in history.
+
+Library media `/info` responses additionally identify `library` and `unavailable`.
+Browser responses also include account-local `saved` collection membership;
+bot responses omit this field.
+Normal `/info`, `/file` and `/link` reject retired assets. Authorized saved users,
+owners or message readers can use `/info?include_expired=true` for placeholder
+metadata after retirement; it never authorizes storage bytes. The service worker
+still checks normal `/info` before every cached read. Scoped bot reads require a
+retained reference in an allowed conversation and cannot inherit independent
+account library access.
+
+Browser sockets may emit `{"kind":"media"}` to invalidate mounted media and open
+library lists. It contains no asset, owner or source identifiers. Membership and ordinary ownership
+changes target that account's devices; confirmed final release and global removal
+also refresh other viewers. Reconnection baselines revalidate mounted media.
 
 ## Object commands and upload hints
 

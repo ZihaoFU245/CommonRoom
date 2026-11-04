@@ -763,7 +763,12 @@ Local UI assets and the media service worker remain on the UI host. Remote files
 share its bounded private media cache using API-origin/deployment-scoped keys.
 Service workers require a secure UI context (HTTPS or loopback). Managed files
 wait for worker control, including after hard reload; startup or storage failures
-surface errors instead of bypassing the cache.
+surface errors instead of bypassing the cache. A plain HTTP debug UI without the
+service-worker API uses a bounded tab-local image cache with live authorization on
+each reuse; other media resolves fresh authenticated signed links and loads storage
+directly. Image bytes do not survive page reloads. The server's
+`production=false` mode already allows HTTP API and public storage endpoints;
+production HTTPS and trusted-proxy requirements remain enforced.
 
 ## External agent workers
 
@@ -782,7 +787,7 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-SQLite HEAD is v20; v19 upgrades atomically to explicit issuer/worker credentials.
+SQLite HEAD is v21; v19/v20 upgrade atomically with library tables and the v19 issuer/worker credential conversion.
 Exchange issuer tokens for expiring workers before making operational bot calls. Unpublished
 PostgreSQL initializes its current v1 schema, including statement-level deletion
 retention. This unpublished format is not deployed yet; fixes modify v1 directly,

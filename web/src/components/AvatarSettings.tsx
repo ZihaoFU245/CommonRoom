@@ -7,6 +7,7 @@ import type { Snapshot } from "../api/protocol.ts";
 import { saveErrorMessage } from "../features/preferences/saveFeedback.ts";
 import { api } from "../api/client.ts";
 import { uploadFile } from "../api/media.ts";
+import { randomUuid } from "../api/randomUuid.ts";
 import {
   AVATAR_SIZE,
   cropSquare,
@@ -169,7 +170,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
     setPreview(URL.createObjectURL(blob));
     setMenu(false);
     avatarButton.current?.focus();
-    const uploadId = crypto.randomUUID();
+    const uploadId = randomUuid();
     let allocated = false;
     try {
       const ticket = await api.allocateAvatar(blob.size, signal, uploadId);

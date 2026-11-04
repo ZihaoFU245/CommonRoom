@@ -12,7 +12,7 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
   const [approved, setApproved] = useState<string | null>(null);
   const base = new URL(serverBaseUrl());
   const url = new URL(src, base);
-  const file = useFileUrl(url.href);
+  const file = useFileUrl(url.href, { image: true });
   const [loaded, setLoaded] = useState<{
     href: string;
     width: number;
@@ -40,6 +40,7 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
       </span>
     ) : file.url ? (
       <img
+        {...(file.crossOrigin ? { crossOrigin: file.crossOrigin } : {})}
         src={file.url}
         width={size?.width}
         height={size?.height}

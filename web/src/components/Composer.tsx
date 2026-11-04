@@ -2,7 +2,10 @@ import { DisplayName } from "./DisplayName.tsx";
 import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
 import type { Hint, ReplyTarget } from "../api/protocol.ts";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
+import type { CompletedMedia } from "../api/media.ts";
+import { PickerIcon } from "./PickerIcon.tsx";
+import { LibraryPicker } from "./LibraryPicker.tsx";
 import {
   canAttachFile,
   clipboardAttachment,
@@ -15,6 +18,7 @@ function reportUploadFailure(error: unknown) {
   console.error("Attachment upload failed", error);
 }
 interface Props {
+  account?: string;
   mediaUpload?: {
     enabled: boolean;
     maxSize: number;
@@ -25,6 +29,7 @@ interface Props {
     start: (file: File) => Promise<void>;
     cancel: () => void;
     retry: (() => Promise<void>) | undefined;
+    select?: (media: CompletedMedia) => void;
   };
   minimumComposerHeight: number;
   actualComposerHeight: number;
@@ -48,6 +53,7 @@ interface Props {
   selectCaret: () => void;
 }
 export function Composer({
+  account,
   mediaUpload,
   minimumComposerHeight,
   actualComposerHeight,
@@ -71,6 +77,9 @@ export function Composer({
   selectCaret,
 }: Props) {
   const hintList = useRef<HTMLUListElement>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryClosing, setLibraryClosing] = useState(false);
+  const libraryButton = useRef<HTMLButtonElement>(null);
   const composition = useCompositionGuard(keydown);
   useEffect(() => {
     hintList.current
@@ -245,6 +254,22 @@ export function Composer({
               />
             </label>
           )}
+          {!consoleView && (
+            <button
+              ref={libraryButton}
+              type="button"
+              class="attach-button"
+              aria-label="Open media library"
+              aria-haspopup="dialog"
+              aria-expanded={libraryOpen && !libraryClosing}
+              onClick={() => {
+                if (libraryOpen) setLibraryClosing(true);
+                else setLibraryOpen(true);
+              }}
+            >
+              <PickerIcon name="sticker" />
+            </button>
+          )}
           {consoleView && (
             <span class="prompt" aria-hidden="true">
               ›
@@ -298,6 +323,34 @@ export function Composer({
           </button>
         </div>
       </form>
+      {libraryOpen && (
+        <LibraryPicker
+          account={account ?? ""}
+          anchor={libraryButton}
+          closing={libraryClosing}
+          canSelect={attachAllowed}
+          canEmoji={canWrite && !pending}
+          select={(media) => mediaUpload?.select?.(media)}
+          selectEmoji={(emoji) => {
+            const start = input.current?.selectionStart ?? draft.length;
+            const end = input.current?.selectionEnd ?? start;
+            edit(draft.slice(0, start) + emoji + draft.slice(end));
+            requestAnimationFrame(() => {
+              input.current?.focus({ preventScroll: true });
+              input.current?.setSelectionRange(
+                start + emoji.length,
+                start + emoji.length,
+              );
+              selectCaret();
+            });
+          }}
+          close={() => {
+            setLibraryOpen(false);
+            setLibraryClosing(false);
+            input.current?.focus();
+          }}
+        />
+      )}
     </div>
   );
 }

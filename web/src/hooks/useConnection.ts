@@ -1,3 +1,4 @@
+import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
 import { serverBaseUrl } from "../api/server.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
@@ -131,6 +132,11 @@ export function useConnection(
         if (stopped || socket.current !== ws) return;
         const data = parseFrame(String(event.data));
         if (!data) return;
+        if (data.kind === "media") {
+          mediaStatusCache.clear();
+          window.dispatchEvent(new Event("commonroom-library-change"));
+          return;
+        }
         if (data.kind === "activity") {
           setBotActivities((items) =>
             [
@@ -157,6 +163,7 @@ export function useConnection(
           return;
         }
         if (data.kind === "snapshot") {
+          window.dispatchEvent(new Event("commonroom-library-change"));
           awaitingBaseline = false;
           clearTimeout(resumeTimer);
           const ids = new Set([

@@ -17,6 +17,8 @@ pub(crate) struct PendingMessage {
     revision: u64,
     mutation: PendingMutation,
     retention: usize,
+    library_recent_limit: u64,
+    library_independent: bool,
     new_conversation: Option<String>,
 }
 pub(super) enum PendingMutation {
@@ -244,6 +246,8 @@ impl Engine {
             revision,
             mutation,
             retention: self.max_messages,
+            library_recent_limit: self.media.config.library_recent_limit,
+            library_independent: true,
             new_conversation: None,
         })
     }
@@ -391,6 +395,9 @@ impl Engine {
     }
 }
 impl PendingMessage {
+    pub(crate) fn restrict_library_to_conversation(&mut self) {
+        self.library_independent = false;
+    }
     pub(crate) fn creates_conversation(&self) -> bool {
         self.new_conversation.is_some()
     }
@@ -469,12 +476,32 @@ impl PendingMessage {
             _ => BTreeSet::new(),
         };
         for id in references.difference(&previous) {
-            records.push(
+            let (media, attached) = self
+                .database
+                .stored_media(id)
+                .await
+                .map_err(|cause| Error::from(EngineError::from(cause)))?;
+            let attached = if media.conversation == "@library" {
+                let account = match &self.mutation {
+                    PendingMutation::Edit { actor, .. } => actor.as_str(),
+                    _ => self.message.author_id.as_str(),
+                };
                 self.database
-                    .stored_media(id)
+                    .library_access(
+                        id,
+                        if self.library_independent {
+                            account
+                        } else {
+                            ""
+                        },
+                        std::slice::from_ref(&self.conversation),
+                    )
                     .await
-                    .map_err(|cause| Error::from(EngineError::from(cause)))?,
-            );
+                    .map_err(|cause| Error::from(EngineError::from(cause)))?
+            } else {
+                attached
+            };
+            records.push((media, attached));
         }
         Ok(records)
     }
@@ -483,6 +510,7 @@ impl PendingMessage {
         receipt: Option<(&'a str, &'a str)>,
     ) -> database::Result<database::MessageWrite<'a>> {
         Ok(database::MessageWrite {
+            library_recent_limit: self.library_recent_limit,
             conversation: &self.conversation,
             kind: if self.private { "private" } else { "room" },
             key: &self.key,

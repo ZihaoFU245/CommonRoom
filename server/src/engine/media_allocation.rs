@@ -15,7 +15,12 @@ impl Engine {
         user: &str,
         target: &str,
     ) -> Result<(Scope, Option<(String, PrivateChat)>), EngineError> {
-        if let Some(peer) = target.strip_prefix("@direct:") {
+        if target == "@library" {
+            if !self.active(user) {
+                return Err(EngineError::Forbidden("Account unavailable.".into()));
+            }
+            Ok((Scope::Server, None))
+        } else if let Some(peer) = target.strip_prefix("@direct:") {
             if !self.active(user) || !self.active(peer) || peer == user {
                 return Err("Private recipient unavailable.".into());
             }
@@ -57,7 +62,12 @@ impl Engine {
         hints: &BTreeMap<String, String>,
     ) -> Result<i64, EngineError> {
         crate::media::hint_headers(hints).map_err(EngineError::Invalid)?;
-        let max_age = self.media_allowance(user, scope, size, None)?;
+        let max_age = if matches!(scope, Scope::Server) {
+            self.validate_library_upload(user, size)?;
+            -1
+        } else {
+            self.media_allowance(user, scope, size, None)?
+        };
         if filename.is_empty()
             || filename.chars().count() > 200
             || filename.chars().any(char::is_control)
@@ -78,6 +88,7 @@ impl Engine {
         self.check_media_request(user, &scope, filename, size, hints)?;
         match scope {
             Scope::Room(id) | Scope::Private(id) => Ok(id),
+            Scope::Server if target == "@library" => Ok("@library".into()),
             _ => Err("Invalid upload scope.".into()),
         }
     }
@@ -98,6 +109,7 @@ impl Engine {
             .min(self.media.config.user_quota);
         let conversation = match scope {
             Scope::Room(id) | Scope::Private(id) => id,
+            Scope::Server if target == "@library" => "@library".into(),
             _ => return Err("Invalid upload scope.".into()),
         };
         Ok(PendingMedia {
@@ -155,17 +167,23 @@ impl PendingMedia {
             .as_ref()
             .map(|(key, chat)| storage::private_json(chat).map(|json| (key.as_str(), json)))
             .transpose()?;
-        self.store
-            .database
-            .media_write(&database::MediaWrite::Allocate(database::MediaAllocation {
-                media: &self.media,
-                quota: self.quota,
-                pending_limit: self.store.config.pending_limit,
-                rate_limit: self.store.config.allocations_per_minute,
-                at: now(),
-                private,
-            }))
-            .await?;
+        let allocation = database::MediaAllocation {
+            media: &self.media,
+            quota: self.quota,
+            pending_limit: self.store.config.pending_limit,
+            rate_limit: self.store.config.allocations_per_minute,
+            at: now(),
+            private,
+        };
+        let request = if self.media.conversation == "@library" {
+            database::MediaWrite::LibraryAllocate {
+                allocation,
+                config: &self.store.config,
+            }
+        } else {
+            database::MediaWrite::Allocate(allocation)
+        };
+        self.store.database.media_write(&request).await?;
         Ok(())
     }
 }

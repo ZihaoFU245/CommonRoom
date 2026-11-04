@@ -8,17 +8,40 @@ const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (specifier === "preact/hooks")
       return { url: "test:composer-hooks", shortCircuit: true };
+    if (specifier === "preact/compat")
+      return { url: "test:composer-compat", shortCircuit: true };
+    if (specifier.endsWith("/LibraryPicker.tsx"))
+      return { url: "test:library-picker", shortCircuit: true };
     if (specifier.endsWith("/useCompositionGuard.ts"))
       return { url: "test:composition-guard", shortCircuit: true };
     return next(specifier, context);
   },
   load(url, context, next) {
+    if (url.endsWith(".svg"))
+      return {
+        format: "module",
+        shortCircuit: true,
+        source: `export default ${JSON.stringify(url)};`,
+      };
     if (url === "test:composer-hooks")
       return {
         format: "module",
         shortCircuit: true,
         source:
-          "export const useRef=(value)=>({current:value});export const useEffect=()=>{};export const useContext=()=>({});",
+          "export const useRef=(value)=>({current:value});export const useEffect=()=>{};export const useContext=()=>({});export const useState=(value)=>[value,()=>{}];",
+      };
+    if (url === "test:composer-compat")
+      return {
+        format: "module",
+        shortCircuit: true,
+        source:
+          "export const lazy=()=>()=>null;export const Suspense=()=>null;export const memo=(value)=>value;",
+      };
+    if (url === "test:library-picker")
+      return {
+        format: "module",
+        shortCircuit: true,
+        source: "export const LibraryPicker=()=>null;",
       };
     if (url === "test:composition-guard")
       return {

@@ -107,6 +107,10 @@ pub(crate) async fn browser_with_interests_async(
                     let presence = !bot && changes.contains(&Change::Presence);
                     let mut ids = BTreeSet::new();
                     let mut plans = Vec::new();
+                    let media_changed = !bot && changes.iter().any(|change| matches!(change, Change::Media(target) if target.as_deref().is_none_or(|target| target == account)) || matches!(change, Change::Metadata(notice) if notice.has_media()));
+                    if media_changed {
+                        plans.push(Plan::Ready(serde_json::json!({"kind":"media"}).to_string().into()));
+                    }
                     let mut catalogue = None;
                     let mut catalogue_position = 0;
                     let refreshed = interests
