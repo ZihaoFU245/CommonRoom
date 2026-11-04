@@ -177,6 +177,25 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes sho
 `web/src/main.tsx` boots the app and selects login or chat. `components/Chat.tsx` composes the screen and connects feature hooks; individual components render navigation, messages, composer, local output, login, and settings.
 
 - `api/protocol.ts` declares wire types and validates untrusted JSON. `api/client.ts` owns relative URLs, cookie-based requests, response validation, and outbound frames.
+- `api/bootstrap.ts` reuses the initial snapshot to connect complete account
+  preferences. Missing preferences are initialized atomically; a second snapshot
+  is fetched only when initialization changes the synchronization revision or
+  the requested name-color projection.
+- `api/mediaConfigCache.ts` shares pending and completed server-wide media
+  configuration reads across upload controls. Session changes, authentication
+  failures, server selection and observed server restarts clear it. Each reader
+  cancels independently; the last departing reader aborts the transport. This
+  cache contains presentation configuration; upload allocation and completion
+  still require individual server authorization.
+- `features/conversation/mediaAccess.ts` owns bounded read leases, request
+  deduplication and 32-item batches. `mediaCache.ts` owns immutable bytes and
+  uses these leases; the worker exposes shared resolution to the page.
+  `mediaController.ts` owns worker RPC, invalidation barriers and background
+  renewal for mounted visible media. HTTP images use the same cache engine in
+  memory. `web/media_resolve.rs` shares admission/native reads and final
+  authorization across each batch. Upload and mutation authorization never uses
+  read leases. See [Media uploads](media-uploads.md) for lifetimes and
+  revocation semantics.
 - `hooks/useConnection.ts` owns WebSocket lifetime, reconnect backoff, current snapshot, and HTTP resynchronization. Callback refs avoid stale state without reopening sockets on every render. Resume events share a 100ms debounce; reconnecting sockets supply their baseline without an extra resume HTTP snapshot. Hidden pages, disconnects and cleanup cancel queued resume work.
 - `hooks/useHistory.ts` loads 100-message pages and keeps sliding conversation windows, rejecting stale responses.
 - `features/conversation/historyCache.ts` bounds each window to 1,000 messages/approximately 4 MiB and the shared browser history cache to 5,000 messages/16 MiB/32 views. Oldest views are evicted.
@@ -313,57 +332,58 @@ background cleanup orchestration. `engine/media.rs` owns scoped authorization,
 scoped user metadata limits and configured quotas. `engine/media_store.rs` and
 owned media plans coordinate typed lifecycle operations; independent SQLite and
 PostgreSQL modules under `engine/database/` own media SQL, transactional message
-references, deletion claims and SQLite schema v21. `media.rs`
-provides the S3 transport through rust-s3. Storage network calls run outside engine
-guards. Finalization/cleanup serialize per object, with permissions rechecked before
+references, deletion claims and SQLite schema v21. `media.rs` provides the S3
+transport through rust-s3. Storage network calls run outside engine guards.
+Finalization/cleanup serialize per object, with permissions rechecked before
 publication. `useMediaUploads.ts` owns browser progress, cancellation and safe
-attachment preview state and acknowledgement-based publication; `api/media.ts` validates responses and direct-upload transport.
-`api/mediaFile.ts` shares canonical file parsing and signed-link validation between
-the page and worker without importing browser bootstrap or configuration state.
-Startup claims unreferenced tracked uploads before serving requests; cleanup sweeps
-immediately and daily by default, with short retries for incomplete work. Quota
-remains reserved until confirmed storage deletion. `mediaWorker.ts` intercepts only
+attachment preview state and acknowledgement-based publication; `api/media.ts`
+validates responses and direct-upload transport. `api/mediaFile.ts` shares
+canonical file parsing and signed-link validation between the page and worker
+without importing browser bootstrap or configuration state. Startup claims
+unreferenced tracked uploads before serving requests; cleanup sweeps immediately
+and daily by default, with short retries for incomplete work. Quota remains
+reserved until confirmed storage deletion. `mediaWorker.ts` intercepts only
 application media and managed avatar file GETs, including cross-origin API files
-and UI-scoped top-level download navigations,
-and uses `features/conversation/mediaCache.ts` for a
-128-entry/256 MiB persistent byte cache with live metadata authorization and range
-support. Cache names remain stable across releases. Reads validate stored response
-status, body presence, length and content headers; incompatible entries are deleted
-and fetched again without migrations or buffering cached bodies for validation.
-`mediaController.ts` owns a single 15-second initialization handshake,
-including reclaiming uncontrolled pages after hard reload. `useFileUrl.ts` gates
-managed file controls on acknowledged worker control; confirmed readiness is
-read synchronously on warm mounts without waiting for an effect or another render.
-Controller changes invalidate readiness. On non-loopback HTTP where the browser
-provides no service-worker API, `httpImageCache.ts` adapts the same `MediaCache`
-engine to tab-local Blob storage for inline images, avatars and sticker thumbnails.
-The existing 128-entry/256-MiB eviction and four-fill budgets still apply. Every
-remount rechecks live `/info`; warm hits skip signing and storage GETs. Admitted
-fills survive row cancellation, and each consumer revokes its own object URL on
-cleanup. Other media, native downloads and bounded text previews resolve signed
-links and stream storage directly. No signed URL is persisted and there is no
-offline authorization fallback. HTTP image bytes are lost on reload; HTTPS uses
-persistent Cache Storage instead. HTTPS/loopback worker startup and cache failures
-remain visible rather than taking this HTTP-only path.
-Other API/static requests follow their normal network paths.
-Cross-origin misses resolve authenticated `/link` URLs inside the worker and fetch
-storage without credentials; hits skip signing and storage entirely. Stable keys
-include the API origin and deployment path. Admitted whole-file fills survive
-row cancellation under the existing four-fill/256 MiB budget. A two-minute
-background deadline starts on cancellation; active downloads have no cache-fill
-deadline. Range requests bypass pending fills to avoid delaying playback.
-`mediaStatusCache.ts` separately shares up to 128 presentation metadata
-records and in-flight checks across virtual remounts; expiry and visibility resume
-refresh them. Login, logout, unauthorized API responses and server selection clear
-these records and abort their pending requests, as do successful library mutations
-and socket media invalidations. Pending entries retain ownership
-until completion; at 128 pending checks, excess cold checks fail without starting
-more background requests. They never authorize cached bytes or provide offline file access.
-`ExternalImage.tsx` retains up to 128 intrinsic image sizes, with URL keys limited
-to 4 KiB, as layout hints across virtual remounts. Unknown sizes load eagerly;
-lazy images receive explicit measured width/height attributes. Size discovery
-uses the existing image load and adds no metadata or image-prefetch request.
-See [Media uploads](media-uploads.md).
+and UI-scoped top-level download navigations, and uses
+`features/conversation/mediaCache.ts` for a 128-entry/256 MiB persistent byte
+cache with bounded read leases and range support. Cache names remain stable
+across releases. Reads validate stored response status, body presence, length
+and content headers; incompatible entries are deleted and fetched again without
+migrations or buffering cached bodies for validation. `mediaController.ts` owns
+a single 15-second initialization handshake, including reclaiming uncontrolled
+pages after hard reload. `useFileUrl.ts` gates managed file controls on
+acknowledged worker control; confirmed readiness is read synchronously on warm
+mounts without waiting for an effect or another render. Controller changes
+invalidate readiness. On non-loopback HTTP where the browser provides no
+service-worker API, `httpImageCache.ts` adapts the same `MediaCache` engine to
+tab-local Blob storage for inline images, avatars and sticker thumbnails. The
+existing 128-entry/256-MiB eviction and four-fill budgets still apply. Valid
+read leases let warm remounts skip authorization, signing and storage GETs.
+Admitted fills survive row cancellation, and each consumer revokes its own
+object URL on cleanup. Other media, native downloads and bounded text previews
+resolve signed links and stream storage directly. No signed URL is persisted and
+there is no offline authorization fallback. HTTP image bytes are lost on reload;
+HTTPS uses persistent Cache Storage instead. HTTPS/loopback worker startup and
+cache failures remain visible rather than taking this HTTP-only path. Other
+API/static requests follow their normal network paths. Cross-origin misses
+obtain signed URLs through the shared batch resolver and fetch storage without
+credentials; hits skip signing and storage entirely. Stable keys include the API
+origin and deployment path. Admitted whole-file fills survive row cancellation
+under the existing four-fill/256 MiB budget. A two-minute background deadline
+starts on cancellation; active downloads have no cache-fill deadline. Range
+requests bypass pending fills to avoid delaying playback. `mediaStatusCache.ts`
+separately shares up to 128 presentation metadata records and in-flight checks
+across virtual remounts; expiry and visibility resume refresh them. Login,
+logout, unauthorized API responses and server selection clear these records and
+abort their pending requests, as do successful library mutations and socket
+media invalidations. Pending entries retain ownership until completion; at 128
+pending checks, excess cold checks fail without starting more background
+requests. They never authorize cached bytes or provide offline file access.
+`ExternalImage.tsx` retains up to 128 intrinsic image sizes, with URL keys
+limited to 4 KiB, as layout hints across virtual remounts. Unknown sizes load
+eagerly; lazy images receive explicit measured width/height attributes. Size
+discovery uses the existing image load and adds no metadata or image-prefetch
+request. See [Media uploads](media-uploads.md).
 
 `web/library.rs` adapts browser library lists and mutations; `engine/media_store.rs`
 awaits typed native library requests. The SQLite/PostgreSQL `library.rs` modules
@@ -376,47 +396,55 @@ Ordinary attachment reservations also include library charges in account usage.
 
 Library cleanup admission reads transactional `library_storage` counters instead
 of scanning the asset catalogue. Media triggers update these derived counters on
-retirement and confirmed deletion; a partial index finds the oldest backlog item.
-Storage deletion remains outside engine guards and asset ownership transactions.
-The composer loads the picker with its own bundle so the first click opens it
-without an intermediate loading surface. Sticker requests and their loading status
-stay inside the Stickers tab.
-`useLibraryPopover.ts` owns picker placement, animation and dismissal cleanup;
-`useLibraryActions.ts` owns save/acquire/remove state and final-owner confirmation.
-`LibraryStickerTile.tsx` renders available media or removable unavailable metadata
-and the themed remove/acquire capsule for borrowed assets or a single remove control
-for owned assets. The picker shows Recent and Collections, retaining loaded tiles
-during revalidation. Collections owns the upload control and pending local preview;
-its grid packs borderless previews into rows using their natural aspect ratios,
-with bounded browser-memory layout hints and no additional metadata requests.
-`useLibraryMotion.ts` coordinates preview insertion, removal, reordering,
-row wrapping and delayed image-size changes in one layout pass. Additions,
-reordering and resizing take 120 ms; deletion fades and their reflow retain 180 ms. It animates painted
-boxes rather than flex dimensions; inert exit copies stay outside the live grid.
-Interrupted changes resume from the current animation progress. Unchanged
-measurements preserve running effects instead of restarting their duration;
-geometry reads are batched before animation writes. Reduced-motion
-changes cancel active effects and remove exit copies. Upload completion retains
-the pending tile's key and local image until the authorized thumbnail loads;
-preview URLs are then released. Completed uploads remain usable as temporary
-entries when their saved position lies beyond the current page. The canonical
-page deduplicates them; explicit collection pagination clears temporary entries.
-Successful removal also removes the temporary entry. Pagination preserves the
-other section and Add.
-A small Edit/Done toggle beside Collections enables manipulation controls across
-both sections; browsing keeps them inert and hidden, including on touch devices.
-Mode changes and removal confirmation use short opacity crossfades in fixed
-containers, independent of row layout; outgoing controls are inert. Removal
-confirmation floats centrally above inert picker content. Cancelling restores
-focus to its remove button; deletion or a missing trigger returns focus to Edit.
-Saved entries paginate by indexed insertion position, while ownership lists retain
-media-ID order. Optional picker persistence uses the shared
-browser-storage boundary. `useLibraryPage.ts` fetches one bounded page at a time;
-there is no unused search aggregation path.
-The browser receives an identifier-free `media` invalidation after library changes;
-membership and ordinary ownership changes target only that account, while
-potential retirement refreshes other viewers. Account-deletion metadata carries
-this invalidation even to independent borrowers outside the metadata audience.
+retirement and confirmed deletion; a partial index finds the oldest backlog
+item. Storage deletion remains outside engine guards and asset ownership
+transactions. The composer loads the picker with its own bundle so the first
+click opens it without an intermediate loading surface. Sticker requests and
+their loading status stay inside the Stickers tab. `useLibraryPopover.ts` owns
+picker placement, animation and dismissal cleanup; `useLibraryActions.ts` owns
+save/acquire/remove state and final-owner confirmation. `LibraryStickerTile.tsx`
+renders available media or removable unavailable metadata and the themed
+remove/acquire capsule for borrowed assets or a single remove control for owned
+assets. The picker shows Recent and Collections, retaining loaded tiles during
+revalidation. Collections owns the upload control and pending local preview; its
+grid packs borderless previews into rows using their natural aspect ratios, with
+bounded browser-memory layout hints and no additional metadata requests.
+`useLibraryMotion.ts` coordinates preview insertion, removal, reordering, row
+wrapping and delayed image-size changes in one layout pass. Additions,
+reordering and resizing take 120 ms; deletion fades and their reflow retain 180
+ms. It animates painted boxes rather than flex dimensions; inert exit copies
+stay outside the live grid. Interrupted changes resume from the current
+animation progress. Unchanged measurements preserve running effects instead of
+restarting their duration; geometry reads are batched before animation writes.
+Reduced-motion changes cancel active effects and remove exit copies. Upload
+completion retains the pending tile's key and local image until the authorized
+thumbnail loads; preview URLs are then released. Completed uploads remain usable
+as temporary entries when their saved position lies beyond the current page. The
+canonical page deduplicates them; explicit collection pagination clears
+temporary entries. Successful removal also removes the temporary entry.
+Pagination preserves the other section and Add. A small Edit/Done toggle beside
+Collections enables manipulation controls across both sections; browsing keeps
+them inert and hidden, including on touch devices. Mode changes and removal
+confirmation use short opacity crossfades in fixed containers, independent of
+row layout; outgoing controls are inert. Removal confirmation floats centrally
+above inert picker content. Cancelling restores focus to its remove button;
+deletion or a missing trigger returns focus to Edit. Saved entries paginate by
+indexed insertion position, while ownership lists retain media-ID order.
+Optional picker persistence uses the shared browser-storage boundary.
+`useLibraryPage.ts` fetches one bounded page at a time. Identical in-flight
+reads share a request scoped by server, account, view and cursor; the picker and
+storage-usage panel share the same account scope. Each consumer owns its
+subscription, and only the final unsubscribe cancels the network request.
+Library invalidation starts a fresh generation; ordinary rerenders do not
+refetch. Fresh cached pages are reused for 60 seconds across remounts and mode
+switches, without another request. Explicit refresh and library invalidations
+bypass this cache; cached pages remain visible during invalidation revalidation.
+There is no unused search aggregation path. The browser receives `media`
+invalidations after library changes. Account-targeted changes can identify
+affected assets; global invalidations omit their IDs. Membership and ordinary
+ownership changes target only that account, while potential retirement refreshes
+other viewers. Account-deletion metadata carries this invalidation even to
+independent borrowers outside the metadata audience.
 
 Attachment playback/previews live in the lazy `components/Attachment.tsx` chunk.
 The Markdown renderer recognizes only local media link hints; clicking Play or
@@ -461,41 +489,43 @@ Cleanup previews batch up to 256 authorized conversation IDs per aggregate query
 one history reader, using the existing conversation/timestamp expression index.
 A cleanup with no matching messages leaves the audit, database and revision unchanged.
 
-`engine/avatars.rs` owns self-service profile validation, ownership and the avatar
-metadata projection. `web/avatars.rs` adapts authenticated HTTP requests to that
-engine and the shared S3 transport. Avatar files use the existing tracked media
-lifecycle with a dedicated `avatars/` final prefix and profile references instead
-of message references. `AvatarSettings.tsx` owns the local crop/confirm flow;
-`Avatar.tsx` keeps the last loaded frame visible while a replacement loads, uses
-explicit image dimensions and decorative alt text next to names, and hides external
-URLs until the viewer opts in through Security. Snapshot projection validates only
-visible users' avatars. Managed reads resolve the owner through the existing stable
-account ID index, check its current reference and viewer visibility, and recheck
-after signing. The existing media worker caches avatar bytes with live `/info`
-authorization. Crop controls draw from a 1024-pixel working canvas once per animation
-frame; a local blob preview covers upload and canonical image loading. Account avatar
-state stays mounted across Settings tabs.
+`engine/avatars.rs` owns self-service profile validation, ownership and the
+avatar metadata projection. `web/avatars.rs` adapts authenticated HTTP requests
+to that engine and the shared S3 transport. Avatar files use the existing
+tracked media lifecycle with a dedicated `avatars/` final prefix and profile
+references instead of message references. `AvatarSettings.tsx` owns the local
+crop/confirm flow; `Avatar.tsx` keeps the last loaded frame visible while a
+replacement loads, uses explicit image dimensions and decorative alt text next
+to names, and hides external URLs until the viewer opts in through Security.
+Snapshot projection validates only visible users' avatars. Managed reads resolve
+the owner through the existing stable account ID index, check its current
+reference and viewer visibility, and recheck after signing. The media worker
+caches avatar bytes under read authorization leases; profile changes invalidate
+affected IDs when known. Crop controls draw from a 1024-pixel working canvas
+once per animation frame; a local blob preview covers upload and canonical image
+loading. Account avatar state stays mounted across Settings tabs.
 
 Media-cache recency rewrites are limited to once per object per minute within a
-worker lifetime, with bounded timestamp maps and at most 128 queued recency writes.
-Pending writes for the same object coalesce. Persisted eviction order
-is approximate LRU; every byte reuse still checks live `/info` authorization.
-Serialized cache maintenance builds an ordered size index lazily once per worker,
-then maintains its byte total on insertion, deletion and recency rewrites instead
-of scanning every cached response on each insertion. Before insertion it reconciles
-the live key list, reading sizes only for unfamiliar keys, so overlapping worker
-lifetimes and browser eviction cannot leave stale accounting indefinitely. Storage
-failures discard the index for rebuilding on the next write.
-With Web Locks, maintenance shares an origin-wide lock across workers/tabs so
-accounting, eviction and insertion cannot race past the disk budget. Without Web
-Locks, the per-instance serialized queue and reconciliation remain the fallback.
-Only insertions needing space rank eviction candidates: at most one timestamp
-read per retained object and one bounded sort, even when many objects are evicted.
-Warm byte reads use direct key lookup and stream responses without scanning or
-rewriting object bodies. Cached range reads stream/discard preceding chunks rather
-than allocating a whole-file buffer; seek work can still grow with the byte offset.
-The 256 MiB storage/fill accounting budgets do not cap total browser memory:
-decoded images, native players and browser-managed buffers are separate.
+worker lifetime, with bounded timestamp maps and at most 128 queued recency
+writes. Pending writes for the same object coalesce. Persisted eviction order is
+approximate LRU; byte reuse requires an unexpired read authorization lease.
+Serialized cache maintenance builds an ordered size index lazily once per
+worker, then maintains its byte total on insertion, deletion and recency
+rewrites instead of scanning every cached response on each insertion. Before
+insertion it reconciles the live key list, reading sizes only for unfamiliar
+keys, so overlapping worker lifetimes and browser eviction cannot leave stale
+accounting indefinitely. Storage failures discard the index for rebuilding on
+the next write. With Web Locks, maintenance shares an origin-wide lock across
+workers/tabs so accounting, eviction and insertion cannot race past the disk
+budget. Without Web Locks, the per-instance serialized queue and reconciliation
+remain the fallback. Only insertions needing space rank eviction candidates: at
+most one timestamp read per retained object and one bounded sort, even when many
+objects are evicted. Warm byte reads use direct key lookup and stream responses
+without scanning or rewriting object bodies. Cached range reads stream/discard
+preceding chunks rather than allocating a whole-file buffer; seek work can still
+grow with the byte offset. The 256 MiB storage/fill accounting budgets do not
+cap total browser memory: decoded images, native players and browser-managed
+buffers are separate.
 
 Bottom-following intent survives temporary scroll-height growth from animated
 rows and delayed content. Wheel, touch, pointer and keyboard input cancel timeline

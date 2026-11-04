@@ -25,7 +25,12 @@ test("LAN HTTP resolves fresh media, avatar and download links without requiring
   );
   Object.defineProperty(globalThis, "document", {
     configurable: true,
-    value: { baseURI: "http://ui.test/chat/" },
+    value: {
+      baseURI: "http://ui.test/chat/",
+      hidden: true,
+      addEventListener() {},
+      removeEventListener() {},
+    },
   });
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
@@ -127,7 +132,12 @@ test("managed file hooks wait for cache control and never resolve direct storage
   serviceWorker.controller = null;
   Object.defineProperty(globalThis, "document", {
     configurable: true,
-    value: { baseURI: "https://ui.test/chat/" },
+    value: {
+      baseURI: "https://ui.test/chat/",
+      hidden: true,
+      addEventListener() {},
+      removeEventListener() {},
+    },
   });
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
@@ -144,6 +154,11 @@ test("managed file hooks wait for cache control and never resolve direct storage
     registrations = 0;
   const worker = {
     postMessage(message, [port]) {
+      if (message.kind === "commonroom-media:clear") {
+        port.postMessage({ ok: true });
+        port.close();
+        return;
+      }
       assert.equal(message, "commonroom-media:claim");
       if (serviceWorker.controller) {
         port.postMessage("commonroom-media:ready");

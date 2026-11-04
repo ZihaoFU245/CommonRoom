@@ -1,4 +1,5 @@
 //! Sqlite upload lifecycle, quota coordination and cleanup claims.
+use super::super::media::{MediaRead, ReadColumns, decode_read};
 use super::super::{
     Error, Result,
     history::unsigned,
@@ -229,4 +230,38 @@ pub(in crate::engine::database) async fn load(
         ))
     })
     .transpose()
+}
+
+/// One coherent statement for metadata, references and viewer library state.
+pub(in crate::engine::database) async fn read_batch(
+    db: &mut SqliteConnection,
+    ids: &[String],
+    account: &str,
+    scopes: &[String],
+) -> Result<Vec<MediaRead>> {
+    let invalid_ids = |_| Error::Conversion("Invalid media IDs");
+    let invalid_scopes = |_| Error::Conversion("Invalid media scopes");
+    let ids = serde_json::to_string(ids).map_err(invalid_ids)?;
+    let scopes = serde_json::to_string(scopes).map_err(invalid_scopes)?;
+    let rows: Vec<ReadColumns> = sqlx::query_as(
+        r#"SELECT json,ready,expires,deleting,deleted,
+ CASE WHEN media.conversation='@library' THEN
+ EXISTS(SELECT 1 FROM library_owners
+        WHERE media_id=media.id AND account_id=?2) OR
+ EXISTS(SELECT 1 FROM library_entries
+        WHERE media_id=media.id AND account_id=?2) OR
+ EXISTS(SELECT 1 FROM message_media
+        WHERE media_id=media.id
+        AND conversation IN (SELECT value FROM json_each(?3)))
+ ELSE EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) END,
+ EXISTS(SELECT 1 FROM library_entries
+        WHERE media_id=media.id AND account_id=?2)
+ FROM media WHERE id IN (SELECT value FROM json_each(?1))"#,
+    )
+    .bind(ids)
+    .bind(account)
+    .bind(scopes)
+    .fetch_all(db)
+    .await?;
+    rows.into_iter().map(decode_read).collect()
 }

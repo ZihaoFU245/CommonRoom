@@ -62,6 +62,19 @@ export async function startRemoteServer(
   const servers = [];
   const connections = new Set();
   const apiRequests = [];
+  function recordApi(req) {
+    const record = { method: req.method, path: req.url, mediaIds: [] };
+    apiRequests.push(record);
+    if (req.method === "POST" && req.url.endsWith("/api/media/resolve")) {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        record.mediaIds = JSON.parse(
+          Buffer.concat(chunks).toString("utf8"),
+        ).items.map((item) => item.id);
+      });
+    }
+  }
   let apiPort;
   function track(...listeners) {
     for (const server of listeners) {
@@ -119,7 +132,7 @@ export async function startRemoteServer(
     const ui = publicServer((req, res) => {
       // Never send this isolated browser's default bootstrap to an existing dev backend.
       if (sameOrigin && req.url.startsWith("/server/")) {
-        apiRequests.push({ method: req.method, path: req.url });
+        recordApi(req);
         // Match auto/debug.sh's preview: HTTP GETs lack browser Fetch Metadata.
         if (plainHttp && !req.headers.origin && !req.headers["sec-fetch-site"])
           req.headers.origin = uiOrigin;
@@ -224,7 +237,7 @@ export async function startRemoteServer(
     const internalStorageOrigin = `http://127.0.0.1:${await listen(internalStorage)}`;
     const storageOrigin = `${scheme}://${plainHttp ? "ui.test" : "store.test"}:${await listen(publicStorage)}`;
     const apiProxy = publicServer((req, res) => {
-      apiRequests.push({ method: req.method, path: req.url });
+      recordApi(req);
       proxy(apiPort, true)(req, res);
     });
     const upgrade = async (req, incoming, head) => {
@@ -528,6 +541,10 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     ).length;
   const signedLinks = () =>
     fixture.apiRequests.filter((req) => req.path.includes("/link")).length;
+  const resolutions = () =>
+    fixture.apiRequests.filter((req) =>
+      req.mediaIds.includes(fixture.mediaPaths[0].split("/").at(-2)),
+    ).length;
   async function hardReload() {
     const previousDocument = await evaluate("performance.timeOrigin");
     await command("Page.reload", { ignoreCache: true }, sessionId);
@@ -571,12 +588,18 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     "completed image cache fills",
   );
   const readsBefore = storageReads(),
-    linksBefore = signedLinks();
+    linksBefore = signedLinks(),
+    resolutionsBefore = resolutions();
   await hardReload();
   assert.equal(
     storageReads(),
     readsBefore,
     "warm hard reload transfers no storage bytes",
+  );
+  assert.equal(
+    resolutions(),
+    resolutionsBefore,
+    "warm image reload needs no read authorization RTT",
   );
   assert.equal(
     signedLinks(),
@@ -847,7 +870,16 @@ async function runHttpDebug({ fixture, events, evaluate, wait }) {
     fixture.storageRequests.filter(
       (request) => request.method === "GET" && request.origin === fixture.url,
     ).length;
-  const before = { links: links(), auth: auth(), reads: reads() };
+  const resolutions = () =>
+    fixture.apiRequests.filter((request) =>
+      request.mediaIds.includes(imagePath.split("/").at(-2)),
+    ).length;
+  const before = {
+    links: links(),
+    auth: auth(),
+    reads: reads(),
+    resolutions: resolutions(),
+  };
   for (let pass = 0; pass < 3; pass++) {
     await evaluate(
       '[...document.querySelectorAll(".room-link")].find(button => button.textContent.includes("other")).click()',
@@ -874,9 +906,15 @@ async function runHttpDebug({ fixture, events, evaluate, wait }) {
     before.links,
     "cached images do not request another signature",
   );
-  assert.ok(
-    auth() >= before.auth + 3,
-    "each remount checks current server authorization",
+  assert.equal(
+    auth(),
+    before.auth,
+    "valid read leases avoid per-remount info checks",
+  );
+  assert.equal(
+    resolutions(),
+    before.resolutions,
+    "warm image remounts need no read resolution RTT",
   );
 
   await evaluate(

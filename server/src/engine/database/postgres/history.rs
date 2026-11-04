@@ -123,6 +123,14 @@ async fn reactions(db: &mut PgConnection, id: &str, messages: &mut [Message]) ->
         .bind(id).bind(number(low)?).bind(number(high)?).fetch_all(db).await?;
     attach_reactions(messages, rows)
 }
+pub(in crate::engine::database) async fn author_witnesses(
+    db: &mut PgConnection,
+    requests: &[(Vec<String>, String)],
+) -> Result<Vec<Option<String>>> {
+    let selection = serde_json::to_string(requests)
+        .map_err(|_| Error::Conversion("Cannot serialize author selection"))?;
+    Ok(sqlx::query_scalar("SELECT (SELECT m.conversation FROM messages m WHERE m.conversation IN (SELECT jsonb_array_elements_text(p.value->0)) AND m.projection #>> '{from}' = p.value->>1 ORDER BY m.conversation LIMIT 1) FROM jsonb_array_elements($1::text::jsonb) WITH ORDINALITY p(value, ordinal) ORDER BY p.ordinal").bind(selection).fetch_all(db).await?)
+}
 pub(in crate::engine::database) async fn has_author(
     db: &mut PgConnection,
     ids: &[String],

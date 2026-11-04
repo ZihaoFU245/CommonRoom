@@ -2,6 +2,22 @@
 use super::{Backend, Error, Result, metadata::WriteResult};
 use crate::engine::media::Media;
 
+#[derive(Clone)]
+pub(crate) struct MediaRead {
+    pub(crate) media: Media,
+    pub(crate) attached: bool,
+    pub(crate) saved: bool,
+}
+pub(super) type ReadColumns = (String, i64, Option<i64>, i64, i64, bool, bool);
+pub(super) fn decode_read(row: ReadColumns) -> Result<MediaRead> {
+    let (json, ready, expires, deleting, deleted, attached, saved) = row;
+    Ok(MediaRead {
+        media: decode((json, ready, expires, deleting, deleted))?,
+        attached,
+        saved,
+    })
+}
+
 pub(crate) struct MediaAllocation<'a> {
     pub(crate) media: &'a Media,
     pub(crate) quota: u64,
@@ -109,6 +125,22 @@ impl super::Connection {
     }
 }
 impl super::Handle {
+    pub(crate) async fn media_reads(
+        &self,
+        ids: &[String],
+        account: &str,
+        scopes: &[String],
+    ) -> Result<Vec<MediaRead>> {
+        use super::postgres::media::read_batch as pg_read;
+        use super::sqlite::media::read_batch as sqlite_read;
+        let mut session = self.acquire_read().await?;
+        let result = match session.backend.get_mut() {
+            Backend::Sqlite(db) => sqlite_read(db, ids, account, scopes).await,
+            Backend::Postgres(db) => pg_read(db, ids, account, scopes).await,
+            Backend::Closed => Err(Error::RestartRequired),
+        };
+        session.checked(result)
+    }
     #[cfg(test)]
     pub(crate) fn media_write_blocking(&self, request: &MediaWrite<'_>) -> Result<MediaCommit> {
         super::runtime::run(self.media_write(request))

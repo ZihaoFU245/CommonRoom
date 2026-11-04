@@ -1,3 +1,5 @@
+import { mediaResolution } from "../../tests/helpers/mediaResolve.js";
+import * as media from "../../src/features/conversation/mediaController.ts";
 import { LoginServerSettings } from "../../src/components/LoginServerSettings.tsx";
 import { libraryRegressions } from "./library.mjs";
 import { savedServerUrl, saveServerUrl } from "../../src/api/server.ts";
@@ -116,6 +118,8 @@ async function test(name, run) {
     Object.assign(api, originals);
     render(null, tests);
     tests.replaceChildren();
+    mediaStatusCache.clear();
+    await media.invalidateMediaReads();
   }
 }
 await test("login server settings animate from the gear and persist only on Save", async () => {
@@ -1108,7 +1112,7 @@ await test("settings panel switches clear credentials and ignore late account re
   }
 });
 
-await test("real CacheStorage shares cold fills while checking each caller's access", async () => {
+await test("real CacheStorage shares fills and rechecks access", async () => {
   await caches.delete("commonroom-media");
   const url = new URL(
     "api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
@@ -1118,16 +1122,10 @@ await test("real CacheStorage shares cold fills while checking each caller's acc
     authorizations = 0,
     denied = false;
   const work = [];
-  const media = new MediaCache(caches, async (address) => {
-    if (String(address).endsWith("/info")) {
+  const media = new MediaCache(caches, async (address, options) => {
+    if (String(address).endsWith("/resolve")) {
       authorizations++;
-      return denied
-        ? new Response(null, { status: 403 })
-        : Response.json({
-            size: 6,
-            content_type: "image/png",
-            filename: "test.png",
-          });
+      return mediaResolution(address, options, {}, denied ? 403 : 200);
     }
     downloads++;
     await sleep(100);
@@ -1148,8 +1146,8 @@ await test("real CacheStorage shares cold fills while checking each caller's acc
       "every concurrent caller receives the complete bytes",
     );
     check(
-      downloads === 1 && authorizations === 16,
-      `expected one download and 16 checks, got ${downloads}/${authorizations}`,
+      downloads === 1 && authorizations === 1,
+      `expected one download/check, got ${downloads}/${authorizations}`,
     );
     const stored = await caches.open("commonroom-media");
     await stored.put(url, new Response("broken"));
@@ -1162,12 +1160,8 @@ await test("real CacheStorage shares cold fills while checking each caller's acc
       "incompatible stored bytes are replaced from the network",
     );
     await Promise.all(work);
-    const reloaded = new MediaCache(caches, () =>
-      Response.json({
-        size: 6,
-        content_type: "image/png",
-        filename: "test.png",
-      }),
+    const reloaded = new MediaCache(caches, async (address, options) =>
+      mediaResolution(address, options),
     );
     check(
       (await (
@@ -1179,6 +1173,7 @@ await test("real CacheStorage shares cold fills while checking each caller's acc
     );
     await Promise.all(work);
     denied = true;
+    media.invalidate();
     check(
       (
         await media.respond(new Request(url), url, (promise) =>
@@ -3050,23 +3045,23 @@ await test("login requests saved name colors in its first authenticated snapshot
 await test("attachment remounts share pending status and warm rows skip loading motion", async () => {
   const id = "d5cd8a44-d8b7-4c63-91fe-3cc63f106178";
   const originalFetch = window.fetch;
+  const serviceWorker = Object.getOwnPropertyDescriptor(
+    navigator,
+    "serviceWorker",
+  );
+  Object.defineProperty(navigator, "serviceWorker", {
+    configurable: true,
+    value: undefined,
+  });
   const pending = deferred();
   let calls = 0;
   mediaStatusCache.clear();
-  window.fetch = async (address) => {
+  window.fetch = async (address, options) => {
     calls++;
     await pending.promise;
-    const requestedId = new URL(address).pathname.split("/").at(-2);
-    return Response.json({
-      media_id: requestedId,
-      path: `/api/media/${requestedId}/file`,
-      filename: "photo.png",
-      content_type: "image/png",
-      size: 6,
-      expires: null,
-      expired: false,
-    });
+    return mediaResolution(address, options, { filename: "photo.png" });
   };
+
   function draw(attachmentId = id) {
     render(
       h(
@@ -3126,6 +3121,9 @@ await test("attachment remounts share pending status and warm rows skip loading 
     pending.resolve();
     render(null, tests);
     window.fetch = originalFetch;
+    if (serviceWorker)
+      Object.defineProperty(navigator, "serviceWorker", serviceWorker);
+    else delete navigator.serviceWorker;
     mediaStatusCache.clear();
   }
 });

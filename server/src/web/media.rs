@@ -268,9 +268,10 @@ async fn mutate(app: &App, access: &Access, mutation: MediaMutation) -> Result<(
             MediaMutation::Ready(media, lock) => {
                 store.ready(&media).await?;
                 if media.conversation == "@library" {
-                    let _ = app
-                        .changes
-                        .send(Change::Media(Some(identity.account.clone())));
+                    let _ = app.changes.send(Change::Media(
+                        Some(identity.account.clone()),
+                        Some(media.id.clone()),
+                    ));
                 }
                 Some(lock)
             }

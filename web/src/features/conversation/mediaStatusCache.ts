@@ -3,7 +3,6 @@ import type { MediaInfo } from "../../api/media.ts";
 interface Entry {
   info?: MediaInfo;
   pending?: Promise<MediaInfo>;
-  controller?: AbortController;
 }
 
 // Presentation metadata only. Never use these records to authorize file bytes.
@@ -11,9 +10,11 @@ interface Entry {
 class MediaStatusCache {
   private readonly entries = new Map<string, Entry>();
 
-  clear() {
-    for (const entry of this.entries.values()) entry.controller?.abort();
-    this.entries.clear();
+  clear(ids?: readonly string[]) {
+    for (const key of this.entries.keys()) {
+      if (ids && !ids.some((id) => key.endsWith(id))) continue;
+      this.entries.delete(key);
+    }
   }
 
   peek(key: string): MediaInfo | undefined {
@@ -28,7 +29,7 @@ class MediaStatusCache {
 
   load(
     key: string,
-    fetchInfo: (signal: AbortSignal) => Promise<MediaInfo>,
+    fetchInfo: () => Promise<MediaInfo>,
     refresh = false,
   ): Promise<MediaInfo> {
     const previous = this.entries.get(key);
@@ -55,15 +56,11 @@ class MediaStatusCache {
         );
       this.entries.delete(oldest);
     }
-    const controller = new AbortController();
-    const entry: Entry = previous?.info
-      ? { info: previous.info, controller }
-      : { controller };
-    const pending = fetchInfo(controller.signal).then(
+    const entry: Entry = previous?.info ? { info: previous.info } : {};
+    const pending = fetchInfo().then(
       (value) => {
         if (this.entries.get(key) === entry) {
           delete entry.pending;
-          delete entry.controller;
           entry.info = value;
         }
         return value;

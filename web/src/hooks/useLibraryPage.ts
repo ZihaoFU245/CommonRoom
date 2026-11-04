@@ -7,7 +7,47 @@ import { useEvent } from "./useEvent.ts";
 
 // Browser-memory metadata only: media bytes retain their private-cache checks.
 const cachedPages = new Map<string, { page: LibraryPage; expires: number }>();
+interface PendingPage {
+  controller: AbortController;
+  generation: number;
+  readers: number;
+  promise: Promise<LibraryPage>;
+}
+const pendingPages = new Map<string, PendingPage>();
 let cacheGeneration = 0;
+
+/** Releasing one reader keeps other readers' HTTP request alive. */
+function sharePage(key: string, view: LibraryView, after: string) {
+  let pending = pendingPages.get(key);
+  if (pending?.generation !== cacheGeneration) {
+    pending?.controller.abort();
+    const controller = new AbortController();
+    const entry: PendingPage = {
+      controller,
+      generation: cacheGeneration,
+      readers: 0,
+      promise: api.library(view, after, controller.signal).finally(() => {
+        if (pendingPages.get(key) === entry) pendingPages.delete(key);
+      }),
+    };
+    pendingPages.set(key, entry);
+    pending = entry;
+  }
+  const entry = pending;
+  entry.readers++;
+  let released = false;
+  return {
+    promise: entry.promise,
+    release: () => {
+      if (released) return;
+      released = true;
+      if (--entry.readers === 0 && pendingPages.get(key) === entry) {
+        pendingPages.delete(key);
+        entry.controller.abort();
+      }
+    },
+  };
+}
 let observingChanges = false;
 function cachedPage(key: string | undefined) {
   if (!key) return null;
@@ -41,6 +81,7 @@ export function useLibraryPage(
   const [error, setError] = useState("");
   const [version, setVersion] = useState(0);
   const refresh = useEvent(() => {
+    if (cacheKey) cachedPages.delete(cacheKey);
     if (!retainWhileRefreshing) setLoaded(null);
     setVersion((value) => value + 1);
   });
@@ -70,13 +111,24 @@ export function useLibraryPage(
           : null,
     );
     setError("");
+    if (cached) return;
+    let release = () => {};
     async function load() {
       let result;
       try {
-        result = await api.library(view, after, controller.signal);
+        const request = cacheKey
+          ? sharePage(cacheKey, view, after)
+          : {
+              promise: api.library(view, after, controller.signal),
+              release: () => {},
+            };
+        release = request.release;
+        result = await request.promise;
       } catch (failure) {
         if (!controller.signal.aborted) setError(errorMessage(failure));
         return;
+      } finally {
+        release();
       }
       if (!controller.signal.aborted && generation === cacheGeneration) {
         if (cacheKey) {
@@ -97,7 +149,10 @@ export function useLibraryPage(
     load().catch((failure: unknown) => {
       console.error("Library page update failed", failure);
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      release();
+    };
   }, [view, after, version, enabled, key, cacheKey, retainWhileRefreshing]);
   return { page, error, refresh };
 }

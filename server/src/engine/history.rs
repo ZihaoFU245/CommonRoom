@@ -202,6 +202,17 @@ impl HistoryStore {
         }
         self.query(self.database.history_has_author(conversations, author))
     }
+    pub(crate) async fn author_witnesses_in_async(
+        &self,
+        requests: &[(Vec<String>, String)],
+    ) -> Result<Vec<Option<String>>, EngineError> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ensure_caches()?;
+        self.next.fetch_add(1, Ordering::Relaxed);
+        Ok(self.database.history_author_witnesses(requests).await?)
+    }
     pub(crate) async fn has_author_in_async(
         &self,
         conversations: &[String],

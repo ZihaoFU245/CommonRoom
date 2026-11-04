@@ -8,6 +8,7 @@ import {
   ensureMediaCache,
   mediaCacheReady,
   directMediaRequired,
+  watchMediaRead,
 } from "../features/conversation/mediaController.ts";
 
 /** Workers cache managed files; HTTP images share bounded authorized memory bytes. */
@@ -43,6 +44,10 @@ export function useFileUrl(
   const ready = mediaCacheReady();
   const direct = directMediaRequired();
   const managedUrl = file?.url.href;
+  useEffect(() => {
+    if (!managedUrl) return;
+    return watchMediaRead(managedUrl);
+  }, [managedUrl]);
   useEffect(() => {
     if (!managedUrl || (!direct && ready)) return;
     let mounted = true;

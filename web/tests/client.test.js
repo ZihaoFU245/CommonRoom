@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mediaConfigCache } from "../src/api/mediaConfigCache.ts";
 import { api, sendFrame, ApiError, isUnauthorized } from "../src/api/client.ts";
 
 function httpFixture(t) {
@@ -196,4 +197,44 @@ test("outbound frames reject sockets that are not open before sending", () => {
       /Disconnected/,
     );
   }
+});
+
+test("media config shares GETs until the session changes", async (t) => {
+  httpFixture(t);
+  mediaConfigCache.clear();
+  t.after(() => mediaConfigCache.clear());
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    const path = new URL(url).pathname;
+    requests.push({ path, method: options.method });
+    if (path.endsWith("/media/config"))
+      return Response.json({ enabled: true, max_size: 1024 });
+    return Response.json({ ok: true });
+  };
+  const signal = new AbortController().signal;
+  await Promise.all([api.mediaConfig(signal), api.mediaConfig(signal)]);
+  await api.mediaConfig(signal);
+  assert.equal(
+    requests.filter((r) => r.path.endsWith("/media/config")).length,
+    1,
+  );
+  for (const changeSession of [
+    () => api.login("alice", "secret"),
+    () => api.logout(),
+  ]) {
+    await changeSession();
+    const before = requests.length;
+    await api.mediaConfig(signal);
+    assert.equal(requests.length, before + 1);
+  }
+  globalThis.fetch = async () =>
+    Response.json({ error: "Expired" }, { status: 401 });
+  await assert.rejects(api.session(), (error) => isUnauthorized(error));
+  let reloads = 0;
+  globalThis.fetch = async () => {
+    reloads++;
+    return Response.json({ enabled: false, max_size: 1024 });
+  };
+  assert.equal((await api.mediaConfig(signal)).enabled, false);
+  assert.equal(reloads, 1, "authorization failure invalidates configuration");
 });

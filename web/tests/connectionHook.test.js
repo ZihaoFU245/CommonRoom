@@ -182,12 +182,27 @@ test("media invalidations refresh viewers without changing conversation state", 
   const before = h.snapshots.length;
   h.sockets.at(-1).onmessage({ data: '{"kind":"media"}' });
   assert.equal(mediaStatusCache.peek("library-item"), undefined);
-  assert.deepEqual(h.mediaUpdates, [
-    "commonroom-library-change",
-    "commonroom-library-change",
-  ]);
+  assert.deepEqual(h.mediaUpdates, ["commonroom-library-change"]);
   assert.equal(h.snapshots.length, before);
   assert.equal(h.refreshes.length, 0);
+});
+test("snapshots invalidate media only after authority changes", async (t) => {
+  const h = fixture(t);
+  h.baseline();
+  await mediaStatusCache.load("unchanged", async () => ({
+    saved: true,
+    expires: null,
+    expired: false,
+  }));
+  const ws = h.sockets.at(-1);
+  ws.onmessage({
+    data: JSON.stringify({ ...snapshot, preferences: { theme: "dark" } }),
+  });
+  assert.ok(mediaStatusCache.peek("unchanged"));
+  assert.equal(h.mediaUpdates.length, 0);
+  ws.onmessage({ data: JSON.stringify({ ...snapshot, policy_revision: 1 }) });
+  assert.equal(mediaStatusCache.peek("unchanged"), undefined);
+  assert.equal(h.mediaUpdates.length, 1);
 });
 test("reconnect backoff starts before a slow session check completes", async (t) => {
   const h = fixture(t);

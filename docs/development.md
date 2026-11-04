@@ -58,17 +58,18 @@ and any Tailscale access rules as needed.
 
 Remote debug uses plain HTTP; browser features requiring a secure context, such
 as service workers, are unavailable. The debug preview supplies the configured
-origin for API GETs to that host when browsers omit both Origin and Fetch Metadata.
-Explicit origin/metadata headers still pass through for backend validation.
-On this HTTP UI, images/avatars/sticker thumbnails share a bounded in-memory byte
-cache because service workers are unavailable. Warm remounts recheck server access
-without downloading storage again; a page reload starts a cold cache. Other media
-uses authenticated signed-link requests and direct storage loads. Avatar upload IDs use
-`crypto.getRandomValues()` when the secure-context-only `randomUUID()` is absent.
-With `--network HOST --with-s3`, storage links point to `http://HOST:19000`.
-Start RustFS with the matching `./auto/start-s3.sh --network HOST` in another
-terminal so that port is reachable from the browser. Rebuild with
-`./auto/build.sh debug` after client changes; `debug.sh` only runs existing artifacts.
+origin for API GETs to that host when browsers omit both Origin and Fetch
+Metadata. Explicit origin/metadata headers still pass through for backend
+validation. On this HTTP UI, images/avatars/sticker thumbnails share a bounded
+in-memory byte cache because service workers are unavailable. Warm remounts
+reuse bounded read leases without an authorization or storage request; a page
+reload starts a cold cache. Other media uses authenticated signed-link requests
+and direct storage loads. Avatar upload IDs use `crypto.getRandomValues()` when
+the secure-context-only `randomUUID()` is absent. With `--network HOST
+--with-s3`, storage links point to `http://HOST:19000`. Start RustFS with the
+matching `./auto/start-s3.sh --network HOST` in another terminal so that port is
+reachable from the browser. Rebuild with `./auto/build.sh debug` after client
+changes; `debug.sh` only runs existing artifacts.
 
 Start dependencies in separate terminals before enabling them:
 

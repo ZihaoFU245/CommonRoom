@@ -1,4 +1,3 @@
-import { api } from "../../api/client.ts";
 import { MediaCache } from "./mediaCache.ts";
 import type { MediaCacheStorage, MediaCacheStore } from "./mediaCache.ts";
 
@@ -69,6 +68,14 @@ export class HttpImageCache {
     this.cache = new MediaCache(new MemoryStorage(), network);
   }
 
+  invalidate(ids?: readonly string[]): void {
+    this.cache.invalidate(ids);
+  }
+
+  resolve(href: string, refresh = false, download = false, link = false) {
+    return this.cache.resolve(href, refresh, download, link);
+  }
+
   async load(href: string, signal: AbortSignal): Promise<string> {
     const response = await this.cache.respond(
       new Request(href, { signal }),
@@ -78,7 +85,6 @@ export class HttpImageCache {
           console.error("HTTP image cache maintenance failed", error);
         });
       },
-      true,
     );
     if (!response.ok) {
       await response.body?.cancel();
@@ -87,7 +93,10 @@ export class HttpImageCache {
     if (Number(response.headers.get("Content-Length")) > 256 * 1024 * 1024) {
       // Preserve streaming for unusually large images; do not buffer above budget.
       await response.body?.cancel();
-      return (await api.fileLink(href, signal)).url;
+      const resolved = await this.cache.resolve(href, false, false, true);
+      if (!resolved.url || resolved.info.expired || resolved.info.unavailable)
+        throw new Error("Image is no longer available.");
+      return resolved.url;
     }
     const body = await response.blob();
     signal.throwIfAborted();

@@ -316,6 +316,141 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
                     && value.starts_with(if download { "attachment" } else { "inline" }))
         );
     }
+    // Read resolution shares one admission job even with duplicate IDs, and
+    // returns independent outcomes without revealing hidden media.
+    let absent = uuid::Uuid::new_v4().to_string();
+    let batch = json!({"items":[
+        {"kind":"media","id":id,"link":true},
+        {"kind":"media","id":id,"download":true,"link":true},
+        {"kind":"media","id":absent},
+        {"kind":"avatars","id":id}
+    ]});
+    let route = "/api/media/resolve";
+    let resolved = request(&app, "bob", "POST", route, batch.clone()).await;
+    assert_eq!(resolved.0, StatusCode::OK, "{}", resolved.1);
+    let items = resolved.1["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[0]["status"], 200);
+    assert_eq!(items[0]["lease_seconds"], 900);
+    assert_eq!(items[0]["info"]["content_type"], "image/png");
+    assert!(
+        items[0]["link"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("X-Amz-Signature")
+    );
+    assert_eq!(items[0]["link"]["expires_in"], 60);
+    assert_eq!(items[1]["status"], 200);
+    assert_eq!(items[2]["status"], 404);
+    assert_eq!(items[3]["status"], 404);
+    let denied = request(&app, "carol", "POST", route, batch).await;
+    assert!(
+        denied.1["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["status"] == 404)
+    );
+    Arc::make_mut(&mut app.config)
+        .media
+        .authorization_lease_seconds = 17;
+    let custom = request(
+        &app,
+        "bob",
+        "POST",
+        "/api/media/resolve",
+        json!({"items":[{"kind":"media","id":id}]}),
+    )
+    .await;
+    assert_eq!(custom.1["items"][0]["lease_seconds"], 17);
+    assert!(custom.1["items"][0].get("link").is_none());
+    Arc::make_mut(&mut app.config)
+        .media
+        .authorization_lease_seconds = 900;
+    let session_expiry = {
+        let mut engine = app.engine().unwrap();
+        let session = engine
+            .data
+            .sessions
+            .values_mut()
+            .find(|session| session.username == "bob")
+            .unwrap();
+        let original = session.expires;
+        session.expires = crate::engine::media::timestamp() + 10;
+        original
+    };
+    let capped = request(
+        &app,
+        "bob",
+        "POST",
+        "/api/media/resolve",
+        json!({"items":[{"kind":"media","id":id}]}),
+    )
+    .await;
+    let lease = capped.1["items"][0]["lease_seconds"].as_u64().unwrap();
+    assert!((1..=10).contains(&lease));
+    app.engine()
+        .unwrap()
+        .data
+        .sessions
+        .values_mut()
+        .find(|session| session.username == "bob")
+        .unwrap()
+        .expires = session_expiry;
+    let expiry = crate::engine::media::timestamp() + 9;
+    db.execute(
+        if postgres {
+            "UPDATE media SET expires=$2 WHERE id=$1"
+        } else {
+            "UPDATE media SET expires=?2 WHERE id=?1"
+        },
+        crate::engine::database::params![id, expiry],
+    )
+    .unwrap();
+    let capped = request(
+        &app,
+        "bob",
+        "POST",
+        "/api/media/resolve",
+        json!({"items":[{"kind":"media","id":id,"link":true}]}),
+    )
+    .await;
+    let item = &capped.1["items"][0];
+    assert!((1..=9).contains(&item["lease_seconds"].as_u64().unwrap()));
+    assert!((1..=9).contains(&item["link"]["expires_in"].as_u64().unwrap()));
+    db.execute(
+        if postgres {
+            "UPDATE media SET expires=$2 WHERE id=$1"
+        } else {
+            "UPDATE media SET expires=?2 WHERE id=?1"
+        },
+        crate::engine::database::params![id, media.expires.unwrap()],
+    )
+    .unwrap();
+    for input in [
+        json!({"items":[]}),
+        json!({"items":[{"kind":"media","id":"invalid"}]}),
+        json!({"items":vec![json!({"kind":"media","id":id});33]}),
+    ] {
+        assert_eq!(
+            request(&app, "bob", "POST", "/api/media/resolve", input)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "unknown",
+            "POST",
+            "/api/media/resolve",
+            json!({"items":[{"kind":"media","id":id}]})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         request(
             &app,

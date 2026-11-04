@@ -15,10 +15,18 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
 | `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
+| `POST /api/media/resolve` | Media read batch | See the contract below |
 | `GET /api/media/{id}/link?download=true` | Session cookie and allowed Origin; `download` defaults to false | `{url}`; short-lived signed storage URL after current conversation access/reference/expiry checks; true forces download disposition |
 | `GET /api/avatars/{id}/link` | Session cookie and allowed Origin | `{url}`; short-lived signed storage URL after current avatar visibility checks |
 | `GET /api/health` | No session required | `{ok:true}` |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
+
+`POST /api/media/resolve` accepts
+`{items:[{kind,id,link?:boolean,download?:boolean}]}` with 1..32 items, a
+session and an allowed Origin. It returns
+`{items:[{kind,id,status,info?,lease_seconds?,link?,error?}]}`; optional links
+contain `{url,expires_in}`. Read-only leases default to 900 seconds, with
+per-item errors.
 
 Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are HttpOnly, SameSite Strict by default, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript. Browser routes and `/ws` reject Authorization headers; bot bearer authentication is confined to `/api/bot/v1/`. Media/profile bot counterparts are listed in [Bots](bots.md#media-and-profiles-v1-extension).
 
@@ -52,18 +60,23 @@ API hosts on the same site in that case. HTTP development cookies remain Strict.
 
 When the selected API is on another origin, controlled images, avatars, players
 and source previews use canonical `/file` URLs through the UI's media worker.
-Each read checks live `/info` with credentials; only a byte-cache miss resolves
-`/link` and fetches signed storage without credentials. Native downloads use a
-UI-scoped `media-download?file=...` navigation through the same cache. Managed
-controls wait for worker control after startup and hard reload; initialization
-failure shows an error instead of taking a direct storage path. This avoids
-credentialed cross-origin redirect chains. For plain HTTP without service-worker
-support, the page caches inline image/avatar/sticker bytes in bounded memory.
-Every reuse still checks authenticated `/info`; only cold misses resolve `/link`
-and fetch storage. Other media uses authenticated `/link` requests and direct signed
-storage URLs. Download links request `download=true`; text previews fetch storage
-without credentials. This debug path has no persistent byte cache across reloads.
-The app does not persist signed URLs in preferences or localStorage.
+The page and worker share batched `/api/media/resolve` results: metadata and a
+read-only authorization lease, plus a signed storage URL only for byte-cache
+misses. Valid leases serve cached bytes without network checks, including
+ranges. Mounted media renew before expiry; hidden/unmounted media stop renewing.
+Lease lifetime is configured by `media.authorization_lease_seconds` (default
+900), capped by session/media expiry. Signed URLs remain separately limited to
+60 seconds. Login/logout, unauthorized responses, server changes and disconnects
+invalidate leases. Authority changes and scoped media events invalidate affected
+resources; unrelated snapshots do not trigger attachment refreshes. Revocation
+can remain stale until lease expiry when an invalidation is missed. See [Media
+uploads](media-uploads.md) for the full read-cache and revocation contract.
+Native downloads use a UI-scoped `media-download?file=...` worker navigation.
+Managed controls wait for worker acknowledgement after startup and hard reload.
+For HTTP without workers, the same resolver authorizes bounded tab-local image
+bytes; other controls use direct signed storage URLs. Storage receives no chat
+credentials. Neither signed URLs nor leases persist in preferences/localStorage.
+Uploads and all mutations still require server authorization on every request.
 
 Login throttling uses the client address from the configured `set_real_ip_from`
 header (default `X-Forwarded-For`) only when the socket peer matches `trust`.
@@ -115,6 +128,8 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
 - `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,colors,color_version,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"conversation",view,id,messages,unread,name_colors}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
+- `{kind:"media",ids?:string[]}`: invalidate the listed media read
+  leases/presentation records; omitted IDs invalidate all.
 - `{kind:"bot_commands",conversation_id}`: invalidate the cached command directory; the ID is one currently readable conversation from the changed batch. Fetch all directory pages in the background.
 - `{kind:"activity",conversation_id,account_id,state,expires,draft?}`: transient bot progress for current readers. `state` is working/idle; optional plain-text draft is provisional, bounded to 4,000 characters, expires after 30 seconds, and is never inserted into history.
 - `{kind:"presence",online}`: authorized online account names; preserves existing message data.
@@ -384,21 +399,21 @@ upload-completion fields `{media_id,path,filename,content_type,size}` plus
 `expires` (Unix seconds, or null for permanent files) and `expired` (boolean).
 Only retained, published attachments readable by the current viewer are visible
 (otherwise 404). Normal info and file reads reject expiry with 404, preserving
-access enforcement for existing clients and media workers. The UI explicitly requests
-`/info?include_expired=true` to retrieve metadata, including the original filename,
+access enforcement for existing clients and media workers. The browser resolver retrieves metadata, including the original filename,
 for expired attachments even after object cleanup; it grants no access to bytes.
 No storage request is made. `GET /api/media/{id}/file?download=true` forces
 attachment disposition; the default permits native recognized media playback.
 Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
-are optional UI hints; the client verifies MIME with the info endpoint on click.
+are optional UI hints; the client verifies MIME with the resolver on click.
 
 Browser media bytes are explicitly persisted by the application-scoped media worker
 under canonical file URLs including API origin and deployment path, for both local
 and remote APIs (playback/download queries share content). Each cached
-read still calls the authenticated `/info` endpoint; no S3 GET is needed on a hit.
+read requires a valid bounded authorization lease from `POST /api/media/resolve`;
+a valid lease avoids an authorization request, and a byte hit avoids an S3 GET.
 Only full 200 responses are cached; hits refresh eviction recency, and ranges can
-be served from a complete cached object. Every range still checks `/info` so
-access revocations take effect immediately. Expired metadata stops cache reuse
+be served from a complete cached object. Ranges share the same read authorization lease. Targeted invalidations shorten
+revocation latency; without one, cached reads can continue until lease expiry. Expired metadata stops cache reuse
 with 410 and never fetches storage. Network redirects and storage remain `no-store`. See [Media uploads](media-uploads.md)
 for bounds, full-object caching and initialization behavior.
 
@@ -445,20 +460,24 @@ release/global removal atomically retires the asset and refunds ownership quota,
 while background deletion can retry independently. Acquisition cannot resurrect a
 retired asset. Retained messages remain in history.
 
-Library media `/info` responses additionally identify `library` and `unavailable`.
-Browser responses also include account-local `saved` collection membership;
-bot responses omit this field.
-Normal `/info`, `/file` and `/link` reject retired assets. Authorized saved users,
-owners or message readers can use `/info?include_expired=true` for placeholder
-metadata after retirement; it never authorizes storage bytes. The service worker
-still checks normal `/info` before every cached read. Scoped bot reads require a
-retained reference in an allowed conversation and cannot inherit independent
-account library access.
+Library media `/info` responses additionally identify `library` and
+`unavailable`. Browser responses also include account-local `saved` collection
+membership; bot responses omit this field. Normal `/info`, `/file` and `/link`
+reject retired assets. Authorized saved users, owners or message readers can use
+`/info?include_expired=true` for placeholder metadata after retirement; it never
+authorizes storage bytes. The service worker requires a valid read lease and
+rejects resolver results marked unavailable; existing leases can remain usable
+until expiry if invalidation is missed. Scoped bot reads require a retained
+reference in an allowed conversation and cannot inherit independent account
+library access.
 
-Browser sockets may emit `{"kind":"media"}` to invalidate mounted media and open
-library lists. It contains no asset, owner or source identifiers. Membership and ordinary ownership
-changes target that account's devices; confirmed final release and global removal
-also refresh other viewers. Reconnection baselines revalidate mounted media.
+Browser sockets may emit `{"kind":"media","ids":["asset-id"]}` to invalidate
+specific mounted media and open library lists. Omitted `ids` invalidate all read
+leases. Asset IDs are sent only to the targeted account; global invalidations
+omit IDs to avoid disclosing private objects. Frames disclose no owner or source
+identifiers. Membership and ordinary ownership changes target that account's
+devices; confirmed final release and global removal also refresh other viewers.
+Disconnect invalidates read leases; mounted visible media resolve again.
 
 ## Object commands and upload hints
 
@@ -530,22 +549,24 @@ General metadata commands retain their su requirement.
 Upload PUTs target staging `uploads/<id>` with the returned headers and no chat
 cookies. Completion copies verified PNG/JPEG/WebP bytes to immutable
 `avatars/<stable-account-id>/<id>` before updating metadata and broadcasting a
-snapshot. The stored link `/api/avatars/<id>/file` is deployment-relative: clients
-resolve it under their application base path. Active avatars have no retention
-expiry. Replaced/removed avatars stop receiving new signed reads immediately;
-already issued URLs expire within 60 seconds. Unreferenced objects use the existing
-cleanup worker, staging grace, retries, quota and allocation rate limits.
-No image bytes are stored in SQLite or streamed through chat. Reads require a
-current active owner/profile reference and viewer visibility through the directory,
-a readable room's members or retained authors, or readable private peers/members/authors.
-The media worker privately caches immutable avatar bytes and rechecks `/info` before
-every reuse; removal, disablement, logout and lost visibility deny cached reads.
-The browser supplies a generated `upload_id`, replays an uncertain allocation with
-that same ID, and abandons the known reservation on cancellation/failure. A different
-owner/size, completed, expired or abandoned allocation cannot reuse the ID.
-Avatar allocation skips the preliminary storage availability probe; PUT/completion
-report storage failures. Completion retains its immutable-copy validation and
-post-I/O authorization checks.
+snapshot. The stored link `/api/avatars/<id>/file` is deployment-relative:
+clients resolve it under their application base path. Active avatars have no
+retention expiry. Replaced/removed avatars stop receiving new signed reads
+immediately; already issued URLs expire within 60 seconds. Unreferenced objects
+use the existing cleanup worker, staging grace, retries, quota and allocation
+rate limits. No image bytes are stored in SQLite or streamed through chat. Reads
+require a current active owner/profile reference and viewer visibility through
+the directory, a readable room's members or retained authors, or readable
+private peers/members/authors. The media worker privately caches immutable
+avatar bytes under read leases. Profile changes invalidate known old avatar IDs;
+logout/authority changes invalidate leases. Missed invalidations can leave
+cached reads authorized until lease expiry. The browser supplies a generated
+`upload_id`, replays an uncertain allocation with that same ID, and abandons the
+known reservation on cancellation/failure. A different owner/size, completed,
+expired or abandoned allocation cannot reuse the ID. Avatar allocation skips the
+preliminary storage availability probe; PUT/completion report storage failures.
+Completion retains its immutable-copy validation and post-I/O authorization
+checks.
 
 External avatar URLs require an exact host in server `avatar_hosts` (default empty).
 Only HTTPS without userinfo is accepted; subdomains and suffix lookalikes do not

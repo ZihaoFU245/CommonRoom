@@ -55,7 +55,9 @@ export function useLibraryActions(
     } finally {
       setBusy(false);
     }
-    window.dispatchEvent(new Event("commonroom-library-change"));
+    window.dispatchEvent(
+      new CustomEvent("commonroom-library-change", { detail: [item.media_id] }),
+    );
   }
   async function remove(item: LibraryItem, confirmed = false) {
     if (busy || uploadBusy || exiting.current) return;
@@ -77,7 +79,11 @@ export function useLibraryActions(
       return;
     } finally {
       setBusy(false);
-      window.dispatchEvent(new Event("commonroom-library-change"));
+      window.dispatchEvent(
+        new CustomEvent("commonroom-library-change", {
+          detail: [item.media_id],
+        }),
+      );
     }
     removed(item.media_id);
   }

@@ -3,6 +3,7 @@ import test from "node:test";
 import { api } from "../src/api/client.ts";
 import { loadInitialAccount } from "../src/api/bootstrap.ts";
 import {
+  connectPreferences,
   disconnectPreferences,
   preferenceValue,
 } from "../src/features/preferences/account.ts";
@@ -89,4 +90,65 @@ test("login seeds only missing settings and requests its first visible snapshot 
   assert.equal(await loadInitialAccount(), account);
   assert.deepEqual(calls, [false, true]);
   assert.equal(preferenceValue("theme", ""), "light");
+});
+
+for (const complete of [true, false]) {
+  test(`bootstrap reuses snapshot (complete=${complete})`, async (t) => {
+    const originalMe = api.me,
+      originalPreferences = api.preferences;
+    t.after(() => {
+      api.me = originalMe;
+      api.preferences = originalPreferences;
+      disconnectPreferences();
+    });
+    let values;
+    const sync = { instance: "server", revision: 1 };
+    await connectPreferences("seed", async (local) => {
+      values = local;
+      return { values: local, sync };
+    });
+    const account = {
+      account_access: { id: "alice-id" },
+      preferences: complete ? values : {},
+      sync,
+    };
+    let reads = 0,
+      writes = 0;
+    api.me = async () => {
+      reads++;
+      return account;
+    };
+    api.preferences = async (local) => {
+      writes++;
+      return { values: local, sync };
+    };
+    assert.equal(await loadInitialAccount(), account);
+    assert.equal(reads, 1);
+    assert.equal(writes, complete ? 0 : 1);
+  });
+}
+
+test("preference revision changes refetch the snapshot", async (t) => {
+  const originalMe = api.me,
+    originalPreferences = api.preferences;
+  t.after(() => {
+    api.me = originalMe;
+    api.preferences = originalPreferences;
+    disconnectPreferences();
+  });
+  let reads = 0;
+  api.me = async () => {
+    reads++;
+    return {
+      account_access: { id: "alice-id" },
+      preferences: {},
+      sync: { instance: "server", revision: reads },
+    };
+  };
+  api.preferences = async (values) => ({
+    values,
+    sync: { instance: "server", revision: 2 },
+  });
+  await loadInitialAccount();
+  assert.equal(reads, 2);
 });

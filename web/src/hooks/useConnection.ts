@@ -1,3 +1,6 @@
+import { sameMediaAuthority } from "../features/conversation/mediaAuthority.ts";
+import { mediaConfigCache } from "../api/mediaConfigCache.ts";
+import * as mediaReads from "../features/conversation/mediaController.ts";
 import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
 import { serverBaseUrl } from "../api/server.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -58,6 +61,19 @@ export function useConnection(
         callbacks.current.onLogout();
       }
       // Transient refresh failures retry on reconnect/focus; socket updates remain authoritative.
+    };
+    const invalidateMedia = (ids?: string[]) => {
+      mediaStatusCache.clear(ids);
+      mediaReads
+        .invalidateMediaReads(ids)
+        .catch((error: unknown) =>
+          console.error("Media invalidation failed", error),
+        );
+      window.dispatchEvent(
+        ids
+          ? new CustomEvent("commonroom-library-change", { detail: ids })
+          : new Event("commonroom-library-change"),
+      );
     };
     const createSync = () =>
       snapshotSync(
@@ -133,8 +149,7 @@ export function useConnection(
         const data = parseFrame(String(event.data));
         if (!data) return;
         if (data.kind === "media") {
-          mediaStatusCache.clear();
-          window.dispatchEvent(new Event("commonroom-library-change"));
+          invalidateMedia(data.ids);
           return;
         }
         if (data.kind === "activity") {
@@ -163,7 +178,12 @@ export function useConnection(
           return;
         }
         if (data.kind === "snapshot") {
-          window.dispatchEvent(new Event("commonroom-library-change"));
+          mediaConfigCache.observeInstance(
+            serverBaseUrl(),
+            data.sync?.instance,
+          );
+          if (!sameMediaAuthority(currentState.current, data))
+            invalidateMedia();
           awaitingBaseline = false;
           clearTimeout(resumeTimer);
           const ids = new Set([
@@ -186,6 +206,11 @@ export function useConnection(
           }
           sync.receive(next, false);
         } else if (data.kind === "avatar") {
+          const old = currentState.current.avatars?.[data.username];
+          const id = old
+            ? /\/avatars\/([a-f0-9-]+)\/file/u.exec(old)?.[1]
+            : undefined;
+          if (id) invalidateMedia([id]);
           sync.receive(applyAvatar(currentState.current, data), true);
         } else if (data.kind === "presence") {
           sync.receive({ ...currentState.current, online: data.online }, true);
@@ -199,6 +224,11 @@ export function useConnection(
         if (stopped || socket.current !== ws) return;
         clearTimeout(resumeTimer);
         setStatus("offline");
+        mediaReads
+          .invalidateMediaReads()
+          .catch((error: unknown) =>
+            console.error("Media disconnect reset failed", error),
+          );
         setBotActivities([]);
         callbacks.current.onDisconnect();
         if (stopped || socket.current !== ws) return;

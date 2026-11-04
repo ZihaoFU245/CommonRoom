@@ -1,3 +1,4 @@
+import { mediaResolution } from "./helpers/mediaResolve.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HttpImageCache } from "../src/features/conversation/httpImageCache.ts";
@@ -14,15 +15,15 @@ function fixture(t) {
   const network = async (input, options) => {
     const url = new URL(input);
     calls.push({ url, options });
-    if (url.pathname.endsWith("/info"))
-      return Response.json(
-        { size: 6, filename: "test.png", content_type: "image/png" },
-        { status },
+    if (url.pathname.endsWith("/resolve"))
+      return mediaResolution(
+        input,
+        options,
+        {},
+        status,
+        "http://debug.test:19000/object?file=" +
+          encodeURIComponent(url.pathname),
       );
-    if (url.pathname.endsWith("/link"))
-      return Response.json({
-        url: `http://debug.test:19000/object?file=${encodeURIComponent(url.pathname)}`,
-      });
     await pending;
     assert.equal(options.credentials, "omit");
     return new Response("abcdef", {
@@ -56,7 +57,7 @@ function fixture(t) {
   };
 }
 
-test("HTTP images and avatars reuse no-store bytes across remounts while checking live authorization", async (t) => {
+test("HTTP media remounts reuse bytes under read leases", async (t) => {
   const f = fixture(t);
   const avatar = href.replace("/media/", "/avatars/");
   for (const path of [href, avatar, href, avatar, href]) {
@@ -65,13 +66,18 @@ test("HTTP images and avatars reuse no-store bytes across remounts while checkin
     assert.equal(await (await fetch(url)).text(), "abcdef");
   }
   assert.equal(
-    f.count("/info"),
-    5,
-    "presentation metadata never authorizes a cached byte read",
+    f.count("/resolve"),
+    2,
+    "each immutable file shares one read lease",
   );
-  assert.equal(f.count("/link"), 2, "one signature per cold file");
+  assert.equal(
+    f.count("/link"),
+    0,
+    "resolution already supplies the signature",
+  );
   assert.equal(f.count("/object"), 2, "one storage GET per immutable file");
   f.deny();
+  f.cache.invalidate();
   await assert.rejects(f.load(), /403/u);
   assert.equal(
     f.count("/object"),

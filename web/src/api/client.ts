@@ -1,18 +1,18 @@
+import { mediaConfigCache } from "./mediaConfigCache.ts";
 import { serverBaseUrl } from "./server.ts";
 import type { PreferenceState } from "../features/preferences/account.ts";
 import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { responseJson } from "./responseJson.ts";
 import { requestAbort } from "./requestAbort.ts";
-import { isFileLink, mediaFileUrl } from "./mediaFile.ts";
+import { mediaFileUrl } from "./mediaFile.ts";
 import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
+import {
+  resolveMediaRead,
+  invalidateMediaReads,
+} from "../features/conversation/mediaController.ts";
 import { isLibraryPage } from "./library.ts";
 import type { LibraryAction, LibraryView } from "./library.ts";
-import {
-  isUploadTicket,
-  isCompletedMedia,
-  isMediaConfig,
-  isMediaInfo,
-} from "./media.ts";
+import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
 import {
   isSnapshot,
   isHistory,
@@ -86,7 +86,11 @@ async function request<T>(
     });
     const value = await responseJson(response);
     cancellation.signal.throwIfAborted();
-    if (response.status === 401) mediaStatusCache.clear();
+    if (response.status === 401) {
+      mediaConfigCache.clear();
+      mediaStatusCache.clear();
+      await invalidateMediaReads();
+    }
     if (!response.ok)
       throw new ApiError(
         response.status,
@@ -133,16 +137,16 @@ function isPreferences(value: unknown): value is PreferenceState {
 }
 
 export const api = {
-  fileLink: (href: string, signal: AbortSignal, download = false) => {
+  fileLink: async (href: string, signal: AbortSignal, download = false) => {
     const base = serverBaseUrl();
     const file = mediaFileUrl(href, base);
     if (file?.base !== base) throw new Error("Invalid managed file URL.");
-    return request(
-      `${file.kind}/${encodeURIComponent(file.id)}/link${download ? "?download=true" : ""}`,
-      (value): value is { url: string } => isFileLink(value, base),
-      undefined,
-      signal,
-    );
+    signal.throwIfAborted();
+    const result = await resolveMediaRead(file.url.href, false, download, true);
+    signal.throwIfAborted();
+    if (!result.url || result.info.expired || result.info.unavailable)
+      throw new ApiError(410, "Media unavailable.");
+    return { url: result.url };
   },
   preferences: (values: Record<string, string | null>, initialize: boolean) =>
     request("preferences", isPreferences, { values, initialize }),
@@ -164,26 +168,30 @@ export const api = {
       signal,
       120000,
     ),
-  mediaInfo: (id: string, signal: AbortSignal) =>
-    request(
-      `media/${encodeURIComponent(id)}/info`,
-      isCompletedMedia,
-      undefined,
-      signal,
-    ),
+  mediaInfo: async (id: string, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    const value = await resolveMediaRead(
+      new URL(`api/media/${encodeURIComponent(id)}/file`, serverBaseUrl()).href,
+    );
+    signal.throwIfAborted();
+    if (value.info.expired || value.info.unavailable)
+      throw new ApiError(410, "Media unavailable.");
+    return value.info;
+  },
   cachedMediaStatus: (id: string) =>
     mediaStatusCache.peek(`${serverBaseUrl()}${id}`),
   mediaStatus: (id: string, signal: AbortSignal, refresh = false) => {
     signal.throwIfAborted();
     return mediaStatusCache.load(
       `${serverBaseUrl()}${id}`,
-      (signal) =>
-        request(
-          `media/${encodeURIComponent(id)}/info?include_expired=true`,
-          isMediaInfo,
-          undefined,
-          signal,
-        ),
+      async () =>
+        (
+          await resolveMediaRead(
+            new URL(`api/media/${encodeURIComponent(id)}/file`, serverBaseUrl())
+              .href,
+            refresh,
+          )
+        ).info,
       refresh,
     );
   },
@@ -204,12 +212,15 @@ export const api = {
       action,
       source_conversation: source ?? null,
       confirm_last: confirmLast,
-    }).then((result) => {
-      mediaStatusCache.clear();
+    }).then(async (result) => {
+      mediaStatusCache.clear([id]);
+      await invalidateMediaReads([id]);
       return result;
     }),
   mediaConfig: (signal: AbortSignal) =>
-    request("media/config", isMediaConfig, undefined, signal),
+    mediaConfigCache.load(serverBaseUrl(), signal, (sharedSignal) =>
+      request("media/config", isMediaConfig, undefined, sharedSignal),
+    ),
   allocateMedia: (
     conversationId: string,
     filename: string,
@@ -252,16 +263,38 @@ export const api = {
     signal.throwIfAborted();
     return { conversations };
   },
-  me: (nameColors = false) =>
-    request("me", isSnapshot, undefined, undefined, 15000, nameColors),
-  session: () => request("session", isOk),
-  login: (username: string, password: string) => {
-    mediaStatusCache.clear();
-    return request("login", isOk, { username, password });
+  me: async (nameColors = false) => {
+    const base = serverBaseUrl();
+    const result = await request(
+      "me",
+      isSnapshot,
+      undefined,
+      undefined,
+      15000,
+      nameColors,
+    );
+    if (serverBaseUrl() === base)
+      mediaConfigCache.observeInstance(base, result.sync?.instance);
+    return result;
   },
-  logout: () => {
+  session: () => request("session", isOk),
+  login: async (username: string, password: string) => {
+    mediaConfigCache.clear();
     mediaStatusCache.clear();
-    return request("logout", isOk, {});
+    await invalidateMediaReads();
+    const result = await request("login", isOk, { username, password });
+    mediaConfigCache.clear();
+    await invalidateMediaReads();
+    return result;
+  },
+  logout: async () => {
+    mediaConfigCache.clear();
+    mediaStatusCache.clear();
+    await invalidateMediaReads();
+    const result = await request("logout", isOk, {});
+    mediaConfigCache.clear();
+    await invalidateMediaReads();
+    return result;
   },
   history: (
     view: string,

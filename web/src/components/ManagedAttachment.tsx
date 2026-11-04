@@ -91,8 +91,15 @@ export function ManagedAttachment({
           console.error("Attachment status update failed", error);
         });
     }
-    function resume() {
-      if (document.visibilityState === "visible") check(true);
+    function resume(event: Event) {
+      if (
+        event instanceof CustomEvent &&
+        Array.isArray(event.detail) &&
+        !event.detail.includes(id)
+      )
+        return;
+      if (document.visibilityState === "visible")
+        check(event.type === "commonroom-library-change");
     }
     check();
     document.addEventListener("visibilitychange", resume);
@@ -116,7 +123,9 @@ export function ManagedAttachment({
       setSaving(false);
     }
     setSaved(true);
-    window.dispatchEvent(new Event("commonroom-library-change"));
+    window.dispatchEvent(
+      new CustomEvent("commonroom-library-change", { detail: [id] }),
+    );
   }
   return (
     <span

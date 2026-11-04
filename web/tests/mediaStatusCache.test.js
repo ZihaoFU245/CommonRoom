@@ -1,3 +1,4 @@
+import { mediaResolution } from "./helpers/mediaResolve.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { api } from "../src/api/client.ts";
@@ -19,7 +20,7 @@ function setup(t) {
   const document = Object.getOwnPropertyDescriptor(globalThis, "document");
   const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "document", {
-    value: { baseURI: "https://ui.test/chat/" },
+    value: { baseURI: "http://ui.test/chat/" },
     configurable: true,
   });
   Object.defineProperty(globalThis, "localStorage", {
@@ -33,7 +34,7 @@ function setup(t) {
     else delete globalThis.localStorage;
   });
   mediaStatusCache.clear();
-  saveServerUrl("https://api.test/chat/");
+  saveServerUrl("http://api.test/chat/");
   t.after(() => mediaStatusCache.clear());
 }
 
@@ -44,11 +45,16 @@ test("virtual remounts and duplicate attachments share metadata without transfer
     release = resolve;
   });
   let calls = 0;
+  let entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
   t.mock.method(globalThis, "fetch", async (_url, options) => {
     calls++;
+    entered();
     await gate;
     assert.equal(options.signal.aborted, false);
-    return Response.json(info);
+    return mediaResolution(_url, options, info);
   });
   const controller = new AbortController();
   const first = api.mediaStatus(id, controller.signal);
@@ -56,6 +62,7 @@ test("virtual remounts and duplicate attachments share metadata without transfer
   const remounts = Array.from({ length: 20 }, () =>
     api.mediaStatus(id, new AbortController().signal),
   );
+  await started;
   assert.equal(calls, 1);
   release();
   await first;
@@ -81,10 +88,10 @@ test("metadata expires, stays bounded and cannot survive identity or deployment 
     calls = 0,
     status = 200;
   t.mock.method(Date, "now", () => now);
-  t.mock.method(globalThis, "fetch", async (url) => {
+  t.mock.method(globalThis, "fetch", async (url, options) => {
     calls++;
-    return String(url).includes("/info")
-      ? Response.json({ ...info, expires: 101 }, { status })
+    return String(url).includes("/resolve")
+      ? mediaResolution(url, options, { ...info, expires: 101 }, status)
       : Response.json({ ok: true });
   });
   const load = (refresh = false) =>
@@ -102,8 +109,8 @@ test("metadata expires, stays bounded and cannot survive identity or deployment 
   for (const reset of [
     () => api.logout(),
     () => api.login("alice", "test"),
-    () => saveServerUrl("https://other.test/chat/"),
-    () => saveServerUrl("https://api.test/chat/"),
+    () => saveServerUrl("http://other.test/chat/"),
+    () => saveServerUrl("http://api.test/chat/"),
   ]) {
     await load();
     assert.ok(api.cachedMediaStatus(id));
@@ -136,17 +143,15 @@ test("metadata expires, stays bounded and cannot survive identity or deployment 
   );
 });
 
-test("pending metadata ownership is bounded and clearing aborts its retained requests", async (t) => {
+test("pending metadata ownership is bounded and cleared work cannot repopulate it", async (t) => {
   setup(t);
-  const signals = [];
   let release,
     calls = 0;
   const gate = new Promise((resolve) => {
     release = resolve;
   });
-  const fetchInfo = async (signal) => {
+  const fetchInfo = async () => {
     calls++;
-    signals.push(signal);
     await gate;
     return info;
   };
@@ -161,10 +166,6 @@ test("pending metadata ownership is bounded and clearing aborts its retained req
     "overflow and duplicate callers cannot start more background requests",
   );
   mediaStatusCache.clear();
-  assert.ok(
-    signals.every((signal) => signal.aborted),
-    "logout/server changes cancel all retained work",
-  );
   release();
   await Promise.all([...loads, duplicate]);
   assert.equal(mediaStatusCache.peek("pending-0"), undefined);
@@ -180,9 +181,14 @@ test("library mutations invalidate cached membership and availability", async (t
   setup(t);
   let saved = false;
   let unavailable = false;
-  t.mock.method(globalThis, "fetch", async (url) => {
-    if (String(url).includes("/info"))
-      return Response.json({ ...info, library: true, saved, unavailable });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (String(url).includes("/resolve"))
+      return mediaResolution(url, options, {
+        ...info,
+        library: true,
+        saved,
+        unavailable,
+      });
     return Response.json({ ok: true });
   });
   const load = () => api.mediaStatus(id, new AbortController().signal);

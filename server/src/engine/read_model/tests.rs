@@ -204,3 +204,56 @@ fn profile_edits_reuse_authorized_templates_and_match_cold_snapshots() {
             .is_empty()
     );
 }
+
+#[test]
+fn media_visibility_ignores_cursors_but_rechecks_history() {
+    let mut engine = super::super::tests::engine();
+    engine
+        .execute(Some("alice"), Some("lobby"), "visible author")
+        .unwrap();
+    let watched = BTreeSet::from([engine.data.rooms["lobby"].id.clone()]);
+    let before = engine.delivery_stamp("bob", &watched, false).unwrap();
+    let through = engine
+        .history("bob", "lobby")
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .sequence;
+    engine.mark_read("bob", "lobby", through).unwrap();
+    let after_read = engine.delivery_stamp("bob", &watched, false).unwrap();
+    assert!(before != after_read);
+    assert!(before.same_media_authority(&after_read));
+    engine
+        .execute(Some("alice"), Some("lobby"), "new history")
+        .unwrap();
+    let after = engine.delivery_stamp("bob", &watched, false).unwrap();
+    assert!(!before.same_media_authority(&after));
+}
+
+#[test]
+fn media_history_stamp_ignores_unrelated_conversations_but_fences_its_witness() {
+    let mut engine = super::super::tests::engine();
+    engine.execute(None, None, "/room new unrelated").unwrap();
+    engine
+        .execute(None, None, "/room add bob #unrelated")
+        .unwrap();
+    let witness = engine.data.rooms["lobby"].id.clone();
+    let watched = [witness.clone(), engine.data.rooms["unrelated"].id.clone()].into();
+    let mut before = engine.delivery_stamp("bob", &watched, false).unwrap();
+    before.restrict_history(&[witness.clone()].into());
+    engine
+        .execute(None, Some("unrelated"), "unrelated traffic")
+        .unwrap();
+    let current = engine
+        .delivery_stamp("bob", &[witness.clone()].into(), false)
+        .unwrap();
+    assert!(before.same_media_authority(&current));
+    engine
+        .execute(Some("alice"), Some("lobby"), "witness traffic")
+        .unwrap();
+    let current = engine
+        .delivery_stamp("bob", &[witness].into(), false)
+        .unwrap();
+    assert!(!before.same_media_authority(&current));
+}

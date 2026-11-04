@@ -45,6 +45,12 @@ test("library responses validate bounded lists and explicit ownership independen
     assert.equal(isLibraryPage({ ...page, ...patch }), false);
   }
   assert.deepEqual(parseFrame('{"kind":"media"}'), { kind: "media" });
+  const ids = ["d5cd8a44-d8b7-4c63-91fe-3cc63f106178"];
+  assert.deepEqual(parseFrame(JSON.stringify({ kind: "media", ids })), {
+    kind: "media",
+    ids,
+  });
+  assert.equal(parseFrame('{"kind":"media","ids":["../foreign"]}'), null);
 });
 test("library requests preserve base paths, cookies and explicit final-release confirmation", async (t) => {
   const document = globalThis.document;

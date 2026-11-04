@@ -18,6 +18,7 @@ pub(crate) fn valid_avatar_url(value: &str) -> bool {
     })
 }
 /// Only owned authorization inputs cross the history read boundary.
+#[derive(Clone)]
 pub(crate) struct AvatarPlan {
     owner: String,
     value: Option<String>,
@@ -26,6 +27,40 @@ pub(crate) struct AvatarPlan {
     history: std::sync::Arc<HistoryStore>,
 }
 impl AvatarPlan {
+    pub(crate) async fn visible_batch(
+        plans: &[&Self],
+    ) -> Result<(Vec<bool>, BTreeSet<String>), EngineError> {
+        let requests: Vec<_> = plans
+            .iter()
+            .filter(|plan| !plan.known)
+            .map(|plan| (plan.conversations.clone(), plan.owner.clone()))
+            .collect();
+        let mut checked = if let Some(plan) = plans.first() {
+            plan.history
+                .author_witnesses_in_async(&requests)
+                .await?
+                .into_iter()
+        } else {
+            Vec::new().into_iter()
+        };
+        let mut watched = BTreeSet::new();
+        let visible = plans
+            .iter()
+            .map(|plan| {
+                if plan.known {
+                    return true;
+                }
+                if let Some(Some(conversation)) = checked.next() {
+                    watched.insert(conversation);
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect();
+        Ok((visible, watched))
+    }
+
     pub(crate) fn history_ids(&self) -> impl Iterator<Item = &str> {
         self.conversations
             .iter()

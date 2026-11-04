@@ -9,6 +9,40 @@ use crate::engine::{
 use axum::{extract::ws::Utf8Bytes, http::HeaderMap};
 use std::collections::BTreeSet;
 
+/// Global invalidations must not disclose private asset IDs.
+fn media_frame(changes: &[Change], account: &str, bot: bool) -> Option<String> {
+    if bot {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    let mut all = false;
+    for change in changes {
+        match change {
+            Change::Media(target, id) => {
+                if target.as_deref().is_some_and(|target| target != account) {
+                    continue;
+                }
+                match (target, id) {
+                    (Some(_), Some(id)) => {
+                        ids.insert(id.clone());
+                    }
+                    _ => all = true,
+                }
+            }
+            Change::Metadata(notice) if notice.has_media() => all = true,
+            _ => {}
+        }
+    }
+    if !all && ids.is_empty() {
+        return None;
+    }
+    let mut frame = serde_json::json!({ "kind": "media" });
+    if !all {
+        frame["ids"] = serde_json::json!(ids);
+    }
+    Some(frame.to_string())
+}
+
 enum Plan {
     Ready(Utf8Bytes),
     Avatar(AvatarPlan),
@@ -107,9 +141,9 @@ pub(crate) async fn browser_with_interests_async(
                     let presence = !bot && changes.contains(&Change::Presence);
                     let mut ids = BTreeSet::new();
                     let mut plans = Vec::new();
-                    let media_changed = !bot && changes.iter().any(|change| matches!(change, Change::Media(target) if target.as_deref().is_none_or(|target| target == account)) || matches!(change, Change::Metadata(notice) if notice.has_media()));
-                    if media_changed {
-                        plans.push(Plan::Ready(serde_json::json!({"kind":"media"}).to_string().into()));
+                    let media = media_frame(&changes, account, bot);
+                    if let Some(frame) = media {
+                        plans.push(Plan::Ready(frame.into()));
                     }
                     let mut catalogue = None;
                     let mut catalogue_position = 0;

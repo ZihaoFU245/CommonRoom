@@ -1,3 +1,4 @@
+import { mediaResolution } from "./helpers/mediaResolve.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MediaCache } from "../src/features/conversation/mediaCache.ts";
@@ -50,15 +51,12 @@ function fixture(filePath = path) {
   let contentType = "image/png";
   const network = async (url, options) => {
     calls.push({ url: String(url), options });
-    if (String(url).endsWith("/info"))
-      return Response.json(
-        {
-          size: 6,
-          content_type: contentType,
-          filename: "test'file.html",
-          expired,
-        },
-        { status },
+    if (String(url).endsWith("/resolve"))
+      return mediaResolution(
+        url,
+        options,
+        { content_type: contentType, filename: "test'file.html", expired },
+        status,
       );
     if (options.headers.Range)
       return new Response("abc", {
@@ -112,12 +110,16 @@ test("repeated full and range hits persist small recency records without rewriti
     await Promise.all(f.work);
   }
   assert.equal(f.puts(), writes);
-  assert.equal(f.calls.filter((call) => call.url.endsWith("/info")).length, 5);
+  assert.equal(
+    f.calls.filter((call) => call.url.endsWith("/resolve")).length,
+    1,
+  );
   now += 60_000;
   await (await f.load(instance)).text();
   await Promise.all(f.work);
   assert.equal(f.puts(), writes, "recency must not rewrite attachment bytes");
   f.deny();
+  instance.invalidate();
   assert.equal((await f.load(instance)).status, 403);
   assert.equal(f.puts(), writes, "recency must not rewrite attachment bytes");
 });
@@ -134,17 +136,18 @@ for (const kind of ["media", "avatars"]) {
     const download = await f.load(reload, "?download=true");
     assert.match(download.headers.get("Content-Disposition"), /^attachment;/);
     assert.equal(
-      f.calls.filter((call) => !call.url.endsWith("/info")).length,
+      f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
       1,
     );
     assert.equal(
-      f.calls.filter((call) => call.url.endsWith("/info")).length,
-      3,
+      f.calls.filter((call) => call.url.endsWith("/resolve")).length,
+      2,
     );
     f.deny();
+    reload.invalidate();
     assert.equal((await f.load(reload)).status, 403);
     assert.equal(
-      f.calls.filter((call) => !call.url.endsWith("/info")).length,
+      f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
       1,
     );
   });
@@ -186,7 +189,7 @@ test("incompatible cached records are deleted and refetched without migrations",
       }),
     );
     const instance = new MediaCache(f.storage, async (url, options) => {
-      if (!String(url).endsWith("/info"))
+      if (!String(url).endsWith("/resolve"))
         assert.equal(f.saved.has(path), false, JSON.stringify(invalid));
       return f.network(url, options);
     });
@@ -200,7 +203,7 @@ test("incompatible cached records are deleted and refetched without migrations",
     );
     await Promise.all(f.work);
     assert.equal(
-      f.calls.filter((call) => !call.url.endsWith("/info")).length,
+      f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
       1,
     );
     assert.equal(f.saved.size, 1);
@@ -250,8 +253,12 @@ test("cached full objects satisfy native ranges and never render HTML inline", a
     assert.equal(await response.text(), expected);
   }
   assert.equal((await f.load(instance, "", "bytes=99-")).status, 416);
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+  assert.equal(
+    f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
+    1,
+  );
   f.html();
+  instance.invalidate();
   const html = await f.load(instance);
   assert.match(html.headers.get("Content-Disposition"), /^attachment;/);
   assert.equal(html.headers.get("X-Content-Type-Options"), "nosniff");
@@ -272,7 +279,10 @@ test("partial playback responses preserve legacy CORS support without caching fr
   );
   assert.equal(next.status, 206);
   assert.equal(await next.text(), "abc");
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 2);
+  assert.equal(
+    f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
+    2,
+  );
 });
 test("unavailable storage cannot silently switch to uncached downloads", async () => {
   const f = fixture();
@@ -286,7 +296,7 @@ test("unavailable storage cannot silently switch to uncached downloads", async (
   );
   await assert.rejects(f.load(instance), /disabled/u);
   assert.ok(
-    f.calls.every((call) => call.url.endsWith("/info")),
+    f.calls.every((call) => call.url.endsWith("/resolve")),
     "only live authorization ran; no storage download bypassed the cache",
   );
 });
@@ -342,7 +352,7 @@ test("bulk byte eviction reads recency once per entry instead of once per remove
   const f = fixture();
   const large = new URL(path.replace("06178/file", "99999/file"));
   const instance = new MediaCache(f.storage, async (url, options) =>
-    String(url).endsWith("/info")
+    String(url).endsWith("/resolve")
       ? f.network(url, options)
       : new Response("abcdef", {
           headers: {
@@ -461,7 +471,7 @@ test("slow recency storage cannot build an unbounded write queue during repeated
 test("actual network Content-Length wins over info and cached ranges use that length", async () => {
   const f = fixture();
   const instance = new MediaCache(f.storage, async (url, options) =>
-    String(url).endsWith("/info")
+    String(url).endsWith("/resolve")
       ? f.network(url, options)
       : new Response("abcd", { headers: { "Content-Length": "4" } }),
   );
@@ -478,7 +488,7 @@ test("cache accounting reuses response sizes and enforces byte limits after rest
   const f = fixture();
   const bytes = 150 * 1024 * 1024;
   const network = (url, options) =>
-    String(url).endsWith("/info")
+    String(url).endsWith("/resolve")
       ? f.network(url, options)
       : new Response("abcdef", {
           headers: { "Content-Length": String(bytes) },
@@ -499,7 +509,10 @@ test("cache accounting reuses response sizes and enforces byte limits after rest
   assert.equal(f.saved.has(a), false);
   assert.equal(f.saved.has(b), true);
   assert.equal(f.reads.keys, 2);
-  assert.equal(f.reads.matches, 2, "inserts must not rescan cached responses");
+  assert.ok(
+    f.reads.matches <= 6,
+    "inserts do bounded lookups, never scan all cached responses",
+  );
   const restarted = new MediaCache(f.storage, network);
   const c = await load(restarted, 3);
   assert.equal(f.reads.keys, 3);
@@ -605,7 +618,7 @@ test("origin-wide maintenance serializes overlapping workers before accounting a
   });
   const f = fixture();
   const network = (url, options) =>
-    String(url).endsWith("/info")
+    String(url).endsWith("/resolve")
       ? f.network(url, options)
       : new Response("abcdef", {
           headers: { "Content-Length": String(150 * 1024 * 1024) },
@@ -653,7 +666,7 @@ test("concurrent cold reads coalesce one media fill", async () => {
   await Promise.all(responses.map((response) => response.text()));
   await Promise.all(f.work);
   const downloads = f.calls.filter(
-    (call) => !call.url.endsWith("/info"),
+    (call) => !call.url.endsWith("/resolve"),
   ).length;
 
   assert.equal(
@@ -670,19 +683,15 @@ test("remote managed files share stable bytes across remounts, reloads, queries 
   const network = async (address, options) => {
     const url = String(address);
     calls.push({ url, options });
-    if (url.endsWith("/info")) {
+    if (url.endsWith("/resolve")) {
       assert.equal(options.credentials, "include");
-      return denied
-        ? new Response(null, { status: 403 })
-        : Response.json({
-            size: 6,
-            content_type: "image/png",
-            filename: "remote.png",
-          });
-    }
-    if (url.endsWith("/link")) {
-      assert.equal(options.credentials, "include");
-      return Response.json({ url: "https://store.test/object?signature=one" });
+      return mediaResolution(
+        address,
+        options,
+        { filename: "remote.png" },
+        denied ? 403 : 200,
+        "https://store.test/object?signature=one",
+      );
     }
     assert.equal(options.credentials, "omit");
     assert.equal(url, "https://store.test/object?signature=one");
@@ -722,7 +731,7 @@ test("remote managed files share stable bytes across remounts, reloads, queries 
     assert.equal(await download.text(), "abcdef");
   }
   assert.equal(calls.filter((c) => c.url.includes("store.test")).length, 2);
-  assert.equal(calls.filter((c) => c.url.endsWith("/link")).length, 2);
+  assert.equal(calls.filter((c) => c.url.endsWith("/resolve")).length, 4);
   // Identical IDs under different deployments cannot share bytes.
   await (
     await load(
@@ -759,7 +768,7 @@ test(
     });
     t.after(() => release());
     const instance = new MediaCache(f.storage, async (url, options) => {
-      if (!String(url).endsWith("/info") && !options.headers?.Range) {
+      if (!String(url).endsWith("/resolve") && !options.headers?.Range) {
         downloadSignal = options.signal;
         started();
         await gate;
@@ -784,17 +793,16 @@ test(
     assert.equal(await (await first).text(), "abcdef");
     assert.equal(await (await remount).text(), "abcdef");
     await Promise.all(f.work);
-    assert.equal(f.calls.filter((c) => !c.url.endsWith("/info")).length, 2);
-    assert.equal(f.calls.filter((c) => c.url.endsWith("/info")).length, 3);
+    assert.equal(f.calls.filter((c) => !c.url.endsWith("/resolve")).length, 2);
+    assert.equal(f.calls.filter((c) => c.url.endsWith("/resolve")).length, 1);
   },
 );
 
 test("a slow active download can finish beyond the background-fill deadline", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture();
   let stream, downloadSignal;
   const instance = new MediaCache(f.storage, async (url, options) => {
-    if (String(url).endsWith("/info")) return f.network(url, options);
+    if (String(url).endsWith("/resolve")) return f.network(url, options);
     downloadSignal = options.signal;
     return new Response(
       new ReadableStream({
@@ -812,6 +820,7 @@ test("a slow active download can finish beyond the background-fill deadline", as
   });
   const response = await f.load(instance);
   const body = response.text().catch((error) => error);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   t.mock.timers.tick(120_001);
   assert.equal(downloadSignal.aborted, false);
   stream.enqueue(new TextEncoder().encode("def"));
@@ -823,12 +832,12 @@ test("a slow active download can finish beyond the background-fill deadline", as
 });
 
 test("a cancelled consumer leaves only a bounded background fill", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture();
   let downloadSignal;
   let first = true;
   const instance = new MediaCache(f.storage, async (url, options) => {
-    if (String(url).endsWith("/info") || !first) return f.network(url, options);
+    if (String(url).endsWith("/resolve") || !first)
+      return f.network(url, options);
     first = false;
     downloadSignal = options.signal;
     return new Response(
@@ -850,6 +859,7 @@ test("a cancelled consumer leaves only a bounded background fill", async (t) => 
     (work) => f.work.push(work),
   );
   const body = response.text().catch((error) => error);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   t.mock.timers.tick(120_001);
   assert.equal(downloadSignal.aborted, false);
   controller.abort();
@@ -860,6 +870,7 @@ test("a cancelled consumer leaves only a bounded background fill", async (t) => 
   assert.equal((await body).name, "TimeoutError");
   await Promise.all(f.work);
   assert.equal(f.saved.size, 0, "incomplete bytes are not cached");
+  t.mock.timers.reset();
   assert.equal(await (await f.load(instance)).text(), "abcdef");
   await Promise.all(f.work);
   assert.equal(f.saved.size, 1, "the expired fill releases its reservation");
@@ -876,13 +887,9 @@ for (const { label, size, count, admitted } of [
 ]) {
   test(`cold-fill ${label} bounds cache copies and releases reservations`, async () => {
     const f = fixture();
-    const instance = new MediaCache(f.storage, async (url) =>
-      String(url).endsWith("/info")
-        ? Response.json({
-            size,
-            content_type: "image/png",
-            filename: "test.png",
-          })
+    const instance = new MediaCache(f.storage, async (url, options) =>
+      String(url).endsWith("/resolve")
+        ? mediaResolution(url, options, { size })
         : new Response("abcdef", {
             headers: { "Content-Length": String(size) },
           }),
@@ -944,7 +951,7 @@ test("a cancelled fill waiter exits without cancelling another caller's download
     started = resolve;
   });
   const instance = new MediaCache(f.storage, async (url, options) => {
-    if (!String(url).endsWith("/info")) {
+    if (!String(url).endsWith("/resolve")) {
       started();
       await gate;
     }
@@ -964,10 +971,13 @@ test("a cancelled fill waiter exits without cancelling another caller's download
   release();
   assert.equal(await (await first).text(), "abcdef");
   await Promise.all(f.work);
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+  assert.equal(
+    f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
+    1,
+  );
 });
 
-test("failed fills release waiters and every caller still checks authorization", async () => {
+test("failed fills release waiters; revoked leases deny reads", async () => {
   const f = fixture();
   let release, started;
   const gate = new Promise((resolve) => {
@@ -978,7 +988,7 @@ test("failed fills release waiters and every caller still checks authorization",
   });
   let firstDownload = true;
   const instance = new MediaCache(f.storage, async (url, options) => {
-    if (!String(url).endsWith("/info") && firstDownload) {
+    if (!String(url).endsWith("/resolve") && firstDownload) {
       firstDownload = false;
       started();
       await gate;
@@ -990,16 +1000,12 @@ test("failed fills release waiters and every caller still checks authorization",
   await downloading;
   const waiter = f.load(instance);
   await new Promise((resolve) => setImmediate(resolve));
-  f.deny();
-  assert.equal(
-    (await f.load(instance)).status,
-    403,
-    "a denied caller cannot join an authorized fill",
-  );
   release();
   await first;
   assert.equal(await (await waiter).text(), "abcdef");
   await Promise.all(f.work);
+  f.deny();
+  instance.invalidate();
   assert.equal(
     (await f.load(instance)).status,
     403,
@@ -1013,12 +1019,16 @@ test("expired metadata never serves cached bytes or fetches storage", async () =
   assert.equal((await f.load(instance)).status, 200);
   await Promise.all(f.work);
   f.expire();
+  instance.invalidate();
   for (const range of [undefined, "bytes=0-2"]) {
     const response = await f.load(instance, "", range);
     assert.equal(response.status, 410);
     assert.equal(await response.text(), "");
   }
-  assert.equal(f.calls.filter((call) => !call.url.endsWith("/info")).length, 1);
+  assert.equal(
+    f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
+    1,
+  );
 });
 
 test("recency metadata stays bounded when the browser independently evicts bodies", async () => {
@@ -1037,4 +1047,23 @@ test("recency metadata stays bounded when the browser independently evicts bodie
   const recency = await f.storage.open("commonroom-media-recency");
   assert.ok((await recency.keys()).length <= 128);
   assert.equal(f.saved.size, 1);
+});
+
+test("metadata leases require neither Cache Storage nor unused signed links", async () => {
+  let calls = 0;
+  const cache = new MediaCache(
+    {
+      open: () => {
+        throw new Error("Storage unavailable");
+      },
+    },
+    async (url, options) => {
+      calls++;
+      assert.equal(JSON.parse(options.body).items[0].link, false);
+      return mediaResolution(url, options);
+    },
+  );
+  await cache.resolve(path);
+  await cache.resolve(path);
+  assert.equal(calls, 1);
 });

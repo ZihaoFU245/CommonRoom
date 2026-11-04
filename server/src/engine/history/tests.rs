@@ -1646,3 +1646,63 @@ fn configured_page_conversation_and_unread_limits_are_enforced_and_recovered() {
     assert_eq!(stats["unread_entry_limit"], 8);
     assert_eq!(history.unread_cache[0].lock().unwrap().entry_limit, 2);
 }
+
+fn author_witness_batch_contract(mut engine: Engine) {
+    for name in ["alice", "bob"] {
+        engine.provision(name, "hash".into(), true, false).unwrap();
+    }
+    for room in ["one", "two"] {
+        engine
+            .execute(None, None, &format!("/room new {room}"))
+            .unwrap();
+    }
+    for room in ["one", "two"] {
+        for user in ["alice", "bob"] {
+            engine
+                .execute(None, None, &format!("/room add {user} #{room}"))
+                .unwrap();
+        }
+    }
+    engine
+        .execute(Some("alice"), Some("one"), "retained author")
+        .unwrap();
+    engine
+        .execute(Some("bob"), Some("two"), "another author")
+        .unwrap();
+    let one = engine.data.rooms["one"].id.clone();
+    let two = engine.data.rooms["two"].id.clone();
+    let requests = vec![
+        (vec![one.clone(), two.clone()], "alice".into()),
+        (vec![one.clone()], "bob".into()),
+        (vec![two.clone()], "bob".into()),
+        (vec![], "alice".into()),
+        (vec![two.clone(), one.clone()], "alice".into()),
+    ];
+    let history = engine.history_store();
+    let before = history.next.load(Ordering::Relaxed);
+    let witnesses = database::block_on_storage(history.author_witnesses_in_async(&requests))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        witnesses,
+        vec![Some(one.clone()), None, Some(two), None, Some(one)]
+    );
+    assert_eq!(history.next.load(Ordering::Relaxed) - before, 1);
+    engine.execute(None, None, "/clean -1 #one").unwrap();
+    let witnesses =
+        database::block_on_storage(engine.history_store().author_witnesses_in_async(&requests))
+            .unwrap()
+            .unwrap();
+    assert_eq!(witnesses[0], None);
+    assert_eq!(witnesses[4], None);
+}
+#[test]
+fn author_witness_batch_preserves_scope_order_and_retention() {
+    author_witness_batch_contract(Engine::open(Path::new(":memory:")).unwrap());
+}
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_author_witness_batch_preserves_scope_order_and_retention() {
+    let fixture = database::tests::PostgresFixture::new();
+    author_witness_batch_contract(Engine::open_postgres(&fixture.url).unwrap());
+}

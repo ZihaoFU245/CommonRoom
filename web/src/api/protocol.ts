@@ -170,7 +170,7 @@ export interface BotActivity {
   draft?: string;
 }
 export type ServerFrame =
-  | { kind: "media" }
+  | { kind: "media"; ids?: string[] }
   | BotActivity
   | AvatarUpdate
   | { kind: "bot_commands"; conversation_id: string }
@@ -444,7 +444,26 @@ export function parseFrame(raw: string): ServerFrame | null {
   }
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
-  if (value.kind === "media") return { kind: "media" };
+  if (value.kind === "media") {
+    if (value.ids === undefined) return { kind: "media" };
+    if (
+      Array.isArray(value.ids) &&
+      value.ids.length > 0 &&
+      value.ids.length <= 1024 &&
+      value.ids.every(
+        (id: unknown) =>
+          typeof id === "string" &&
+          /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(id),
+      )
+    )
+      return {
+        kind: "media",
+        ids: value.ids.filter(
+          (id: unknown): id is string => typeof id === "string",
+        ),
+      };
+    return null;
+  }
   if (
     value.kind === "activity" &&
     typeof value.conversation_id === "string" &&

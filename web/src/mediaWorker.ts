@@ -1,5 +1,5 @@
 import { MediaCache } from "./features/conversation/mediaCache.ts";
-import { mediaRequestUrl } from "./api/mediaFile.ts";
+import { mediaFileUrl, mediaRequestUrl } from "./api/mediaFile.ts";
 // Keep the worker isolated from Window globals and application bootstrap.
 interface Lifetime {
   waitUntil(work: Promise<unknown>): void;
@@ -27,9 +27,59 @@ declare const self: {
   ): void;
 };
 const media = new MediaCache(caches);
-const origin = new URL(self.registration.scope).origin;
 self.addEventListener("message", (event) => {
-  if (event.data !== "commonroom-media:claim") return;
+  const data = event.data;
+  if (data && typeof data === "object" && "kind" in data) {
+    if (data.kind === "commonroom-media:clear") {
+      const ids =
+        "ids" in data &&
+        Array.isArray(data.ids) &&
+        data.ids.every((id: unknown) => typeof id === "string")
+          ? data.ids
+          : undefined;
+      media.invalidate(ids);
+      event.ports[0]?.postMessage({ ok: true });
+      event.ports[0]?.close();
+      return;
+    }
+    if (
+      data.kind === "commonroom-media:resolve" &&
+      "href" in data &&
+      typeof data.href === "string" &&
+      mediaFileUrl(data.href)
+    ) {
+      const port = event.ports[0];
+      event.waitUntil(
+        media
+          .resolve(
+            data.href,
+            "refresh" in data && data.refresh === true,
+            "download" in data && data.download === true,
+            "link" in data && data.link === true,
+          )
+          .then(
+            (value) => port?.postMessage({ value }),
+            (error: unknown) =>
+              port?.postMessage({
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Media resolution failed.",
+                status:
+                  error &&
+                  typeof error === "object" &&
+                  "status" in error &&
+                  typeof error.status === "number"
+                    ? error.status
+                    : 503,
+              }),
+          )
+          .finally(() => port?.close()),
+      );
+      return;
+    }
+  }
+  if (data !== "commonroom-media:claim") return;
   event.waitUntil(
     (async () => {
       await self.clients.claim();
@@ -48,11 +98,6 @@ self.addEventListener("fetch", (event) => {
   const url = mediaRequestUrl(event.request, self.registration.scope);
   if (url)
     event.respondWith(
-      media.respond(
-        event.request,
-        url,
-        (work) => event.waitUntil(work),
-        url.origin !== origin,
-      ),
+      media.respond(event.request, url, (work) => event.waitUntil(work)),
     );
 });

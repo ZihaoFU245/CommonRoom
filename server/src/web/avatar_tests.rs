@@ -184,6 +184,23 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
             .query_pairs()
             .any(|(key, _)| key == "X-Amz-Signature")
     );
+    let resolved = request(
+        &app,
+        "bob",
+        "POST",
+        "/api/media/resolve",
+        json!({"items":[{"kind":"avatars","id":id,"link":true}]}),
+    )
+    .await;
+    assert_eq!(resolved.1["items"][0]["status"], 200, "{}", resolved.1);
+    assert_eq!(resolved.1["items"][0]["lease_seconds"], 900);
+    assert!(
+        resolved.1["items"][0]["link"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("X-Amz-Signature")
+    );
+
     {
         let mut engine = app.engine().unwrap();
         engine
@@ -200,6 +217,19 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
     assert_eq!(
         request(&app, "bob", "GET", &info, json!(null)).await.0,
         StatusCode::OK
+    );
+    let resolved = request(
+        &app,
+        "bob",
+        "POST",
+        "/api/media/resolve",
+        json!({"items":[{"kind":"avatars","id":id}]}),
+    )
+    .await;
+    assert_eq!(
+        resolved.1["items"][0]["status"], 200,
+        "historical author visibility: {}",
+        resolved.1
     );
     app.engine()
         .unwrap()

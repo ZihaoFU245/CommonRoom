@@ -650,16 +650,19 @@ requires the public endpoint to be HTTPS.
 
 ### Lifecycle rules
 
-Chat sweeps expired and unreferenced tracked objects at startup and every 24 hours
-by default, with short retries for failed/incomplete sweeps. Saved
+Chat sweeps expired and unreferenced tracked objects at startup and every 24
+hours by default, with short retries for failed/incomplete sweeps. Saved
 `media.cleanup_interval` overrides remain in effect. Serve `media-cache.js` from
-the UI base path with JavaScript MIME and background revalidation
-(`max-age=0, stale-while-revalidate=7200`, as in the supplied Nginx include);
-the worker scope must cover the UI documents that load media. The UI
-worker caches downloaded immutable attachment and managed-avatar bytes privately
-and checks current `/info` authorization before reuse. Avatar redirects and signed
-storage responses remain `no-store`; do not cache them at a shared proxy. External
-URL avatars load only for viewers who enable them in Security (default off). Keep its `connect-src` policy able to reach storage.
+the UI base path with JavaScript MIME and background revalidation (`max-age=0,
+stale-while-revalidate=7200`, as in the supplied Nginx include); the worker
+scope must cover the UI documents that load media. The UI worker caches
+downloaded immutable attachment and managed-avatar bytes privately and reuses
+bounded read authorization leases before reuse. Configure
+`media.authorization_lease_seconds` (default 900); see [Media
+uploads](media-uploads.md) for renewal and revocation semantics. Avatar
+redirects and signed storage responses remain `no-store`; do not cache them at a
+shared proxy. External URL avatars load only for viewers who enable them in
+Security (default off). Keep its `connect-src` policy able to reach storage.
 
 Chat deletes expired and retracted objects itself with retries. A bucket
 lifecycle rule is a backstop for objects that outlive their metadata because a process
@@ -750,25 +753,25 @@ headers through the reverse proxy. Cross-site sessions also require browser
 permission for third-party cookies. Prefer hosts on the same site when that
 permission is unavailable.
 
-For another API origin, the UI's media worker checks `/info` with credentialed
-CORS before every read. Byte-cache misses resolve `/link` with credentials and
-fetch the short-lived signed storage URL without credentials. Hits reuse private
-cached bytes without signing or downloading again. Storage receives no chat
-credentials. Storage CORS must allow the UI’s origin for GET/HEAD reads
-and PUT uploads, including the documented upload headers. Storage may use `*`
-for these credentialless requests when accepting arbitrary web clients. Native
-downloads navigate through a UI-scoped worker route and share cached bytes without
-buffering files in the UI.
-Local UI assets and the media service worker remain on the UI host. Remote files
-share its bounded private media cache using API-origin/deployment-scoped keys.
-Service workers require a secure UI context (HTTPS or loopback). Managed files
-wait for worker control, including after hard reload; startup or storage failures
-surface errors instead of bypassing the cache. A plain HTTP debug UI without the
-service-worker API uses a bounded tab-local image cache with live authorization on
-each reuse; other media resolves fresh authenticated signed links and loads storage
-directly. Image bytes do not survive page reloads. The server's
-`production=false` mode already allows HTTP API and public storage endpoints;
-production HTTPS and trusted-proxy requirements remain enforced.
+For another API origin, the UI's media worker batches read authorization through
+`/api/media/resolve` with credentialed CORS. Valid read leases reuse cached
+bytes without a network request. Byte-cache misses obtain a short-lived signed
+storage URL in the same resolution and fetch it without credentials. Storage
+receives no chat credentials. Storage CORS must allow the UI’s origin for
+GET/HEAD reads and PUT uploads, including the documented upload headers. Storage
+may use `*` for these credentialless requests when accepting arbitrary web
+clients. Native downloads navigate through a UI-scoped worker route and share
+cached bytes without buffering files in the UI. Local UI assets and the media
+service worker remain on the UI host. Remote files share its bounded private
+media cache using API-origin/deployment-scoped keys. Service workers require a
+secure UI context (HTTPS or loopback). Managed files wait for worker control,
+including after hard reload; startup or storage failures surface errors instead
+of bypassing the cache. A plain HTTP debug UI without the service-worker API
+uses a bounded tab-local image cache with read authorization leases; other media
+resolves fresh authenticated signed links and loads storage directly. Image
+bytes do not survive page reloads. The server's `production=false` mode already
+allows HTTP API and public storage endpoints; production HTTPS and trusted-proxy
+requirements remain enforced.
 
 ## External agent workers
 

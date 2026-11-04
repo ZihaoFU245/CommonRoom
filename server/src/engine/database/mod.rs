@@ -13,7 +13,7 @@ mod library;
 mod media;
 pub(crate) use library::{LibraryAction, LibraryList, LibraryPage, LibraryWrite};
 mod profile;
-pub(crate) use media::{MediaAllocation, MediaWrite};
+pub(crate) use media::{MediaAllocation, MediaRead, MediaWrite};
 pub(crate) use profile::ProfileWrite;
 mod metadata;
 pub(crate) use metadata::{CursorRows, EntityRow, MetadataOp, MetadataSnapshot, MetadataWrite};

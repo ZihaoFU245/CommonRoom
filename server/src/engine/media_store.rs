@@ -18,6 +18,14 @@ impl Engine {
     }
 }
 impl MediaStore {
+    pub(crate) async fn read_batch(
+        &self,
+        ids: &[String],
+        account: &str,
+        scopes: &[String],
+    ) -> Result<Vec<database::MediaRead>, EngineError> {
+        Ok(self.database.media_reads(ids, account, scopes).await?)
+    }
     pub(crate) async fn library_saved(&self, id: &str, account: &str) -> Result<bool, EngineError> {
         Ok(self.database.library_saved(id, account).await?)
     }

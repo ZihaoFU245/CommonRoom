@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import test from "node:test";
 import { requestAbort } from "../src/api/requestAbort.ts";
+import { mediaConfigCache } from "../src/api/mediaConfigCache.ts";
 import { api } from "../src/api/client.ts";
 import { documentSource } from "../src/api/media.ts";
 
@@ -79,6 +80,8 @@ test("fallback completion detaches listeners from a long-lived parent", (t) => {
 
 test("HTTP and preview requests work without AbortSignal.any and clean up on all exits", async (t) => {
   withoutAny(t);
+  mediaConfigCache.clear();
+  t.after(() => mediaConfigCache.clear());
   const originalDocument = globalThis.document;
   globalThis.document = { baseURI: "https://chat.test/" };
   t.after(() => {
@@ -105,6 +108,7 @@ test("HTTP and preview requests work without AbortSignal.any and clean up on all
     "fetch",
     async () => new Response("failure", { status: 503 }),
   );
+  mediaConfigCache.clear();
   await assert.rejects(api.mediaConfig(parent.signal), /503/);
   await assert.rejects(
     documentSource(
@@ -130,6 +134,8 @@ test("HTTP and preview requests work without AbortSignal.any and clean up on all
 
 test("request deadlines remain active through JSON and preview body reads", async (t) => {
   withoutAny(t);
+  mediaConfigCache.clear();
+  t.after(() => mediaConfigCache.clear());
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const originalDocument = globalThis.document;
   globalThis.document = { baseURI: "https://chat.test/" };

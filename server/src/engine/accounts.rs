@@ -365,6 +365,13 @@ impl Engine {
             .filter(|s| s.expires > now() && self.active(&s.username))
             .map(|s| s.username.clone())
     }
+    pub(crate) fn session_expires(&self, token: &str) -> Option<u64> {
+        self.data
+            .sessions
+            .get(&session_digest(token))
+            .filter(|s| s.expires > now() && self.active(&s.username))
+            .map(|session| session.expires)
+    }
     #[cfg(test)]
     pub fn login(
         &mut self,

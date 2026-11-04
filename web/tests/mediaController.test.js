@@ -1,3 +1,4 @@
+import { mediaResolution } from "./helpers/mediaResolve.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -92,4 +93,42 @@ test("stalled startup has a bounded deadline, releases listeners and can retry o
   await media.ensureMediaCache();
   assert.equal(registrations, 3);
   assert.equal(media.mediaCacheReady(), true);
+});
+
+test("metadata resolves directly when secure worker startup is unavailable", async (t) => {
+  const media = await controller(t, {});
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls++;
+    assert.equal(JSON.parse(options.body).items[0].link, false);
+    return mediaResolution(url, options);
+  });
+  const value = await media.resolveMediaRead(
+    "https://api.test/chat/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+  );
+  assert.equal(value.info.size, 6);
+  assert.equal(calls, 1);
+});
+
+test("invalidation waits for control and clears the worker before resolving", async (t) => {
+  const serviceWorker = new EventTarget();
+  const messages = [];
+  const worker = {
+    postMessage(message, [port]) {
+      if (message === "commonroom-media:claim") {
+        serviceWorker.controller = worker;
+        port.postMessage("commonroom-media:ready");
+      } else {
+        messages.push(message.kind);
+        if (message.kind === "commonroom-media:clear")
+          port.postMessage({ ok: true });
+      }
+      port.close();
+    },
+  };
+  serviceWorker.register = async () => ({ active: worker });
+  const media = await controller(t, { serviceWorker });
+  media.startMediaCache(new URL("https://ui.test/chat/media-cache.js"));
+  await media.invalidateMediaReads();
+  assert.deepEqual(messages, ["commonroom-media:clear"]);
 });

@@ -134,7 +134,8 @@ pub(crate) async fn change(
             let global = matches!(input.action, LibraryAction::Delete)
                 || matches!(input.action, LibraryAction::Release) && input.confirm_last;
             let target = (!global).then(|| identity.account.clone());
-            let _ = app.changes.send(super::Change::Media(target));
+            let asset = (!global).then(|| id.clone());
+            let _ = app.changes.send(super::Change::Media(target, asset));
         }
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
             media::verify_identity(&identity, engine)?;

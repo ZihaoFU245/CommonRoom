@@ -281,6 +281,7 @@ mod byte_size {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
+    pub authorization_lease_seconds: u64,
     #[serde(with = "byte_size")]
     pub max_size: u64,
     pub max_age: i64,
@@ -301,6 +302,7 @@ pub struct MediaConfig {
 impl Default for MediaConfig {
     fn default() -> Self {
         Self {
+            authorization_lease_seconds: 900,
             max_size: 25 * 1024 * 1024,
             max_age: 7 * 86400,
             pending_ttl: 86400,
@@ -319,6 +321,10 @@ impl Default for MediaConfig {
 }
 impl MediaConfig {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if !(1..=86400).contains(&self.authorization_lease_seconds) {
+            let message = "media.authorization_lease_seconds must be 1..86400.";
+            return Err(message.into());
+        }
         if !(1..=10000).contains(&self.library_limit)
             || !(1..=10000).contains(&self.library_owned_limit)
             || !(1..=100).contains(&self.library_recent_limit)
@@ -1143,6 +1149,8 @@ mod media_config_tests {
     fn invalid_media_policy_does_not_rewrite_configuration() {
         let dir = tempfile::tempdir().unwrap();
         for media in [
+            serde_json::json!({"authorization_lease_seconds":0}),
+            serde_json::json!({"authorization_lease_seconds":86401}),
             serde_json::json!({"max_age":0}),
             serde_json::json!({"max_age":-2}),
             serde_json::json!({"max_size":0}),
@@ -1164,6 +1172,14 @@ mod media_config_tests {
             assert!(Config::load(dir.path()).is_err());
             assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
         }
+        assert_eq!(MediaConfig::default().authorization_lease_seconds, 900);
+        let custom: Config = serde_json::from_value(
+            serde_json::json!({"media":{"authorization_lease_seconds":600}}),
+        )
+        .unwrap();
+        custom.media.validate().unwrap();
+        let value = serde_json::to_value(&custom).unwrap();
+        assert_eq!(value["media"]["authorization_lease_seconds"], 600);
         let valid:Config=serde_json::from_value(serde_json::json!({"media":{"max_age":-1},"s3":{"endpoint":"https://account.r2.cloudflarestorage.com","bucket":"private","region":"auto","path_style":true}})).unwrap();
         valid.media.validate().unwrap();
         let restored: Config = serde_json::from_str(&valid.display().unwrap()).unwrap();

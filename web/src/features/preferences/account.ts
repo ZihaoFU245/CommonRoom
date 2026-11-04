@@ -152,7 +152,8 @@ function localValues(): Record<string, string> {
 export async function connectPreferences(
   id: string,
   transport: Transport,
-): Promise<void> {
+  initial?: PreferenceState,
+): Promise<PreferenceState> {
   disconnectPreferences();
   const attempt = generation;
   const local = localValues();
@@ -163,7 +164,11 @@ export async function connectPreferences(
         local[key] = value;
     }
   }
-  const state = await transport(local, true);
+  const state =
+    initial &&
+    Object.keys(local).every((key) => Object.hasOwn(initial.values, key))
+      ? initial
+      : await transport(local, true);
   if (attempt !== generation)
     throw new Error("Settings session changed. Please sign in again.");
   active = {
@@ -177,6 +182,7 @@ export async function connectPreferences(
   };
   cache();
   notify();
+  return state;
 }
 export function disconnectPreferences(): void {
   generation++;

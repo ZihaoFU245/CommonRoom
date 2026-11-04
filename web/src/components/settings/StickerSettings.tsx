@@ -4,7 +4,7 @@ import { PickerIcon } from "../PickerIcon.tsx";
 
 export function StickerSettings({ account = "" }: { account?: string }) {
   const { page, error, refresh } = useLibraryPage("library", {
-    cacheScope: `quota:${account}`,
+    cacheScope: account,
     retainWhileRefreshing: true,
   });
   return (

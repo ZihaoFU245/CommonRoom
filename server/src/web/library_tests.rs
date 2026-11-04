@@ -54,7 +54,34 @@ async fn action(app: &App, user: &str, id: &str, action: &str, confirm: bool) ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_messages() {
-    let mut app = setup(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    library_read_contract(setup(
+        Engine::open(std::path::Path::new(":memory:")).unwrap(),
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run with --test-threads=1"]
+async fn postgres_library_read_leases_preserve_visibility_and_retirement() {
+    let fixture = crate::engine::database::tests::PostgresFixture::new();
+    let engine = Engine::open_postgres(&fixture.url).unwrap();
+    library_read_contract(setup(engine)).await;
+}
+
+async fn resolve(app: &App, user: &str, id: &str) -> serde_json::Value {
+    let (status, body) = request(
+        app,
+        user,
+        "POST",
+        "/api/media/resolve",
+        json!({"items":[{"kind":"media","id":id,"link":true}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["items"][0].clone()
+}
+
+async fn library_read_contract(mut app: App) {
     let (storage, server) = storage_server().await;
     app.media = Some(storage);
     let id = upload(&app, "alice").await;
@@ -92,6 +119,12 @@ async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_mes
     )
     .await;
     assert_eq!(before_save["saved"], false);
+    let read = resolve(&app, "bob", &id).await;
+    assert_eq!(read["status"], 200);
+    assert_eq!(read["info"]["library"], true);
+    assert_eq!(read["info"]["saved"], false);
+    assert_eq!(resolve(&app, "carol", &id).await["status"], 404);
+
     let (_, owner_info) = request(
         &app,
         "alice",
@@ -155,6 +188,12 @@ async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_mes
         .unwrap()
         .execute(Some("bob"), Some("destination"), &text)
         .unwrap();
+    let read = resolve(&app, "bob", &id).await;
+    assert_eq!(read["status"], 200);
+    assert_eq!(
+        read["info"]["saved"], true,
+        "independent saved visibility survives source removal"
+    );
     let (_, owned) = request(&app, "bob", "GET", "/api/library?owned=true", json!(null)).await;
     assert_eq!(owned["items"].as_array().unwrap().len(), 1);
     assert_eq!(owned["usage"], 8);
@@ -188,6 +227,14 @@ async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_mes
         action(&app, "bob", &id, "release", true).await,
         StatusCode::OK
     );
+    let read = resolve(&app, "bob", &id).await;
+    assert_eq!(read["status"], 200);
+    assert_eq!(read["info"]["unavailable"], true);
+    assert!(
+        read.get("link").is_none(),
+        "retired media never gets a signed link"
+    );
+
     assert_eq!(
         request(
             &app,
@@ -333,7 +380,8 @@ async fn library_http_orders_final_release_and_acquisition_and_refunds_admin_rem
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn library_invalidations_preserve_private_audiences_and_omit_asset_identity() {
+async fn library_invalidations_scope_asset_ids_to_private_audiences() {
+    use super::super::Change;
     let app = setup(Engine::open(std::path::Path::new(":memory:")).unwrap());
     let bob = app
         .engine_read()
@@ -341,6 +389,7 @@ async fn library_invalidations_preserve_private_audiences_and_omit_asset_identit
         .active_account_id("bob")
         .unwrap()
         .to_owned();
+    let asset = uuid::Uuid::new_v4().to_string();
     for (user, expected) in [("alice", 0), ("bob", 1)] {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -352,17 +401,33 @@ async fn library_invalidations_preserve_private_audiences_and_omit_asset_identit
             &app,
             &headers,
             false,
-            &[super::super::Change::Media(Some(bob.clone()))],
+            &[super::super::Change::Media(Some(bob.clone()), None)],
             &mut interests,
         )
         .await
         .unwrap();
         assert_eq!(frames.len(), expected);
+        let targeted = Change::Media(Some(bob.clone()), Some(asset.clone()));
         let (_, frames) = super::super::updates::browser_with_interests_async(
             &app,
             &headers,
             false,
-            &[super::super::Change::Media(None)],
+            &[targeted],
+            &mut interests,
+        )
+        .await
+        .unwrap();
+        assert_eq!(frames.len(), expected);
+        if expected == 1 {
+            let text = frames[0].as_str();
+            let frame: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(frame, json!({"kind":"media","ids":[asset]}));
+        }
+        let (_, frames) = super::super::updates::browser_with_interests_async(
+            &app,
+            &headers,
+            false,
+            &[super::super::Change::Media(None, Some(asset.clone()))],
             &mut interests,
         )
         .await

@@ -170,6 +170,12 @@ impl super::Connection {
         }
         Ok(batch)
     }
+    pub(super) async fn read_author_witnesses(
+        &mut self,
+        requests: &[(Vec<String>, String)],
+    ) -> Result<Vec<Option<String>>> {
+        read_call!(self, author_witnesses, requests)
+    }
     pub(super) async fn read_author(&mut self, ids: &[String], author: &str) -> Result<bool> {
         read_call!(self, has_author, ids, author)
     }
@@ -199,6 +205,13 @@ impl super::Database {
     ) -> Result<UnreadBatch> {
         let mut reader = self.acquire_reader().await?;
         self.observe_history(reader.read_unreads(user, requests).await)
+    }
+    pub(crate) async fn history_author_witnesses(
+        &self,
+        requests: &[(Vec<String>, String)],
+    ) -> Result<Vec<Option<String>>> {
+        let mut reader = self.acquire_reader().await?;
+        self.observe_history(reader.read_author_witnesses(requests).await)
     }
     pub(crate) async fn history_has_author(&self, ids: &[String], author: &str) -> Result<bool> {
         let mut reader = self.acquire_reader().await?;

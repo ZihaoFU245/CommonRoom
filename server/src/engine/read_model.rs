@@ -230,6 +230,17 @@ pub(crate) struct DeliveryStamp {
     presence: Option<u64>,
     history: Vec<(String, u64)>,
 }
+impl DeliveryStamp {
+    /// A retained author in one readable conversation suffices for avatar visibility.
+    pub(crate) fn restrict_history(&mut self, ids: &BTreeSet<String>) {
+        self.history.retain(|(id, _)| ids.contains(id));
+    }
+
+    /// Media visibility tracks metadata and history, excluding read cursors.
+    pub(crate) fn same_media_authority(&self, other: &Self) -> bool {
+        self.metadata == other.metadata && self.history == other.history
+    }
+}
 impl Engine {
     pub(crate) fn metadata_clock(&self) -> MetadataClock {
         self.read_model.clock.clone()

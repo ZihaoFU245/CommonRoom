@@ -53,6 +53,49 @@ export async function libraryRegressions({
     click("Stickers");
     await until(() => tests.querySelector('[aria-label="Collections"]'));
   }
+  await test("media library picker and quota share GETs", async () => {
+    const calls = [],
+      pending = [];
+    api.mediaConfig = async () => ({ enabled: true, max_size: 10000 });
+    api.library = (view, after, signal) => {
+      calls.push({ view, after, signal });
+      return new Promise((resolve) => pending.push(() => resolve(page([]))));
+    };
+    render(
+      h(
+        "div",
+        null,
+        h(LibraryPicker, {
+          account: "shared-library-page",
+          canSelect: true,
+          select() {},
+          close() {},
+        }),
+        h(StickerSettings, { account: "shared-library-page" }),
+      ),
+      tests,
+    );
+    click("Stickers");
+    await until(() => pending.length === 2);
+    check(
+      calls.filter((call) => call.view === "library").length === 1,
+      "the collection and quota share one initial library GET",
+    );
+    check(
+      calls.filter((call) => call.view === "recent").length === 1,
+      "Recent keeps its distinct query",
+    );
+    for (const resolve of pending.splice(0)) resolve();
+    await until(() => tests.querySelector(".library-quota"));
+    window.dispatchEvent(new Event("commonroom-library-change"));
+    await until(() => pending.length === 2);
+    check(
+      calls.filter((call) => call.view === "library").length === 2,
+      "invalidation starts one fresh library GET for both consumers",
+    );
+    for (const resolve of pending.splice(0)) resolve();
+    await sleep(30);
+  });
   await test("media library has minimal sticker sections with independent pagination and Account quota", async () => {
     const later = {
       ...sticker,
@@ -204,15 +247,20 @@ export async function libraryRegressions({
     edit.click();
     await until(() => !actions.inert);
     remove.focus();
-    await sleep(160);
-    check(
-      document.activeElement === remove &&
+    await until(
+      () =>
+        document.activeElement === remove &&
         getComputedStyle(actions).opacity === "1",
-      "editing exposes manipulation controls on keyboard focus",
+      () =>
+        JSON.stringify({
+          focus: document.activeElement?.outerHTML,
+          opacity: getComputedStyle(actions).opacity,
+          inert: actions.inert,
+        }),
     );
     edit.click();
     await until(() => actions.inert);
-    await sleep(160);
+    await until(() => getComputedStyle(actions).opacity === "0");
     check(
       getComputedStyle(actions).opacity === "0" && edit.textContent === "Edit",
       "Done restores clean sticker browsing",
@@ -796,20 +844,46 @@ export async function libraryRegressions({
       tests.querySelector(".library-content:not([inert]) .emoji-grid"),
     );
     click("Stickers");
-    await until(() => waiting.length === 2);
+    await until(
+      () =>
+        tests.querySelector(
+          '.library-content:not([inert]) [aria-label="Use wave.gif"]',
+        ) &&
+        !tests
+          .querySelector(".library-content:not([inert])")
+          .textContent.includes("Loading"),
+    );
+    await sleep(80);
+    check(
+      waiting.length === 0 && calls.length === 2,
+      "fresh tab switches issue no GETs",
+    );
     check(
       tests.querySelector('[aria-label="Use wave.gif"]') &&
         !tests
           .querySelector(".library-content:not([inert])")
           .textContent.includes("Loading"),
-      "switching tabs displays cached stickers during revalidation",
+      "switching tabs displays fresh cached stickers",
     );
     flush();
     await sleep(20);
     render(null, tests);
     mount("cache-test-a");
     click("Stickers");
-    await until(() => waiting.length === 2);
+    await until(
+      () =>
+        tests.querySelector(
+          '.library-content:not([inert]) [aria-label="Use wave.gif"]',
+        ) &&
+        !tests
+          .querySelector(".library-content:not([inert])")
+          .textContent.includes("Loading"),
+    );
+    await sleep(80);
+    check(
+      waiting.length === 0 && calls.length === 2,
+      "fresh picker reopening issues no GETs",
+    );
     check(
       tests.querySelector('[aria-label="Use wave.gif"]'),
       "reopening reuses the account's cached pages",
@@ -848,7 +922,10 @@ export async function libraryRegressions({
     );
     flush();
     await until(() => tests.querySelector('[aria-label="Use wave.gif"]'));
-    check(calls.length === 10, "each cache hit revalidates both sections");
+    check(
+      calls.length === 6,
+      "only cold mounts and invalidation fetch both sections",
+    );
   });
   await test("media library remembers the tab and keeps retired stickers removable", async () => {
     const account = "mode-test";
@@ -949,9 +1026,8 @@ export async function libraryRegressions({
       tests.querySelector(".library-quota").title.includes("1,500 /"),
       "reopening instantly displays the last cached usage",
     );
-    await until(() => finish);
-    finish({ ...page([]), usage: 1500 });
-    await sleep(20);
+    await sleep(100);
+    check(finish === undefined, "fresh quota reopening skips the network");
     render(null, tests);
     render(h(StickerSettings, { account: "quota-b" }), tests);
     check(

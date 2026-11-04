@@ -396,3 +396,7 @@ test("snapshot validation bounds rooms, aggregate messages, nesting and strings"
   for (let i = 0; i < 20; i++) nested = { nested };
   assert.equal(isSnapshot({ ...snapshot, extra: nested }), false);
 });
+
+test("empty targeted media invalidations are rejected", () => {
+  assert.equal(parseFrame(JSON.stringify({ kind: "media", ids: [] })), null);
+});

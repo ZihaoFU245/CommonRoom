@@ -1,7 +1,8 @@
-/** Persistent immutable bytes. Every reuse first checks live server authorization. */
+/** Immutable bytes served under bounded, read-only authorization leases. */
 import { rangeStream } from "./rangeStream.ts";
 import { requestAbort } from "../../api/requestAbort.ts";
-import { isFileLink } from "../../api/mediaFile.ts";
+import { MediaAccess, MediaAccessError } from "./mediaAccess.ts";
+import type { Resolution } from "./mediaAccess.ts";
 const cacheName = "commonroom-media";
 const recencyCacheName = "commonroom-media-recency";
 const byteLimit = 256 * 1024 * 1024;
@@ -40,12 +41,7 @@ interface Fill {
   size: number;
   release: () => void;
 }
-interface Metadata {
-  size: number;
-  content_type: string;
-  filename: string;
-  expired?: boolean;
-}
+type Metadata = Resolution["info"];
 // Active consumers may need longer than two minutes on slow connections. Start
 // the background-fill budget only when the original request is cancelled.
 function fillCancellation(parent: AbortSignal) {
@@ -67,11 +63,11 @@ function fillCancellation(parent: AbortSignal) {
     },
   };
 }
-async function waitForFill(work: Promise<void>, signal: AbortSignal) {
+async function waitForFill<T>(work: Promise<T>, signal: AbortSignal) {
   signal.throwIfAborted();
   let abort = () => {};
   try {
-    await Promise.race([
+    return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
         abort = () => {
@@ -88,21 +84,6 @@ async function waitForFill(work: Promise<void>, signal: AbortSignal) {
   } finally {
     signal.removeEventListener("abort", abort);
   }
-}
-function metadata(value: unknown): value is Metadata {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "size" in value &&
-    typeof value.size === "number" &&
-    Number.isSafeInteger(value.size) &&
-    value.size > 0 &&
-    "content_type" in value &&
-    typeof value.content_type === "string" &&
-    "filename" in value &&
-    typeof value.filename === "string" &&
-    (!("expired" in value) || typeof value.expired === "boolean")
-  );
 }
 // Cached bytes are disposable. Reject incompatible records without decoding or
 // buffering their bodies; current authorization supplies presentation headers.
@@ -196,12 +177,14 @@ export class MediaCache {
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
   private readonly storage: MediaCacheStorage;
   private readonly network: typeof fetch;
+  private readonly access: MediaAccess;
   constructor(
     storage: MediaCacheStorage,
     network: typeof fetch = (...args) => fetch(...args),
   ) {
     this.storage = storage;
     this.network = network;
+    this.access = new MediaAccess(network);
   }
   private reserve(key: string, size: number): Fill | undefined {
     if (
@@ -227,12 +210,17 @@ export class MediaCache {
     this.fillingBytes += size;
     return fill;
   }
-  private async read(cache: MediaCacheStore, key: string, info: Metadata) {
+  private async read(
+    cache: MediaCacheStore,
+    key: string,
+    info: Metadata,
+    initial?: { saved: Response | undefined },
+  ) {
     const decode = (response: Response) =>
       response.headers.get("Content-Type") === info.content_type
         ? cachedFile(response)
         : undefined;
-    let saved = await cache.match(key);
+    let saved = initial ? initial.saved : await cache.match(key);
     let file = saved && decode(saved);
     if (!saved || file) return file;
     saved.body?.cancel().catch(() => {});
@@ -396,30 +384,36 @@ export class MediaCache {
       await recency?.delete(key).catch(ignoreStorageFailure);
     }
   }
+  invalidate(ids?: readonly string[]): void {
+    this.access.clear(ids);
+  }
+  async resolve(
+    href: string,
+    refresh = false,
+    download = false,
+    forceLink = false,
+  ): Promise<Resolution> {
+    return this.access.load(href, forceLink, refresh, download);
+  }
   private async download(
     url: URL,
-    remote: boolean,
     range: string | null,
     signal: AbortSignal,
+    resolution: Resolution,
   ): Promise<Response> {
-    let source = url.href;
-    if (remote) {
-      const link = new URL(url.pathname.replace(/\/file$/u, "/link"), url);
-      if (url.searchParams.get("download") === "true")
-        link.searchParams.set("download", "true");
-      const response = await this.network(link, {
-        credentials: "include",
-        cache: "no-store",
+    if (!resolution.url || resolution.linkExpiresAt <= Date.now())
+      resolution = await waitForFill(
+        this.resolve(
+          url.href,
+          false,
+          url.searchParams.get("download") === "true",
+          true,
+        ),
         signal,
-      });
-      if (!response.ok) return new Response(null, { status: response.status });
-      const value: unknown = await response.json();
-      if (!isFileLink(value, url.href))
-        throw new TypeError("Invalid attachment download URL.");
-      source = value.url;
-    }
-    return this.network(source, {
-      credentials: remote ? "omit" : "same-origin",
+      );
+    if (!resolution.url) return new Response(null, { status: 410 });
+    return this.network(resolution.url, {
+      credentials: "omit",
       cache: "no-store",
       mode: "cors",
       headers: range ? { Range: range } : {},
@@ -430,33 +424,48 @@ export class MediaCache {
     request: Request,
     url: URL,
     keepAlive: (work: Promise<void>) => void,
-    remote = false,
+    retry = true,
   ): Promise<Response> {
-    // No offline fallback: logout, expiry, retraction and revoked access apply
-    // equally to cached copies. The small info response never touches S3.
-    const auth = await this.network(
-      new URL(url.pathname.replace(/\/file$/u, "/info"), url),
-      {
-        credentials: "include",
-        cache: "no-store",
-        signal: request.signal,
-      },
-    );
-    if (!auth.ok) return new Response(null, { status: auth.status });
-    const info: unknown = await auth.json();
-    if (!metadata(info))
-      throw new TypeError("Invalid attachment metadata response.");
-    if (info.expired === true) return new Response(null, { status: 410 });
-    const output = headers(info, url.searchParams.get("download") === "true");
-    const range = request.headers.get("Range");
     const key = new URL(url.pathname, url);
     const cache = await this.storage.open(cacheName);
+    const cached = await cache.match(key.href);
+    let resolution: Resolution;
+    try {
+      resolution = await waitForFill(
+        this.resolve(
+          url.href,
+          false,
+          url.searchParams.get("download") === "true",
+          !cached || cachedFile(cached) === undefined,
+        ),
+        request.signal,
+      );
+    } catch (error) {
+      cached?.body?.cancel().catch(() => {});
+      if (
+        retry &&
+        !request.signal.aborted &&
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      )
+        return this.respond(request, url, keepAlive, false);
+      if (error instanceof MediaAccessError)
+        return new Response(null, { status: error.status });
+      throw error;
+    }
+    const info = resolution.info;
+    if (info.expired || info.unavailable) {
+      cached?.body?.cancel().catch(() => {});
+      return new Response(null, { status: 410 });
+    }
+    const output = headers(info, url.searchParams.get("download") === "true");
+    const range = request.headers.get("Range");
     let reservation: Fill | undefined;
     let cancellation: ReturnType<typeof requestAbort> | undefined;
-    let saved = await this.read(cache, key.href, info);
+    let saved = await this.read(cache, key.href, info, { saved: cached });
     if (!saved && !range) {
       // Reserve before the network await so simultaneous misses share the fill.
-      // Every waiter has already performed its own live authorization check.
+      // Waiters share one read authorization lease.
       const filling = this.fills.get(key.href);
       if (filling) {
         await waitForFill(filling.done, request.signal);
@@ -480,7 +489,7 @@ export class MediaCache {
       // cancellation. Remounts wait for its persistent bytes instead of restarting.
       if (reservation) cancellation = fillCancellation(request.signal);
       const signal = cancellation?.signal ?? request.signal;
-      const response = await this.download(url, remote, range, signal);
+      const response = await this.download(url, range, signal, resolution);
       if (!response.ok || (response.status !== 200 && response.status !== 206))
         return response;
       let contentRange = response.headers.get("Content-Range");

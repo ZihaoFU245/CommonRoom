@@ -49,26 +49,27 @@ dependency is involved. Unknown signatures remain application/octet-stream.
 This is signature classification, not a full decode or malware scan.
 
 Audio/video and HTML/SVG use ordinary Markdown links with a display-hint title
-(e.g. `"media:video"`). Only exact same-origin, base-path-correct media links can
-activate attachment controls. Hints never authorize access or determine the
-trusted MIME. Document preview requests `/api/media/UUID/info`, which checks
-publication, expiry and current conversation read permission without S3 I/O.
-Audio/video use the authenticated file endpoint on same-origin deployments; its
-verified MIME and current authorization checks apply before redirecting to storage.
-With a remote API, the UI's service worker resolves `/link` on a cache miss and
-fetches storage without credentials, avoiding a credentialed redirect chain.
+(e.g. `"media:video"`). Only exact same-origin, base-path-correct media links
+can activate attachment controls. Hints never authorize access or determine the
+trusted MIME. Document preview resolves trusted metadata through the shared read
+resolver, which checks publication, expiry and current conversation read
+permission without S3 I/O. Audio/video use canonical file URLs through the same
+worker and validated read leases on same-origin and remote deployments. With a
+remote API, the UI's service worker obtains a signed link from the resolver on a
+cache miss and fetches storage without credentials, avoiding a credentialed
+redirect chain.
 
 Native audio/video controls appear immediately with no extra Play button, no
-autoplay attribute and `preload="none"`. The browser defers file loading until
-its Play control is used. Same-origin playback needs no preliminary metadata
-request. A worker-controlled remote player also needs no preliminary signed-link
-request. Managed controls wait for media-cache initialization before assigning
-a file URL, including after hard reload. Preload is a browser hint rather than
-an access restriction. The app refreshes a failed S3
-redirect through the authenticated file endpoint, preserving playback position;
-repeated failures before successful playback stop with Retry/download controls.
-Seeking uses S3 range requests. `?download=true` requests attachment disposition
-for the original file instead of inline playback.
+autoplay attribute and `preload="none"`. The browser defers byte loading until
+its Play control is used. Mounted controls share metadata/read-lease resolution;
+valid leases and cached bytes avoid a network check when playback starts.
+Managed controls wait for media-cache initialization before assigning a file
+URL, including after hard reload. Preload is a browser hint rather than an
+access restriction. The app refreshes a failed S3 load through the authorized
+media cache, preserving playback position; repeated failures before successful
+playback stop with Retry/download controls. Seeking uses S3 range requests.
+`?download=true` requests attachment disposition for the original file instead
+of inline playback.
 
 HTML and SVG remain attachment downloads and are never navigated as inline
 application documents. Each file shows its name beside Show text/Render HTML;
@@ -112,64 +113,82 @@ it; cross-conversation and foreign unpublished references are rejected. Edits,
 retraction and message retention reconcile references transactionally. Preserving
 an already-expired reference while editing surrounding text is allowed.
 
-Downloads require current read access, an unexpired verified object and a retained
-message reference. Chat redirects to a signed GET valid for at most 60 seconds,
-capped by remaining media life. Redirects/storage responses use `no-store`. A scoped `media-cache.js` service worker
-persists immutable bytes under the stable application media URL. Every reuse first
-checks `/info` with the current session (no S3 I/O), including every seek/range
-request. Authorized readers can retrieve expired metadata with
-`/info?include_expired=true`; normal `/info` and file reads continue to reject
-expiry, and the worker never serves expired cached bytes. The UI replaces expired images,
-players, previews and file links with a themed “Attachment expired” card showing
-the original filename. Up to 128 presentation metadata records and pending checks
-are shared across virtual remounts, avoiding repeated status requests and loading
-placeholders. Expiry is rechecked while mounted and on tab resume. Login, logout,
-unauthorized API responses and server selection clear this metadata. These records
-do not authorize byte reads.
-Expiry, retraction and lost access still stop new byte reads immediately. This
-intentionally pays one authorization/database request per range; there is no auth TTL. Reloads, preview/download switches and playback retry URLs
-reuse those bytes. Full cached objects serve byte ranges locally. Only complete
-200 responses are cached; partial playback responses stream without occupying cache
-entries. Cache hits refresh eviction recency. The cache holds at most 128 entries/256 MiB;
-larger responses stream normally, and browser eviction can require another
-download. Unavailable Cache Storage fails the read instead of silently switching
-to uncached downloads. The exception is a plain HTTP UI without service-worker
-support (LAN/Tailscale debugging): images, avatars and sticker thumbnails use the
-same cache engine with bounded in-memory Blob storage. Warm remounts check live
-`/info` and reuse bytes without another signature or storage GET. Image fills
-survive virtual unmounts; consumer object URLs are revoked on cleanup. This cache
-is lost on page reload. Other file controls resolve authenticated `/link` responses
-and use direct storage URLs. Downloads use signed attachment disposition; text
-previews fetch storage without credentials. This HTTP path has no persistent byte
-cache and no offline authorization fallback.
-Cache Storage retains local downloaded copies across
-sessions, for same-origin and cross-origin APIs; keys include the API origin and
-deployment path. At most four whole-file fills, reserving up to 256 MiB, can
-continue through row unmounts with a two-minute deadline starting at cancellation,
-so a fast remount can reuse the completed fill. Active downloads may take longer
-than two minutes. Range requests stream independently of pending full-file fills,
-so playback does not wait for an entire download. The cache contains no credentials and never supplies an offline authorization
-fallback. Clear site data to erase these local copies.
-The byte and recency caches use stable names across releases. Incompatible stored
-responses are discarded and fetched again; caches have no version migrations.
-A downloaded copy cannot be revoked; an issued URL can remain usable until expiry.
+Downloads require read access, an unexpired verified object and a retained
+message reference. Browser reads use `POST /api/media/resolve` to obtain
+metadata, read authorization and, on a byte-cache miss, a signed GET URL
+together. The page and its scoped `media-cache.js` worker share the result; they
+do not perform independent `/info` checks. The resolver accepts at most 32
+items, shares one admission job, and reads metadata, references and library
+visibility in a single statement on either database backend. Only batches with signed links need a second metadata statement. Final authority
+checks revalidate delivery; avatar history uses one batched query and watches only
+the readable conversation proving each owner’s retained author presence. Authority
+conflicts retry once at the resolver client. Missing and
+unauthorized items return individual hidden errors; one denial does not fail
+unrelated results.
 
-Remote web clients resolve `GET /api/media/UUID/link` (optional
-`?download=true`) or `GET /api/avatars/UUID/link` with a session cookie and allowed
-Origin. These endpoints reuse the file routes’ signing and authorization checks,
-return `{url}`, and use `no-store`. Images, avatars, players and HTML/SVG source
-previews use canonical API file URLs through the shared private byte cache.
-Downloads navigate to a UI-scoped `media-download?file=...` route intercepted by
-the same worker, preserving native streaming and attachment disposition. Only
-top-level document navigations use that route; embedded requests cannot relay
-external content. The worker
-checks live `/info` on each read; a miss additionally resolves `/link` and fetches
-storage without credentials. Warm reads skip both the link request and storage
-download. Signed URLs are not persisted. A shared startup handshake asks the
-active worker to claim the page after hard reload. Managed file controls wait
-for acknowledgment and show a retryable error if initialization fails within
-15 seconds. A secure UI context (HTTPS or loopback) is required. Show text
-remains available when Allow HTML rendering is disabled.
+Read authorization leases default to 900 seconds (15 minutes), configurable with
+`media.authorization_lease_seconds` (1..86400, restart required). Their
+deadlines are capped by session and unexpired media lifetimes. Leases exist only
+in memory; they are never upload credentials or a substitute for server
+authorization of allocation, completion, quota checks or any other mutation.
+Signed storage URLs remain separately limited to at most 60 seconds and
+remaining media life. API, redirect and storage responses remain `no-store`.
+
+A valid lease plus cached bytes serves an image, preview, download or byte range
+without a server request. Mounted media renew through one page heartbeat near 80% of the
+lease lifetime, aligned to shared minute slots for long leases; concurrent
+reads/renewals deduplicate and collect for 5 ms into batches. Hidden or unmounted media stop renewing. Expired leases
+block new reads until successful resolution; failed renewals never extend them.
+Logout, login, unauthorized responses, server selection and socket disconnect
+invalidate read authority. Authority-changing snapshots invalidate it too;
+unrelated snapshots do not refresh every attachment. Library notifications carry
+affected IDs when known. These notifications shorten revocation latency, but
+revocation or retraction can leave an existing lease usable until its deadline
+if an invalidation is absent or missed. Already downloaded copies cannot be
+revoked.
+
+Authorized readers can retrieve expired presentation metadata from the resolver
+or `/info?include_expired=true`; normal `/info` and file routes reject expiry.
+The cache never serves bytes beyond media expiry. The UI replaces expired
+images, players, previews and file links with an “Attachment expired” card and
+filename. Up to 128 presentation records and pending checks survive virtual
+remounts; they do not independently authorize byte reads. The read-lease cache
+holds at most 256 entries and pending items, keyed by API deployment and object
+kind/ID, and starts empty when the worker restarts.
+
+The worker persists immutable bytes under stable application media URLs. Full
+cached objects serve byte ranges locally; partial playback responses stream
+without filling the cache. At most 128 entries/256 MiB are retained. Larger
+responses stream normally, and browser eviction can require another download.
+Unavailable Cache Storage fails the read instead of bypassing the cache. At most
+four whole-object fills, reserving up to 256 MiB, survive row cancellation with
+a two-minute deadline starting at cancellation. Active downloads may take
+longer. Range requests do not wait for pending whole-object fills. Stable cache
+names survive releases; incompatible records are discarded without migrations.
+Clear site data to erase local copies. Bytes contain no credentials; an expired
+or invalidated lease never gains an offline authorization fallback.
+
+For plain HTTP without workers (LAN/Tailscale debugging), images, avatars and
+sticker thumbnails use the same resolver and lease rules with bounded tab-local
+Blob storage. Warm remounts need no authorization or storage request while the
+lease remains valid; a page reload starts cold. Object URLs are revoked on
+cleanup. Other controls resolve signed links through the same read resolver and
+access storage directly, without a persistent byte cache. Upload flows remain
+unchanged.
+
+Storage fetches omit chat credentials. Downloads use signed attachment
+disposition and, on secure pages, navigate through a UI-scoped
+`media-download?file=...` worker route. Only top-level document navigations can
+use that route. Legacy `/info` and `/link` endpoints are deprecated for new
+browser clients; use `/api/media/resolve` instead. They remain available for
+existing scripts with no removal date scheduled. Legacy `/file` endpoints remain
+available and always authorize on the server; bot read APIs retain their existing live
+checks. Signed URLs and leases are never persisted in preferences or
+localStorage. A shared startup handshake claims the page after hard reload;
+controls wait for acknowledgement and show a retryable error after 15 seconds.
+Secure worker pages require HTTPS or loopback. Presentation metadata can resolve
+directly when worker control is unavailable, without opening Cache Storage;
+byte reads still require the normal worker or HTTP debug cache.
 
 ## Configuration
 
@@ -186,6 +205,7 @@ non-secret settings in `data/config.json` while stopped, then restart:
     "path_style": false
   },
   "media": {
+    "authorization_lease_seconds": 900,
     "max_size": "25m",
     "max_age": 604800,
     "pending_ttl": 86400,
