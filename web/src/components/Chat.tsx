@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
-import { notifyMentions } from "../features/preferences/notifications.ts";
+import { notifyMessages } from "../features/preferences/notifications.ts";
 import {
   timeline,
   clearedOrder,
@@ -160,7 +160,7 @@ export function Chat({
             unread.through > (previous.unread[view]?.through ?? 0),
         );
         if (contentChanged)
-          notifyMentions(previous, data, {
+          notifyMessages(previous, data, {
             baseline,
             enabled: notificationsRef.current,
             NotificationClass: window.Notification,

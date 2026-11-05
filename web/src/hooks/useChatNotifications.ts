@@ -2,7 +2,7 @@ import { readStorage } from "../api/browserStorage.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useAccountPreference } from "./useAccountPreference.ts";
 import { errorMessage } from "../api/protocol.ts";
-import { toggleMentionNotifications } from "../features/preferences/notifications.ts";
+import { toggleMessageNotifications } from "../features/preferences/notifications.ts";
 
 export function useChatNotifications(
   append: (command: string, result: string, error: boolean) => string,
@@ -29,7 +29,7 @@ export function useChatNotifications(
     if (notificationRequest.current) return;
     notificationRequest.current = true;
     try {
-      const enabled = await toggleMentionNotifications(
+      const enabled = await toggleMessageNotifications(
         notificationsRef.current,
         window.Notification,
         window.isSecureContext,

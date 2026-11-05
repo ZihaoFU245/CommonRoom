@@ -249,13 +249,15 @@ controls, with up to 32 reactions per message. `/debug on` shows expandable
 metadata only where permitted; it resets on refresh or permission revocation.
 
 `@USERNAME` mentions complete room members or the private peer; email addresses
-are excluded. The profile bell enables browser notifications for new mentions.
-Notifications require browser permission, work while the app is open, and omit
-refresh/history events, own messages, and the focused conversation. Clicking one
-opens its conversation; private previews appear only after opting in.
-The bell shows a slash while muted. Click the enabled bell to mute immediately;
-click the muted bell to enable notifications. Blocked permission is reported
-with instructions to change the browser's site settings.
+are excluded. The profile bell enables browser notifications for room mentions
+and incoming private messages. Notifications require browser permission and a
+running chat tab. Alerts omit refresh and history events, your own messages,
+and messages in the conversation you're viewing in a focused tab. Private alerts
+show the sender and message preview. Room alerts show the room, who mentioned you,
+and the message preview. Clicking an alert opens its conversation. The bell
+shows a slash while muted and silences both types of alerts. Blocked permission
+appears with instructions to change
+the browser's site settings.
 Composer suggestions show one level at a time: `/u` offers `/user`,
 `/user ` offers subcommands, and `/user ls ` offers scopes. Free-form arguments
 show no fallback wall of syntax; use `/man` for usage and permission details.

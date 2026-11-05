@@ -178,7 +178,7 @@ Use the first/last returned sequence with `has_before`/`has_after` to continue. 
 
 ## Synchronization rules
 
-The initial WebSocket snapshot and HTTP resync are baselines and do not trigger mention notifications. Subsequent conversation updates and live snapshots can notify about new mentions. HTTP refreshes run on reconnect/focus/pageshow/online and becoming visible. A generation guard prevents a delayed HTTP response from overwriting a newer socket snapshot or a signed-out session.
+The initial WebSocket snapshot and HTTP resync are baselines and do not trigger desktop alerts. Subsequent conversation updates and live snapshots can notify about room mentions and incoming private messages. HTTP refreshes run on reconnect/focus/pageshow/online and becoming visible. A generation guard prevents a delayed HTTP response from overwriting a newer socket snapshot or a signed-out session.
 
 History requests carry an abort signal and are accepted only for the current view and stable resource ID. Each page represents a coherent content revision; live updates may already be newer. Range-preserving retries stop after three attempts and report a refresh status rather than looping indefinitely. Live tails merge into the current window by ID; cleanup/reactions/gaps refresh the visible page around its anchor, never the complete retained history. Pure appends while browsing older pages advance metadata without moving the window. Read-only updates preserve message-array references to avoid re-rendering the transcript.
 

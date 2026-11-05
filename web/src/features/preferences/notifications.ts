@@ -1,4 +1,6 @@
 import type { Snapshot } from "../../api/protocol.ts";
+import { messageNotificationEvents } from "../conversation/interactions.ts";
+
 interface NotificationOptions {
   baseline: boolean;
   enabled: boolean;
@@ -7,8 +9,7 @@ interface NotificationOptions {
   selected: string;
   open: (view: string) => void;
 }
-import { mentionEvents } from "../conversation/interactions.ts";
-export async function toggleMentionNotifications(
+export async function toggleMessageNotifications(
   enabled: boolean,
   NotificationClass: typeof Notification | undefined,
   secureContext: boolean,
@@ -31,7 +32,7 @@ export async function toggleMentionNotifications(
   return true;
 }
 
-export function notifyMentions(
+export function notifyMessages(
   previous: Snapshot,
   next: Snapshot,
   {
@@ -46,13 +47,15 @@ export function notifyMentions(
   if (baseline || !enabled || NotificationClass?.permission !== "granted")
     return 0;
   let delivered = 0;
-  for (const { message, view } of mentionEvents(previous, next)) {
+  for (const { message, view } of messageNotificationEvents(previous, next)) {
     if (!background && selected === view) continue;
     try {
+      const direct = message.to === next.username;
+      const preview = Array.from(message.text).slice(0, 200).join("");
       const notification = new NotificationClass(
-        `${message.from} mentioned you`,
+        direct ? message.from : `#${view}`,
         {
-          body: Array.from(message.text).slice(0, 200).join(""),
+          body: direct ? preview : `${message.from} mentioned you\n${preview}`,
           tag: message.id,
         },
       );

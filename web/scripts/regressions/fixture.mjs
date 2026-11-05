@@ -809,6 +809,109 @@ const empty = {
   unread: {},
 };
 
+await test("the profile bell enables and mutes live private message alerts", async () => {
+  const OriginalSocket = window.WebSocket;
+  const OriginalNotification = window.Notification;
+  const shown = [];
+  let socket;
+  let values = {};
+  let revision = 0;
+  await connectPreferences(
+    "browser-notification-test",
+    async (patch, initialize) => {
+      values = {
+        ...values,
+        ...patch,
+        ...(initialize ? { notifications: "false" } : {}),
+      };
+      return {
+        values,
+        sync: { instance: "notifications", revision: ++revision },
+      };
+    },
+  );
+  window.Notification = class {
+    static permission = "granted";
+    constructor(title, { body }) {
+      shown.push({ title, body });
+    }
+  };
+  window.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() {
+      socket = this;
+      queueMicrotask(() => {
+        this.onopen?.();
+        this.receive(empty);
+      });
+    }
+    receive(snapshot) {
+      this.onmessage({ data: JSON.stringify(snapshot) });
+    }
+    close() {}
+  };
+  const bell = () => tests.querySelector(".notification-toggle");
+  const incoming = (sequence) => ({
+    ...message(sequence),
+    from: "bob",
+    to: "alice",
+    private_id: "alice-bob",
+  });
+  const snapshot = (through) => ({
+    ...empty,
+    private_peers: ["bob"],
+    private_access: {
+      "@direct:bob": { id: "alice-bob", permissions: [], commands: [] },
+    },
+    direct: Array.from({ length: through }, (_, index) => incoming(index + 1)),
+    unread: {
+      "@direct:bob": {
+        count: through,
+        first: 1,
+        through,
+        oldest: 1,
+        revision: through,
+      },
+    },
+  });
+  try {
+    render(
+      h(Chat, {
+        initial: empty,
+        onLogout() {},
+        appearance: {
+          theme: "light",
+          seeds: defaultSeeds,
+          setTheme() {},
+          setSeeds() {},
+        },
+      }),
+      tests,
+    );
+    await until(() => socket && bell());
+    bell().click();
+    await until(() => bell()?.getAttribute("aria-pressed") === "true");
+    socket.receive(snapshot(1));
+    check(
+      shown[0]?.title === "bob" && shown[0]?.body === "hello",
+      "a live DM shows the sender and message without requiring a mention",
+    );
+    bell().click();
+    await until(() => bell()?.getAttribute("aria-pressed") === "false");
+    socket.receive(snapshot(2));
+    await until(
+      () => tests.querySelector(".unread-badge")?.textContent === "2",
+    );
+    check(shown.length === 1, "a muted bell silences the next DM");
+  } finally {
+    render(null, tests);
+    window.WebSocket = OriginalSocket;
+    window.Notification = OriginalNotification;
+    disconnectPreferences();
+  }
+});
+
 await test("real Preact clears cancelled loading when switching to cached history", async () => {
   const tail = [message(1)];
   const state = {

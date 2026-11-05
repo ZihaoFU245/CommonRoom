@@ -116,13 +116,13 @@ export function Sidebar({
             aria-pressed={notifications}
             aria-label={
               notifications
-                ? "Mute mention notifications"
-                : "Enable mention notifications"
+                ? "Mute message notifications"
+                : "Enable message notifications"
             }
             title={
               notifications
-                ? "Mention notifications on"
-                : "Mention notifications muted · Click to enable"
+                ? "Room mention and private message notifications on"
+                : "Room mention and private message notifications muted · Click to enable"
             }
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">

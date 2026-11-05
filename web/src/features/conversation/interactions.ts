@@ -22,35 +22,40 @@ export function mentionSuggestions(draft: string, users: string[]): Hint[] {
       value: draft.slice(0, draft.lastIndexOf("@")) + `@${name} `,
     }));
 }
-export function mentionEvents(previous: Snapshot, next: Snapshot) {
+export function messageNotificationEvents(previous: Snapshot, next: Snapshot) {
   const seen = new Set(
     [...previous.rooms.flatMap((r) => r.messages), ...previous.direct].map(
       (m) => m.id,
     ),
   );
   const previousRooms = new Map(previous.rooms.map((r) => [r.name, r]));
-  const events: { message: Message; view: string | null }[] = [];
-  function add(messages: Message[], older: Message[], view: string | null) {
-    const newest = Math.max(0, ...older.map((m) => m.time));
-    for (const message of messages) {
+  const events: { message: Message; view: string }[] = [];
+  for (const room of next.rooms) {
+    const previousRoom = previousRooms.get(room.name);
+    if (!previousRoom) continue;
+    const newest = Math.max(0, ...previousRoom.messages.map((m) => m.time));
+    for (const message of room.messages) {
       if (
         !seen.has(message.id) &&
         message.time >= newest &&
         message.from !== next.username &&
         message.mentions?.includes(next.username)
       )
-        events.push({ message, view });
+        events.push({ message, view: room.name });
     }
   }
-  for (const room of next.rooms) {
-    const previousRoom = previousRooms.get(room.name);
-    if (previousRoom) add(room.messages, previousRoom.messages, room.name);
+  for (const message of next.direct) {
+    if (
+      message.from === next.username ||
+      message.to !== next.username ||
+      seen.has(message.id)
+    )
+      continue;
+    const view = `@direct:${message.from}`;
+    if (message.sequence > (previous.unread[view]?.through ?? 0))
+      events.push({ message, view });
   }
-  add(next.direct, previous.direct, null);
-  return events.map((e) => ({
-    ...e,
-    view: e.view || `@direct:${e.message.from}`,
-  }));
+  return events;
 }
 export function mentionedText(text: string, mentions: string[] = []) {
   const names = new Set(mentions);
