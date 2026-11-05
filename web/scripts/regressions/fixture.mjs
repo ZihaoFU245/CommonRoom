@@ -28,6 +28,7 @@ import { mediaStatusCache } from "../../src/features/conversation/mediaStatusCac
 import { ManagedAttachment } from "../../src/components/ManagedAttachment.tsx";
 import { CollapsibleMessage } from "../../src/components/CollapsibleMessage.tsx";
 import { MessageList } from "../../src/components/MessageList.tsx";
+import { ConsoleMessage } from "../../src/components/ConsoleMessage.tsx";
 import { Avatar } from "../../src/components/Avatar.tsx";
 import { ExternalImage } from "../../src/components/ExternalImage.tsx";
 import { Composer } from "../../src/components/Composer.tsx";
@@ -40,6 +41,7 @@ import { Settings } from "../../src/components/Settings.tsx";
 import { MarkdownContent } from "../../src/components/MarkdownContent.tsx";
 import { ConsoleOutput } from "../../src/components/ConsoleOutput.tsx";
 import { markdownNodes } from "../../src/features/conversation/markdown.ts";
+import { messageDate } from "../../src/features/conversation/messages.ts";
 import { api, ApiError } from "../../src/api/client.ts";
 import {
   defaultSeeds,
@@ -1250,6 +1252,46 @@ await test("settings motion follows reduced-motion changes and cancels active tr
   } finally {
     render(null, tests);
     window.matchMedia = original;
+  }
+});
+
+await test("single emoji messages render large in plain text and Markdown", async () => {
+  function draw(text, markdown) {
+    render(
+      h(ConsoleMessage, {
+        message: { ...message(1), text, markdown },
+        self: "alice",
+        date: messageDate(1),
+        grouped: true,
+        onExpandedChange() {},
+      }),
+      tests,
+    );
+  }
+  draw("1️⃣", false);
+  const body = tests.querySelector(".message-body");
+  const regularSize = parseFloat(getComputedStyle(body).fontSize);
+  for (const [emoji, markdown] of [
+    ["1️⃣", false],
+    ["👩🏽‍💻", true],
+  ]) {
+    draw(emoji, markdown);
+    const large = body.querySelector(".message-single-emoji");
+    check(large?.textContent === emoji, "the full emoji stays selectable");
+    check(
+      parseFloat(getComputedStyle(large).fontSize) === 3 * regularSize,
+      "a single emoji renders at three times the chat font size",
+    );
+  }
+  for (const [text, markdown] of [
+    ["😀😀", false],
+    ["Hi 😀", true],
+  ]) {
+    draw(text, markdown);
+    check(
+      !body.querySelector(".message-single-emoji"),
+      "messages with extra content use the regular text size",
+    );
   }
 });
 

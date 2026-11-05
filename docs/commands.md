@@ -233,6 +233,8 @@ Opening a conversation loads a 100-message page; scroll to load older/newer page
 
 Messages stay left-aligned, with local dates and times. Consecutive messages
 from the same sender group within five minutes; commands break the group.
+A message containing exactly one emoji appears at three times the chat font
+size, including emoji sequences such as flags and skin-tone variants.
 Unread badges count unread incoming messages. Opening a view starts at the first
 unread message; Jump to unread returns there while browsing. Only visible
 messages in a focused tab advance the read cursor, which syncs across devices.

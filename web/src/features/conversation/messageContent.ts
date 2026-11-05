@@ -4,3 +4,17 @@ export function hasMessageContent(text: string): boolean {
     text,
   );
 }
+
+const singleEmojiPattern = (() => {
+  try {
+    return new RegExp("^\\p{RGI_Emoji}$", "v");
+  } catch {
+    // Older engines can still render the message at its regular size.
+    return undefined;
+  }
+})();
+
+export function singleEmoji(text: string): string | undefined {
+  const trimmed = text.trim();
+  return singleEmojiPattern?.test(trimmed) ? trimmed : undefined;
+}

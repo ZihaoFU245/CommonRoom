@@ -2,7 +2,10 @@ import { UserCardTrigger } from "./UserCardTrigger.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { CollapsibleMessage } from "./CollapsibleMessage.tsx";
-import { hasMessageContent } from "../features/conversation/messageContent.ts";
+import {
+  hasMessageContent,
+  singleEmoji,
+} from "../features/conversation/messageContent.ts";
 import { memo } from "preact/compat";
 import { MarkdownMessage as Markdown } from "./MarkdownMessage.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -120,6 +123,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   const replyColor = useNameColor(reply?.from ?? "");
   const text = mentionedText(message.text, message.mentions);
   const invocation = mentionedCommand(message.text, message.mentions);
+  const emoji = singleEmoji(message.text);
   return (
     <article
       id={`message-${message.id}`}
@@ -231,7 +235,11 @@ export const ConsoleMessage = memo(function ConsoleMessage({
               expanded={expanded}
               onExpandedChange={(next) => onExpandedChange(message, next)}
             >
-              {invocation ? (
+              {emoji ? (
+                <p class="message-single-emoji" dir="auto">
+                  {emoji}
+                </p>
+              ) : invocation ? (
                 <p dir="auto">
                   <Mention text={invocation.mention} />
                   {invocation.separator}

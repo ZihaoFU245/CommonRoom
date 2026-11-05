@@ -500,6 +500,11 @@ button:focus-visible {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.message-single-emoji {
+  font-family: "Noto Color Emoji Web", sans-serif;
+  font-size: 3em;
+  line-height: 1.25;
+}
 .message-meta time,
 .continuation-time {
   font-size: 0.78571rem;
