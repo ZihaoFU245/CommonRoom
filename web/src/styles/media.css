@@ -237,8 +237,7 @@
   aspect-ratio: 1;
   padding: 2px;
   border-radius: 8px;
-  font-family:
-    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-family: "Noto Color Emoji Web", sans-serif;
   font-size: 28px;
   line-height: 1;
 }

@@ -226,6 +226,13 @@ and listeners in `finally`, after response bodies finish. ESLint rejects direct
 `AbortSignal.any`/`timeout` calls elsewhere. The browser floor applies to the UI;
 Node/Deno development and bot-worker requirements remain separate.
 
+The bundled Noto Color Emoji faces come from Google Fonts'
+[`NotoColorEmoji-Regular.ttf` at revision `142c8963`](https://github.com/google/fonts/blob/142c8963e7606b510c93a644c82a4c4cdeae6ef9/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf).
+To refresh them, use FontTools to save the full glyph set as WOFF2. Drop the
+`SVG ` table for the COLRv1 face and the `COLR` and `CPAL` tables for the
+OpenType-SVG face. Keep the upstream OFL in `web/public/assets/`. The build
+does not fetch fonts.
+
 ## Coding conventions
 
 - Read [Architecture](architecture.md) before changing state ownership or module boundaries.

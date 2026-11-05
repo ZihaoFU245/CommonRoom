@@ -286,6 +286,10 @@ must take effect immediately. Preserve the security headers in both static
 locations when adapting the sample.
 Publish hashed assets before the HTML and retain previous hashed assets while stale
 HTML or existing tabs can still reference them, including lazy-loaded chunks.
+The web build bundles Noto Color Emoji in `dist/assets/`, with separate WOFF2
+files for COLRv1 and OpenType-SVG. Browsers select a supported format and fall
+back to system emoji when needed. The existing asset location and same-origin
+font policy serve both files.
 
 ### Paths and routing
 

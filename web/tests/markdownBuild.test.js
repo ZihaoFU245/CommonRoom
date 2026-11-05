@@ -30,6 +30,26 @@ test("production HTML renderer keeps its exports and stays outside the initial i
     !outputs.some((output) => output.fileName.startsWith("scripts/")),
     "test harnesses must not ship",
   );
+  for (const format of ["COLRv1", "SVG"]) {
+    const font = outputs.find(
+      (output) =>
+        output.type === "asset" &&
+        output.fileName.startsWith(`assets/NotoColorEmoji-${format}-`) &&
+        output.fileName.endsWith(".woff2"),
+    );
+    assert.ok(font, `the ${format} emoji font is bundled under assets/`);
+    assert.ok(
+      outputs.some(
+        (output) =>
+          output.type === "asset" &&
+          output.fileName.endsWith(".css") &&
+          String(output.source).includes(
+            `./${font.fileName.split("/").at(-1)}`,
+          ),
+      ),
+      "the CSS references the bundled font relative to the deployment path",
+    );
+  }
   const chunks = outputs.filter((output) => output.type === "chunk");
   const rich = chunks.find((chunk) => chunk.fileName.includes("richMarkdown"));
   assert.ok(rich);

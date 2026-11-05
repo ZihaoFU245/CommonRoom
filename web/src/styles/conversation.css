@@ -38,12 +38,7 @@
   max-width: 84ch;
   min-width: 0;
   padding: 10px 0 10px 22px;
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--ui-fonts);
   font-size: 1rem;
   line-height: 1.65;
   overflow-wrap: anywhere;
@@ -462,12 +457,7 @@ button:focus-visible {
   padding: 16px 10px 2px 56px;
   margin: 0 -10px;
   border-radius: 5px;
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--ui-fonts);
   font-size: var(--chat-font-size, 16px);
   line-height: 1.65;
 }
