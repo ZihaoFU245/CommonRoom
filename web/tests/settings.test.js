@@ -64,38 +64,29 @@ beforeEach((t) => {
   });
 });
 
-test("formatting opt-ins default off, persist independently and require explicit on", () => {
+test("formatting preferences use their defaults and persist independently", () => {
   const preferences = [
-    [loadMarkdown, saveMarkdown],
-    [loadMarkdownHtml, saveMarkdownHtml],
-    [loadLatex, saveLatex],
-    [loadNameColors, saveNameColors],
-    [loadNameBorders, saveNameBorders],
-    [loadMessageBars, saveMessageBars],
+    [loadMarkdown, saveMarkdown, true],
+    [loadMarkdownHtml, saveMarkdownHtml, false],
+    [loadLatex, saveLatex, false],
+    [loadNameColors, saveNameColors, true],
+    [loadNameBorders, saveNameBorders, false],
+    [loadMessageBars, saveMessageBars, true],
   ];
-  assert.deepEqual(
-    preferences.map(([load]) => load()),
-    preferences.map(() => false),
-  );
-  for (const [index, [, save]] of preferences.entries()) {
-    save(true);
+  const defaults = preferences.map(([, , enabled]) => enabled);
+  const current = () => preferences.map(([load]) => load());
+  assert.deepEqual(current(), defaults);
+  for (const [index, [, save, enabled]] of preferences.entries()) {
+    save(!enabled);
     assert.deepEqual(
-      preferences.map(([load]) => load()),
-      preferences.map((_, other) => other <= index),
+      current(),
+      defaults.map((value, other) => (other === index ? !value : value)),
     );
-  }
-  for (const [index, [, save]] of preferences.entries()) {
-    save(false);
-    assert.deepEqual(
-      preferences.map(([load]) => load()),
-      preferences.map((_, other) => other > index),
-    );
+    save(enabled);
+    assert.deepEqual(current(), defaults);
   }
   for (const key of entries.keys()) entries.set(key, "true");
-  assert.deepEqual(
-    preferences.map(([load]) => load()),
-    preferences.map(() => false),
-  );
+  assert.deepEqual(current(), defaults);
 });
 
 test("Markdown settings and the reserved slash command share one preference", () => {

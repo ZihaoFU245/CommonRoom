@@ -1043,12 +1043,13 @@ coverage verifies nullable projection validation, bounded cache merges, separati
 of display projections from saved room settings, metadata changes without message
 revision changes, and stale in-flight history responses after a color reset.
 
-Name colors, author borders and message side bars default off independently and
-sync their boolean preferences across devices. Browser regressions verify the original reply quote
-bar remains when add-ons are off, Preferences loads the color picker only after
-enabling display, socket/history color requests opt in explicitly, and disabling
-display stops color requests. HTTP/live baseline tests cover default omission and
-cache separation between opted-in and default clients on the same account.
+Name colors and message side bars default to enabled. Author borders default to
+disabled. The settings sync independently across devices. Browser regressions verify
+that the original reply quote bar remains when add-ons are off and that disabling
+name colors stops color requests. The picker loads when Appearance is open and
+name colors are enabled. The opacity slider appears in Appearance when message
+bars are enabled. HTTP and WebSocket tests cover omission of unrequested
+colors and cache separation between clients on the same account.
 
 Settings browser coverage additionally exercises the themed scope listbox,
 macOS Safari-style pointer activation without native button focus,

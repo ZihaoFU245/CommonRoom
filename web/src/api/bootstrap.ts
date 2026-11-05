@@ -17,7 +17,8 @@ export async function loadInitialAccount() {
         ? { values: account.preferences, sync: account.sync }
         : undefined,
     );
-    const colors = preferenceValue("name_colors", "false") === "true";
+    const colors =
+      preferenceValue("name_colors", String(requestedColors)) === "true";
     if (
       colors === requestedColors &&
       account.sync?.instance === preferences.sync.instance &&

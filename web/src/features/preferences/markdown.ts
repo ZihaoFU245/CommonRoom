@@ -14,7 +14,7 @@ export const markdownManual = `# /markdown
 
 - Use /markdown on to format future room messages, private messages and replies.
 - Use /markdown off to send plain text again.
-- The default is off.
+- Markdown is enabled by default.
 - Settings → Preferences → Enable Markdown controls the same sending preference.
 - Enable LaTeX math renders $...$, $$...$$, \\(...\\) and \\[...\\] in Markdown messages.
 - Math rendering defaults off and does not require HTML or scripts.
@@ -42,7 +42,7 @@ export const markdownManual = `# /markdown
 - Each sent message keeps its own format, including after refresh; /markdown on|off does not change earlier messages.`;
 const key = "commonroom.markdown";
 export function loadMarkdown(): boolean {
-  return readStorage(key) === "on";
+  return readStorage(key) !== "off";
 }
 export function setMarkdown(input: string): boolean {
   if (!/^\/markdown (on|off)$/u.test(input))

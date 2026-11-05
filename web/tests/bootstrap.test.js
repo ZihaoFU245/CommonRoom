@@ -8,7 +8,7 @@ import {
   preferenceValue,
 } from "../src/features/preferences/account.ts";
 
-test("initial and post-login snapshots honor saved opt-in, including blocked storage", async (t) => {
+test("initial and post-login snapshots request colors by default and honor saved choices", async (t) => {
   const original = api.me;
   const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   t.after(() => {
@@ -28,7 +28,7 @@ test("initial and post-login snapshots honor saved opt-in, including blocked sto
       value: { getItem: () => saved },
     });
     assert.equal(await loadInitialAccount(), account);
-    assert.equal(calls.at(-1), saved === "on");
+    assert.equal(calls.at(-1), saved !== "off");
   }
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -37,7 +37,7 @@ test("initial and post-login snapshots honor saved opt-in, including blocked sto
     },
   });
   assert.equal(await loadInitialAccount(), account);
-  assert.equal(calls.at(-1), false);
+  assert.equal(calls.at(-1), true);
   assert.equal(calls.length, 4, "one bootstrap request per entry");
 });
 
@@ -67,7 +67,7 @@ test("login seeds only missing settings and requests its first visible snapshot 
   const account = {
     username: "alice",
     account_access: { id: "alice-id" },
-    preferences: { name_colors: "true", theme: "light" },
+    preferences: { name_colors: "false", theme: "light" },
     sync: { instance: "server", revision: 1 },
   };
   api.me = async (colors) => {
@@ -81,14 +81,17 @@ test("login seeds only missing settings and requests its first visible snapshot 
       "dark",
       "send local settings to seed unset keys",
     );
-    assert.equal(values.name_colors, "false");
+    assert.equal(values.markdown, "true");
+    assert.equal(values.name_colors, "true");
+    assert.equal(values.message_bars, "true");
     return {
       values: { ...values, ...account.preferences },
       sync: account.sync,
     };
   };
   assert.equal(await loadInitialAccount(), account);
-  assert.deepEqual(calls, [false, true]);
+  assert.deepEqual(calls, [true, false]);
+  assert.equal(preferenceValue("name_colors", ""), "false");
   assert.equal(preferenceValue("theme", ""), "light");
 });
 

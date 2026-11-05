@@ -14,7 +14,7 @@ export function saveLatex(enabled: boolean): void {
 }
 
 export function loadMessageBars(): boolean {
-  return readStorage(messageBarsKey) === "on";
+  return readStorage(messageBarsKey) !== "off";
 }
 
 export function saveMessageBars(enabled: boolean): void {
@@ -30,7 +30,7 @@ export function saveNameBorders(enabled: boolean): void {
 }
 
 export function loadNameColors(): boolean {
-  return readStorage(nameColorsKey) === "on";
+  return readStorage(nameColorsKey) !== "off";
 }
 export function saveNameColors(enabled: boolean): void {
   writeStorage(nameColorsKey, enabled ? "on" : "off");

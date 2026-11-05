@@ -288,6 +288,10 @@
   justify-content: flex-end;
   padding-top: 0.25rem;
 }
+.name-color-actions .primary {
+  padding-block: 4px;
+  margin-top: 0;
+}
 .name-color-picker > .account-error {
   grid-column: 1 / -1;
   margin: 0;

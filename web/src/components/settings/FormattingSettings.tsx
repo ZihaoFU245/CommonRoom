@@ -1,47 +1,31 @@
-import { useSettingsMotion } from "../../hooks/useSettingsMotion.ts";
-import { lazy, Suspense } from "preact/compat";
-const NameColorSettings = lazy(() =>
-  import("./NameColorSettings.tsx").then((module) => ({
-    default: module.NameColorSettings,
-  })),
-);
 import type { SettingsProps } from "./types.ts";
 
 export function FormattingSettings({
-  state,
   nameColors,
   onNameColorsChange,
-  onNameColorChange,
   markdown,
   onMarkdownChange,
   latex,
   onLatexChange,
   messageBars,
   onMessageBarsChange,
-  messageBarOpacity,
-  onMessageBarOpacityChange,
   nameBorders,
   onNameBordersChange,
 }: Pick<
   SettingsProps,
-  | "state"
   | "nameColors"
   | "onNameColorsChange"
-  | "onNameColorChange"
   | "markdown"
   | "onMarkdownChange"
   | "latex"
   | "onLatexChange"
   | "messageBars"
   | "onMessageBarsChange"
-  | "messageBarOpacity"
-  | "onMessageBarOpacityChange"
   | "nameBorders"
   | "onNameBordersChange"
 >) {
-  const content = useSettingsMotion<HTMLDivElement>();
   return (
-    <div class="formatting-settings" ref={content}>
+    <>
       <h3>Preferences</h3>
       <label class="security-choice">
         <input
@@ -77,20 +61,8 @@ export function FormattingSettings({
         <span>Show name colors</span>
       </label>
       <p id="name-colors-preference-description" class="account-summary">
-        Show each person's chosen name color. Synced across your devices.
+        Show each person's chosen name color. Choose your color in Appearance.
       </p>
-      {nameColors && (
-        <div class="name-color-controls">
-          <Suspense
-            fallback={<p class="account-summary">Loading name colors…</p>}
-          >
-            <NameColorSettings
-              state={state}
-              onNameColorChange={onNameColorChange}
-            />
-          </Suspense>
-        </div>
-      )}
       <label class="security-choice">
         <input
           type="checkbox"
@@ -101,32 +73,9 @@ export function FormattingSettings({
         <span>Show message color bars</span>
       </label>
       <p id="message-bars-preference-description" class="account-summary">
-        Mark each message with its author's name color. Synced across your
-        devices.
+        Mark each message with its author's name color. Adjust bar opacity in
+        Appearance.
       </p>
-      {messageBars && (
-        <div class="font-setting message-bar-opacity-setting">
-          <label for="message-bar-opacity">Bar opacity</label>
-          <output for="message-bar-opacity">{messageBarOpacity}%</output>
-          <input
-            id="message-bar-opacity"
-            type="range"
-            min="0"
-            max="100"
-            step="1"
-            value={messageBarOpacity}
-            aria-valuetext={`${messageBarOpacity}%`}
-            aria-describedby="message-bar-opacity-description"
-            onInput={(event) =>
-              onMessageBarOpacityChange(event.currentTarget.valueAsNumber)
-            }
-          />
-          <p id="message-bar-opacity-description" class="account-summary">
-            Fade the message bar without changing names or reply quotes. Synced
-            across your devices.
-          </p>
-        </div>
-      )}
       <label class="security-choice">
         <input
           type="checkbox"
@@ -139,6 +88,6 @@ export function FormattingSettings({
       <p id="name-borders-preference-description" class="account-summary">
         Frame author names in a rounded badge. Synced across your devices.
       </p>
-    </div>
+    </>
   );
 }

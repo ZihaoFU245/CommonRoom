@@ -2304,6 +2304,8 @@ await test("chat colors update for newly disclosed live and paged authors and re
     localStorage.getItem(key),
   );
   for (const key of preferenceKeys) localStorage.removeItem(key);
+  localStorage.setItem("commonroom-name-colors", "off");
+  localStorage.setItem("commonroom-message-bars", "off");
   let preferenceState = {
     values: {},
     sync: { instance: "preferences", revision: 0 },
@@ -2434,11 +2436,11 @@ await test("chat colors update for newly disclosed live and paged authors and re
     await until(() => socket && requests.length > 0 && author("alice"));
     check(
       !socket.colors && requests.every((enabled) => !enabled),
-      "default requests omit color opt-in",
+      "disabled requests omit color opt-in",
     );
     check(
       !author("alice").hasAttribute("data-name-color"),
-      "name colors default off",
+      "saved opt-out hides name colors",
     );
     check(
       getComputedStyle(author("alice")).borderLeftWidth === "0px",
@@ -2447,7 +2449,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
     check(
       getComputedStyle(tests.querySelector(".message-body")).borderLeftWidth ===
         "0px",
-      "message side bars default off",
+      "saved opt-out hides message side bars",
     );
     check(
       getComputedStyle(tests.querySelector(".reply-quote")).borderLeftWidth ===
@@ -2460,6 +2462,14 @@ await test("chat colors update for newly disclosed live and paged authors and re
         .some((entry) => entry.name.includes("NameColorSettings.tsx")),
       "color picker stays unloaded while disabled",
     );
+    async function selectSettingsTab(label) {
+      [...tests.querySelectorAll(".settings-navigation button")]
+        .find((button) => button.textContent === label)
+        .click();
+      await until(() =>
+        tests.querySelector(`.settings-content[aria-label="${label}"]`),
+      );
+    }
     async function preferences() {
       if (!tests.querySelector('[aria-label="Settings"]')) {
         tests.querySelector('[aria-label="Open navigation"]').click();
@@ -2467,14 +2477,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
       }
       tests.querySelector('[aria-label="Settings"]').click();
       await until(() => tests.querySelector(".settings-dialog[open]"));
-      [...tests.querySelectorAll(".settings-navigation button")]
-        .find((button) => button.textContent === "Preferences")
-        .click();
-      await until(() =>
-        tests.querySelector(
-          '[aria-describedby="name-colors-preference-description"]',
-        ),
-      );
+      await selectSettingsTab("Preferences");
     }
     await preferences();
     const colorToggle = tests.querySelector(
@@ -2488,28 +2491,38 @@ await test("chat colors update for newly disclosed live and paged authors and re
     );
     check(
       !colorToggle.checked && !barsToggle.checked && !bordersToggle.checked,
-      "all new preferences start unchecked",
+      "disabled preferences start unchecked",
     );
-    await sleep(70);
     colorToggle.click();
-    await until(
-      () => socket.colors && tests.querySelector("#name-color-scope"),
+    barsToggle.click();
+    bordersToggle.click();
+    await until(() => socket.colors);
+    check(
+      !tests.querySelector("#name-color-scope, #message-bar-opacity"),
+      "Preferences contains the display toggles without the appearance controls",
+    );
+    check(
+      !performance
+        .getEntriesByType("resource")
+        .some((entry) => entry.name.includes("NameColorSettings.tsx")),
+      "color picker stays unloaded until Appearance opens",
+    );
+    await selectSettingsTab("Appearance");
+    await until(() => tests.querySelector("#name-color-scope"));
+    check(
+      tests
+        .querySelector('.settings-content[aria-label="Appearance"]')
+        .lastElementChild.matches(".settings-reset"),
+      "Reset defaults is the last control in Appearance",
     );
     check(
       performance
         .getEntriesByType("resource")
         .some((entry) => entry.name.includes("NameColorSettings.tsx")),
-      "enabling colors loads the picker lazily",
+      "Appearance loads the color picker lazily",
     );
     const motion = !window.matchMedia("(prefers-reduced-motion: reduce)")
       .matches;
-    if (motion)
-      await until(() =>
-        tests
-          .querySelector(".name-color-controls")
-          ?.getAnimations()
-          .some((animation) => animation.playState === "running"),
-      );
     const scopeToggle = tests.querySelector("#name-color-scope");
     check(
       scopeToggle.tagName === "BUTTON",
@@ -2571,8 +2584,6 @@ await test("chat colors update for newly disclosed live and paged authors and re
       "picker Escape returns focus without closing Settings",
     );
 
-    barsToggle.click();
-    bordersToggle.click();
     await until(
       () => getComputedStyle(author("alice")).borderLeftWidth === "1px",
     );
@@ -2699,8 +2710,13 @@ await test("chat colors update for newly disclosed live and paged authors and re
     }
     applyAppearance("light", false, defaultSeeds);
 
-    barsToggle.click();
-    bordersToggle.click();
+    await selectSettingsTab("Preferences");
+    tests
+      .querySelector('[aria-describedby="message-bars-preference-description"]')
+      .click();
+    tests
+      .querySelector('[aria-describedby="name-borders-preference-description"]')
+      .click();
     await until(
       () => getComputedStyle(author("alice")).borderLeftWidth === "0px",
     );
@@ -2709,7 +2725,11 @@ await test("chat colors update for newly disclosed live and paged authors and re
         "4px",
       "turning message bars off retains reply quote bar",
     );
-    await until(() => !tests.querySelector("#message-bar-opacity"));
+    await selectSettingsTab("Appearance");
+    check(
+      !tests.querySelector("#message-bar-opacity"),
+      "Appearance hides the opacity slider when bars are disabled",
+    );
     tests.querySelector('[aria-label="Close settings"]').click();
     state = {
       ...state,
@@ -2765,8 +2785,12 @@ await test("chat colors update for newly disclosed live and paged authors and re
       .querySelector('[aria-describedby="name-colors-preference-description"]')
       .click();
     await until(() => !socket.colors);
+    await selectSettingsTab("Appearance");
+    check(
+      !tests.querySelector(".name-color-setting"),
+      "Appearance hides the picker when name colors are disabled",
+    );
     tests.querySelector('[aria-label="Close settings"]').click();
-    await until(() => !tests.querySelector(".name-color-setting"));
     check(
       requests.slice(afterEnabled).every((enabled) => !enabled),
       "disabled requests stop fetching colors",
@@ -3001,14 +3025,14 @@ await test("color settings keep the root available and expose only authorized ro
   );
 });
 
-await test("login requests saved name colors in its first authenticated snapshot", async () => {
+await test("login requests name colors by default in its first authenticated snapshot", async () => {
   const key = "commonroom-name-colors";
   const saved = localStorage.getItem(key);
   const login = api.login,
     me = api.me;
   const requests = [];
   try {
-    localStorage.setItem(key, "on");
+    localStorage.removeItem(key);
     api.login = async () => ({ ok: true });
     api.me = async (enabled) => {
       requests.push(enabled);

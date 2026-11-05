@@ -1,4 +1,4 @@
-import type { SettingsProps } from "./types.ts";
+import { lazy, Suspense } from "preact/compat";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { defaultSeeds, parseHex } from "../../features/preferences/palette.ts";
 import {
@@ -6,6 +6,14 @@ import {
   defaultTheme,
   type Theme,
 } from "../../features/preferences/settings.ts";
+import { useSettingsMotion } from "../../hooks/useSettingsMotion.ts";
+import type { SettingsProps } from "./types.ts";
+
+const NameColorSettings = lazy(() =>
+  import("./NameColorSettings.tsx").then((module) => ({
+    default: module.NameColorSettings,
+  })),
+);
 
 const themes: { value: Theme; label: string }[] = [
   { value: "light", label: "Light" },
@@ -79,10 +87,28 @@ export function AppearanceSettings({
   onChange,
   onThemeChange,
   onSeedsChange,
+  state,
+  nameColors,
+  onNameColorChange,
+  messageBars,
+  messageBarOpacity,
+  onMessageBarOpacityChange,
 }: Pick<
   SettingsProps,
-  "fonts" | "theme" | "seeds" | "onChange" | "onThemeChange" | "onSeedsChange"
+  | "fonts"
+  | "theme"
+  | "seeds"
+  | "onChange"
+  | "onThemeChange"
+  | "onSeedsChange"
+  | "state"
+  | "nameColors"
+  | "onNameColorChange"
+  | "messageBars"
+  | "messageBarOpacity"
+  | "onMessageBarOpacityChange"
 >) {
+  const chatSettings = useSettingsMotion<HTMLDivElement>();
   return (
     <>
       <fieldset class="theme-setting">
@@ -154,6 +180,43 @@ export function AppearanceSettings({
             })
           }
         />
+      </div>
+      <div ref={chatSettings}>
+        {nameColors && (
+          <div class="name-color-controls">
+            <Suspense
+              fallback={<p class="account-summary">Loading name colors…</p>}
+            >
+              <NameColorSettings
+                state={state}
+                onNameColorChange={onNameColorChange}
+              />
+            </Suspense>
+          </div>
+        )}
+        {messageBars && (
+          <div class="font-setting message-bar-opacity-setting">
+            <label for="message-bar-opacity">Bar opacity</label>
+            <output for="message-bar-opacity">{messageBarOpacity}%</output>
+            <input
+              id="message-bar-opacity"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={messageBarOpacity}
+              aria-valuetext={`${messageBarOpacity}%`}
+              aria-describedby="message-bar-opacity-description"
+              onInput={(event) =>
+                onMessageBarOpacityChange(event.currentTarget.valueAsNumber)
+              }
+            />
+            <p id="message-bar-opacity-description" class="account-summary">
+              Fade the message bar without changing names or reply quotes.
+              Synced across your devices.
+            </p>
+          </div>
+        )}
       </div>
       <button
         class="settings-reset"

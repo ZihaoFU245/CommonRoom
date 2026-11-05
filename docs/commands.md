@@ -55,7 +55,7 @@ override. `/user get @all #support` applies the same view to every member.
 Metadata never grants permissions. The public global avatar link, `displayname`, and the `color` key
 (global value plus room overrides) are public profile projections; color data is sent only to browsers that opt in. `color` accepts one
 of 16 palette names (`red` … `pink`) at `@global` or a room. Accounts change their own color
-from Settings › Preferences after enabling Show name colors. Their global default needs
+from Settings › Appearance when Show name colors is enabled. Their global default needs
 no color permission. In a room, `w:account.color.own` permits changing their own
 override; `w:account.color.any` permits changing members' overrides and is assigned
 to the owner. Both grants are room-only and absent from global/group bundles.
@@ -279,21 +279,23 @@ light/dark/system/custom palettes, fonts, chat text (14–24px), and UI text
 (12–18px); preferences sync across devices through the account metadata root. Reset restores defaults. Theme
 applies before rendering, and palette text contrast is at least 4.5:1.
 Preferences provides Enable Markdown (the same sending preference as
-`/markdown on|off`) and Enable LaTeX math. Both sync across devices.
+`/markdown on|off`) and Enable LaTeX math. Markdown defaults to enabled.
+Both sync across devices.
 The Markdown checkbox affects future messages; each stored message retains
 its existing format. The LaTeX checkbox immediately changes how Markdown
 messages are displayed, including history, without changing plain-text messages.
 
 Preferences also provides Show name colors, Show message color bars and Show name
-borders. All three default off and are saved independently on this device. Enabling
-name colors loads the picker and requests profile colors for snapshots, live updates
-and history; disabling it stops those requests. Choose a global color or a room
-override in the revealed controls. Apply waits for confirmation; failures show an inline
-error and retain the selected color for retry. Failed avatar uploads similarly
+borders. Name colors and message color bars default to enabled. Name borders
+default to disabled. These preferences sync independently across devices. Enabling
+name colors requests profile colors for snapshots, live updates and history.
+Choose a global color or a room override in Appearance. Apply waits for confirmation.
+Failures show an inline error and retain the selected color for retry. Failed avatar uploads similarly
 retain the selected image and crop. The original reply quote bar remains visible
-regardless of the optional message side bars. When message bars are enabled, a
-Bar opacity slider adjusts only the bar from 0–100%, defaults to 50%, and saves
-on this device; author text and the reply quote bar retain their normal colors.
+regardless of the optional message side bars. When message bars are enabled,
+the Bar opacity slider in Appearance adjusts only the bar from 0–100% and
+defaults to 50%. The slider syncs across devices. Author text and the reply quote
+bar retain their normal colors.
 When enabled, the message bar spans
 the full message content, with the reply quote inset inside it. Consecutive
 messages from the same author and conversation in the same minute share a
@@ -354,9 +356,9 @@ policy. `/bot` does not launch agents.
 
 In the web composer, `/markdown on` formats future room messages, private
 messages (`/tell`) and replies with Markdown. `/markdown off` restores plain
-text (the default). `/man markdown` explains the feature; completion suggests
-`on` and `off`. The preference stays in this browser and does not grant any
-message permissions. Each message retains its chosen format for recipients
+text. Markdown is enabled by default. `/man markdown` explains the feature, and
+completion suggests `on` and `off`. The preference syncs across devices.
+Each message retains its chosen format for recipients
 and history, independently of later toggle changes. Supported formatting includes
 bold, italic, strikethrough, headings, lists, quotes, code, tables and links.
 Enable LaTeX math in Settings → Preferences to render inline `$...$` / `\(...\)`
