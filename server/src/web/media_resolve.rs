@@ -11,7 +11,7 @@ enum Kind {
     Media,
     Avatars,
 }
-#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Item {
     kind: Kind,
@@ -52,25 +52,23 @@ async fn resolve_batch(
     input: Input,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Preserve response order while resolving exact duplicates only once.
-    let mut unique = Vec::new();
+    let mut items = Vec::new();
     let order: Vec<_> = input
         .items
         .into_iter()
         .map(|item| {
-            if let Some(index) = unique.iter().position(|existing| existing == &item) {
+            if let Some(index) = items.iter().position(|existing| existing == &item) {
                 index
             } else {
-                let index = unique.len();
-                unique.push(item);
+                let index = items.len();
+                items.push(item);
                 index
             }
         })
         .collect();
-    let input = Input { items: unique };
     let access = media::Access::Browser(headers.clone());
     let (identity, store) = media::native_context(&app, access).await?;
-    let ids: Vec<_> = input
-        .items
+    let ids: Vec<_> = items
         .iter()
         .map(|item| item.id.clone())
         .collect::<BTreeSet<_>>()
@@ -81,121 +79,114 @@ async fn resolve_batch(
         .mutations
         .conversations(ids.iter().map(|id| format!("@asset:{id}")).collect())
         .await?;
-    let scopes = app
+    let (scopes, mut stamp) = app
         .inspect_engine({
             let identity = identity.clone();
             move |engine, _| -> Result<_, ApiError> {
-                media::verify_identity(&identity, engine)?;
-                let scopes: Vec<_> = engine
-                    .library_read_scopes(&identity.user)
-                    .into_iter()
-                    .collect();
-                Ok(scopes)
+                let scopes = identity.media_read_scopes(engine)?.0;
+                let stamp = engine.delivery_stamp(
+                    &identity.user,
+                    &scopes.iter().cloned().collect(),
+                    false,
+                )?;
+                Ok((scopes, stamp))
             }
         })
         .await?;
     let rows = store.read_batch(&ids, &identity.account, &scopes).await?;
-    let initial_rows = rows.clone();
-    let items = input.items.clone();
-    let (plans, mut stamp) = app
+    let (items, rows, mut authorized) = app
         .inspect_engine({
             let identity = identity.clone();
             move |engine, _| -> Result<_, ApiError> {
                 media::verify_identity(&identity, engine)?;
-                let rows: BTreeMap<_, _> = rows
-                    .into_iter()
-                    .map(|row| (row.media.id.clone(), row))
-                    .collect();
                 let user = &identity.user;
                 let mut authorized = BTreeMap::new();
-                let plans = items
-                    .into_iter()
-                    .map(|item| {
-                        let row = rows.get(&item.id).ok_or_else(missing_media)?;
-                        let plan = authorized
-                            .entry((item.kind, item.id.clone()))
-                            .or_insert_with(|| item.authorize(engine, user, row))
-                            .as_ref()
-                            .map(Clone::clone)
-                            .map_err(|cause| error(cause.status, &cause.message))?;
-                        Ok((row.media.clone(), plan))
-                    })
-                    .collect::<Vec<Result<_, ApiError>>>();
-                let watched: BTreeSet<_> = plans
-                    .iter()
-                    .filter_map(|plan| plan.as_ref().ok())
-                    .filter_map(|(_, avatar)| avatar.as_ref())
-                    .flat_map(|avatar| avatar.history_ids().map(str::to_owned))
-                    .collect();
-                let stamp = (!watched.is_empty())
-                    .then(|| engine.delivery_stamp(user, &watched, false))
-                    .transpose()?;
-                Ok((plans, stamp))
+                for item in &items {
+                    authorized
+                        .entry((item.kind, item.id.clone()))
+                        .or_insert_with(|| {
+                            rows.iter()
+                                .find(|row| row.media.id == item.id)
+                                .ok_or_else(missing_media)
+                                .and_then(|row| item.authorize(engine, user, row))
+                        });
+                }
+                Ok((items, rows, authorized))
             }
         })
         .await?;
-    // One history statement checks all unknown owners in this batch.
-    // Share one check for inline/download variants of the same avatar.
-    let mut avatars = BTreeMap::new();
-    for (item, plan) in input.items.iter().zip(&plans) {
-        if let Ok((_, Some(avatar))) = plan {
-            avatars.entry(item.id.clone()).or_insert(avatar);
+    // Check each avatar identity once, sharing inline/download variants.
+    let avatars: Vec<_> = authorized
+        .values()
+        .filter_map(|plan| plan.as_ref().ok().and_then(Option::as_ref))
+        .collect();
+    let (checks, mut watched) = AvatarPlan::visible_batch(&avatars).await?;
+    // Initial SQL facts may outlive a concurrent message edit/retraction. Fence
+    // attachment references as well as the actual avatar witnesses, without a reread.
+    for row in &rows {
+        if row.media.conversation == "@library" {
+            watched.extend(scopes.iter().cloned());
+        } else if row.media.conversation != "@avatar" && scopes.contains(&row.media.conversation) {
+            watched.insert(row.media.conversation.clone());
         }
     }
-    let avatar_ids: Vec<_> = avatars.keys().cloned().collect();
-    let (checks, watched) =
-        AvatarPlan::visible_batch(&avatars.into_values().collect::<Vec<_>>()).await?;
-    if let Some(stamp) = &mut stamp {
-        stamp.restrict_history(&watched);
+    stamp.restrict_history(&watched);
+    let mut checks = checks.into_iter();
+    for plan in authorized.values_mut() {
+        if matches!(plan, Ok(Some(_))) && checks.next() != Some(true) {
+            *plan = Err(missing_media());
+        }
     }
-    let visible: BTreeMap<_, _> = avatar_ids.into_iter().zip(checks).collect();
-    let links =
-        futures_util::future::join_all(input.items.iter().zip(plans).map(|(item, plan)| {
-            let visible = &visible;
-            let app = &app;
-            async move {
-                let (record, avatar) = plan?;
-                if avatar.is_some() && !visible.get(&item.id).copied().unwrap_or(false) {
-                    return Err(missing_media());
-                }
+    let mut links = Vec::with_capacity(items.len());
+    for item in &items {
+        let plan = &authorized[&(item.kind, item.id.clone())];
+        let link = match plan {
+            Err(cause) => Err(error(cause.status, &cause.message)),
+            Ok(_) => {
+                let record = &rows
+                    .iter()
+                    .find(|row| row.media.id == item.id)
+                    .ok_or_else(missing_media)?
+                    .media;
                 let now = crate::engine::media::timestamp();
-                let readable = record.ready
+                if item.link
+                    && record.ready
                     && !record.deleting
                     && !record.deleted
-                    && record.expires.is_none_or(|expires| expires > now);
-                if item.link && readable {
-                    let storage = app.media.as_ref().ok_or_else(|| {
-                        error(
+                    && record.expires.is_none_or(|expires| expires > now)
+                {
+                    match &app.media {
+                        Some(storage) => storage
+                            .download_url(record, item.download)
+                            .await
+                            .map(Some)
+                            .map_err(|_| {
+                                error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign media URL.")
+                            }),
+                        None => Err(error(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "Media storage unavailable.",
-                        )
-                    })?;
-                    let url = storage
-                        .download_url(&record, item.download)
-                        .await
-                        .map_err(|_| {
-                            error(StatusCode::SERVICE_UNAVAILABLE, "Cannot sign media URL.")
-                        })?;
-                    Ok(Some(url))
+                        )),
+                    }
                 } else {
                     Ok(None)
                 }
             }
-        }))
-        .await;
+        };
+        links.push(link);
+    }
     // Recheck references and mutable columns after signing.
     let rows = if links.iter().any(|link| matches!(link, Ok(Some(_)))) {
         store.read_batch(&ids, &identity.account, &scopes).await?
     } else {
-        initial_rows
+        rows
     };
     app.inspect_engine(move |engine, config| -> Result<_, ApiError> {
         media::verify_identity(&identity, engine)?;
         let user = &identity.user;
-        if let Some(stamp) = stamp
-            && !engine
-                .delivery_stamp(user, &watched, false)?
-                .same_media_authority(&stamp)
+        if !engine
+            .delivery_stamp(user, &watched, false)?
+            .same_media_authority(&stamp)
         {
             return Err(error(
                 StatusCode::CONFLICT,
@@ -210,19 +201,17 @@ async fn resolve_batch(
         if session_expires <= now {
             return Err(error(unauthorized, "Session expired."));
         }
-        let rows: BTreeMap<_, _> = rows
-            .into_iter()
-            .map(|row| (row.media.id.clone(), row))
-            .collect();
         let mut authorized = BTreeMap::new();
-        let results: Vec<_> = input
-            .items
+        let results: Vec<_> = items
             .into_iter()
             .zip(links)
             .map(|(item, link)| {
                 let result = (|| -> Result<_, ApiError> {
                     let link = link?;
-                    let row = rows.get(&item.id).ok_or_else(missing_media)?;
+                    let row = rows
+                        .iter()
+                        .find(|row| row.media.id == item.id)
+                        .ok_or_else(missing_media)?;
                     authorized
                         .entry((item.kind, item.id.clone()))
                         .or_insert_with(|| item.authorize(engine, user, row))

@@ -26,27 +26,12 @@ impl MediaStore {
     ) -> Result<Vec<database::MediaRead>, EngineError> {
         Ok(self.database.media_reads(ids, account, scopes).await?)
     }
-    pub(crate) async fn library_saved(&self, id: &str, account: &str) -> Result<bool, EngineError> {
-        Ok(self.database.library_saved(id, account).await?)
-    }
-
     pub(crate) async fn library_source(
         &self,
         id: &str,
         conversations: &[String],
     ) -> Result<Option<String>, EngineError> {
         Ok(self.database.library_source(id, conversations).await?)
-    }
-    pub(crate) async fn library_access(
-        &self,
-        id: &str,
-        account: &str,
-        conversations: &[String],
-    ) -> Result<bool, EngineError> {
-        Ok(self
-            .database
-            .library_access(id, account, conversations)
-            .await?)
     }
     pub(crate) async fn library_page(
         &self,

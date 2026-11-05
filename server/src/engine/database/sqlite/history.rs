@@ -2,8 +2,8 @@
 use super::super::{
     Error, Result,
     history::{
-        CleanupCounts, PageRead, PageResult, UnreadBatch, UnreadRead, attach_reactions, count,
-        decode_message, unsigned,
+        AuthorRead, CleanupCounts, PageRead, PageResult, UnreadBatch, UnreadRead, attach_reactions,
+        author_selection, count, decode_message, unsigned,
     },
     message::number,
 };
@@ -78,21 +78,14 @@ async fn reactions(db: &mut SqliteConnection, id: &str, messages: &mut [Message]
 }
 pub(in crate::engine::database) async fn author_witnesses(
     db: &mut SqliteConnection,
-    requests: &[(Vec<String>, String)],
+    requests: &[AuthorRead<'_>],
 ) -> Result<Vec<Option<String>>> {
-    let selection = serde_json::to_string(requests)
-        .map_err(|_| Error::Conversion("Cannot serialize author selection"))?;
-    Ok(sqlx::query_scalar("SELECT (SELECT m.conversation FROM json_each(json_extract(p.value,'$[0]')) c JOIN messages m ON m.conversation=c.value WHERE json_extract(m.json,'$.from')=json_extract(p.value,'$[1]') ORDER BY m.conversation LIMIT 1) FROM json_each(?1) p ORDER BY CAST(p.key AS INTEGER)").bind(selection).fetch_all(db).await?)
-}
-pub(in crate::engine::database) async fn has_author(
-    db: &mut SqliteConnection,
-    ids: &[String],
-    author: &str,
-) -> Result<bool> {
-    if ids.is_empty() {
-        return Ok(false);
+    if let [request] = requests {
+        return Ok(vec![sqlx::query_scalar("SELECT m.conversation FROM json_each(?1) c JOIN messages m ON m.conversation=c.value WHERE json_extract(m.json,'$.from')=?2 LIMIT 1")
+            .bind(serde_json::to_string(request.conversations).map_err(|_| Error::Conversion("Cannot serialize conversation selection"))?)
+            .bind(request.author).fetch_optional(db).await?]);
     }
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM json_each(?1) AS c JOIN messages AS m ON m.conversation=c.value WHERE json_extract(m.json,'$.from')=?2)").bind(serde_json::to_string(ids).map_err(|_| Error::Conversion("Cannot serialize conversation selection"))?).bind(author).fetch_one(db).await?)
+    Ok(sqlx::query_scalar("SELECT (SELECT m.conversation FROM json_each(json_extract(?1,'$[0][' || json_extract(p.value,'$[0]') || ']')) c JOIN messages m ON m.conversation=c.value WHERE json_extract(m.json,'$.from')=json_extract(p.value,'$[1]') ORDER BY m.conversation LIMIT 1) FROM json_each(?1,'$[1]') p ORDER BY CAST(p.key AS INTEGER)").bind(author_selection(requests)?).fetch_all(db).await?)
 }
 pub(in crate::engine::database) async fn contains_sequence(
     db: &mut SqliteConnection,

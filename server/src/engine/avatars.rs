@@ -32,8 +32,11 @@ impl AvatarPlan {
     ) -> Result<(Vec<bool>, BTreeSet<String>), EngineError> {
         let requests: Vec<_> = plans
             .iter()
-            .filter(|plan| !plan.known)
-            .map(|plan| (plan.conversations.clone(), plan.owner.clone()))
+            .filter(|plan| !plan.known && !plan.conversations.is_empty())
+            .map(|plan| database::AuthorRead {
+                conversations: &plan.conversations,
+                author: &plan.owner,
+            })
             .collect();
         let mut checked = if let Some(plan) = plans.first() {
             plan.history
@@ -49,6 +52,9 @@ impl AvatarPlan {
             .map(|plan| {
                 if plan.known {
                     return true;
+                }
+                if plan.conversations.is_empty() {
+                    return false;
                 }
                 if let Some(Some(conversation)) = checked.next() {
                     watched.insert(conversation);
@@ -73,12 +79,7 @@ impl AvatarPlan {
         database::block_on_storage(self.finish_async())?
     }
     pub(crate) async fn finish_async(self) -> Result<Option<serde_json::Value>, EngineError> {
-        if !self.known
-            && !self
-                .history
-                .has_author_in_async(&self.conversations, &self.owner)
-                .await?
-        {
+        if !Self::visible_batch(&[&self]).await?.0[0] {
             return Ok(None);
         }
         Ok(Some(

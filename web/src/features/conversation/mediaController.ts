@@ -1,3 +1,4 @@
+import { mediaFileUrl } from "../../api/mediaFile.ts";
 import { httpImageCache } from "./httpImageCache.ts";
 import { isResolution, MediaAccess, MediaAccessError } from "./mediaAccess.ts";
 import type { Resolution } from "./mediaAccess.ts";
@@ -95,7 +96,7 @@ async function connect(): Promise<void> {
 }
 
 const metadataAccess = new MediaAccess();
-const reads = new Set<{ href: string; invalidated: boolean }>();
+const reads = new Set<{ id: string; invalidated: boolean }>();
 let clearing: Promise<void> = Promise.resolve();
 interface Watcher {
   count: number;
@@ -157,8 +158,7 @@ async function workerRequest(
 export function invalidateMediaReads(ids?: readonly string[]): Promise<void> {
   if (ids?.length === 0) return clearing;
   for (const read of reads)
-    if (!ids || ids.some((id) => read.href.includes(id)))
-      read.invalidated = true;
+    if (!ids || ids.includes(read.id)) read.invalidated = true;
   metadataAccess.clear(ids);
   httpImageCache.invalidate(ids);
   clearing = clearing
@@ -170,7 +170,7 @@ export function invalidateMediaReads(ids?: readonly string[]): Promise<void> {
       }
     });
   for (const [href, watcher] of watchers) {
-    if (ids && !ids.some((id) => href.includes(id))) continue;
+    if (ids && !ids.includes(mediaFileUrl(href)?.id ?? "")) continue;
     watcher.run();
   }
   return clearing;
@@ -183,30 +183,27 @@ export async function resolveMediaRead(
   link = false,
 ): Promise<Resolution> {
   for (let attempt = 0; ; attempt++) {
-    // Metadata does not depend on worker startup or Cache Storage availability.
+    // Select once: a controller transition cannot change this operation's backend.
     if (link || mediaCacheReady()) await clearing;
-    const read = { href, invalidated: false };
+    const direct = directMediaRequired();
+    const worker = mediaCacheReady() ? confirmed : null;
+    const read = { id: mediaFileUrl(href)?.id ?? "", invalidated: false };
     reads.add(read);
     try {
-      const packet: unknown =
-        !link && !mediaCacheReady()
+      const packet: unknown = direct
+        ? { value: await httpImageCache.resolve(href, refresh, download, link) }
+        : !link && !worker
           ? { value: await metadataAccess.load(href, false, refresh, download) }
-          : directMediaRequired()
-            ? {
-                value: await httpImageCache.resolve(
-                  href,
-                  refresh,
-                  download,
-                  link,
-                ),
-              }
-            : await workerRequest({
+          : await workerRequest(
+              {
                 kind: "commonroom-media:resolve",
                 href,
                 refresh,
                 download,
                 link,
-              });
+              },
+              worker ?? undefined,
+            );
       if (read.invalidated)
         throw new DOMException("Media access changed", "AbortError");
       if (!packet || typeof packet !== "object")

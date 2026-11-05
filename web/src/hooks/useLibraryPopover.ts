@@ -1,5 +1,5 @@
 import type { RefObject } from "preact";
-import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useEvent } from "./useEvent.ts";
 
@@ -12,31 +12,50 @@ export function useLibraryPopover(
   const dialog = useRef<HTMLDialogElement>(null);
   const motion = useRef<Animation | undefined>(undefined);
   const exiting = useRef(false);
-  const dismiss = useEvent(() => {
-    if (exiting.current) return;
-    exiting.current = true;
+  const move = useEvent((opening: boolean) => {
     const element = dialog.current;
-    if (
-      !element ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      close();
+    if (!element) return;
+    exiting.current = !opening;
+    const previous = motion.current;
+    const painted = previous ? getComputedStyle(element) : undefined;
+    const opacity = painted ? Number(painted.opacity) : 0;
+    const transform = painted?.transform ?? "scale(0.15)";
+    previous?.cancel();
+    motion.current = undefined;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (!opening) close();
       return;
     }
-    if (!motion.current) {
-      close();
-      return;
-    }
-    motion.current.reverse();
-    motion.current.finished
-      .then(close, () => undefined)
+    const animation = element.animate(
+      [
+        { opacity, transform },
+        {
+          opacity: opening ? 1 : 0,
+          transform: opening ? "scale(1)" : "scale(0.15)",
+        },
+      ],
+      {
+        ...controlMotion,
+        duration:
+          controlMotion.duration * Math.abs((opening ? 1 : 0) - opacity),
+        fill: "both",
+      },
+    );
+    motion.current = animation;
+    animation.finished
+      .then(
+        () => {
+          if (motion.current === animation && exiting.current) close();
+        },
+        () => undefined,
+      )
       .catch((error: unknown) => {
         console.error("Picker dismissal failed", error);
       });
   });
-  useEffect(() => {
-    if (closing) dismiss();
-  }, [closing, dismiss]);
+  const dismiss = useEvent(() => {
+    if (!exiting.current) move(false);
+  });
   useLayoutEffect(() => {
     const element = dialog.current;
     if (!element) return;
@@ -66,14 +85,7 @@ export function useLibraryPopover(
       element.style.transformOrigin = `${x - parseFloat(element.style.left)}px ${y - parseFloat(element.style.top)}px`;
     };
     position();
-    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches)
-      motion.current = element.animate(
-        [
-          { opacity: 0, transform: "scale(0.15)" },
-          { opacity: 1, transform: "scale(1)" },
-        ],
-        { ...controlMotion, fill: "both" },
-      );
+    move(true);
     const outside = (event: PointerEvent) => {
       if (
         event.target instanceof Node &&
@@ -108,6 +120,10 @@ export function useLibraryPopover(
       window.visualViewport?.removeEventListener("resize", position);
       window.visualViewport?.removeEventListener("scroll", position);
     };
-  }, [anchor, dismiss]);
+  }, [anchor, dismiss, move]);
+  useLayoutEffect(() => {
+    if (closing) dismiss();
+    else if (exiting.current) move(true);
+  }, [closing, dismiss, move]);
   return { dialog, exiting, dismiss };
 }

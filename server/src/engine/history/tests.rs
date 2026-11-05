@@ -1671,13 +1671,20 @@ fn author_witness_batch_contract(mut engine: Engine) {
         .unwrap();
     let one = engine.data.rooms["one"].id.clone();
     let two = engine.data.rooms["two"].id.clone();
-    let requests = vec![
+    let requests: Vec<(Vec<String>, String)> = vec![
         (vec![one.clone(), two.clone()], "alice".into()),
         (vec![one.clone()], "bob".into()),
         (vec![two.clone()], "bob".into()),
         (vec![], "alice".into()),
         (vec![two.clone(), one.clone()], "alice".into()),
     ];
+    let requests: Vec<_> = requests
+        .iter()
+        .map(|(conversations, author)| database::AuthorRead {
+            conversations,
+            author,
+        })
+        .collect();
     let history = engine.history_store();
     let before = history.next.load(Ordering::Relaxed);
     let witnesses = database::block_on_storage(history.author_witnesses_in_async(&requests))

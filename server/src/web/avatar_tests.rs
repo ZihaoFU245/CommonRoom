@@ -492,48 +492,100 @@ async fn postgres_profile_writes_progress_independently_and_cancelled_updates_pu
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
 async fn postgres_avatar_history_visibility_releases_engine_and_discards_revoked_reads() {
+    avatar_read_race(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+async fn postgres_linkless_media_fences_reference_changes_during_avatar_lookup() {
+    avatar_read_race(true).await;
+}
+
+async fn avatar_read_race(reference_change: bool) {
     let fixture = crate::engine::database::tests::PostgresFixture::new();
     let app = app(Engine::open_postgres(&fixture.url).unwrap());
-    let id = {
+    let (avatar, attachment) = {
         let mut engine = app.engine().unwrap();
-        let mut media = engine.allocate_avatar("alice", 8).unwrap();
-        media.ready = true;
-        media.content_type = "image/png".into();
-        media.object_key = media.final_key();
-        engine.finish_avatar("alice", &media).unwrap();
+        let mut avatar = engine.allocate_avatar("alice", 8).unwrap();
+        avatar.ready = true;
+        avatar.content_type = "image/png".into();
+        avatar.object_key = avatar.final_key();
+        engine.finish_avatar("alice", &avatar).unwrap();
         engine
             .execute(Some("alice"), None, "/room new shared")
             .unwrap();
         engine
             .execute(Some("alice"), Some("shared"), "historical author")
             .unwrap();
+        let attachment = if reference_change {
+            engine
+                .execute(Some("alice"), None, "/room new attachment")
+                .unwrap();
+            let room = engine.data.rooms["attachment"].id.clone();
+            let mut media = engine
+                .allocate_media("alice", &room, "photo.png", 8)
+                .unwrap();
+            media.ready = true;
+            media.content_type = "image/png".into();
+            media.object_key = media.final_key();
+            engine.finish_media("alice", &media).unwrap();
+            engine
+                .execute(
+                    Some("alice"),
+                    Some("attachment"),
+                    &format!("attachment /api/media/{}/file", media.id),
+                )
+                .unwrap();
+            Some(media.id)
+        } else {
+            None
+        };
         engine.execute(None, None, "/revoke bob user").unwrap();
         engine
             .execute(None, None, "/grant bob #shared r:message.read")
             .unwrap();
-        media.id
+        if reference_change {
+            engine
+                .execute(None, None, "/grant bob #attachment r:message.read")
+                .unwrap();
+        }
+        (avatar.id, attachment)
     };
-    let blocker = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
-    let hold = blocker.unchecked_transaction().unwrap();
+    let db = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+    let hold = db.unchecked_transaction().unwrap();
     hold.execute_batch("LOCK TABLE messages IN ACCESS EXCLUSIVE MODE")
         .unwrap();
     let reading = tokio::spawn({
         let app = app.clone();
+        let attachment = attachment.clone();
         async move {
-            request(
-                &app,
-                "bob",
-                "GET",
-                &format!("/api/avatars/{id}/info"),
-                json!(null),
-            )
-            .await
+            if let Some(id) = attachment {
+                request(
+                    &app,
+                    "bob",
+                    "POST",
+                    "/api/media/resolve",
+                    json!({"items":[
+                        {"kind":"media","id":id}, {"kind":"avatars","id":avatar}
+                    ]}),
+                )
+                .await
+            } else {
+                request(
+                    &app,
+                    "bob",
+                    "GET",
+                    &format!("/api/avatars/{avatar}/info"),
+                    json!(null),
+                )
+                .await
+            }
         }
     });
     let inspect = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
-        let waiting: bool = inspect.query_row("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=ANY%')", [], |row| row.get(0)).unwrap();
+        let waiting: bool = inspect.query_row("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT conversation FROM messages WHERE conversation=ANY%')", [], |row| row.get(0)).unwrap();
         if waiting {
             break;
         }
@@ -544,28 +596,64 @@ async fn postgres_avatar_history_visibility_releases_engine_and_discards_revoked
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     assert!(app.engine.try_read().is_ok());
-    tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        tokio::task::spawn_blocking({
-            let app = app.clone();
-            move || {
-                app.engine()
-                    .unwrap()
-                    .execute(None, None, "/revoke bob #shared r:message.read")
-                    .unwrap()
-            }
-        }),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    if let Some(id) = &attachment {
+        // Simulate committed reference removal/publication between media SQL and
+        // delivery without changing the independently locked author table.
+        inspect
+            .execute(
+                "DELETE FROM message_media WHERE media_id=$1",
+                crate::engine::database::params![id],
+            )
+            .unwrap();
+        app.engine
+            .write()
+            .unwrap()
+            .data
+            .rooms
+            .get_mut("attachment")
+            .unwrap()
+            .revision += 1;
+    } else {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tokio::task::spawn_blocking({
+                let app = app.clone();
+                move || {
+                    app.engine()
+                        .unwrap()
+                        .execute(None, None, "/revoke bob #shared r:message.read")
+                        .unwrap()
+                }
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
     hold.rollback().unwrap();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), reading)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), reading)
-            .await
-            .unwrap()
-            .unwrap()
-            .0,
-        StatusCode::NOT_FOUND
+        response.0,
+        if reference_change {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::NOT_FOUND
+        },
+        "{}",
+        response.1
     );
+    if let Some(id) = attachment {
+        let refreshed = request(
+            &app,
+            "bob",
+            "POST",
+            "/api/media/resolve",
+            json!({"items":[{"kind":"media","id":id}]}),
+        )
+        .await;
+        assert_eq!(refreshed.1["items"][0]["status"], 404, "{}", refreshed.1);
+    }
 }

@@ -5,11 +5,9 @@ import { isCompletedAvatar } from "../features/preferences/avatar.ts";
 import { responseJson } from "./responseJson.ts";
 import { requestAbort } from "./requestAbort.ts";
 import { mediaFileUrl } from "./mediaFile.ts";
+import { invalidateMedia } from "../features/conversation/mediaInvalidation.ts";
 import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
-import {
-  resolveMediaRead,
-  invalidateMediaReads,
-} from "../features/conversation/mediaController.ts";
+import { resolveMediaRead } from "../features/conversation/mediaController.ts";
 import { isLibraryPage } from "./library.ts";
 import type { LibraryAction, LibraryView } from "./library.ts";
 import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
@@ -88,8 +86,7 @@ async function request<T>(
     cancellation.signal.throwIfAborted();
     if (response.status === 401) {
       mediaConfigCache.clear();
-      mediaStatusCache.clear();
-      await invalidateMediaReads();
+      await invalidateMedia(undefined, true);
     }
     if (!response.ok)
       throw new ApiError(
@@ -213,8 +210,7 @@ export const api = {
       source_conversation: source ?? null,
       confirm_last: confirmLast,
     }).then(async (result) => {
-      mediaStatusCache.clear([id]);
-      await invalidateMediaReads([id]);
+      await invalidateMedia([id]);
       return result;
     }),
   mediaConfig: (signal: AbortSignal) =>
@@ -280,20 +276,18 @@ export const api = {
   session: () => request("session", isOk),
   login: async (username: string, password: string) => {
     mediaConfigCache.clear();
-    mediaStatusCache.clear();
-    await invalidateMediaReads();
+    await invalidateMedia(undefined, true);
     const result = await request("login", isOk, { username, password });
     mediaConfigCache.clear();
-    await invalidateMediaReads();
+    await invalidateMedia(undefined, true);
     return result;
   },
   logout: async () => {
     mediaConfigCache.clear();
-    mediaStatusCache.clear();
-    await invalidateMediaReads();
+    await invalidateMedia(undefined, true);
     const result = await request("logout", isOk, {});
     mediaConfigCache.clear();
-    await invalidateMediaReads();
+    await invalidateMedia(undefined, true);
     return result;
   },
   history: (

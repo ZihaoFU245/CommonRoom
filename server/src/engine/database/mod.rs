@@ -20,7 +20,7 @@ pub(crate) use metadata::{CursorRows, EntityRow, MetadataOp, MetadataSnapshot, M
 mod history;
 mod transaction;
 pub(crate) use history::wire_size as history_wire_size;
-pub(crate) use history::{PageRead, UnreadHint, UnreadRead};
+pub(crate) use history::{AuthorRead, PageRead, UnreadHint, UnreadRead};
 #[cfg(test)]
 pub(crate) use runtime::block_on as block_on_storage;
 #[cfg(test)]

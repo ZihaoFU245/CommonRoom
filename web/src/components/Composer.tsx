@@ -263,7 +263,7 @@ export function Composer({
               aria-haspopup="dialog"
               aria-expanded={libraryOpen && !libraryClosing}
               onClick={() => {
-                if (libraryOpen) setLibraryClosing(true);
+                if (libraryOpen) setLibraryClosing((value) => !value);
                 else setLibraryOpen(true);
               }}
             >

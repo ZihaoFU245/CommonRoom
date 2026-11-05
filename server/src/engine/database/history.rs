@@ -4,6 +4,30 @@ use super::{Backend, Error, Result};
 use crate::engine::{HistoryRange, Message, Unread};
 use std::collections::BTreeMap;
 
+pub(crate) struct AuthorRead<'a> {
+    pub(crate) conversations: &'a [String],
+    pub(crate) author: &'a str,
+}
+// Serialize equal scopes once without widening any owner's allowed conversations.
+pub(super) fn author_selection(requests: &[AuthorRead<'_>]) -> Result<String> {
+    let mut scopes = Vec::new();
+    let owners: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            let scope = scopes
+                .iter()
+                .position(|ids| *ids == request.conversations)
+                .unwrap_or_else(|| {
+                    scopes.push(request.conversations);
+                    scopes.len() - 1
+                });
+            (scope, request.author)
+        })
+        .collect();
+    serde_json::to_string(&(scopes, owners))
+        .map_err(|_| Error::Conversion("Cannot serialize author selection"))
+}
+
 pub(crate) struct PageRead<'a> {
     pub(crate) conversation: &'a str,
     pub(crate) revision: u64,
@@ -172,12 +196,9 @@ impl super::Connection {
     }
     pub(super) async fn read_author_witnesses(
         &mut self,
-        requests: &[(Vec<String>, String)],
+        requests: &[AuthorRead<'_>],
     ) -> Result<Vec<Option<String>>> {
         read_call!(self, author_witnesses, requests)
-    }
-    pub(super) async fn read_author(&mut self, ids: &[String], author: &str) -> Result<bool> {
-        read_call!(self, has_author, ids, author)
     }
     pub(super) async fn read_sequence(&mut self, id: &str, sequence: u64) -> Result<bool> {
         read_call!(self, contains_sequence, id, sequence)
@@ -208,14 +229,10 @@ impl super::Database {
     }
     pub(crate) async fn history_author_witnesses(
         &self,
-        requests: &[(Vec<String>, String)],
+        requests: &[AuthorRead<'_>],
     ) -> Result<Vec<Option<String>>> {
         let mut reader = self.acquire_reader().await?;
         self.observe_history(reader.read_author_witnesses(requests).await)
-    }
-    pub(crate) async fn history_has_author(&self, ids: &[String], author: &str) -> Result<bool> {
-        let mut reader = self.acquire_reader().await?;
-        self.observe_history(reader.read_author(ids, author).await)
     }
     pub(crate) async fn history_contains_sequence(&self, id: &str, sequence: u64) -> Result<bool> {
         let mut reader = self.acquire_reader().await?;

@@ -122,7 +122,11 @@ items, shares one admission job, and reads metadata, references and library
 visibility in a single statement on either database backend. Only batches with signed links need a second metadata statement. Final authority
 checks revalidate delivery; avatar history uses one batched query and watches only
 the readable conversation proving each owner’s retained author presence. Authority
-conflicts retry once at the resolver client. Missing and
+conflicts retry once within one 15-second resolver request budget. The client
+validates a complete response packet before publishing any result or installing
+leases; malformed later items reject the packet. Linkless reads fence captured
+message-reference revisions through delivery, while signed batches also reread
+mutable SQL facts. Missing and
 unauthorized items return individual hidden errors; one denial does not fail
 unrelated results.
 
@@ -169,8 +173,8 @@ Clear site data to erase local copies. Bytes contain no credentials; an expired
 or invalidated lease never gains an offline authorization fallback.
 
 For plain HTTP without workers (LAN/Tailscale debugging), images, avatars and
-sticker thumbnails use the same resolver and lease rules with bounded tab-local
-Blob storage. Warm remounts need no authorization or storage request while the
+sticker thumbnails share metadata and byte-read resolver ownership and lease rules
+with bounded tab-local Blob storage. Warm remounts need no authorization or storage request while the
 lease remains valid; a page reload starts cold. Object URLs are revoked on
 cleanup. Other controls resolve signed links through the same read resolver and
 access storage directly, without a persistent byte cache. Upload flows remain

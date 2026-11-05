@@ -1,7 +1,7 @@
 import { sameMediaAuthority } from "../features/conversation/mediaAuthority.ts";
 import { mediaConfigCache } from "../api/mediaConfigCache.ts";
 import * as mediaReads from "../features/conversation/mediaController.ts";
-import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
+import { invalidateMedia } from "../features/conversation/mediaInvalidation.ts";
 import { serverBaseUrl } from "../api/server.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
@@ -62,17 +62,9 @@ export function useConnection(
       }
       // Transient refresh failures retry on reconnect/focus; socket updates remain authoritative.
     };
-    const invalidateMedia = (ids?: string[]) => {
-      mediaStatusCache.clear(ids);
-      mediaReads
-        .invalidateMediaReads(ids)
-        .catch((error: unknown) =>
-          console.error("Media invalidation failed", error),
-        );
-      window.dispatchEvent(
-        ids
-          ? new CustomEvent("commonroom-library-change", { detail: ids })
-          : new Event("commonroom-library-change"),
+    const refreshMedia = (ids?: string[]) => {
+      invalidateMedia(ids, true).catch((error: unknown) =>
+        console.error("Media invalidation failed", error),
       );
     };
     const createSync = () =>
@@ -149,7 +141,7 @@ export function useConnection(
         const data = parseFrame(String(event.data));
         if (!data) return;
         if (data.kind === "media") {
-          invalidateMedia(data.ids);
+          refreshMedia(data.ids);
           return;
         }
         if (data.kind === "activity") {
@@ -182,8 +174,7 @@ export function useConnection(
             serverBaseUrl(),
             data.sync?.instance,
           );
-          if (!sameMediaAuthority(currentState.current, data))
-            invalidateMedia();
+          if (!sameMediaAuthority(currentState.current, data)) refreshMedia();
           awaitingBaseline = false;
           clearTimeout(resumeTimer);
           const ids = new Set([
@@ -210,7 +201,7 @@ export function useConnection(
           const id = old
             ? /\/avatars\/([a-f0-9-]+)\/file/u.exec(old)?.[1]
             : undefined;
-          if (id) invalidateMedia([id]);
+          if (id) refreshMedia([id]);
           sync.receive(applyAvatar(currentState.current, data), true);
         } else if (data.kind === "presence") {
           sync.receive({ ...currentState.current, online: data.online }, true);

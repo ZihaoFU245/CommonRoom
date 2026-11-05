@@ -191,20 +191,9 @@ impl HistoryStore {
             .map(|_| self.database.reader_lease().unwrap())
             .collect()
     }
-    #[cfg(test)]
-    pub(crate) fn has_author_in(
-        &self,
-        conversations: &[String],
-        author: &str,
-    ) -> Result<bool, EngineError> {
-        if conversations.is_empty() {
-            return Ok(false);
-        }
-        self.query(self.database.history_has_author(conversations, author))
-    }
     pub(crate) async fn author_witnesses_in_async(
         &self,
-        requests: &[(Vec<String>, String)],
+        requests: &[database::AuthorRead<'_>],
     ) -> Result<Vec<Option<String>>, EngineError> {
         if requests.is_empty() {
             return Ok(Vec::new());
@@ -213,24 +202,16 @@ impl HistoryStore {
         self.next.fetch_add(1, Ordering::Relaxed);
         Ok(self.database.history_author_witnesses(requests).await?)
     }
-    pub(crate) async fn has_author_in_async(
-        &self,
-        conversations: &[String],
-        author: &str,
-    ) -> Result<bool, EngineError> {
-        if conversations.is_empty() {
-            return Ok(false);
-        }
-        self.ensure_caches()?;
-        self.next.fetch_add(1, Ordering::Relaxed);
-        Ok(self
-            .database
-            .history_has_author(conversations, author)
-            .await?)
-    }
     #[cfg(test)]
     pub(crate) fn has_author(&self, id: &str, author: &str) -> Result<bool, EngineError> {
-        self.has_author_in(&[id.into()], author)
+        Ok(
+            database::block_on_storage(self.author_witnesses_in_async(&[database::AuthorRead {
+                conversations: &[id.into()],
+                author,
+            }]))??
+            .iter()
+            .any(Option::is_some),
+        )
     }
     #[cfg(test)]
     pub(crate) fn contains_sequence(&self, id: &str, sequence: u64) -> Result<bool, EngineError> {

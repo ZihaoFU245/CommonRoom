@@ -286,3 +286,55 @@ test("zero-duration leases and links fail at the response boundary", async () =>
     await assert.rejects(access.load(href, true), /Invalid media/u);
   }
 });
+
+test("malformed later items reject the whole packet without installing early leases", async () => {
+  let calls = 0;
+  const other = href.replace(id, "00000000-d8b7-4c63-91fe-3cc63f106178");
+  const access = new MediaAccess(async (url, options) => {
+    calls++;
+    const packet = await mediaResolution(url, options).json();
+    if (calls === 1) packet.items[1].lease_seconds = 0;
+    return Response.json(packet);
+  });
+  const results = await Promise.allSettled([
+    access.load(href),
+    access.load(other),
+  ]);
+  assert.ok(results.every((result) => result.status === "rejected"));
+  await Promise.all([access.load(href), access.load(other)]);
+  assert.equal(
+    calls,
+    2,
+    "neither a lease nor pending ownership survived rejection",
+  );
+});
+
+test("conflict retries share one deadline and omit invalidated items", async (t) => {
+  const timers = t.mock.method(globalThis, "setTimeout");
+  const other = href.replace(id, "00000000-d8b7-4c63-91fe-3cc63f106178");
+  let calls = 0,
+    signal;
+  const access = new MediaAccess(async (url, options) => {
+    calls++;
+    if (calls === 1) {
+      signal = options.signal;
+      access.clear([id]);
+      return new Response(null, { status: 409 });
+    }
+    assert.equal(options.signal, signal);
+    assert.deepEqual(
+      JSON.parse(options.body).items.map((item) => item.id),
+      [other.split("/").at(-2)],
+    );
+    return mediaResolution(url, options);
+  });
+  await Promise.all([
+    assert.rejects(access.load(href), { name: "AbortError" }),
+    access.load(other),
+  ]);
+  assert.equal(calls, 2);
+  assert.equal(
+    timers.mock.calls.filter((call) => call.arguments[1] === 15000).length,
+    1,
+  );
+});

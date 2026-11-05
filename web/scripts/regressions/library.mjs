@@ -36,6 +36,36 @@ const page = (items) => ({
   uploads_paused: false,
 });
 
+function PickerComposer() {
+  const input = useRef(null);
+  const [draft, edit] = useState("hello world");
+  return h(Composer, {
+    account: "picker-test",
+    minimumComposerHeight: 40,
+    actualComposerHeight: 40,
+    hints: [],
+    activeHint: 0,
+    replyTarget: null,
+    input,
+    consoleView: false,
+    draft,
+    pending: false,
+    canWrite: true,
+    edit,
+    startResize() {},
+    moveResize() {},
+    endResize() {},
+    resizeComposer() {},
+    acceptHint() {},
+    cancelReply() {},
+    send(event) {
+      event.preventDefault();
+    },
+    keydown() {},
+    selectCaret() {},
+  });
+}
+
 export async function libraryRegressions({
   test,
   tests,
@@ -53,6 +83,87 @@ export async function libraryRegressions({
     click("Stickers");
     await until(() => tests.querySelector('[aria-label="Collections"]'));
   }
+  await test("media library repeated icon clicks reverse picker motion immediately", async () => {
+    api.mediaConfig = async () => ({ enabled: false, max_size: 0 });
+    api.library = async () => page([]);
+    render(h(PickerComposer), tests);
+    click("Open media library");
+    await until(() => tests.querySelector(".library-picker"));
+    const picker = tests.querySelector(".library-picker");
+    let animation = picker.getAnimations()[0];
+    check(animation, "opening has an animation");
+    animation.finish();
+    await animation.finished;
+    for (let turn = 0; turn < 6; turn++) {
+      click("Open media library");
+      await until(() => picker.getAnimations()[0] !== animation);
+      animation = picker.getAnimations()[0];
+      check(animation, "each click immediately starts the requested direction");
+      check(
+        animation.playbackRate > 0 &&
+          animation.effect.getTiming().easing === "ease-out",
+        "closing and reopening both start promptly with ease-out",
+      );
+      check(
+        animation.effect.getTiming().duration <= 120,
+        "interrupted motion never restarts a full long transition",
+      );
+      animation.pause();
+      animation.currentTime = Number(animation.effect.getTiming().duration) / 2;
+      const painted = getComputedStyle(picker).opacity;
+      const bounds = picker.getBoundingClientRect();
+      click("Open media library");
+      await until(() => picker.getAnimations()[0] !== animation);
+      const reopened = picker.getAnimations()[0];
+      reopened.pause();
+      reopened.currentTime = 0;
+      check(
+        tests.querySelector(".library-picker") === picker,
+        "reopening retains the mounted picker",
+      );
+      check(
+        tests
+          .querySelector('[aria-label="Open media library"]')
+          .getAttribute("aria-expanded") === "true",
+        "the latest click reopens instead of waiting for dismissal",
+      );
+      check(
+        Math.abs(Number(getComputedStyle(picker).opacity) - Number(painted)) <
+          0.02,
+        "direction changes continue from the painted opacity without a jump",
+      );
+      const continued = picker.getBoundingClientRect();
+      check(
+        Math.abs(continued.width - bounds.width) < 1 &&
+          Math.abs(continued.top - bounds.top) < 1,
+        "reversal also preserves painted scale and placement",
+      );
+      reopened.finish();
+      await reopened.finished;
+      animation = reopened;
+    }
+    click("Open media library");
+    await until(() => !tests.querySelector(".library-picker"));
+    const matchMedia = window.matchMedia;
+    window.matchMedia = (query) => {
+      const result = matchMedia.call(window, query);
+      if (query === "(prefers-reduced-motion: reduce)")
+        Object.defineProperty(result, "matches", { value: true });
+      return result;
+    };
+    try {
+      click("Open media library");
+      await until(() => tests.querySelector(".library-picker"));
+      check(
+        tests.querySelector(".library-picker").getAnimations().length === 0,
+        "reduced motion reveals immediately without an animation",
+      );
+      click("Open media library");
+      await until(() => !tests.querySelector(".library-picker"));
+    } finally {
+      window.matchMedia = matchMedia;
+    }
+  });
   await test("media library picker and quota share GETs", async () => {
     const calls = [],
       pending = [];
@@ -659,37 +770,8 @@ export async function libraryRegressions({
     localStorage.removeItem(key);
     api.mediaConfig = async () => ({ enabled: false, max_size: 0 });
     api.library = async () => page([sticker]);
-    function Editor() {
-      const input = useRef(null);
-      const [draft, edit] = useState("hello world");
-      return h(Composer, {
-        account: "picker-test",
-        minimumComposerHeight: 40,
-        actualComposerHeight: 40,
-        hints: [],
-        activeHint: 0,
-        replyTarget: null,
-        input,
-        consoleView: false,
-        draft,
-        pending: false,
-        canWrite: true,
-        edit,
-        startResize() {},
-        moveResize() {},
-        endResize() {},
-        resizeComposer() {},
-        acceptHint() {},
-        cancelReply() {},
-        send(event) {
-          event.preventDefault();
-        },
-        keydown() {},
-        selectCaret() {},
-      });
-    }
     try {
-      render(h(Editor), tests);
+      render(h(PickerComposer), tests);
       const input = tests.querySelector("textarea");
       input.focus();
       input.setSelectionRange(6, 11);

@@ -191,8 +191,10 @@ One `Arc<RwLock<Engine>>` permits simultaneous engine readers and serializes sho
   deduplication and 32-item batches. `mediaCache.ts` owns immutable bytes and
   uses these leases; the worker exposes shared resolution to the page.
   `mediaController.ts` owns worker RPC, invalidation barriers and background
-  renewal for mounted visible media. HTTP images use the same cache engine in
-  memory. `web/media_resolve.rs` shares admission/native reads and final
+  renewal for mounted visible media. HTTP images and metadata share the same
+  resolver and cache engine in memory. Secure pre-control metadata retains a separate resolver; each operation
+  selects its backend after the invalidation barrier and keeps that choice.
+  `web/media_resolve.rs` shares admission/native reads and final
   authorization across each batch. Upload and mutation authorization never uses
   read leases. See [Media uploads](media-uploads.md) for lifetimes and
   revocation semantics.
@@ -401,7 +403,9 @@ item. Storage deletion remains outside engine guards and asset ownership
 transactions. The composer loads the picker with its own bundle so the first
 click opens it without an intermediate loading surface. Sticker requests and
 their loading status stay inside the Stickers tab. `useLibraryPopover.ts` owns
-picker placement, animation and dismissal cleanup; `useLibraryActions.ts` owns
+picker placement, animation and dismissal cleanup. Repeated trigger clicks reverse
+the current painted state immediately; each direction uses the shared 120 ms
+ease-out timing, shortened for interrupted travel. `useLibraryActions.ts` owns
 save/acquire/remove state and final-owner confirmation. `LibraryStickerTile.tsx`
 renders available media or removable unavailable metadata and the themed
 remove/acquire capsule for borrowed assets or a single remove control for owned
@@ -507,7 +511,9 @@ loading. Account avatar state stays mounted across Settings tabs.
 
 Media-cache recency rewrites are limited to once per object per minute within a
 worker lifetime, with bounded timestamp maps and at most 128 queued recency
-writes. Pending writes for the same object coalesce. Persisted eviction order is
+writes. Pending writes for the same object coalesce; one admitted flush shares
+the recency-cache handle and trims metadata once per bounded batch. Persisted
+eviction order is
 approximate LRU; byte reuse requires an unexpired read authorization lease.
 Serialized cache maintenance builds an ordered size index lazily once per
 worker, then maintains its byte total on insertion, deletion and recency

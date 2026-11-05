@@ -1067,3 +1067,57 @@ test("metadata leases require neither Cache Storage nor unused signed links", as
   await cache.resolve(path);
   assert.equal(calls, 1);
 });
+
+test("warm bursts coalesce recency cache opens and enumeration", async (t) => {
+  let now = 100000;
+  t.mock.method(Date, "now", () => now);
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  const urls = Array.from(
+    { length: 32 },
+    (_, index) =>
+      new URL(
+        path.replace("06178/file", `${String(index).padStart(5, "0")}/file`),
+      ),
+  );
+  const load = async (url) =>
+    (
+      await instance.respond(new Request(url), url, (work) => f.work.push(work))
+    ).text();
+  for (const url of urls) {
+    await load(url);
+    await Promise.all(f.work);
+  }
+  const recency = await f.storage.open("commonroom-media-recency");
+  const keys = t.mock.method(recency, "keys");
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  const open = f.storage.open;
+  let opens = 0;
+  t.mock.method(f.storage, "open", async (name) => {
+    if (name === "commonroom-media-recency") {
+      opens++;
+      await gate;
+    }
+    return open(name);
+  });
+  const network = f.calls.length,
+    bytes = f.puts(),
+    writes = f.metadataPuts();
+  now += 60001;
+  await Promise.all(urls.map(load));
+  release();
+  await Promise.all(f.work);
+  assert.equal(
+    f.calls.length,
+    network,
+    "valid leases and bytes avoid all network work",
+  );
+  assert.equal(f.puts(), bytes, "immutable bodies are unchanged");
+  assert.equal(f.metadataPuts() - writes, 32);
+  assert.equal(opens, 1);
+  assert.equal(keys.mock.callCount(), 1);
+});

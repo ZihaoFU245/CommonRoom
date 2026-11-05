@@ -174,6 +174,7 @@ export class MediaCache {
   private readonly touched = new Map<string, number>();
   private readonly persistedAt = new Map<string, number>();
   private readonly recencyWrites = new Set<string>();
+  private recencyFlush: Promise<void> | undefined;
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
   private readonly storage: MediaCacheStorage;
   private readonly network: typeof fetch;
@@ -300,35 +301,47 @@ export class MediaCache {
       return;
     this.persistedAt.set(key, now);
     this.recencyWrites.add(key);
-    // Persist only a tiny timestamp. Immutable attachment bytes are never
-    // deleted/re-written merely because a player seeks or a row remounts.
-    const work = this.writes
-      .then(() =>
-        maintain(async () => {
-          const recency = await this.storage.open(recencyCacheName);
-          await recency.put(
-            key,
-            new Response(null, { headers: { "X-Accessed-At": String(now) } }),
-          );
-          // Browser eviction can remove bodies without their metadata. Bound this
-          // cache independently, including when body storage never reaches pressure.
-          const records = await recency.keys();
-          for (const record of records.slice(
-            0,
-            Math.max(0, records.length - entryLimit),
-          ))
-            await recency.delete(record);
-        }),
-      )
-      .catch((error: unknown) => {
-        if (this.persistedAt.get(key) === now) this.persistedAt.delete(key);
-        ignoreStorageFailure(error);
-      })
-      .finally(() => {
-        this.recencyWrites.delete(key);
-      });
-    this.writes = work.catch(() => {});
-    keepAlive(work);
+    if (!this.recencyFlush) {
+      // One admitted flush owns the bounded queue and its worker lifetime. Only
+      // timestamps change; immutable bodies and cross-worker reconciliation stay separate.
+      const work = this.writes
+        .then(() =>
+          maintain(async () => {
+            const recency = await this.storage.open(recencyCacheName);
+            while (this.recencyWrites.size) {
+              const batch = [...this.recencyWrites];
+              for (const key of batch)
+                await recency.put(
+                  key,
+                  new Response(null, {
+                    headers: {
+                      "X-Accessed-At": String(this.touched.get(key) ?? now),
+                    },
+                  }),
+                );
+              // Bound metadata even when the browser independently evicts bodies.
+              const records = await recency.keys();
+              for (const record of records.slice(
+                0,
+                Math.max(0, records.length - entryLimit),
+              ))
+                await recency.delete(record);
+              for (const key of batch) this.recencyWrites.delete(key);
+            }
+          }),
+        )
+        .catch((error: unknown) => {
+          for (const key of this.recencyWrites) this.persistedAt.delete(key);
+          ignoreStorageFailure(error);
+        })
+        .finally(() => {
+          this.recencyWrites.clear();
+          this.recencyFlush = undefined;
+        });
+      this.recencyFlush = work;
+      this.writes = work.catch(() => {});
+    }
+    keepAlive(this.recencyFlush);
   }
   private async evict(
     cache: MediaCacheStore,

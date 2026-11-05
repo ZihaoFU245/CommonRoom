@@ -9,7 +9,6 @@ import { useEvent } from "./useEvent.ts";
 const cachedPages = new Map<string, { page: LibraryPage; expires: number }>();
 interface PendingPage {
   controller: AbortController;
-  generation: number;
   readers: number;
   promise: Promise<LibraryPage>;
 }
@@ -19,12 +18,10 @@ let cacheGeneration = 0;
 /** Releasing one reader keeps other readers' HTTP request alive. */
 function sharePage(key: string, view: LibraryView, after: string) {
   let pending = pendingPages.get(key);
-  if (pending?.generation !== cacheGeneration) {
-    pending?.controller.abort();
+  if (!pending) {
     const controller = new AbortController();
     const entry: PendingPage = {
       controller,
-      generation: cacheGeneration,
       readers: 0,
       promise: api.library(view, after, controller.signal).finally(() => {
         if (pendingPages.get(key) === entry) pendingPages.delete(key);
@@ -92,6 +89,8 @@ export function useLibraryPage(
       window.addEventListener("commonroom-library-change", () => {
         cacheGeneration++;
         cachedPages.clear();
+        for (const pending of pendingPages.values()) pending.controller.abort();
+        pendingPages.clear();
       });
     }
     window.addEventListener("commonroom-library-change", refresh);

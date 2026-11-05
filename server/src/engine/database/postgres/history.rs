@@ -2,8 +2,8 @@
 use super::super::{
     Error, Result,
     history::{
-        CleanupCounts, PageRead, PageResult, UnreadBatch, UnreadRead, attach_reactions, count,
-        decode_message, unsigned,
+        AuthorRead, CleanupCounts, PageRead, PageResult, UnreadBatch, UnreadRead, attach_reactions,
+        author_selection, count, decode_message, unsigned,
     },
     message::number,
 };
@@ -125,21 +125,13 @@ async fn reactions(db: &mut PgConnection, id: &str, messages: &mut [Message]) ->
 }
 pub(in crate::engine::database) async fn author_witnesses(
     db: &mut PgConnection,
-    requests: &[(Vec<String>, String)],
+    requests: &[AuthorRead<'_>],
 ) -> Result<Vec<Option<String>>> {
-    let selection = serde_json::to_string(requests)
-        .map_err(|_| Error::Conversion("Cannot serialize author selection"))?;
-    Ok(sqlx::query_scalar("SELECT (SELECT m.conversation FROM messages m WHERE m.conversation IN (SELECT jsonb_array_elements_text(p.value->0)) AND m.projection #>> '{from}' = p.value->>1 ORDER BY m.conversation LIMIT 1) FROM jsonb_array_elements($1::text::jsonb) WITH ORDINALITY p(value, ordinal) ORDER BY p.ordinal").bind(selection).fetch_all(db).await?)
-}
-pub(in crate::engine::database) async fn has_author(
-    db: &mut PgConnection,
-    ids: &[String],
-    author: &str,
-) -> Result<bool> {
-    if ids.is_empty() {
-        return Ok(false);
+    if let [request] = requests {
+        return Ok(vec![sqlx::query_scalar("SELECT conversation FROM messages WHERE conversation=ANY($1) AND (projection #>> '{from}')=$2 LIMIT 1")
+            .bind(request.conversations).bind(request.author).fetch_optional(db).await?]);
     }
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=ANY($1) AND (projection #>> '{from}')=$2)").bind(ids).bind(author).fetch_one(db).await?)
+    Ok(sqlx::query_scalar("SELECT (SELECT m.conversation FROM messages m WHERE m.conversation IN (SELECT jsonb_array_elements_text(($1::text::jsonb->0)->((p.value->>0)::int))) AND m.projection #>> '{from}' = p.value->>1 ORDER BY m.conversation LIMIT 1) FROM jsonb_array_elements($1::text::jsonb->1) WITH ORDINALITY p(value, ordinal) ORDER BY p.ordinal").bind(author_selection(requests)?).fetch_all(db).await?)
 }
 pub(in crate::engine::database) async fn contains_sequence(
     db: &mut PgConnection,

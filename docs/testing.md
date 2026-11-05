@@ -244,7 +244,8 @@ Browser image regressions require measured dimensions before lazy loading on
 remount and preserve responsive landscape/portrait aspect ratios and size limits.
 Attachment remount coverage also replaces the file ID without unmounting its
 wrapper and requires the new file's own loading/status state.
-Cache work-count tests cap recency write backlog under slow storage, rank bulk
+Cache work-count tests verify shared recency opens/key enumeration for warm bursts,
+cap recency write backlog under slow storage, rank bulk
 evictions once per retained entry, bound pending status ownership and cancel it
 on identity reset, and serialize competing workers' byte-budget maintenance.
 Error-boundary tests distinguish browser security/quota failures from unexpected
@@ -1295,3 +1296,9 @@ cases require focus restoration to the original remove button or Edit after the
 trigger disappears or deletion succeeds.
 The ordinary web suite validates
 bounded list responses, canonical paths, cookie handling and explicit confirmation.
+
+Media resolver regressions reject a whole malformed packet before installing leases,
+share the conflict-retry deadline and omit invalidated items from retries. HTTP-debug
+metadata/image reads share queued resolution. PostgreSQL linkless-read coverage
+pauses avatar lookup after media SQL, removes an attachment reference and publishes
+its conversation revision, then requires conflict and a denied fresh read.

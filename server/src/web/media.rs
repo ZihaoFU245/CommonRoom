@@ -73,7 +73,21 @@ impl Identity {
         }
         Ok(())
     }
-    pub(super) fn avatar_conversations<'a>(
+    pub(super) fn media_read_scopes(
+        &self,
+        engine: &Engine,
+    ) -> Result<(Vec<String>, bool), ApiError> {
+        verify_identity(self, engine)?;
+        Ok((
+            engine
+                .library_read_scopes(&self.user)
+                .into_iter()
+                .filter(|id| self.permit_conversation(engine, id).is_ok())
+                .collect(),
+            self.conversation_scope(engine)?.is_none(),
+        ))
+    }
+    pub(super) fn conversation_scope<'a>(
         &self,
         engine: &'a Engine,
     ) -> Result<Option<&'a std::collections::BTreeSet<String>>, ApiError> {
@@ -125,14 +139,7 @@ async fn native_media<T: Send + 'static>(
     access: &Access,
     id: String,
     missing: &'static str,
-    include_saved: bool,
-    inspect: impl FnOnce(
-        &Engine,
-        &Identity,
-        crate::engine::media::Media,
-        bool,
-        bool,
-    ) -> Result<T, ApiError>
+    inspect: impl FnOnce(&Engine, &Identity, crate::engine::database::MediaRead) -> Result<T, ApiError>
     + Send
     + 'static,
 ) -> Result<T, ApiError> {
@@ -142,57 +149,28 @@ async fn native_media<T: Send + 'static>(
     super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
         let _ordering = app.mutations.conversation(format!("@asset:{id}")).await?;
-        let (media, attached) = store
-            .load(&id)
+        let (scopes, independent) = app
+            .inspect_engine({
+                let identity = identity.clone();
+                move |engine, _| identity.media_read_scopes(engine)
+            })
+            .await?;
+        let row = store
+            .read_batch(
+                &[id],
+                if independent { &identity.account } else { "" },
+                &scopes,
+            )
             .await
-            .map_err(|cause| super::error::hidden(cause, missing))?;
-        let attached = if media.conversation == "@library" {
-            let (scopes, independent) = app
-                .inspect_engine({
-                    let identity = identity.clone();
-                    move |engine, _| -> Result<_, ApiError> {
-                        verify_identity(&identity, engine)?;
-                        let independent = match &identity.access {
-                            Access::Browser(_) => true,
-                            Access::Bot { context, .. } => {
-                                context.metadata(engine)?.conversations.is_none()
-                            }
-                        };
-                        Ok((
-                            engine
-                                .library_read_scopes(&identity.user)
-                                .into_iter()
-                                .filter(|id| identity.permit_conversation(engine, id).is_ok())
-                                .collect::<Vec<_>>(),
-                            independent,
-                        ))
-                    }
-                })
-                .await?;
-            store
-                .library_access(
-                    &id,
-                    if independent { &identity.account } else { "" },
-                    &scopes,
-                )
-                .await?
-        } else {
-            attached
-        };
-        let saved = if include_saved
-            && media.conversation == "@library"
-            && matches!(&identity.access, Access::Browser(_))
-        {
-            store.library_saved(&id, &identity.account).await?
-        } else {
-            false
-        };
+            .map_err(|cause| super::error::hidden(cause, missing))?
+            .pop()
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, missing))?;
         app.inspect_engine(move |engine, _| {
             verify_identity(&identity, engine)?;
-            if media.conversation != "@library" {
-                identity.permit_conversation(engine, &media.conversation)?;
+            if row.media.conversation != "@library" {
+                identity.permit_conversation(engine, &row.media.conversation)?;
             }
-            inspect(engine, &identity, media, attached, saved)
+            inspect(engine, &identity, row)
         })
         .await
     })
@@ -208,13 +186,12 @@ async fn owner(
         access,
         id,
         "Upload not found.",
-        false,
-        |engine, identity, media, attached, _saved| {
-            if media.conversation == "@library" {
+        |engine, identity, row| {
+            if row.media.conversation == "@library" {
                 identity.permit_conversation(engine, "@library")?;
             }
-            engine.authorize_media_owner(&identity.user, &media, attached)?;
-            Ok(media)
+            engine.authorize_media_owner(&identity.user, &row.media, row.attached)?;
+            Ok(row.media)
         },
     )
     .await
@@ -493,12 +470,16 @@ pub(crate) async fn info_as(
         &access,
         id,
         "Attachment not found.",
-        true,
-        move |engine, identity, media, attached, saved| {
+        move |engine, identity, row| {
             engine
-                .authorize_media_read(&identity.user, &media, attached, options.include_expired)
+                .authorize_media_read(
+                    &identity.user,
+                    &row.media,
+                    row.attached,
+                    options.include_expired,
+                )
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))?;
-            Ok((media, saved))
+            Ok((row.media, row.saved))
         },
     )
     .await?;
@@ -546,10 +527,9 @@ async fn download_url_as(
         &access,
         id,
         "Attachment not found.",
-        false,
-        |engine, identity, media, attached, _saved| {
+        |engine, identity, row| {
             engine
-                .prepare_media_download_record(&identity.user, media, attached)
+                .prepare_media_download_record(&identity.user, row.media, row.attached)
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))
         },
     )
@@ -566,10 +546,9 @@ async fn download_url_as(
         &access,
         ticket.media.id.clone(),
         "Attachment not found.",
-        false,
-        move |engine, identity, current, attached, _saved| {
+        move |engine, identity, row| {
             engine
-                .validate_media_download_record(&identity.user, &ticket, &current, attached)
+                .validate_media_download_record(&identity.user, &ticket, &row.media, row.attached)
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))
         },
     )

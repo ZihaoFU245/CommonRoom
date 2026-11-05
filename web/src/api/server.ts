@@ -1,7 +1,6 @@
 /** Server directory URLs preserve API path prefixes. */
 import { mediaConfigCache } from "./mediaConfigCache.ts";
-import * as mediaReads from "../features/conversation/mediaController.ts";
-import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
+import { invalidateMedia } from "../features/conversation/mediaInvalidation.ts";
 import { readStorage, writeStorage } from "./browserStorage.ts";
 let selectedServer: string | undefined;
 
@@ -58,11 +57,8 @@ export function saveServerUrl(value: string): string {
   }
   selectedServer = url;
   mediaConfigCache.clear();
-  mediaStatusCache.clear();
-  mediaReads
-    .invalidateMediaReads()
-    .catch((error: unknown) =>
-      console.error("Media access reset failed", error),
-    );
+  invalidateMedia(undefined, true).catch((error: unknown) =>
+    console.error("Media access reset failed", error),
+  );
   return url;
 }

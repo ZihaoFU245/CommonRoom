@@ -470,20 +470,6 @@ pub(in crate::engine::database) async fn source(
 }
 
 /// Account-local collection membership, independent of message read access.
-pub(in crate::engine::database) async fn saved(
-    db: &mut PgConnection,
-    id: &str,
-    account: &str,
-) -> Result<bool> {
-    Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE media_id=$1 AND account_id=$2)",
-    )
-    .bind(id)
-    .bind(account)
-    .fetch_one(db)
-    .await?)
-}
-
 /// Record a use in commit order, including multiple sends within one second.
 /// The caller holds the SQLite writer or PostgreSQL per-account recent lock.
 pub(super) async fn record_recent(db: &mut PgConnection, account: &str, id: &str) -> Result<()> {

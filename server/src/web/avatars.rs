@@ -205,7 +205,7 @@ async fn readable(
                             .avatar_read_plan_scoped(
                                 &identity.user,
                                 &media,
-                                identity.avatar_conversations(engine)?,
+                                identity.conversation_scope(engine)?,
                             )
                             .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?;
                         let ids = visibility.history_ids().map(str::to_owned).collect();
@@ -231,7 +231,7 @@ async fn readable(
                         .avatar_read_plan_scoped(
                             &identity.user,
                             &media,
-                            identity.avatar_conversations(engine)?,
+                            identity.conversation_scope(engine)?,
                         )
                         .map_err(|cause| super::error::hidden(cause, "Avatar not found."))?;
                     if !visible {
