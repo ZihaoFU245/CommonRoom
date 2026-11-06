@@ -445,6 +445,7 @@ impl Engine {
                 self.require_target_command(actor, &Scope::Server, "/bot")?;
                 if !valid_name(label) { return Err("Invalid credential label.".into()); }
                 let registration = self.data.bots.get_mut(&id).ok_or("Bot not found.")?;
+                registration.remove_expired_workers(now());
                 if registration.tokens.len() >= 8 { return Err("At most 8 credentials per account.".into()); }
                 if registration.tokens.values().any(|t| t.label == *label) { return Err("Credential label already exists.".into()); }
                 let token_id = uuid::Uuid::new_v4().to_string();

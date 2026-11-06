@@ -358,9 +358,10 @@ impl Engine {
         input: models::CredentialInput,
     ) -> Result<(serde_json::Value, MetadataChange), Error> {
         let user = context.issuer(self)?;
+        let issued_at = now();
         if !valid_name(&input.label)
-            || input.expires <= now()
-            || input.expires > now().saturating_add(86400)
+            || input.expires <= issued_at
+            || input.expires > issued_at.saturating_add(86400)
             || input.operations.is_empty()
             || input
                 .operations
@@ -389,9 +390,11 @@ impl Engine {
             .bots
             .get_mut(&context.account)
             .ok_or_else(|| Error::new(Code::Unauthorized, "Registration gone."))?;
+        registration.remove_expired_workers(issued_at);
         if registration.tokens.len() >= 8
             || registration.tokens.values().any(|c| c.label == input.label)
         {
+            before.restore(&mut self.data);
             return Err(Error::new(
                 Code::InvalidRequest,
                 "Credential limit or duplicate label.",
@@ -409,7 +412,7 @@ impl Engine {
                 kind: models::CredentialKind::Worker,
                 label: input.label,
                 digest: crate::bots::digest(&secret),
-                created: now(),
+                created: issued_at,
                 expires: Some(input.expires),
                 conversations: input.conversations,
                 operations: Some(input.operations),

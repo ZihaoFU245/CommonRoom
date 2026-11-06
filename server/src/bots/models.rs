@@ -78,6 +78,14 @@ pub struct Registration {
     #[serde(default)]
     pub owner_id: Option<String>,
 }
+impl Registration {
+    pub(crate) fn remove_expired_workers(&mut self, now: u64) {
+        self.tokens.retain(|_, credential| {
+            credential.kind != CredentialKind::Worker
+                || credential.expires.is_none_or(|expires| expires > now)
+        });
+    }
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
