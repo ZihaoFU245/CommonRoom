@@ -82,8 +82,10 @@ self-service through explicit `profile` delegation.
 `/me` exposes the worker's credential kind, ID, expiry, scope and operations.
 Issuer and worker tokens cannot authenticate browser transports. Revocation and
 expiry are checked on requests and sockets; a heartbeat closes an idle expired
-socket within 25 seconds. Remove expired credentials with `/bot token rm` before
-reusing their label or capacity. `/bot token ls` returns metadata, never secrets.
+socket within 25 seconds. Issuing a credential automatically removes expired
+workers for that account, freeing their labels and slots. To rotate before
+expiry, use a different label or revoke the old worker with `/bot token rm`.
+`/bot token ls` returns metadata, never secrets.
 Browser output formats creation and expiry timestamps in local time; the JSON
 metadata retains epoch seconds. `/bot token rm ID` locates the authorized bot
 automatically, while `/bot token rm BOT ID` remains supported. Tab completion
