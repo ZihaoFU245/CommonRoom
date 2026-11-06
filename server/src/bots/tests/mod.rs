@@ -223,6 +223,37 @@ async fn send(
     let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
 }
+
+#[tokio::test]
+async fn replies_and_reply_replays_require_worker_read_scope() {
+    let (app, worker) = fixture();
+    let conversation = conversation(&app);
+    let plain = json!({"conversation_id": conversation, "text": "original"});
+    let send_only = scoped_worker(&app, "send-only", &[&conversation], &["send"]).await;
+    let (status, original) = send(&app, &send_only, "original", plain).await;
+    assert_eq!(status, StatusCode::OK, "{original:?}");
+
+    let reply = json!({
+        "conversation_id": conversation,
+        "text": "reply",
+        "reply_to": original["message"]["id"],
+    });
+    let denied = send(&app, &send_only, "reply", reply.clone()).await;
+    assert_eq!(denied.0, StatusCode::FORBIDDEN, "{denied:?}");
+
+    let (status, sent) = send(&app, &worker, "reply", reply.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{sent:?}");
+    assert_eq!(sent["replayed"], false);
+    assert_eq!(sent["message"]["reply"]["text"], "original");
+
+    let denied = send(&app, &send_only, "reply", reply.clone()).await;
+    assert_eq!(denied.0, StatusCode::FORBIDDEN, "{denied:?}");
+    let (status, replay) = send(&app, &worker, "reply", reply).await;
+    assert_eq!(status, StatusCode::OK, "{replay:?}");
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["message"], sent["message"]);
+}
+
 #[tokio::test]
 async fn profile_is_bearer_only_scoped_and_has_no_legacy_command_transport() {
     let (app, token) = fixture();

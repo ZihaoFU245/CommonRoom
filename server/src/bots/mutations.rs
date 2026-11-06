@@ -1,6 +1,6 @@
 //! Native async message sends with short engine preparation/publication guards.
 use super::{
-    auth::Context,
+    auth::{Context, Scope},
     error::{Code, Error},
     models,
 };
@@ -33,7 +33,11 @@ pub(super) async fn message(
                 let input = input.clone();
                 move |engine| {
                     let user = super::api::admit(engine, &context)?;
-                    context.permits(engine, "send", crate::bots::auth::Scope::Conversation(&input.conversation_id))?;
+                    let conversation_id = &input.conversation_id;
+                    context.permits(engine, "send", Scope::Conversation(conversation_id))?;
+                    if input.reply_to.is_some() {
+                        context.permits(engine, "read", Scope::Conversation(conversation_id))?;
+                    }
                     engine.prepare_append(&user, &input)
                 }
             })

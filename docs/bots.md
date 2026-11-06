@@ -250,9 +250,10 @@ namespace or automatic browser-route fallback exists.
 
 Send `{conversation_id,text,reply_to?,markdown?}` with a fresh idempotency key.
 Text is trimmed, supports 1–4,000 Unicode characters, and remains literal even
-when it starts with `/`. Markdown defaults to true; send `markdown:false` for plain text. A reply needs current read,
-send and `/reply` grants; all v1 sends need read/send access to return the result.
-A reply target must be retained in the selected conversation.
+when it starts with `/`. Markdown defaults to true. Send `markdown:false` for
+plain text. All v1 sends require the worker's `send` operation and the account's
+read and send grants. Replies also require the worker's `read` operation and the
+account's `/reply` grant. The reply target must be retained in the selected conversation.
 
 Both plain sends and replies return `{message,replayed}`. A message contains
 stable `id` and `author_id`, current author label `from`, text/format/edit marker,
