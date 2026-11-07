@@ -77,6 +77,9 @@ async fn preferences_concurrent_login_first_commit_wins_and_invalid_writes_are_a
         json!({"theme":"blue"}),
         json!({"font.chat":"99"}),
         json!({"unknown":null}),
+        json!({"message_preview_height":"255"}),
+        json!({"message_preview_height":"1025"}),
+        json!({"message_preview_height":"NaN"}),
         json!({"theme":"light","allow_html":"yes"}),
         json!({"media.user_quota":"1"}),
     ] {
@@ -290,4 +293,25 @@ async fn preferences_are_root_only_and_metadata_authority_cannot_change_or_reset
         StatusCode::OK
     );
     assert!(app.engine_read().unwrap().preferences("bob").is_empty());
+}
+
+#[tokio::test]
+async fn preferences_message_preview_height_can_sync_and_reset() {
+    let app = app(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    for height in ["256", "640", "1024"] {
+        let response = write(&app, "bob", json!({"message_preview_height":height}), false).await;
+        assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+        assert_eq!(response.1["values"]["message_preview_height"], height);
+        assert_eq!(
+            app.engine_read()
+                .unwrap()
+                .snapshot("bob")
+                .unwrap()
+                .preferences["message_preview_height"],
+            height
+        );
+    }
+    let response = write(&app, "bob", json!({"message_preview_height":null}), false).await;
+    assert_eq!(response.0, StatusCode::OK);
+    assert!(response.1["values"].get("message_preview_height").is_none());
 }

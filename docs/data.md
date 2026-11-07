@@ -349,11 +349,13 @@ Concurrent initializations never overwrite an already-set value.
 
 Recognized keys are `theme`, `palette.base`, `palette.accent`, `font.chat`,
 `font.ui`, `markdown`, `latex`, `name_colors`, `message_bars`,
-`message_bar_opacity`, `name_borders`, `allow_html`, `external_avatars`, and
-`notifications`. Boolean values are `true`/`false`; custom palette seeds are
+`message_bar_opacity`, `message_preview_height`, `name_borders`, `allow_html`,
+`external_avatars`, and `notifications`. Boolean values are `true`/`false`; custom palette seeds are
 six-digit hex colors; theme is `system`, `light`, `dark`, or `custom`. Chat fonts
 range from 14–24, UI fonts from 12–18, and bar opacity from 0–100. These fixed,
 validated keys have a separate bound from the existing 32 other keys per scope.
+Message preview height ranges from 256–1024px (default 256); 1024 disables
+folding entirely. Preferences exposes it in 64px steps.
 Room overrides are rejected. Only the viewer's preferences appear in browser
 snapshots; they do not enter other users' profile directories or bot snapshots.
 

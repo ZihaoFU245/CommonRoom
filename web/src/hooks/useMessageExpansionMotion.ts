@@ -3,21 +3,19 @@ import { messageExpansionMotion } from "../features/conversation/messageExpansio
 import { observedBorderBox } from "../features/conversation/observedBorderBox.ts";
 
 /** Start before the expansion state changes, so virtual rows measure the animation. */
-export function useMessageExpansionMotion() {
+export function useMessageExpansionMotion(limit: number | null) {
   const panel = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const stop = useRef<(() => void) | null>(null);
   const [overflows, setOverflows] = useState(false);
   useLayoutEffect(() => {
+    stop.current?.();
     const element = content.current;
     const clip = panel.current;
     if (!element || !clip) return;
     const measure = (height: number) => {
-      const limit = parseFloat(
-        getComputedStyle(clip).getPropertyValue("--message-preview-height"),
-      );
-      setOverflows(height > limit + 1);
+      setOverflows(limit !== null && height > limit + 1);
     };
     measure(element.getBoundingClientRect().height);
     const observer = new ResizeObserver((records) => {
@@ -26,7 +24,7 @@ export function useMessageExpansionMotion() {
     });
     observer.observe(element, { box: "border-box" });
     return () => observer.disconnect();
-  }, []);
+  }, [limit]);
   useEffect(() => () => stop.current?.(), []);
 
   function prepareTransition(expanding: boolean, visibleHeight?: number) {
@@ -69,12 +67,9 @@ export function useMessageExpansionMotion() {
       });
       return;
     }
-    const limit = parseFloat(
-      getComputedStyle(clip).getPropertyValue("--message-preview-height"),
-    );
     const target = expanding
       ? natural.getBoundingClientRect().height
-      : Math.min(limit, natural.getBoundingClientRect().height);
+      : Math.min(limit ?? Infinity, natural.getBoundingClientRect().height);
     const viewportHeight = viewport
       ? viewport.getBoundingClientRect().bottom -
         clip.getBoundingClientRect().top

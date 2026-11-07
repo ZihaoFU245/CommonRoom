@@ -78,6 +78,9 @@ test("first device seeds local settings; subsequent login pulls cloud values and
   local.set("commonroom-notifications", "on");
   await connectPreferences("alice", transport);
   assert.equal(preferenceValue("theme", ""), "dark");
+  assert.equal(preferenceValue("message_preview_height", ""), "256");
+  changePreference("message_preview_height", "1024");
+  await flushPreferences();
   assert.equal(preferenceValue("name_colors", ""), "true");
   assert.equal(preferenceValue("font.chat", ""), "22");
   // Notification preference imports even on a device with no Notification API.
@@ -88,6 +91,7 @@ test("first device seeds local settings; subsequent login pulls cloud values and
   await connectPreferences("alice", transport);
   assert.equal(preferenceValue("theme", ""), "dark");
   assert.equal(preferenceValue("font.chat", ""), "22");
+  assert.equal(preferenceValue("message_preview_height", ""), "1024");
   disconnectPreferences();
   await transport({ theme: null }, false);
   local.clear();

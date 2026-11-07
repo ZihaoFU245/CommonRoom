@@ -1,3 +1,4 @@
+import { messagePreviewMin } from "./messagePreview.ts";
 import {
   readStorage,
   readStorageJson,
@@ -141,6 +142,7 @@ function localValues(): Record<string, string> {
     name_colors: String(loadNameColors()),
     message_bars: String(loadMessageBars()),
     message_bar_opacity: String(loadMessageBarOpacity()),
+    message_preview_height: String(messagePreviewMin),
     name_borders: String(loadNameBorders()),
     allow_html: String(loadMarkdownHtml()),
     external_avatars: String(external),

@@ -1,3 +1,5 @@
+import { useMessagePreviewHeight } from "../hooks/useMessagePreviewHeight.ts";
+import { messagePreviewMax } from "../features/preferences/messagePreview.ts";
 import type { ComponentChildren } from "preact";
 import { useContentResizeMotion } from "../hooks/useContentResizeMotion.ts";
 import { useId } from "preact/hooks";
@@ -14,8 +16,11 @@ export function CollapsibleMessage({
   onExpandedChange: (expanded: boolean) => void;
 }) {
   const id = useId();
+  const [previewHeight] = useMessagePreviewHeight();
+  const limit = previewHeight === messagePreviewMax ? null : previewHeight;
+  const showFull = expanded || limit === null;
   const { panel, content, toggle, overflows, prepareTransition } =
-    useMessageExpansionMotion();
+    useMessageExpansionMotion(limit);
   const resize = useContentResizeMotion();
   function prepare(expanding: boolean) {
     const shellHeight = resize.panel.current?.getBoundingClientRect().height;
@@ -39,10 +44,11 @@ export function CollapsibleMessage({
         <div
           id={id}
           ref={panel}
-          class={`message-preview${expanded ? " expanded" : ""}${overflows && !expanded ? " folded" : ""}`}
+          class={`message-preview${showFull ? " expanded" : ""}${overflows && !showFull ? " folded" : ""}`}
+          style={{ "--message-preview-height": `${previewHeight}px` }}
           onFocusCapture={() => {
             // Keyboard focus must never disappear into the clipped part of a message.
-            if (overflows && !expanded) {
+            if (overflows && !showFull) {
               prepare(true);
               onExpandedChange(true);
             }

@@ -1,3 +1,9 @@
+import { useMessagePreviewHeight } from "../../hooks/useMessagePreviewHeight.ts";
+import {
+  messagePreviewMin,
+  messagePreviewMax,
+  messagePreviewStep,
+} from "../../features/preferences/messagePreview.ts";
 import type { SettingsProps } from "./types.ts";
 
 export function FormattingSettings({
@@ -24,6 +30,11 @@ export function FormattingSettings({
   | "nameBorders"
   | "onNameBordersChange"
 >) {
+  const [previewHeight, setPreviewHeight] = useMessagePreviewHeight();
+  const previewLabel =
+    previewHeight === messagePreviewMax
+      ? "Show full messages"
+      : `${previewHeight}px`;
   return (
     <>
       <h3>Preferences</h3>
@@ -88,6 +99,22 @@ export function FormattingSettings({
       <p id="name-borders-preference-description" class="account-summary">
         Frame author names in a rounded badge. Synced across your devices.
       </p>
+      <div class="font-setting">
+        <label for="message-preview-height">Message preview height</label>
+        <output for="message-preview-height">{previewLabel}</output>
+        <input
+          id="message-preview-height"
+          type="range"
+          min={messagePreviewMin}
+          max={messagePreviewMax}
+          step={messagePreviewStep}
+          value={previewHeight}
+          aria-valuetext={previewLabel}
+          onInput={(event) =>
+            setPreviewHeight(event.currentTarget.valueAsNumber)
+          }
+        />
+      </div>
     </>
   );
 }
