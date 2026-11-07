@@ -239,7 +239,7 @@ fn library_limits_quota_backlog_and_account_deletion() {
 }
 
 #[test]
-fn library_hidden_ownership_survives_cleanup_and_failed_retirement_rolls_back() {
+fn library_hidden_ownership_survives_cleanup_and_failed_release_rolls_back() {
     let engine = engine();
     let media = upload(&engine, "alice");
     change(&engine, "alice", &media, LibraryAction::Remove, None, false).unwrap();
@@ -251,7 +251,7 @@ fn library_hidden_ownership_survives_cleanup_and_failed_retirement_rolls_back() 
             .iter()
             .any(|item| item.id == media.id)
     );
-    engine.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_library_retirement BEFORE UPDATE OF deleting ON media WHEN NEW.deleting=1 BEGIN SELECT RAISE(ABORT,'injected retirement failure'); END;").unwrap();
+    engine.store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_library_retirement BEFORE UPDATE OF expires ON media WHEN NEW.expires IS NOT NULL BEGIN SELECT RAISE(ABORT,'injected release failure'); END;").unwrap();
     assert!(change(&engine, "alice", &media, LibraryAction::Release, None, true).is_err());
     let owned = page(&engine, "alice", true);
     assert_eq!(owned.usage, 8);
@@ -266,6 +266,9 @@ fn library_hidden_ownership_survives_cleanup_and_failed_retirement_rolls_back() 
         .execute_batch("DROP TRIGGER reject_library_retirement;")
         .unwrap();
     change(&engine, "alice", &media, LibraryAction::Release, None, true).unwrap();
+    assert_eq!(page(&engine, "alice", true).usage, 0);
+    assert_eq!(page(&engine, "alice", true).cleanup_bytes, 0);
+    change(&engine, "alice", &media, LibraryAction::Delete, None, false).unwrap();
     let retired = page(&engine, "alice", true);
     assert_eq!(retired.usage, 0);
     assert_eq!(retired.cleanup_bytes, 16);
@@ -641,6 +644,14 @@ fn unavailable_library_entries_cannot_pin_cleaned_tombstones() {
     let media = upload(&engine, "alice");
     change(&engine, "alice", &media, LibraryAction::Release, None, true).unwrap();
     assert_eq!(page(&engine, "alice", false).items.len(), 1);
+    set_expiry(&engine, &media, media::timestamp() - 1);
+    assert!(
+        engine
+            .expired_media()
+            .unwrap()
+            .iter()
+            .any(|row| row.id == media.id)
+    );
     engine
         .store
         .db
@@ -652,4 +663,385 @@ fn unavailable_library_entries_cannot_pin_cleaned_tombstones() {
         .unwrap();
     assert!(engine.stored_media(&media.id).is_err());
     assert!(page(&engine, "alice", false).items.is_empty());
+}
+
+fn set_expiry(engine: &Engine, media: &media::Media, expires: u64) {
+    engine
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE media SET expires=$2 WHERE id=$1",
+            database::params![&media.id, i64::try_from(expires).unwrap()],
+        )
+        .unwrap();
+}
+
+fn release_retention(mut engine: Engine) {
+    let media = upload(&engine, "alice");
+    let text = format!("![sticker](/api/media/{}/file)", media.id);
+    engine.execute(Some("alice"), Some("lobby"), &text).unwrap();
+    let room = engine.data.rooms["lobby"].id.clone();
+    change(
+        &engine,
+        "bob",
+        &media,
+        LibraryAction::Save,
+        Some(&room),
+        false,
+    )
+    .unwrap();
+    let before = media::timestamp();
+    change(&engine, "alice", &media, LibraryAction::Release, None, true).unwrap();
+    let store = engine.media_store();
+    let released = run(store.load(&media.id)).unwrap().0;
+    let deadline = released.expires.unwrap();
+    assert!((before + 7 * 86400..=media::timestamp() + 7 * 86400).contains(&deadline));
+    assert!(!released.deleting);
+    assert_eq!(released.object_key, media.object_key);
+    assert_eq!(released.final_key(), media.final_key());
+    assert!(engine.readable_media("bob", &media.id).is_ok());
+    change(&engine, "alice", &media, LibraryAction::Release, None, true).unwrap();
+    engine.prepare_media_cleanup().unwrap();
+    assert_eq!(
+        run(store.load(&media.id)).unwrap().0.expires,
+        Some(deadline)
+    );
+    assert!(
+        engine
+            .expired_media()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != media.id)
+    );
+    // Reuse and a saved collection alone never renew the grace period.
+    engine.execute(Some("bob"), Some("lobby"), &text).unwrap();
+    assert_eq!(
+        run(store.load(&media.id)).unwrap().0.expires,
+        Some(deadline)
+    );
+    engine
+        .execute(None, None, "/user set bob media.user_quota 7")
+        .unwrap();
+    assert!(change(&engine, "bob", &media, LibraryAction::Acquire, None, false).is_err());
+    assert_eq!(
+        run(store.load(&media.id)).unwrap().0.expires,
+        Some(deadline)
+    );
+    engine
+        .execute(None, None, "/user set bob media.user_quota 16")
+        .unwrap();
+    change(&engine, "bob", &media, LibraryAction::Acquire, None, false).unwrap();
+    assert_eq!(run(store.load(&media.id)).unwrap().0.expires, None);
+    assert_eq!(page(&engine, "bob", true).usage, 8);
+    change(&engine, "bob", &media, LibraryAction::Release, None, true).unwrap();
+    set_expiry(&engine, &media, media::timestamp());
+    assert!(engine.readable_media("bob", &media.id).is_err());
+    assert!(engine.media_info("bob", &media.id).is_ok());
+    assert!(page(&engine, "bob", false).items.is_empty());
+    for action in [LibraryAction::Acquire, LibraryAction::Save] {
+        assert!(change(&engine, "bob", &media, action, None, false).is_err());
+    }
+    assert!(engine.execute(Some("bob"), Some("lobby"), &text).is_err());
+    let expired = engine.expired_media().unwrap();
+    assert!(
+        expired.iter().any(|row| row.id == media.id),
+        "message references cannot block expiry cleanup"
+    );
+    run(store.cleanup_done(&expired, std::slice::from_ref(&media.id))).unwrap();
+    assert!(run(store.load(&media.id)).unwrap().0.deleted);
+    assert!(change(&engine, "bob", &media, LibraryAction::Acquire, None, false).is_err());
+
+    // A never-sent sticker also gets the full grace period, not orphan cleanup.
+    let unused = upload(&engine, "bob");
+    change(&engine, "bob", &unused, LibraryAction::Release, None, true).unwrap();
+    engine.prepare_media_cleanup().unwrap();
+    assert!(
+        engine
+            .expired_media()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != unused.id)
+    );
+    assert!(engine.readable_media("bob", &unused.id).is_ok());
+
+    // Account deletion follows the same last-owner rule.
+    let orphan = upload(&engine, "alice");
+    engine.execute(None, None, "/user delete alice").unwrap();
+    let orphan = run(store.load(&orphan.id)).unwrap().0;
+    assert!(
+        orphan
+            .expires
+            .is_some_and(|expiry| expiry > media::timestamp())
+    );
+    assert!(!orphan.deleting);
+}
+
+#[test]
+fn library_release_retention_preserves_grace_and_blocks_expired_reacquisition() {
+    release_retention(engine());
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_library_release_retention_preserves_grace_and_blocks_expired_reacquisition() {
+    let fixture = database::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    for (name, admin) in [("alice", true), ("bob", false)] {
+        engine.provision(name, "hash".into(), admin, false).unwrap();
+    }
+    engine
+        .execute(Some("alice"), None, "/new room lobby")
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/add bob #lobby")
+        .unwrap();
+    release_retention(engine);
+}
+
+fn legacy_retention(mut engine: Engine) {
+    let media = upload(&engine, "alice");
+    let text = format!("![sticker](/api/media/{}/file)", media.id);
+    engine.execute(Some("alice"), Some("lobby"), &text).unwrap();
+    // Simulate an ownerless permanent asset written by the previous version.
+    engine
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM library_owners WHERE media_id=$1", [&media.id])
+        .unwrap();
+    engine.prepare_media_cleanup().unwrap();
+    let store = engine.media_store();
+    let deadline = run(store.load(&media.id)).unwrap().0.expires.unwrap();
+    assert!(deadline >= media::timestamp() + 7 * 86400 - 1);
+    engine.prepare_media_cleanup().unwrap();
+    assert_eq!(
+        run(store.load(&media.id)).unwrap().0.expires,
+        Some(deadline)
+    );
+    assert!(
+        engine
+            .expired_media()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != media.id)
+    );
+    let owned = upload(&engine, "alice");
+    engine.prepare_media_cleanup().unwrap();
+    assert_eq!(run(store.load(&owned.id)).unwrap().0.expires, None);
+}
+
+#[test]
+fn library_startup_assigns_legacy_abandoned_assets_one_grace_period() {
+    legacy_retention(engine());
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_library_startup_assigns_legacy_abandoned_assets_one_grace_period() {
+    let fixture = database::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/new room lobby")
+        .unwrap();
+    legacy_retention(engine);
+}
+
+fn reacquire_cleanup_race(engine: Engine) {
+    let media = upload(&engine, "alice");
+    change(&engine, "alice", &media, LibraryAction::Release, None, true).unwrap();
+    let store = engine.media_store();
+    let deadline = run(store.load(&media.id)).unwrap().0.expires.unwrap();
+    let request = database::LibraryWrite {
+        account: engine.principal_id(Some("alice")).unwrap(),
+        id: &media.id,
+        source: None,
+        action: LibraryAction::Acquire,
+        confirm_last: false,
+        quota: engine.library_quota("alice"),
+        config: &engine.media.config,
+    };
+    // A cleanup snapshot at the deadline races an accepted pre-expiry acquire.
+    // Whichever durable row lock wins must prevent the opposite outcome.
+    let cleanup = database::MediaWrite::ClaimCleanup {
+        at: deadline,
+        pending_before: 0,
+        attempted_before: u64::MAX,
+        limit: 32,
+    };
+    let (acquired, claimed) = run(async {
+        Ok(tokio::join!(
+            store.library_action(&request),
+            engine.store.db.media_write(&cleanup)
+        ))
+    })
+    .unwrap();
+    let claimed = claimed.unwrap();
+    let current = run(store.load(&media.id)).unwrap().0;
+    if acquired.is_ok() {
+        assert!(claimed.media.iter().all(|row| row.id != media.id));
+        assert!(current.available_at(media::timestamp()));
+        assert_eq!(current.expires, None);
+    } else {
+        assert!(claimed.media.iter().any(|row| row.id == media.id));
+        assert!(current.deleting);
+        assert!(
+            change(
+                &engine,
+                "alice",
+                &media,
+                LibraryAction::Acquire,
+                None,
+                false
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn library_reacquisition_and_cleanup_claim_have_one_durable_winner() {
+    reacquire_cleanup_race(engine());
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_library_reacquisition_and_cleanup_claim_have_one_durable_winner() {
+    let fixture = database::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    reacquire_cleanup_race(engine);
+}
+
+fn collection_ownership_policy(mut engine: Engine) {
+    let first = upload(&engine, "alice");
+    let text = format!("![sticker](/api/media/{}/file)", first.id);
+    engine.execute(Some("alice"), Some("lobby"), &text).unwrap();
+    let room = engine.data.rooms["lobby"].id.clone();
+    change(
+        &engine,
+        "bob",
+        &first,
+        LibraryAction::Save,
+        Some(&room),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        page(&engine, "bob", false).usage,
+        0,
+        "owned-by-others saves stay borrowed"
+    );
+    assert!(!page(&engine, "bob", false).items[0].owned);
+    change(&engine, "alice", &first, LibraryAction::Save, None, false).unwrap();
+    assert_eq!(
+        page(&engine, "alice", true).usage,
+        8,
+        "saving one's own asset never adds a charge"
+    );
+    change(&engine, "alice", &first, LibraryAction::Release, None, true).unwrap();
+    let store = engine.media_store();
+    let expiry = run(store.load(&first.id)).unwrap().0.expires;
+    engine
+        .execute(None, None, "/user set bob media.user_quota 7")
+        .unwrap();
+    assert!(change(&engine, "bob", &first, LibraryAction::Save, None, false).is_err());
+    assert_eq!(run(store.load(&first.id)).unwrap().0.expires, expiry);
+    engine
+        .execute(None, None, "/user set bob media.user_quota 16")
+        .unwrap();
+    // A previously borrowed entry can now be kept through the same save action.
+    for _ in 0..2 {
+        change(&engine, "bob", &first, LibraryAction::Save, None, false).unwrap();
+    }
+    assert_eq!(run(store.load(&first.id)).unwrap().0.expires, None);
+    assert_eq!(page(&engine, "bob", false).usage, 8);
+    assert_eq!(page(&engine, "bob", false).items[0].owner_count, 1);
+    let second = upload(&engine, "alice");
+    let text = format!("![sticker](/api/media/{}/file)", second.id);
+    engine.execute(Some("alice"), Some("lobby"), &text).unwrap();
+    change(
+        &engine,
+        "alice",
+        &second,
+        LibraryAction::Release,
+        None,
+        true,
+    )
+    .unwrap();
+    let expiry = run(store.load(&second.id)).unwrap().0.expires;
+    engine.media.config.library_limit = 1;
+    assert!(
+        change(
+            &engine,
+            "bob",
+            &second,
+            LibraryAction::Save,
+            Some(&room),
+            false
+        )
+        .is_err()
+    );
+    assert_eq!(
+        run(store.load(&second.id)).unwrap().0.expires,
+        expiry,
+        "collection-limit failure rolls back ownership and expiry restoration"
+    );
+    assert_eq!(page(&engine, "bob", true).usage, 8);
+    change(&engine, "bob", &first, LibraryAction::Release, None, true).unwrap();
+    set_expiry(&engine, &first, media::timestamp());
+    assert!(page(&engine, "bob", false).items.is_empty());
+    // Expired hidden entries consume neither collection slots nor page limits.
+    change(
+        &engine,
+        "bob",
+        &second,
+        LibraryAction::Save,
+        Some(&room),
+        false,
+    )
+    .unwrap();
+    let list = run(store.library_page(&database::LibraryList {
+        account: engine.principal_id(Some("bob")).unwrap(),
+        owned: false,
+        recent: false,
+        after: "",
+        limit: 1,
+        quota: engine.library_quota("bob"),
+        conversations: &[],
+    }))
+    .unwrap();
+    assert_eq!(list.items.len(), 1);
+    assert_eq!(list.items[0].media_id, second.id);
+    assert!(list.next_cursor.is_none());
+    assert!(list.items[0].owned);
+}
+
+#[test]
+fn library_save_acquires_only_dangling_assets_and_hides_expired_entries() {
+    collection_ownership_policy(engine());
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_library_save_acquires_only_dangling_assets_and_hides_expired_entries() {
+    let fixture = database::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    for (name, admin) in [("alice", true), ("bob", false)] {
+        engine.provision(name, "hash".into(), admin, false).unwrap();
+    }
+    engine
+        .execute(Some("alice"), None, "/new room lobby")
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/add bob #lobby")
+        .unwrap();
+    collection_ownership_policy(engine);
 }

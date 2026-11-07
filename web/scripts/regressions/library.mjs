@@ -84,6 +84,150 @@ export async function libraryRegressions({
     click("Stickers");
     await until(() => tests.querySelector('[aria-label="Collections"]'));
   }
+  await test("media library static uploads resize before allocation and preserve chat originals", async () => {
+    const original = window.XMLHttpRequest;
+    const source = document.createElement("canvas");
+    source.width = 3840;
+    source.height = 2160;
+    const context = source.getContext("2d");
+    context.fillStyle = "#16a085";
+    context.fillRect(0, 0, source.width, source.height);
+    const blob = await new Promise((resolve) =>
+      source.toBlob(resolve, "image/png"),
+    );
+    const file = new File([blob], "wide.png", { type: "image/png" });
+    let uploads;
+    let reservation;
+    let transferred;
+    api.mediaConfig = async () => ({ enabled: true, max_size: 1000000 });
+    api.allocateMedia = async (
+      conversation,
+      filename,
+      size,
+      _signal,
+      hints,
+    ) => {
+      reservation = { conversation, filename, size, hints };
+      return {
+        media_id: id,
+        upload: {
+          method: "PUT",
+          url: "https://storage.test/upload",
+          headers: { "Content-Type": "application/octet-stream" },
+          expires_in: 300,
+        },
+      };
+    };
+    api.completeMedia = async () => ({
+      media_id: id,
+      path: new URL(`api/media/${id}/file`, serverBaseUrl()).pathname,
+      filename: reservation.filename,
+      size: reservation.size,
+      content_type: reservation.hints["content-type"],
+    });
+    window.XMLHttpRequest = class {
+      upload = {};
+      open() {}
+      setRequestHeader() {}
+      send(value) {
+        transferred = value;
+        this.status = 200;
+        queueMicrotask(() => this.onload());
+      }
+    };
+    function Upload({ conversation }) {
+      uploads = useMediaUploads(conversation);
+      return null;
+    }
+    let url;
+    try {
+      render(h(Upload, { conversation: "@library" }), tests);
+      await until(() => uploads?.enabled);
+      const cancelled = uploads.start(file);
+      uploads.cancel();
+      await cancelled;
+      check(
+        !reservation && !transferred,
+        "cancelling preparation never allocates or uploads",
+      );
+      await uploads.start(file);
+      check(!uploads.error, `library upload succeeds: ${uploads.error}`);
+      check(
+        reservation.size === transferred.size &&
+          reservation.hints["content-type"] === transferred.type,
+        "allocation and content hints describe the actual encoded upload",
+      );
+      check(
+        reservation.conversation === "@library" &&
+          /\.(webp|jpg)$/u.test(reservation.filename),
+        "opaque library image uses WebP or the JPEG encoder fallback",
+      );
+      url = URL.createObjectURL(transferred);
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      check(
+        image.naturalWidth === 1920 && image.naturalHeight === 1080,
+        "real encoded bytes preserve 1080p dimensions and aspect ratio",
+      );
+      uploads.published(id);
+      render(h(Upload, { conversation: "room" }), tests);
+      await until(() => !uploads.attachment);
+      await uploads.start(file);
+      check(
+        transferred === file &&
+          reservation.filename === file.name &&
+          reservation.size === file.size,
+        "ordinary chat uploads keep the exact original File",
+      );
+      uploads.published(id);
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+      render(null, tests);
+      window.XMLHttpRequest = original;
+    }
+  });
+  await test("media library transparent images retain alpha after real encoding", async () => {
+    const { resizeLibraryImage } =
+      await import("../../src/features/conversation/resizeLibraryImage.ts");
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 2048;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "rgba(20, 80, 160, 0.5)";
+    context.fillRect(256, 512, 512, 1024);
+    const source = await new Promise((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    const result = await resizeLibraryImage(
+      new File([source], "transparent.png", { type: "image/png" }),
+      new AbortController().signal,
+    );
+    check(
+      ["image/webp", "image/png"].includes(result.type),
+      "transparency never falls back to JPEG",
+    );
+    const url = URL.createObjectURL(result);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      check(
+        image.naturalWidth === 960 && image.naturalHeight === 1920,
+        "portrait resize keeps the full image",
+      );
+      canvas.width = 960;
+      canvas.height = 1920;
+      context.drawImage(image, 0, 0);
+      check(
+        context.getImageData(0, 0, 1, 1).data[3] === 0 &&
+          Math.abs(context.getImageData(480, 960, 1, 1).data[3] - 128) <= 1,
+        "transparent and semitransparent pixels survive encoding",
+      );
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  });
   await test("media library repeated icon clicks reverse picker motion immediately", async () => {
     api.mediaConfig = async () => ({ enabled: false, max_size: 0 });
     api.library = async () => page([]);
@@ -383,7 +527,7 @@ export async function libraryRegressions({
       ...sticker,
       media_id: `b5cd8a44-d8b7-4c63-91fe-3cc63f10617${index}`,
       filename: `motion-${index}.png`,
-      available: false,
+      available: true,
       owned: false,
     }));
     let items = initial;
@@ -1044,7 +1188,7 @@ export async function libraryRegressions({
       "only cold mounts and invalidation fetch both sections",
     );
   });
-  await test("media library remembers the tab and keeps retired stickers removable", async () => {
+  await test("media library remembers the tab and hides unavailable stickers", async () => {
     const account = "mode-test";
     const key = `commonroom-picker-mode:${serverBaseUrl()}:${account}`;
     const saved = localStorage.getItem(key);
@@ -1070,11 +1214,11 @@ export async function libraryRegressions({
       click("Stickers");
       await until(() => tests.querySelector('[aria-label="Use wave.gif"]'));
       check(
-        tests.querySelector('[aria-label="Use retired.gif"]').disabled &&
+        !tests.querySelector('[aria-label="Use retired.gif"]') &&
           !tests.querySelector('[aria-label="Acquire retired.gif"]') &&
-          !tests.querySelector('[aria-label="Remove retired.gif"]').disabled &&
-          tests.textContent.includes("Media unavailable"),
-        "retired stickers cannot be used or acquired but remain removable",
+          !tests.querySelector('[aria-label="Remove retired.gif"]') &&
+          !tests.textContent.includes("Media unavailable"),
+        "unavailable stickers are hidden rather than rendered as dead entries",
       );
       await until(() => localStorage.getItem(key) === "stickers");
       render(null, tests);
@@ -1455,18 +1599,11 @@ export async function libraryRegressions({
     );
     item = { ...item, available: false, owned: false };
     window.dispatchEvent(new Event("commonroom-library-change"));
-    await until(() => tests.textContent.includes("Media unavailable"));
-    api.libraryChange = async (_id, action) => {
-      actions.push(action);
-      if (action === "remove") item = { ...item, saved: false };
-      return { ok: true };
-    };
-    api.library = async () => page(item.saved ? [item] : []);
-    click("Remove wave.gif");
     await until(() => !tests.querySelector('[aria-label="Remove wave.gif"]'));
     check(
-      actions.at(-1) === "remove",
-      "a retired borrowed entry can be removed to free its collection slot",
+      !tests.querySelector('[aria-label="Use wave.gif"]') &&
+        !tests.textContent.includes("Media unavailable"),
+      "a retired entry disappears without requiring manual removal",
     );
   });
   await test("media library removal handles borrowers owners and final-owner races", async () => {
@@ -1539,8 +1676,10 @@ export async function libraryRegressions({
     await until(() => tests.querySelector(".library-confirmation"));
     check(
       actions.length === before &&
-        tests.textContent.includes("Existing messages keep their attachment"),
-      "known last owner sees retained-message warning before any mutation",
+        tests.textContent.includes(
+          "it expires in 7 days, including in existing messages",
+        ),
+      "known last owner sees the grace-period warning before any mutation",
     );
     const popupBounds = tests
       .querySelector(".library-picker")
@@ -1596,7 +1735,7 @@ export async function libraryRegressions({
         item.saved,
       "last-owner race preserves the entry until confirmation",
     );
-    button("Remove permanently").click();
+    button("Remove sticker").click();
     await until(() => !tests.querySelector('[aria-label="Remove race.gif"]'));
     check(
       actions.at(-2).confirmed === true && actions.at(-1).action === "remove",
@@ -1903,6 +2042,12 @@ export async function libraryRegressions({
       tests,
     );
     await until(() => tests.querySelector(".library-save button"));
+    check(
+      tests
+        .querySelector(".library-save button")
+        .title.includes("without acquiring ownership"),
+      "an already-owned sticker is saved as a borrow without another charge",
+    );
     tests.querySelector(".library-save button").click();
     await until(() => tests.textContent.includes("Saved"));
     check(
@@ -1936,6 +2081,38 @@ export async function libraryRegressions({
       () =>
         tests.querySelector(".library-save button")?.textContent ===
         "Add to collection",
+    );
+    info = {
+      ...info,
+      saved: true,
+      expires: Math.floor(Date.now() / 1000) + 7 * 86400,
+    };
+    window.dispatchEvent(new Event("commonroom-library-change"));
+    await until(
+      () =>
+        tests.querySelector(".library-save button")?.textContent ===
+        "Keep in collection",
+    );
+    check(
+      !tests.querySelector(".library-save button").disabled &&
+        tests.querySelector(".library-save button").title.includes("800"),
+      "a saved dangling sticker offers ownership acquisition with its storage charge",
+    );
+    const previousChange = api.libraryChange;
+    api.libraryChange = async (...args) => {
+      const result = await previousChange(...args);
+      info = { ...info, expires: null };
+      return result;
+    };
+    tests.querySelector(".library-save button").click();
+    await until(
+      () =>
+        tests.querySelector(".library-save button")?.textContent === "Saved",
+    );
+    check(
+      calls.length === 2 &&
+        tests.querySelector(".library-save button").disabled,
+      "keeping a dangling sticker uses the atomic save action and restores Saved state",
     );
     info = { ...info, unavailable: true };
     window.dispatchEvent(new Event("commonroom-library-change"));

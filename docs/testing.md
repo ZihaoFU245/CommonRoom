@@ -1301,6 +1301,19 @@ invalidation recovery, retry replacement and forced metadata refresh. Appearance
 and viewport tests cover startup palettes/fonts and keyboard resize batching.
 The ordinary web suite validates
 bounded list responses, canonical paths, cookie handling and explicit confirmation.
+Library retention contracts on SQLite and PostgreSQL cover the seven-day grace
+period after last-owner release/account deletion, unchanged storage keys, expiry
+despite message references, quota-failed acquisition rollback and reacquisition
+before expiry. Startup assigns legacy ownerless assets one deadline without
+renewing it on later restarts. Cleanup racing acquisition has one durable winner;
+claimed/expired assets cannot be resurrected. HTTP cases cap signed links and
+read leases at expiry, reject expired reads/acquisition before cleanup, and
+invalidate every viewer when acquisition restores permanent ownership.
+Collection saves acquire only ownerless media. Cross-backend tests cover existing
+owners retaining borrowed saves, quota/entry-limit rollback, repeated saves with
+one charge, and expired entries being hidden before pagination and slot counting.
+Browser cases require unavailable tiles to disappear and saved dangling messages
+to offer Keep in collection with the ownership byte cost on the existing control.
 
 Media resolver regressions reject a whole malformed packet before installing leases,
 share the conflict-retry deadline and omit invalidated items from retries. HTTP-debug

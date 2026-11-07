@@ -431,6 +431,8 @@ Ordinary expiring attachments cannot be converted through library actions.
   `owned=true` lists ownerships, including assets hidden from the picker;
   `recent=true` selects the separately bounded recent list. Library/owned pages
   use the returned opaque `next_cursor` as `after`; `limit` accepts 1–100.
+  All lists exclude unavailable/expired assets before pagination; hidden expired
+  entries do not consume collection slots.
   Saved entries are ordered by collection insertion, oldest first; their cursor is
   a nonnegative integer position encoded as a string. Ownership pages retain
   media-ID order and media-ID cursors. Invalid collection cursors return 400.
@@ -442,9 +444,11 @@ Ordinary expiring attachments cannot be converted through library actions.
   conservatively reserve tracked final/staging keys until deletion is confirmed;
   they do not measure the bucket's untracked objects.
 - Each item contains `media_id`, `filename`, `content_type`, `size`, `available`,
-  `owned`, `saved` and `owner_count`. A saved unavailable item remains removable.
+  `owned`, `saved` and `owner_count`. The `remove` action remains idempotent for
+  hidden unavailable entries.
 - `POST /api/library/{id}` accepts `{action,source_conversation?,confirm_last?}`.
-  Actions are `save` (borrow), `acquire`, `remove` (hide saved and recent entries), `release` (one's own
+  Actions are `save` (borrow if owned, acquire-and-save if ownerless), `acquire`,
+  `remove` (hide saved and recent entries), `release` (one's own
   ownership), and administrator-only `delete` (global removal). Save/acquire
   require current saved/owned access or an authorized retained message. An
   explicit source is reauthorized; if omitted, current readable retained
@@ -456,8 +460,14 @@ Ordinary expiring attachments cannot be converted through library actions.
 
 Removing a saved entry preserves ownership; releasing ownership preserves an
 existing saved entry. Every owner pays the asset's full size once. The last
-release refunds ownership quota and retires unreferenced assets. Existing message
-references preserve bytes after final release. Global removal atomically retires
+release refunds ownership quota and schedules expiry seven days after release,
+including for assets referenced by messages. Before that deadline, an authorized
+acquisition clears expiry and restores permanent ownership. Saving an ownerless
+asset performs this acquisition atomically with collection insertion, including
+for an already-saved borrower. Quota/entry-limit failures roll back both changes.
+Saves of assets with owners remain borrowed; sending and message references do
+not extend expiry. At expiry, reads, new references, saving and
+acquisition are denied even before physical cleanup. Global removal atomically retires
 the asset and refunds ownership quota, while background deletion can retry independently. Acquisition cannot resurrect a
 retired asset. Retained messages remain in history.
 
@@ -477,7 +487,7 @@ specific mounted media and open library lists. Omitted `ids` invalidate all read
 leases. Asset IDs are sent only to the targeted account; global invalidations
 omit IDs to avoid disclosing private objects. Frames disclose no owner or source
 identifiers. Membership and ordinary ownership changes target that account's
-devices; confirmed final release and global removal also refresh other viewers.
+devices; saving/acquisition, confirmed final release and global removal also refresh other viewers.
 Disconnect invalidates read leases; mounted visible media resolve again.
 
 ## Object commands and upload hints

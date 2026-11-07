@@ -484,6 +484,17 @@ pagination. Collections lists media in saved order, oldest first, so new uploads
 and saves append at the end. Empty Recent sections and empty emoji recents are hidden. Collections
 keeps its upload control even when it has no media. Owned assets have no separate
 section, so uploading does not create a duplicate owned grid.
+New static JPEG, PNG and WebP library uploads are processed in the browser before
+allocation. The longest edge is capped at 1,920 pixels without upscaling or
+cropping. Encoding prefers WebP at 85% quality; browsers without WebP encoding
+use JPEG for opaque images and PNG for transparency. Small images retain their
+original bytes when re-encoding would increase size. Allocation, quota checks,
+upload hints and storage use the processed file's actual size and format.
+Animated PNG/WebP, all GIF/AVIF images and unrecognized containers retain their
+original bytes. Ordinary chat attachments, existing library assets and images
+saved from messages are unchanged. Source files retain the configured upload
+byte limit; decoded static images over 40 megapixels are rejected. Cancellation
+during preparation cannot allocate or upload a file.
 Previews use tightly packed, borderless rows with widths proportional to each
 image's natural aspect ratio. Portraits and landscapes keep their full contents;
 there is no padded square around each image. Intrinsic aspect ratios are retained
@@ -513,8 +524,10 @@ local preview URLs are released afterward. Successful uploads stop showing uploa
 progress immediately, including when their saved entry belongs to a later page.
 They remain usable on the current page until normal pagination or removal; loading
 the canonical entry deduplicates the temporary preview.
-Unavailable saved stickers remain as named placeholders with a remove action,
-so users can free collection slots. A small themed Edit button beside Collections
+Expired, retired and otherwise unavailable stickers are hidden from Collections
+and Recent. Server lists filter them before pagination, and they do not consume
+collection slots. Message history retains its named attachment placeholder.
+A small themed Edit button beside Collections
 switches to editing; Done returns to browsing. Only while editing does each sticker
 expose its top-left manipulation control on hover or visible keyboard focus
 (always visible on touch devices). Browsing keeps these controls hidden and out
@@ -523,13 +536,12 @@ Opening the picker focuses its shell, so queued media cannot cause an unhovered
 remove control to reveal automatically. Its left
 circular button removes the sticker; its right `+` button acquires ownership,
 charging the asset's full size to account storage. The acquisition tooltip shows
-that byte cost. Owned assets show only a single circular remove button; borrowed unavailable assets
-keep acquisition disabled. Both
+that byte cost. Owned assets show only a single circular remove button. Both
 circles use the current theme's surface and accent colors. Borrowed entries remove immediately. Owned stickers
 release the current user's ownership and remove the saved/recent entry; final
 ownership requires a centered floating confirmation above the inert sticker content.
-Releasing the final ownership preserves bytes referenced by retained messages;
-otherwise it retires the asset for cleanup. A concurrent
+Releasing the final ownership starts the seven-day grace period, including for
+bytes referenced by retained messages. A concurrent
 change to the last owner also requires confirmation. Keep sticker returns keyboard
 focus to the original remove button. If the item disappeared or was deleted,
 focus moves to a remaining tile or Edit. Escape cancels the confirmation while
@@ -542,9 +554,15 @@ small minimum visible marker even when its true fraction is below one screen
 pixel; the numeric usage and accessible progress value remain exact. Upload PNG/JPEG/GIF/WebP/AVIF files into the library; the server
 verifies MIME through the existing media pipeline. Selecting an asset reuses its
 ID and bytes in the ordinary message path. A message's **Add to collection** action
-borrows without adding ownership. Saved media shows **Saved** instead of an add
-action; membership is read from the server after refresh and library changes.
-Both collection states share the same control footprint. Virtualized message rows
+borrows when any owner exists, without an additional ownership charge. For a
+dangling sticker with zero owners, the same action atomically acquires ownership,
+charges quota and cancels expiry while saving the collection entry. Saving one's
+own sticker adds no charge. A previously borrowed sticker that becomes dangling
+shows **Keep in collection** on the same message control, with an ownership/storage
+tooltip; success returns to **Saved**. Explicit `+` acquisition in Edit mode
+continues to acquire ownership even when other owners exist. Membership is read
+from the server after refresh and library changes. These collection states share
+the same control footprint. Virtualized message rows
 retain their previously measured height while attachment access checks or image loads are pending
 on remount, through the shared timeline layout code. Children retain their geometry
 while presentation metadata loads; byte reads keep their independent authorization. **Acquire** adds an independent full-size quota
@@ -553,13 +571,22 @@ picker remove control performs both steps for owned stickers.
 
 Ownership, saved entries and current conversation references authorize reads
 independently. Owners protect an available file even without messages or a picker
-entry. Message references protect bytes after ordinary ownership release. Explicit
+entry. Releasing the final ownership starts a seven-day grace period, regardless
+of message references. Account deletion follows the same rule. Saved entries,
+new sends and later message deletion do not reset the deadline. An authorized
+user can acquire ownership before expiry to cancel it; at expiry, reads and
+acquisitions stop and the existing cleanup worker deletes the bytes, even if
+messages still reference the asset. Unreferenced stickers also keep the full
+grace period. Explicit
 administrator deletion retires the file globally; borrowers and message references
 do not protect an administratively retired file from physical cleanup. Ordinary media abandonment cannot remove a completed library asset.
 Account deletion releases its ownerships; another owner's asset remains available.
 Administrators can remove an asset globally through the library API. Cleaned
 tombstones with no owner or message reference also remove stale collection and
-recent entries. See
+recent entries. Storage keys remain unchanged under `media/permanent/`; grace
+expiry is enforced in the database and cleaned by the app, not bucket lifecycle
+rules. On startup, available ownerless legacy stickers without expiry receive
+one fresh seven-day grace period; later restarts do not extend it. See
 [Library protocol](protocol.md#personal-media-library) for endpoints and errors.
 
 These restart-required `media` configuration fields are independent of byte quota:

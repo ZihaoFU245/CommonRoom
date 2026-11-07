@@ -105,14 +105,24 @@ export function useMediaUploads(
     setRetryFile(null);
     setStatus("Preparing upload…");
     try {
+      const prepared =
+        conversationId === "@library"
+          ? await import("../features/conversation/resizeLibraryImage.ts").then(
+              ({ resizeLibraryImage }) =>
+                resizeLibraryImage(file, active.signal),
+            )
+          : file;
+      if (!valid()) return;
+      if (!prepared.size || prepared.size > maxSize)
+        throw new Error(`Choose a file between 1 byte and ${maxSize} bytes.`);
       const ticket = await api.allocateMedia(
         conversationId,
-        file.name,
-        file.size,
+        prepared.name,
+        prepared.size,
         active.signal,
         {
-          filename: filenameHint(file.name),
-          ...(file.type ? { "content-type": file.type } : {}),
+          filename: filenameHint(prepared.name),
+          ...(prepared.type ? { "content-type": prepared.type } : {}),
           client: "commonroom-web",
         },
       );
@@ -123,7 +133,7 @@ export function useMediaUploads(
       uploadId = ticket.media_id;
       allocated.current = ticket.media_id;
       setStatus("Uploading 0%…");
-      await uploadFile(ticket, file, active.signal, (percent) => {
+      await uploadFile(ticket, prepared, active.signal, (percent) => {
         if (valid()) setStatus(`Uploading ${percent}%…`);
       });
       if (!valid()) return;
@@ -133,10 +143,10 @@ export function useMediaUploads(
       const value = {
         media,
         preview:
-          file.size <= 4 * 1024 * 1024 &&
+          prepared.size <= 4 * 1024 * 1024 &&
           media.content_type.startsWith("image/") &&
           media.content_type !== "image/svg+xml"
-            ? URL.createObjectURL(file)
+            ? URL.createObjectURL(prepared)
             : null,
       };
       currentAttachment.current = value;

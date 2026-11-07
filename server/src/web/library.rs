@@ -131,8 +131,10 @@ pub(crate) async fn change(
             })
             .await?;
         if changed {
-            let global = matches!(input.action, LibraryAction::Delete)
-                || matches!(input.action, LibraryAction::Release) && input.confirm_last;
+            let global = matches!(
+                input.action,
+                LibraryAction::Delete | LibraryAction::Acquire | LibraryAction::Save
+            ) || matches!(input.action, LibraryAction::Release) && input.confirm_last;
             let target = (!global).then(|| identity.account.clone());
             let asset = (!global).then(|| id.clone());
             let _ = app.changes.send(super::Change::Media(target, asset));

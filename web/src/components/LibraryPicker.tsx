@@ -347,7 +347,7 @@ export function LibraryPicker({
                   ({ view, title, result: { page, error: sectionError } }) =>
                     (view === "library" ||
                       !page ||
-                      page.items.length > 0 ||
+                      page.items.some((item) => item.available) ||
                       sectionError ||
                       cursors[view] ||
                       page.next_cursor) && (
@@ -391,45 +391,47 @@ export function LibraryPicker({
                                       ),
                                   )
                                 : []),
-                            ].map((item) => {
-                              const upload = uploadKeys.current.get(
-                                item.media_id,
-                              );
-                              return (
-                                <LibraryStickerTile
-                                  key={upload?.key ?? item.media_id}
-                                  item={item}
-                                  {...(upload?.preview
-                                    ? { localPreview: upload.preview }
-                                    : {})}
-                                  previewLoaded={() => {
-                                    if (upload?.preview) {
-                                      URL.revokeObjectURL(upload.preview);
-                                      uploadKeys.current.set(item.media_id, {
-                                        key: upload.key,
-                                      });
+                            ]
+                              .filter((item) => item.available)
+                              .map((item) => {
+                                const upload = uploadKeys.current.get(
+                                  item.media_id,
+                                );
+                                return (
+                                  <LibraryStickerTile
+                                    key={upload?.key ?? item.media_id}
+                                    item={item}
+                                    {...(upload?.preview
+                                      ? { localPreview: upload.preview }
+                                      : {})}
+                                    previewLoaded={() => {
+                                      if (upload?.preview) {
+                                        URL.revokeObjectURL(upload.preview);
+                                        uploadKeys.current.set(item.media_id, {
+                                          key: upload.key,
+                                        });
+                                      }
+                                    }}
+                                    editing={editing}
+                                    disabled={
+                                      busy ||
+                                      uploads.busy ||
+                                      confirmation !== null
                                     }
-                                  }}
-                                  editing={editing}
-                                  disabled={
-                                    busy ||
-                                    uploads.busy ||
-                                    confirmation !== null
-                                  }
-                                  canSelect={canSelect}
-                                  choose={() => {
-                                    choose(item);
-                                  }}
-                                  remove={(trigger) => {
-                                    confirmationReturnFocus.current = trigger;
-                                    remove(item);
-                                  }}
-                                  acquire={() => {
-                                    acquire(item);
-                                  }}
-                                />
-                              );
-                            }),
+                                    canSelect={canSelect}
+                                    choose={() => {
+                                      choose(item);
+                                    }}
+                                    remove={(trigger) => {
+                                      confirmationReturnFocus.current = trigger;
+                                      remove(item);
+                                    }}
+                                    acquire={() => {
+                                      acquire(item);
+                                    }}
+                                  />
+                                );
+                              }),
                             view === "library" && pendingUpload && (
                               <LibraryStickerTile
                                 key={pendingUpload.preview}
@@ -572,9 +574,9 @@ export function LibraryPicker({
                 Remove “{confirmation.filename}”?
               </h3>
               <p id="library-confirmation-description">
-                This releases the last ownership and removes it from your
-                collection. Existing messages keep their attachment until they
-                are removed.
+                This removes the sticker from your collection. Without an owner,
+                it expires in 7 days, including in existing messages. Acquiring
+                ownership before expiry keeps it available.
               </p>
               {error && <p role="alert">{error}</p>}
               <div class="library-confirmation-actions">
@@ -586,7 +588,7 @@ export function LibraryPicker({
                     remove(confirmation, true);
                   }}
                 >
-                  Remove permanently
+                  Remove sticker
                 </button>
                 <button
                   class="library-confirmation-keep"

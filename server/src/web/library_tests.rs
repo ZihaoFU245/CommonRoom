@@ -54,10 +54,11 @@ async fn action(app: &App, user: &str, id: &str, action: &str, confirm: bool) ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_messages() {
-    library_read_contract(setup(
-        Engine::open(std::path::Path::new(":memory:")).unwrap(),
-    ))
-    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("library.sqlite");
+    let app = setup(Engine::open(&path).unwrap());
+    let db = crate::engine::database::Connection::open(path).unwrap();
+    library_read_contract(app, db).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -65,7 +66,8 @@ async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_mes
 async fn postgres_library_read_leases_preserve_visibility_and_retirement() {
     let fixture = crate::engine::database::tests::PostgresFixture::new();
     let engine = Engine::open_postgres(&fixture.url).unwrap();
-    library_read_contract(setup(engine)).await;
+    let db = crate::engine::database::Connection::postgres(&fixture.url, false).unwrap();
+    library_read_contract(setup(engine), db).await;
 }
 
 async fn resolve(app: &App, user: &str, id: &str) -> serde_json::Value {
@@ -81,7 +83,7 @@ async fn resolve(app: &App, user: &str, id: &str) -> serde_json::Value {
     body["items"][0].clone()
 }
 
-async fn library_read_contract(mut app: App) {
+async fn library_read_contract(mut app: App, db: crate::engine::database::Connection) {
     let (storage, server) = storage_server().await;
     app.media = Some(storage);
     let id = upload(&app, "alice").await;
@@ -232,8 +234,63 @@ async fn library_read_contract(mut app: App) {
     assert_eq!(read["info"]["unavailable"], false);
     assert!(
         read.get("link").is_some(),
-        "final release preserves referenced bytes"
+        "final release preserves referenced bytes during grace"
     );
+    assert!(read["info"]["expires"].as_u64().unwrap() > crate::engine::media::timestamp());
+    let mut changes = app.changes.subscribe();
+    assert_eq!(
+        action(&app, "bob", &id, "acquire", false).await,
+        StatusCode::OK
+    );
+    assert!(
+        matches!(
+            changes.recv().await.unwrap(),
+            super::super::Change::Media(None, None)
+        ),
+        "restoring permanent ownership refreshes all viewers' expiry leases"
+    );
+    assert!(resolve(&app, "bob", &id).await["info"]["expires"].is_null());
+    assert_eq!(
+        action(&app, "bob", &id, "release", true).await,
+        StatusCode::OK
+    );
+    let deadline = crate::engine::media::timestamp() + 9;
+    db.execute(
+        "UPDATE media SET expires=$2 WHERE id=$1",
+        crate::engine::database::params![&id, deadline],
+    )
+    .unwrap();
+    let capped = resolve(&app, "bob", &id).await;
+    assert!((1..=9).contains(&capped["lease_seconds"].as_u64().unwrap()));
+    assert!((1..=9).contains(&capped["link"]["expires_in"].as_u64().unwrap()));
+    db.execute(
+        "UPDATE media SET expires=$2 WHERE id=$1",
+        crate::engine::database::params![&id, crate::engine::media::timestamp() - 1],
+    )
+    .unwrap();
+    let expired = resolve(&app, "bob", &id).await;
+    assert_eq!(expired["info"]["expired"], true);
+    assert!(expired.get("link").is_none());
+    assert_eq!(
+        action(&app, "bob", &id, "acquire", false).await,
+        StatusCode::NOT_FOUND
+    );
+    for endpoint in ["info", "link", "file"] {
+        assert_eq!(
+            request(
+                &app,
+                "bob",
+                "GET",
+                &format!("/api/media/{id}/{endpoint}"),
+                json!(null)
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let (_, expired_list) = request(&app, "bob", "GET", "/api/library", json!(null)).await;
+    assert!(expired_list["items"].as_array().unwrap().is_empty());
     assert_eq!(
         action(&app, "alice", &id, "delete", false).await,
         StatusCode::OK
@@ -303,7 +360,7 @@ async fn library_read_contract(mut app: App) {
     );
     let (_, library) = request(&app, "bob", "GET", "/api/library", json!(null)).await;
     assert_eq!(library["usage"], 0);
-    assert_eq!(library["items"][0]["available"], false);
+    assert!(library["items"].as_array().unwrap().is_empty());
     assert_eq!(
         app.engine_read()
             .unwrap()
@@ -341,7 +398,12 @@ async fn library_http_orders_final_release_and_acquisition_and_refunds_admin_rem
     );
     assert_eq!(released, StatusCode::OK);
     let (_, owned) = request(&app, "bob", "GET", "/api/library?owned=true", json!(null)).await;
-    if acquired == StatusCode::OK {
+    assert_eq!(
+        acquired,
+        StatusCode::OK,
+        "either ordering preserves a reacquirable grace period"
+    );
+    {
         assert_eq!(owned["usage"], 8);
         assert_eq!(owned["items"][0]["owner_count"], 1);
         assert_eq!(
@@ -349,10 +411,6 @@ async fn library_http_orders_final_release_and_acquisition_and_refunds_admin_rem
             StatusCode::OK
         );
         let (_, owned) = request(&app, "bob", "GET", "/api/library?owned=true", json!(null)).await;
-        assert_eq!(owned["usage"], 0);
-        assert!(owned["items"].as_array().unwrap().is_empty());
-    } else {
-        assert_eq!(acquired, StatusCode::NOT_FOUND);
         assert_eq!(owned["usage"], 0);
         assert!(owned["items"].as_array().unwrap().is_empty());
     }

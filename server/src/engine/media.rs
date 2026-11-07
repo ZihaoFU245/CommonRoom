@@ -44,10 +44,19 @@ pub(crate) struct Media {
 pub(crate) fn timestamp() -> u64 {
     now()
 }
+pub(crate) fn library_release_deadline(at: u64) -> u64 {
+    at.saturating_add(7 * 86400)
+}
 fn default_media_age() -> i64 {
     7 * 86400
 }
 impl Media {
+    pub(crate) fn expired_at(&self, at: u64) -> bool {
+        self.expires.is_some_and(|expiry| expiry <= at)
+    }
+    pub(crate) fn available_at(&self, at: u64) -> bool {
+        self.ready && !self.deleting && !self.deleted && !self.expired_at(at)
+    }
     pub(super) fn completed_record(&self, at: u64) -> Result<Self, EngineError> {
         let mut media = self.clone();
         media.expires = if media.max_age == -1 {
@@ -255,7 +264,7 @@ impl Engine {
         self.require(Some(user), scope, Action::Read)?;
         self.require(Some(user), scope, Action::Send)?;
         if media.conversation == "@library" {
-            if !referenced || !media.ready || media.deleting || media.deleted {
+            if !referenced || !media.available_at(now()) {
                 return Err(EngineError::NotFound("Library asset unavailable.".into()));
             }
             self.media_allowance(user, scope, media.size, None)?;
@@ -266,10 +275,7 @@ impl Engine {
             _ => return Err(EngineError::NotFound("Upload not found.".into())),
         };
         if media.conversation != *conversation
-            || !media.ready
-            || media.deleting
-            || media.deleted
-            || media.expires.is_some_and(|expiry| expiry <= now())
+            || !media.available_at(now())
             || (self.principal_id(Some(user)) != Some(media.uploader.as_str()) && !referenced)
         {
             return Err(EngineError::NotFound("Upload not found.".into()));
@@ -491,20 +497,14 @@ impl Engine {
         include_expired: bool,
     ) -> Result<(), EngineError> {
         if media.conversation == "@library" {
-            if !self.active(user)
-                || !attached
-                || (!include_expired && (!media.ready || media.deleting || media.deleted))
-            {
+            if !self.active(user) || !attached || (!include_expired && !media.available_at(now())) {
                 return Err(EngineError::NotFound("Library asset unavailable.".into()));
             }
             return Ok(());
         }
         self.media_scope(user, &media.conversation, MediaAccess::Read)?;
-        let expired = media.expires.is_some_and(|time| time <= now());
-        if !attached
-            || !(include_expired && expired)
-                && (!media.ready || media.deleting || media.deleted || expired)
-        {
+        let expired = media.expired_at(now());
+        if !attached || !(include_expired && expired) && !media.available_at(now()) {
             return Err(EngineError::NotFound("Attachment not found.".into()));
         }
         Ok(())

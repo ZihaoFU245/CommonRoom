@@ -11,8 +11,8 @@ use crate::engine::media::Media;
 use sqlx::SqliteConnection;
 
 pub(crate) const TOMBSTONES_SQL: &str = "DELETE FROM media WHERE deleted=1 AND staging_clean=1 AND created<?1 AND (conversation!='@library' OR ready=0 OR NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=?1) AND (conversation!='@library' OR ready=0 OR NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
-pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND (conversation!='@library' OR ready=0 OR NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)\n            ) ORDER BY cleanup_attempt,created LIMIT ?3";
+pub(crate) const STARTUP_CLEANUP_SQL: &str = "UPDATE media SET deleting=1,cleanup_attempt=0 WHERE deleted=0 AND (deleting=1 OR unreferenced<=?1) AND (conversation!='@library' OR ready=0 OR (expires IS NULL AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id))) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL)";
+pub(crate) const CLAIM_CLEANUP_SQL: &str = "SELECT json,ready,expires,deleting,deleted FROM media WHERE id IN (\n                SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=1 AND cleanup_attempt<?4 ORDER BY cleanup_attempt,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND expires<=?1 AND cleanup_attempt<?4 ORDER BY expires,created LIMIT ?3)\n                UNION SELECT id FROM (SELECT id FROM media WHERE deleted=0 AND deleting=0 AND unreferenced IS NOT NULL AND (published IS NOT NULL OR unreferenced<=?2) AND (conversation!='@library' OR ready=0 OR (expires IS NULL AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id))) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=media.id) AND ('/api/avatars/'||media.id||'/file') NOT IN (SELECT (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') FROM entities WHERE kind='account' AND (json_extract(json,'$.metadata') -> '@global' ->> 'avatar') IS NOT NULL) AND cleanup_attempt<?4 ORDER BY unreferenced,created LIMIT ?3)\n            ) ORDER BY cleanup_attempt,created LIMIT ?3";
 
 pub(in crate::engine::database) async fn apply(
     db: &mut SqliteConnection,
@@ -50,11 +50,19 @@ pub(in crate::engine::database) async fn apply(
             }
             changed
         }
-        MediaWrite::PrepareCleanup { pending_before } => sqlx::query(STARTUP_CLEANUP_SQL)
-            .bind(number(*pending_before)?)
-            .execute(db)
-            .await?
-            .rows_affected(),
+        MediaWrite::PrepareCleanup { pending_before } => {
+            // Existing ownerless permanent stickers receive one grace period on upgrade.
+            let changed = sqlx::query("UPDATE media SET expires=?1 WHERE conversation='@library' AND ready=1 AND deleting=0 AND deleted=0 AND expires IS NULL AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=media.id)")
+                .bind(number(crate::engine::media::library_release_deadline(crate::engine::media::timestamp()))?)
+                .execute(&mut *db)
+                .await?
+                .rows_affected();
+            changed + sqlx::query(STARTUP_CLEANUP_SQL)
+                .bind(number(*pending_before)?)
+                .execute(db)
+                .await?
+                .rows_affected()
+        },
         MediaWrite::Abandon { id, uploader } => sqlx::query(
             "UPDATE media SET deleting=1 WHERE id=?1 AND uploader=?2 AND published IS NULL AND deleted=0",
         )

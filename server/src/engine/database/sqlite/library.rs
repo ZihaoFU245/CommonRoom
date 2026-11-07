@@ -55,7 +55,7 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
             .await?;
             if !others && !media.deleting && !media.deleted && !request.confirm_last {
                 return Err(Error::Conflict(
-                    "Confirm release of the final ownership. Existing messages retain the attachment.",
+                    "Confirm release of the final ownership. The sticker expires in 7 days unless acquired again.",
                 ));
             }
             let mut changed =
@@ -67,10 +67,10 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
                     .rows_affected();
             if !others {
                 changed += sqlx::query(
-                    "UPDATE media SET deleting=1,unreferenced=?2 WHERE id=?1 AND deleted=0 AND deleting=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)",
+                    "UPDATE media SET expires=COALESCE(expires,?2) WHERE id=?1 AND ready=1 AND deleted=0 AND deleting=0",
                 )
                 .bind(request.id)
-                .bind(number(crate::engine::media::timestamp())?)
+                .bind(number(crate::engine::media::library_release_deadline(crate::engine::media::timestamp()))?)
                 .execute(db)
                 .await?
                 .rows_affected();
@@ -90,7 +90,7 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
         }
         LibraryAction::Save | LibraryAction::Acquire => {}
     }
-    if !media.ready || media.deleting || media.deleted {
+    if !media.available_at(crate::engine::media::timestamp()) {
         return Err(Error::MissingMedia);
     }
     let referenced: bool = sqlx::query_scalar(
@@ -103,78 +103,61 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
     if !owned && !saved && !referenced {
         return Err(Error::MissingMedia);
     }
-    match request.action {
-        LibraryAction::Save => {
-            if saved {
-                return Ok(0);
-            }
-            let count: i64 = sqlx::query_scalar(
-                r#"
-            SELECT (SELECT count(*)
-            FROM library_entries
-            WHERE account_id=?1)+(SELECT count(*)
-            FROM media
-            WHERE conversation='@library'
-            AND uploader=?1
-            AND ready=0
-            AND deleting=0
-            AND deleted=0)
-            "#,
+    // Saving a dangling asset acquires it atomically. Existing ownership keeps
+    // saves borrowed, with no duplicate ownership or storage charge.
+    let acquire = matches!(request.action, LibraryAction::Acquire)
+        || matches!(request.action, LibraryAction::Save)
+            && !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM library_owners WHERE media_id=?1)",
             )
-            .bind(request.account)
+            .bind(request.id)
             .fetch_one(&mut *db)
             .await?;
-            if unsigned(count)? >= request.config.library_limit {
-                return Err(Error::InvalidRequest("Library entry limit reached."));
-            }
-            Ok(
-                sqlx::query("INSERT INTO library_entries(account_id,media_id,position) SELECT ?1,?2,COALESCE(MAX(position),0)+1 FROM library_entries WHERE account_id=?1")
-                    .bind(request.account)
-                    .bind(request.id)
-                    .execute(db)
-                    .await?
-                    .rows_affected(),
-            )
+    let mut changed = 0;
+    if acquire && !owned {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM library_owners o JOIN media m ON m.id=o.media_id WHERE o.account_id=?1 AND m.deleting=0 AND m.deleted=0)+(SELECT count(*) FROM media WHERE conversation='@library' AND uploader=?1 AND ready=0 AND deleting=0 AND deleted=0)",
+        )
+        .bind(request.account)
+        .fetch_one(&mut *db)
+        .await?;
+        if unsigned(count)? >= request.config.library_owned_limit {
+            return Err(Error::InvalidRequest("Owned asset limit reached."));
         }
-        LibraryAction::Acquire => {
-            if owned {
-                return Ok(0);
-            }
-            let count: i64 = sqlx::query_scalar(
-                r#"
-            SELECT (SELECT count(*)
-            FROM library_owners o JOIN media m ON m.id=o.media_id
-            WHERE o.account_id=?1
-            AND m.deleting=0
-            AND m.deleted=0)+(SELECT count(*)
-            FROM media
-            WHERE conversation='@library'
-            AND uploader=?1
-            AND ready=0
-            AND deleting=0
-            AND deleted=0)
-            "#,
-            )
+        if usage(db, request.account).await?.saturating_add(media.size) > request.quota {
+            return Err(Error::InvalidRequest("Account media quota reached."));
+        }
+        changed += sqlx::query("INSERT INTO library_owners(account_id,media_id) VALUES(?1,?2)")
             .bind(request.account)
-            .fetch_one(&mut *db)
-            .await?;
-            if unsigned(count)? >= request.config.library_owned_limit {
-                return Err(Error::InvalidRequest("Owned asset limit reached."));
-            }
-            if usage(db, request.account).await?.saturating_add(media.size) > request.quota {
-                return Err(Error::InvalidRequest("Account media quota reached."));
-            }
-            Ok(
-                sqlx::query("INSERT INTO library_owners(account_id,media_id) VALUES(?1,?2)")
-                    .bind(request.account)
-                    .bind(request.id)
-                    .execute(db)
-                    .await?
-                    .rows_affected(),
-            )
-        }
-        _ => Err(Error::Conversion("Invalid library operation")),
+            .bind(request.id)
+            .execute(&mut *db)
+            .await?
+            .rows_affected();
+        changed += sqlx::query("UPDATE media SET expires=NULL WHERE id=?1 AND expires IS NOT NULL")
+            .bind(request.id)
+            .execute(&mut *db)
+            .await?
+            .rows_affected();
     }
+    if matches!(request.action, LibraryAction::Save) && !saved {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM library_entries e JOIN media m ON m.id=e.media_id WHERE e.account_id=?1 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 AND (m.expires IS NULL OR m.expires>?2))+(SELECT count(*) FROM media WHERE conversation='@library' AND uploader=?1 AND ready=0 AND deleting=0 AND deleted=0)",
+        )
+        .bind(request.account)
+        .bind(number(crate::engine::media::timestamp())?)
+        .fetch_one(&mut *db)
+        .await?;
+        if unsigned(count)? >= request.config.library_limit {
+            return Err(Error::InvalidRequest("Library entry limit reached."));
+        }
+        changed += sqlx::query("INSERT INTO library_entries(account_id,media_id,position) SELECT ?1,?2,COALESCE(MAX(position),0)+1 FROM library_entries WHERE account_id=?1")
+            .bind(request.account)
+            .bind(request.id)
+            .execute(db)
+            .await?
+            .rows_affected();
+    }
+    Ok(changed)
 }
 
 pub(super) async fn usage(db: &mut SqliteConnection, account: &str) -> Result<u64> {
@@ -277,6 +260,8 @@ pub(in crate::engine::database) async fn page(
               (SELECT count(*) FROM library_owners o WHERE o.media_id=m.id) AS owners
             FROM {selection} selected JOIN media m ON m.id=selected.media_id
             WHERE selected.account_id=?1 AND {continuation} AND {access_filter}
+              AND m.ready=1 AND m.deleting=0 AND m.deleted=0
+              AND (m.expires IS NULL OR m.expires>?5)
             ORDER BY {order}
             LIMIT ?3
             "#
@@ -289,6 +274,7 @@ pub(in crate::engine::database) async fn page(
             serde_json::to_string(conversations)
                 .map_err(|_| Error::Conversion("Invalid library scopes"))?,
         )
+        .bind(number(crate::engine::media::timestamp())?)
         .fetch_all(&mut *db)
         .await?;
     let mut items = Vec::new();
@@ -363,8 +349,9 @@ pub(super) async fn reserve_checks(
     }
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM media WHERE conversation='@library' AND uploader=?1 AND ready=0 AND deleting=0 AND deleted=0").bind(account).fetch_one(&mut *db).await?;
     let owned: i64 = sqlx::query_scalar("SELECT count(*) FROM library_owners o JOIN media m ON m.id=o.media_id WHERE o.account_id=?1 AND m.deleting=0 AND m.deleted=0").bind(account).fetch_one(&mut *db).await?;
-    let saved: i64 = sqlx::query_scalar("SELECT count(*) FROM library_entries WHERE account_id=?1")
+    let saved: i64 = sqlx::query_scalar("SELECT count(*) FROM library_entries e JOIN media m ON m.id=e.media_id WHERE e.account_id=?1 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 AND (m.expires IS NULL OR m.expires>?2)")
         .bind(account)
+        .bind(number(crate::engine::media::timestamp())?)
         .fetch_one(db)
         .await?;
     if unsigned(owned)?.saturating_add(unsigned(pending)?) >= config.library_owned_limit
@@ -397,7 +384,7 @@ pub(super) async fn remove_account(db: &mut SqliteConnection, account: &str) -> 
                     .execute(&mut *db)
                     .await?
                     .rows_affected();
-            changed += sqlx::query("UPDATE media SET deleting=1,unreferenced=?2 WHERE id=?1 AND deleted=0 AND deleting=0 AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=?1) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)").bind(&id).bind(number(crate::engine::media::timestamp())?).execute(&mut *db).await?.rows_affected();
+            changed += sqlx::query("UPDATE media SET expires=COALESCE(expires,?2) WHERE id=?1 AND ready=1 AND deleted=0 AND deleting=0 AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=?1)").bind(&id).bind(number(crate::engine::media::library_release_deadline(crate::engine::media::timestamp()))?).execute(&mut *db).await?.rows_affected();
         }
     }
     for table in ["library_entries", "library_recents"] {

@@ -178,12 +178,7 @@ async fn resolve_batch(
                     .ok_or_else(missing_media)?
                     .media;
                 let now = crate::engine::media::timestamp();
-                if item.link
-                    && record.ready
-                    && !record.deleting
-                    && !record.deleted
-                    && record.expires.is_none_or(|expires| expires > now)
-                {
+                if item.link && record.available_at(now) {
                     match &app.media {
                         Some(storage) => storage
                             .download_url(record, item.download)
@@ -305,7 +300,7 @@ impl Item {
         link: Option<String>,
     ) -> serde_json::Value {
         let media = &row.media;
-        let expired = media.expires.is_some_and(|expires| expires <= now);
+        let expired = media.expired_at(now);
         let unavailable = !media.ready || media.deleting || media.deleted;
         let lease_seconds = config
             .media

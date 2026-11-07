@@ -681,13 +681,19 @@ The final key encodes the retention class:
 | `media/1d/`, `media/7d/`, ... | Whole-day metadata lifetimes, `media/<N>d/`. |
 | `media/<N>s/` | Sub-day lifetimes such as `media/3600s/`. |
 | `avatars/` | Permanent account avatar files; do not apply an expiry lifecycle rule. |
-| `media/permanent/` | Metadata with no expiry (`-1`). |
+| `media/permanent/` | Permanent uploads and stable library object keys. |
 
 Reasonable rules: expire `uploads/` after 1 day, `media/1d/` after 1 day, and
 `media/7d/` after 7 days. Add one rule per whole-day class you actually use, never
 expire a class sooner than the grant period it represents, and leave
 `media/permanent/` alone. On versioned buckets also expire noncurrent versions, or
 objects never disappear. Use a dedicated prefix (or bucket) per deployment.
+Library objects keep their permanent-prefix key when the last owner releases
+them. Chat schedules seven-day expiry in its database and deletes those objects
+through its cleanup worker; prefix lifecycle rules do not enforce library grace
+expiry. Reacquiring before the deadline cancels expiry without copying bytes.
+On upgrade, startup assigns a fresh seven-day grace period to available ownerless
+legacy stickers without an expiry. Repeated restarts preserve that deadline.
 
 ### Storage headers and CSP
 

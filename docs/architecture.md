@@ -395,8 +395,21 @@ own indexed relationships, quota reads and retirement transactions. Mutations ho
 an asset permit and the shared metadata fence; PostgreSQL locks the submitting
 account before the asset row to serialize quota checks across assets. Message
 reference admission locks/rechecks the same durable asset state before commit.
-Only initial upload completion inserts ownership plus picker membership together.
+Initial upload completion inserts ownership plus picker membership together.
+Saving an ownerless asset also inserts ownership and membership atomically;
+saves with an existing owner remain borrowed. Expired/unavailable entries are
+excluded before list pagination and collection slot accounting.
 Ordinary attachment reservations also include library charges in account usage.
+Shared media availability checks enforce expiry for ordinary attachments and
+library assets. Final ownership release (including account deletion) schedules
+seven-day expiry in the authoritative media column. Acquisition before expiry
+clears it in the same transaction as quota charging. Saving a dangling asset uses
+that same acquisition path; expiry cannot be reversed
+by an acquisition after its deadline or by a cleanup claim. Message references
+do not prolong this grace period. Keys and immutable bytes remain unchanged.
+Startup gives legacy ownerless permanent assets one grace period. Orphan cleanup
+excludes scheduled library assets until expiry; normal expiry cleanup ignores
+message references. Acquisition broadcasts expiry invalidation to all viewers.
 
 Library cleanup admission reads transactional `library_storage` counters instead
 of scanning the asset catalogue. Media triggers update these derived counters on
@@ -447,9 +460,10 @@ switches, without another request. Explicit refresh and library invalidations
 bypass this cache; cached pages remain visible during invalidation revalidation.
 There is no unused search aggregation path. The browser receives `media`
 invalidations after library changes. Account-targeted changes can identify
-affected assets; global invalidations omit their IDs. Membership and ordinary
-ownership changes target only that account, while potential retirement refreshes
-other viewers. Account-deletion metadata carries this invalidation even to
+affected assets; global invalidations omit their IDs. Entry removal and unconfirmed
+ownership releases target only that account. Saves/acquisitions, confirmed final
+releases and global retirement refresh other viewers so expiry leases follow
+the durable state. Account-deletion metadata carries this invalidation even to
 independent borrowers outside the metadata audience.
 
 Attachment playback/previews live in the lazy `components/Attachment.tsx` chunk.

@@ -45,7 +45,7 @@ impl LibraryRow {
             self.deleting,
             self.deleted,
         ))?;
-        let available = media.ready && !media.deleting && !media.deleted;
+        let available = media.available_at(crate::engine::media::timestamp());
         Ok(LibraryItem {
             media_id: media.id,
             filename: media.filename,

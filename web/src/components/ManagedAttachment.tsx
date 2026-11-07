@@ -21,6 +21,7 @@ export function ManagedAttachment({
   const source = useContext(LibrarySourceContext);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(info?.saved === true);
+  const dangling = !!info?.library && info.expires !== null;
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
@@ -93,6 +94,7 @@ export function ManagedAttachment({
       setSaving(false);
     }
     setSaved(true);
+    if (info) setChecked({ id, info: { ...info, saved: true, expires: null } });
     window.dispatchEvent(
       new CustomEvent("commonroom-library-change", { detail: [id] }),
     );
@@ -120,14 +122,23 @@ export function ManagedAttachment({
             <span class="library-save">
               <button
                 type="button"
-                disabled={saving || saved}
+                disabled={saving || (saved && !dangling)}
+                title={
+                  dangling
+                    ? `Acquire ownership to keep this sticker (${info.size.toLocaleString()} bytes of storage)`
+                    : "Save to your collection without acquiring ownership"
+                }
                 onClick={() => {
                   save().catch((failure: unknown) => {
                     console.error("Library save update failed", failure);
                   });
                 }}
               >
-                {saved ? "Saved" : "Add to collection"}
+                {saved
+                  ? dangling
+                    ? "Keep in collection"
+                    : "Saved"
+                  : "Add to collection"}
               </button>
               {error && <span role="status">{error}</span>}
             </span>
