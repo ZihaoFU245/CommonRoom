@@ -8,7 +8,9 @@ export function useLibraryPopover(
   anchor: RefObject<HTMLButtonElement> | undefined,
   closing: boolean,
   close: () => void,
+  escapeAction: () => boolean,
 ) {
+  const onEscape = useEvent(escapeAction);
   const dialog = useRef<HTMLDialogElement>(null);
   const motion = useRef<Animation | undefined>(undefined);
   const exiting = useRef(false);
@@ -59,7 +61,8 @@ export function useLibraryPopover(
   useLayoutEffect(() => {
     const element = dialog.current;
     if (!element) return;
-    element.showPopover();
+    if (typeof element.showPopover === "function") element.showPopover();
+    else element.setAttribute("open", "");
     // Reopening with a queued attachment disables previews. Keep the browser
     // from focusing the first remove control and revealing its actions.
     element.focus({ preventScroll: true });
@@ -70,19 +73,26 @@ export function useLibraryPopover(
       const width = visual?.width ?? innerWidth;
       const height = visual?.height ?? innerHeight;
       const bounds = anchor?.current?.getBoundingClientRect();
-      element.style.width = `${Math.min(420, width - 24)}px`;
+      const panelWidth = Math.max(0, Math.min(420, width - 24));
       const bottom = bounds
         ? Math.min(bounds.top - 8, top + height - 12)
         : top + height - 24;
-      element.style.height = `${Math.min(460, Math.max(120, bottom - top - 12))}px`;
+      const panelHeight = Math.max(0, Math.min(460, bottom - top - 12));
+      element.style.width = `${panelWidth}px`;
+      element.style.height = `${panelHeight}px`;
       // Entry motion scales the painted box; positioning uses its layout size.
-      element.style.left = `${Math.max(left + 12, Math.min(bounds?.left ?? left + 12, left + width - element.offsetWidth - 12))}px`;
-      element.style.top = `${Math.max(top + 12, bottom - element.offsetHeight)}px`;
+      element.style.left = `${Math.max(left + 12, Math.min(bounds?.left ?? left + 12, left + width - panelWidth - 12))}px`;
+      element.style.top = `${Math.max(top + 12, bottom - panelHeight)}px`;
       const x = bounds
         ? bounds.left + bounds.width / 2
         : parseFloat(element.style.left);
       const y = bounds ? bounds.top + bounds.height / 2 : bottom + 16;
       element.style.transformOrigin = `${x - parseFloat(element.style.left)}px ${y - parseFloat(element.style.top)}px`;
+    };
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(position);
     };
     position();
     move(true);
@@ -98,29 +108,30 @@ export function useLibraryPopover(
       if (event.key === "Escape" && !event.isComposing) {
         event.preventDefault();
         event.stopPropagation();
-        dismiss();
+        if (!onEscape()) dismiss();
       }
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape, true);
-    window.addEventListener("resize", position);
-    window.addEventListener("scroll", position, true);
-    window.visualViewport?.addEventListener("resize", position);
-    window.visualViewport?.addEventListener("scroll", position);
-    const resize = new ResizeObserver(position);
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    const resize = new ResizeObserver(schedule);
     if (anchor?.current?.parentElement)
       resize.observe(anchor.current.parentElement);
     return () => {
+      cancelAnimationFrame(frame);
       motion.current?.cancel();
       resize.disconnect();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape, true);
-      window.removeEventListener("resize", position);
-      window.removeEventListener("scroll", position, true);
-      window.visualViewport?.removeEventListener("resize", position);
-      window.visualViewport?.removeEventListener("scroll", position);
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
     };
-  }, [anchor, dismiss, move]);
+  }, [anchor, dismiss, move, onEscape]);
   useLayoutEffect(() => {
     if (closing) dismiss();
     else if (exiting.current) move(true);

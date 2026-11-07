@@ -284,7 +284,7 @@ test("partial playback responses preserve legacy CORS support without caching fr
     2,
   );
 });
-test("unavailable storage cannot silently switch to uncached downloads", async () => {
+test("unavailable storage preserves authorized network downloads", async () => {
   const f = fixture();
   const instance = new MediaCache(
     {
@@ -294,10 +294,10 @@ test("unavailable storage cannot silently switch to uncached downloads", async (
     },
     f.network,
   );
-  await assert.rejects(f.load(instance), /disabled/u);
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
   assert.ok(
-    f.calls.every((call) => call.url.endsWith("/resolve")),
-    "only live authorization ran; no storage download bypassed the cache",
+    f.calls.some((call) => call.url.endsWith("/resolve")),
+    "network fallback still checks live authorization",
   );
 });
 
@@ -1120,4 +1120,47 @@ test("warm bursts coalesce recency cache opens and enumeration", async (t) => {
   assert.equal(f.metadataPuts() - writes, 32);
   assert.equal(opens, 1);
   assert.equal(keys.mock.callCount(), 1);
+});
+
+test("cache match failures fall back after authorization; revoked reads never download", async () => {
+  const f = fixture();
+  const cache = await f.storage.open("commonroom-media");
+  cache.match = async () => {
+    throw new DOMException("Evicted", "UnknownError");
+  };
+  const instance = new MediaCache(f.storage, f.network);
+  assert.equal(await (await f.load(instance)).text(), "abcdef");
+  f.deny();
+  instance.invalidate();
+  const before = f.calls.filter(
+    (call) => !call.url.endsWith("/resolve"),
+  ).length;
+  assert.equal((await f.load(instance)).status, 403);
+  assert.equal(
+    f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
+    before,
+  );
+});
+
+test("explicit retry replaces valid-looking corrupt bytes only once per token", async () => {
+  const f = fixture();
+  const instance = new MediaCache(f.storage, f.network);
+  await (await f.load(instance)).text();
+  await Promise.all(f.work);
+  const record = f.saved.get(path);
+  f.saved.set(path, new Response("xxxxxx", { headers: record.headers }));
+  assert.equal(await (await f.load(instance)).text(), "xxxxxx");
+  assert.equal(await (await f.load(instance, "?retry=0:1")).text(), "abcdef");
+  await Promise.all(f.work);
+  const downloads = f.calls.filter(
+    (call) => !call.url.endsWith("/resolve"),
+  ).length;
+  assert.equal(
+    await (await f.load(instance, "?retry=0:1", "bytes=0-2")).text(),
+    "abc",
+  );
+  assert.equal(
+    f.calls.filter((call) => !call.url.endsWith("/resolve")).length,
+    downloads,
+  );
 });

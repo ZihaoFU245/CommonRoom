@@ -85,7 +85,9 @@ Completion and cleanup serialize mutation of the same object; engine locks are r
 before network I/O. Current identity/grants are rechecked after verification.
 
 The composer holds a separate attachment card/preview with Remove, while text
-remains editable. Pasting an image from the clipboard attaches it through the
+remains editable. Uploaded images and library selections use the same preview
+layout. Local upload previews reuse their Blob URL; stored images load through
+the authorized media cache without allocating or uploading another object. Pasting an image from the clipboard attaches it through the
 same upload path as the attach picker: the paste is consumed, no Markdown or
 image URL reaches the textarea, and an unnamed screenshot receives a filename
 from its image type. The picker and pasted images share one availability rule,
@@ -94,8 +96,8 @@ pending send, an existing attachment, or a `/command` draft applies. A paste
 without an image file keeps the browser's ordinary text behavior.
 Upload/verification blocks every send path. Sending combines
 text and an application media path as Markdown; a media-only message is allowed.
-Raw attachment Markdown never enters the textarea. Preview object URLs are local
-and released on removal, publication and navigation. Completed but unsent media
+Raw attachment Markdown never enters the textarea. Locally created preview object
+URLs are released on removal, publication and navigation. Completed but unsent media
 still consume pending slots. A rejected send retains the attachment/draft; an
 uncertain acknowledgement asks the user to inspect history before retrying.
 There is no automatic retry of an uncertain browser message.
@@ -119,7 +121,10 @@ metadata, read authorization and, on a byte-cache miss, a signed GET URL
 together. The page and its scoped `media-cache.js` worker share the result; they
 do not perform independent `/info` checks. The resolver accepts at most 32
 items, shares one admission job, and reads metadata, references and library
-visibility in a single statement on either database backend. Only batches with signed links need a second metadata statement. Final authority
+visibility in a batch statement on either database backend. A discovery read first
+identifies requested media kinds; only library requests enumerate all readable
+conversation scopes. The authoritative reread follows revision capture. Batches
+with signed links recheck mutable metadata after signing. Final authority
 checks revalidate delivery; avatar history uses one batched query and watches only
 the readable conversation proving each owner’s retained author presence. Authority
 conflicts retry once within one 15-second resolver request budget. The client
@@ -143,8 +148,8 @@ without a server request. Mounted media renew through one page heartbeat near 80
 lease lifetime, aligned to shared minute slots for long leases; concurrent
 reads/renewals deduplicate and collect for 5 ms into batches. Hidden or unmounted media stop renewing. Expired leases
 block new reads until successful resolution; failed renewals never extend them.
-Logout, login, unauthorized responses, server selection and socket disconnect
-invalidate read authority. Authority-changing snapshots invalidate it too;
+Logout, login, unauthorized responses and server selection invalidate read
+authority. Transient socket disconnects retain valid leases. Authority-changing snapshots invalidate it too;
 unrelated snapshots do not refresh every attachment. Library notifications carry
 affected IDs when known. These notifications shorten revocation latency, but
 revocation or retraction can leave an existing lease usable until its deadline
@@ -164,7 +169,9 @@ The worker persists immutable bytes under stable application media URLs. Full
 cached objects serve byte ranges locally; partial playback responses stream
 without filling the cache. At most 128 entries/256 MiB are retained. Larger
 responses stream normally, and browser eviction can require another download.
-Unavailable Cache Storage fails the read instead of bypassing the cache. At most
+Unavailable Cache Storage falls back to an authorized network download; it never
+bypasses live authorization or grants offline access. Explicit retries replace
+possibly corrupt cached bytes once per retry token. At most
 four whole-object fills, reserving up to 256 MiB, survive row cancellation with
 a two-minute deadline starting at cancellation. Active downloads may take
 longer. Range requests do not wait for pending whole-object fills. Stable cache
@@ -520,12 +527,13 @@ that byte cost. Owned assets show only a single circular remove button; borrowed
 keep acquisition disabled. Both
 circles use the current theme's surface and accent colors. Borrowed entries remove immediately. Owned stickers
 release the current user's ownership and remove the saved/recent entry; final
-ownership requires a centered floating confirmation above the inert sticker content
-and explicit confirmation that the sticker becomes
-permanently unavailable for everyone, including existing messages. A concurrent
+ownership requires a centered floating confirmation above the inert sticker content.
+Releasing the final ownership preserves bytes referenced by retained messages;
+otherwise it retires the asset for cleanup. A concurrent
 change to the last owner also requires confirmation. Keep sticker returns keyboard
 focus to the original remove button. If the item disappeared or was deleted,
-focus returns to Edit. The picker contains no quota
+focus moves to a remaining tile or Edit. Escape cancels the confirmation while
+keeping the picker open. The picker contains no quota
 panel. **Settings → Account** shows media storage usage and quota with an icon-only
 refresh button. Its last fetched usage is cached per server/account in browser
 memory and remains visible during refresh; new results update the number and
@@ -538,17 +546,20 @@ borrows without adding ownership. Saved media shows **Saved** instead of an add
 action; membership is read from the server after refresh and library changes.
 Both collection states share the same control footprint. Virtualized message rows
 retain their previously measured height while attachment access checks or image loads are pending
-on remount, through the shared timeline layout code; media remains hidden until
-reauthorized. **Acquire** adds an independent full-size quota
+on remount, through the shared timeline layout code. Children retain their geometry
+while presentation metadata loads; byte reads keep their independent authorization. **Acquire** adds an independent full-size quota
 charge. The library API supports hiding an entry without releasing ownership; the
 picker remove control performs both steps for owned stickers.
 
 Ownership, saved entries and current conversation references authorize reads
 independently. Owners protect an available file even without messages or a picker
-entry. Message references and borrowers do not protect a retired file from physical
-cleanup. Ordinary media abandonment cannot remove a completed library asset.
+entry. Message references protect bytes after ordinary ownership release. Explicit
+administrator deletion retires the file globally; borrowers and message references
+do not protect an administratively retired file from physical cleanup. Ordinary media abandonment cannot remove a completed library asset.
 Account deletion releases its ownerships; another owner's asset remains available.
-Administrators can remove an asset globally through the library API. See
+Administrators can remove an asset globally through the library API. Cleaned
+tombstones with no owner or message reference also remove stale collection and
+recent entries. See
 [Library protocol](protocol.md#personal-media-library) for endpoints and errors.
 
 These restart-required `media` configuration fields are independent of byte quota:

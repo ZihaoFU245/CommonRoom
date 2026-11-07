@@ -55,7 +55,7 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
             .await?;
             if !others && !media.deleting && !media.deleted && !request.confirm_last {
                 return Err(Error::Conflict(
-                    "This is the final ownership. Confirm release to make the asset unavailable for everyone.",
+                    "Confirm release of the final ownership. Existing messages retain the attachment.",
                 ));
             }
             let mut changed =
@@ -67,7 +67,7 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
                     .rows_affected();
             if !others {
                 changed += sqlx::query(
-                    "UPDATE media SET deleting=1,unreferenced=?2 WHERE id=?1 AND deleted=0 AND deleting=0",
+                    "UPDATE media SET deleting=1,unreferenced=?2 WHERE id=?1 AND deleted=0 AND deleting=0 AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)",
                 )
                 .bind(request.id)
                 .bind(number(crate::engine::media::timestamp())?)
@@ -262,6 +262,11 @@ pub(in crate::engine::database) async fn page(
     } else {
         "selected.position>CAST(?2 AS INTEGER)"
     };
+    let access_filter = if recent {
+        "(EXISTS(SELECT 1 FROM library_owners o WHERE o.media_id=m.id AND o.account_id=?1) OR EXISTS(SELECT 1 FROM library_entries e WHERE e.media_id=m.id AND e.account_id=?1) OR EXISTS(SELECT 1 FROM message_media r WHERE r.media_id=m.id AND r.conversation IN (SELECT value FROM json_each(?4))))"
+    } else {
+        "?4 IS NOT NULL"
+    };
     let sql = format!(
         r#"
             SELECT {cursor} AS cursor, m.json, m.ready, m.expires, m.deleting, m.deleted,
@@ -271,7 +276,7 @@ pub(in crate::engine::database) async fn page(
                 WHERE e.media_id=m.id AND e.account_id=?1) AS saved,
               (SELECT count(*) FROM library_owners o WHERE o.media_id=m.id) AS owners
             FROM {selection} selected JOIN media m ON m.id=selected.media_id
-            WHERE selected.account_id=?1 AND {continuation}
+            WHERE selected.account_id=?1 AND {continuation} AND {access_filter}
             ORDER BY {order}
             LIMIT ?3
             "#
@@ -280,6 +285,10 @@ pub(in crate::engine::database) async fn page(
         .bind(account)
         .bind(after)
         .bind(number(limit + 1)?)
+        .bind(
+            serde_json::to_string(conversations)
+                .map_err(|_| Error::Conversion("Invalid library scopes"))?,
+        )
         .fetch_all(&mut *db)
         .await?;
     let mut items = Vec::new();
@@ -287,9 +296,6 @@ pub(in crate::engine::database) async fn page(
     for row in rows {
         let cursor = row.cursor.clone();
         let item = row.into_item()?;
-        if recent && !access(db, &item.media_id, account, conversations).await? {
-            continue;
-        }
         cursors.push(cursor);
         items.push(item);
     }
@@ -391,7 +397,7 @@ pub(super) async fn remove_account(db: &mut SqliteConnection, account: &str) -> 
                     .execute(&mut *db)
                     .await?
                     .rows_affected();
-            changed += sqlx::query("UPDATE media SET deleting=1,unreferenced=?2 WHERE id=?1 AND deleted=0 AND deleting=0 AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=?1)").bind(&id).bind(number(crate::engine::media::timestamp())?).execute(&mut *db).await?.rows_affected();
+            changed += sqlx::query("UPDATE media SET deleting=1,unreferenced=?2 WHERE id=?1 AND deleted=0 AND deleting=0 AND NOT EXISTS(SELECT 1 FROM library_owners WHERE media_id=?1) AND NOT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1)").bind(&id).bind(number(crate::engine::media::timestamp())?).execute(&mut *db).await?.rows_affected();
         }
     }
     for table in ["library_entries", "library_recents"] {

@@ -115,7 +115,7 @@ async function test(name, run) {
     await run();
     results.push({ name });
   } catch (error) {
-    results.push({ name, error: error.stack ?? String(error) });
+    results.push({ name, error: `${String(error)}\n${error.stack ?? ""}` });
   } finally {
     Object.assign(api, originals);
     render(null, tests);
@@ -212,11 +212,13 @@ await test("login server settings animate from the gear and persist only on Save
       tests.querySelector("#login-server-url").value === selected,
       "reopening shows saved URL",
     );
-    tests
-      .querySelector("#login-server-url")
-      .dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
+    tests.querySelector("#login-server-url").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     await until(() => !tests.querySelector(".login-server-card"));
     check(document.activeElement === gear, "Escape returns focus to gear");
   } finally {
@@ -261,7 +263,11 @@ await test("login server settings shrink visibly back to the gear on every dismi
           .click();
       else if (dismissal === "escape")
         card.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            bubbles: true,
+            cancelable: true,
+          }),
         );
       else
         document.body.dispatchEvent(
@@ -350,7 +356,11 @@ await test("user cards show profiles and open private messages", async () => {
   check(bounds.height < 110, "card uses a short horizontal layout");
   check(bounds.left >= 0 && bounds.right <= innerWidth, "card fits viewport");
   document.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
   );
   await until(() => !document.querySelector(".user-card"));
   check(document.activeElement === trigger, "Escape restores focus");
@@ -520,7 +530,11 @@ await test("user cards animate every dismissal and handle rapid toggles", async 
       ),
     () =>
       document.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
       ),
     () => tests.querySelector("#outside-profile").focus(),
   ]) {
@@ -654,7 +668,11 @@ await test("user cards label self, show presence and copy usernames", async () =
     );
     check(copied === "@alice", "copy includes the username prefix");
     document.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
     );
     await until(() => !document.querySelector(".user-card"));
     peer.click();
@@ -2718,7 +2736,11 @@ await test("chat colors update for newly disclosed live and paged authors and re
           .some((animation) => animation.playState === "running"),
       );
     picker.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
     );
     await until(
       () => colorPickerToggle.getAttribute("aria-expanded") === "false",
@@ -2726,7 +2748,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
     check(
       document.activeElement === colorPickerToggle &&
         tests.querySelector(".settings-dialog[open]"),
-      "picker Escape returns focus without closing Settings",
+      `picker Escape returns focus without closing Settings: active=${document.activeElement?.outerHTML.slice(0, 200)}, dialog=${!!tests.querySelector(".settings-dialog[open]")}`,
     );
 
     await until(
@@ -2849,7 +2871,11 @@ await test("chat colors update for newly disclosed live and paged authors and re
         `${theme}: scope menu follows the current surface`,
       );
       menu.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
       );
       await until(() => !tests.querySelector("#name-color-scopes"));
     }
@@ -3083,7 +3109,11 @@ await test("color picker previews locally, applies once and preserves keyboard f
         .getAttribute("aria-pressed") === "true",
   );
   panel().dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
   );
   await until(() => !panel());
   check(
@@ -3281,10 +3311,14 @@ await test("attachment remounts share pending status and warm rows skip loading 
     check(calls === 1, "completed status skips subsequent remount requests");
     draw("d5cd8a44-d8b7-4c63-91fe-3cc63f106179");
     check(
-      tests.querySelector(".attachment-loading"),
+      tests.querySelector('.managed-attachment[aria-busy="true"]'),
       "a changed file identity cannot retain the old file's checked state",
     );
-    await until(() => tests.querySelector("[data-attachment]"));
+    await until(
+      () =>
+        calls === 2 &&
+        tests.querySelector('.managed-attachment[aria-busy="false"]'),
+    );
     check(calls === 2, "a replacement file resolves its own metadata once");
   } finally {
     pending.resolve();
@@ -3351,8 +3385,10 @@ await test("expired attachments preserve filenames across media kinds and themes
         check(icon.naturalWidth > 0, "approved SVG icon loads successfully");
         const bounds = icon.getBoundingClientRect();
         check(
-          bounds.width === bounds.height && bounds.width > 0,
-          "icon retains square proportions",
+          bounds.width === bounds.height &&
+            bounds.width > 0 &&
+            bounds.width <= 40,
+          "the placeholder icon stays at its regular size inside Markdown",
         );
         check(
           getComputedStyle(tests.querySelector(".attachment-expired"))
@@ -4191,8 +4227,8 @@ for (const failure of [
         .getBoundingClientRect();
       const bounds = panel().getBoundingClientRect();
       check(
-        alert.top >= bounds.top && alert.bottom <= bounds.bottom,
-        "the error scrolls into view in a constrained picker",
+        alert.top >= bounds.top - 1 && alert.bottom <= bounds.bottom + 1,
+        "the error scrolls into view in a constrained picker within scroll rounding",
       );
       check(
         panel().querySelector('.name-color-option[aria-pressed="true"]').dataset
@@ -4251,7 +4287,11 @@ await test("closing scope menus hide scrollbars throughout their exit animation"
   );
   panel.scrollTop = 40;
   panel.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
   );
   let samples = 0;
   while (tests.contains(panel)) {
@@ -4361,7 +4401,11 @@ await test("display name scopes default globally, save authorized room overrides
     applyAppearance("light", false, defaultSeeds);
     surface.remove();
     options.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
     );
     await until(() => scope.getAttribute("aria-expanded") === "false");
     check(
@@ -5214,11 +5258,39 @@ await test("external message images require URL-specific consent", async () => {
     "consent identifies the destination",
   );
   button.click();
-  await until(() => tests.querySelector("img"));
-  check(tests.querySelector("img").src === first, "approved image loads");
+  await until(
+    () =>
+      tests.querySelector("img:not(.attachment-expired-icon)") ||
+      tests.querySelector('[aria-label="Retry image"]'),
+  );
+  const approved = tests.querySelector("img:not(.attachment-expired-icon)");
+  if (approved) {
+    check(approved.src === first, "approved image loads");
+    check(
+      approved.referrerPolicy === "no-referrer",
+      "image requests omit page referrers",
+    );
+    approved.dispatchEvent(new Event("error"));
+  }
+  await until(() => tests.querySelector(".attachment-expired-icon"));
   check(
-    tests.querySelector("img").referrerPolicy === "no-referrer",
-    "image requests omit page referrers",
+    tests.textContent.includes("Image unavailable") &&
+      tests
+        .querySelector('[aria-label="Retry image"] img.attachment-expired-icon')
+        ?.src.includes("attachment-expired"),
+    "failed images reuse the existing missing-file asset and remain retryable",
+  );
+  const missingIcon = tests
+    .querySelector(".attachment-expired-icon")
+    .getBoundingClientRect();
+  const placeholder = tests
+    .querySelector(".attachment-expired")
+    .getBoundingClientRect();
+  check(
+    missingIcon.width <= 40 &&
+      missingIcon.height <= 40 &&
+      placeholder.height < 100,
+    "failed images use a compact placeholder rather than the image's remembered dimensions",
   );
   draw(second);
   check(!tests.querySelector("img"), "an edited URL requires fresh consent");

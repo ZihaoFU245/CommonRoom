@@ -159,15 +159,15 @@ test("pending metadata ownership is bounded and cleared work cannot repopulate i
     mediaStatusCache.load(`pending-${index}`, fetchInfo),
   );
   const duplicate = mediaStatusCache.load("pending-0", fetchInfo);
-  await assert.rejects(mediaStatusCache.load("overflow", fetchInfo), /busy/u);
+  const overflow = mediaStatusCache.load("overflow", fetchInfo);
   assert.equal(
     calls,
-    128,
-    "overflow and duplicate callers cannot start more background requests",
+    129,
+    "overflow evicts a record while duplicate callers share existing work",
   );
   mediaStatusCache.clear();
   release();
-  await Promise.all([...loads, duplicate]);
+  await Promise.all([...loads, duplicate, overflow]);
   assert.equal(mediaStatusCache.peek("pending-0"), undefined);
   await mediaStatusCache.load("replacement", async () => info);
   assert.deepEqual(
@@ -201,4 +201,24 @@ test("library mutations invalidate cached membership and availability", async (t
   await api.libraryChange(id, "release", undefined, true);
   assert.equal(api.cachedMediaStatus(id), undefined);
   assert.equal((await load()).unavailable, true);
+});
+
+test("forced refresh replaces pending metadata and late stale responses cannot overwrite it", async (t) => {
+  setup(t);
+  let stale;
+  const previous = mediaStatusCache.load(
+    "refresh",
+    () =>
+      new Promise((resolve) => {
+        stale = resolve;
+      }),
+  );
+  const fresh = { ...info, saved: true };
+  assert.equal(
+    await mediaStatusCache.load("refresh", async () => fresh, true),
+    fresh,
+  );
+  stale(info);
+  await previous;
+  assert.equal(mediaStatusCache.peek("refresh"), fresh);
 });

@@ -79,16 +79,45 @@ async fn resolve_batch(
         .mutations
         .conversations(ids.iter().map(|id| format!("@asset:{id}")).collect())
         .await?;
+    // Discover only requested media kinds. Discard these authorization facts;
+    // the authoritative reread below follows its delivery stamp capture.
+    let discovered = store.read_batch(&ids, &identity.account, &[]).await?;
     let (scopes, mut stamp) = app
         .inspect_engine({
             let identity = identity.clone();
             move |engine, _| -> Result<_, ApiError> {
-                let scopes = identity.media_read_scopes(engine)?.0;
-                let stamp = engine.delivery_stamp(
-                    &identity.user,
-                    &scopes.iter().cloned().collect(),
-                    false,
-                )?;
+                media::verify_identity(&identity, engine)?;
+                let scopes = if discovered
+                    .iter()
+                    .any(|row| row.media.conversation == "@library")
+                {
+                    identity.media_read_scopes(engine)?.0
+                } else {
+                    discovered
+                        .iter()
+                        .filter_map(|row| {
+                            let id = &row.media.conversation;
+                            (id != "@avatar"
+                                && engine.authorize_library_source(&identity.user, id).is_ok())
+                            .then(|| id.clone())
+                        })
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                };
+                let mut stamp_ids: BTreeSet<_> = scopes.iter().cloned().collect();
+                // Unknown avatar authors need historical witnesses. Capture only
+                // those plans' candidate revisions, without binding them as library
+                // read scopes for every ordinary avatar/media request.
+                for row in &discovered {
+                    if row.media.conversation == "@avatar"
+                        && let Ok(plan) =
+                            engine.avatar_read_plan_scoped(&identity.user, &row.media, None)
+                    {
+                        stamp_ids.extend(plan.history_ids().map(str::to_owned));
+                    }
+                }
+                let stamp = engine.delivery_stamp(&identity.user, &stamp_ids, false)?;
                 Ok((scopes, stamp))
             }
         })

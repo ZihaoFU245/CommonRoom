@@ -214,7 +214,8 @@ independent SQL-oracle and stale-revision checks.
 
 ## Browser compatibility
 
-The minimum supported Chrome version is 114. Production JavaScript and CSS targets
+The minimum supported Chrome version is 114. Safari, Firefox and Edge are
+supported at their latest releases; older versions are best-effort. Production JavaScript and CSS targets
 pin `chrome114` in Vite while preserving the other existing browser targets.
 Build targets handle syntax, not missing runtime APIs. Feature-detect newer APIs
 and keep fallbacks in focused helpers; do not infer support from the user agent.
@@ -226,12 +227,31 @@ and listeners in `finally`, after response bodies finish. ESLint rejects direct
 `AbortSignal.any`/`timeout` calls elsewhere. The browser floor applies to the UI;
 Node/Deno development and bot-worker requirements remain separate.
 
-The bundled Noto Color Emoji faces come from Google Fonts'
+Noto Color Emoji renders emoji tiles and messages, using the COLRv1 or SVG source
+supported by the engine. The mixed-text face excludes ordinary arrows, digits and
+spaces, so decorative login text does not request an emoji font. The picker and
+its catalogue load on demand. A blocking same-origin appearance
+bootstrap applies the saved theme, custom palette and font sizes before styles
+paint; keep it ahead of the stylesheet in the emitted HTML. Editable fields on
+coarse pointers stay at least 16px. The shell follows VisualViewport height at
+normal zoom so the composer stays above the keyboard, and preserves pinch zoom.
+Device checks should cover login focus, keyboard dismissal, rotation, safe areas
+and the picker with VoiceOver.
+
+The Noto Color Emoji source faces come from Google Fonts'
 [`NotoColorEmoji-Regular.ttf` at revision `142c8963`](https://github.com/google/fonts/blob/142c8963e7606b510c93a644c82a4c4cdeae6ef9/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf).
 To refresh them, use FontTools to save the full glyph set as WOFF2. Drop the
 `SVG ` table for the COLRv1 face and the `COLR` and `CPAL` tables for the
 OpenType-SVG face. Keep the upstream OFL in `web/public/assets/`. The build
-does not fetch fonts.
+does not fetch fonts. Split the SVG face's shared documents after conversion:
+
+```sh
+rtk proxy uv run --with fonttools --with brotli --with lxml python auto/split-emoji-svg.py INPUT.woff2 web/src/assets/NotoColorEmoji-SVG.woff2
+```
+
+This retains the complete glyph set, shaping tables and original SVG artwork.
+Each glyph document includes its transitive shared definitions; Safari can paint
+an emoji without parsing thousands of unrelated glyphs in the upstream document.
 
 ## Coding conventions
 

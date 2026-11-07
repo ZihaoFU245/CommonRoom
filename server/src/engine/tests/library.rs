@@ -170,22 +170,18 @@ fn lifecycle(mut engine: Engine) {
     change(&engine, "bob", &media, LibraryAction::Release, None, true).unwrap();
     change(&engine, "bob", &media, LibraryAction::Release, None, true).unwrap();
     assert_eq!(page(&engine, "bob", true).usage, 0);
-    assert!(engine.readable_media("carol", &media.id).is_err());
-    assert!(!page(&engine, "carol", false).items[0].available);
-    assert!(engine.execute(Some("alice"), Some("lobby"), &text).is_err());
+    assert!(engine.readable_media("carol", &media.id).is_ok());
+    assert!(page(&engine, "carol", false).items[0].available);
     assert!(
-        change(
-            &engine,
-            "carol",
-            &media,
-            LibraryAction::Acquire,
-            None,
-            false
-        )
-        .is_err()
+        engine
+            .expired_media()
+            .unwrap()
+            .iter()
+            .all(|value| value.id != media.id)
     );
-    assert!(change(&engine, "carol", &media, LibraryAction::Save, None, false).is_err());
-    assert_eq!(engine.history("alice", "lobby").unwrap().messages.len(), 1);
+    // Administrative deletion remains an explicit global revocation.
+    change(&engine, "alice", &media, LibraryAction::Delete, None, false).unwrap();
+    assert!(engine.readable_media("carol", &media.id).is_err());
     assert!(
         engine
             .expired_media()
@@ -230,6 +226,9 @@ fn library_limits_quota_backlog_and_account_deletion() {
     assert!(engine.readable_media("bob", &media.id).is_ok());
     assert_eq!(page(&engine, "bob", true).items[0].owner_count, 1);
     change(&engine, "bob", &media, LibraryAction::Release, None, true).unwrap();
+    assert!(!page(&engine, "bob", false).uploads_paused);
+    assert!(engine.readable_media("bob", &media.id).is_ok());
+    change(&engine, "bob", &media, LibraryAction::Delete, None, false).unwrap();
     let page = page(&engine, "bob", false);
     assert!(page.uploads_paused);
     assert_eq!(page.usage, 0);
@@ -590,4 +589,67 @@ fn postgres_library_collection_order_appends_uploads_and_saves() {
         .provision("alice", "hash".into(), true, false)
         .unwrap();
     collection_order_contract(engine);
+}
+
+#[test]
+fn recent_page_filters_inaccessible_entries_before_the_limit() {
+    let engine = engine();
+    let first = upload(&engine, "alice");
+    let second = upload(&engine, "alice");
+    let third = upload(&engine, "alice");
+    let account = engine.principal_id(Some("alice")).unwrap();
+    let db = engine.store.db.lock().unwrap();
+    for (index, media) in [&first, &second, &third].iter().enumerate() {
+        db.execute(
+            "INSERT INTO library_recents(account_id,media_id,used) VALUES(?1,?2,?3)",
+            &[
+                &account as &dyn database::Encode,
+                &media.id,
+                &i64::try_from(index).unwrap(),
+            ][..],
+        )
+        .unwrap();
+    }
+    db.execute("DELETE FROM library_owners WHERE media_id=?1", [&third.id])
+        .unwrap();
+    db.execute("DELETE FROM library_entries WHERE media_id=?1", [&third.id])
+        .unwrap();
+    drop(db);
+    let mut config = engine.media.config.clone();
+    config.library_recent_limit = 2;
+    let store = MediaStore {
+        database: engine.store.db.clone(),
+        config,
+    };
+    let recent = run(store.library_page(&database::LibraryList {
+        account,
+        owned: false,
+        recent: true,
+        after: "",
+        limit: 2,
+        quota: engine.library_quota("alice"),
+        conversations: &[],
+    }))
+    .unwrap();
+    assert_eq!(recent.items.len(), 2);
+    assert!(recent.items.iter().all(|item| item.media_id != third.id));
+}
+
+#[test]
+fn unavailable_library_entries_cannot_pin_cleaned_tombstones() {
+    let engine = engine();
+    let media = upload(&engine, "alice");
+    change(&engine, "alice", &media, LibraryAction::Release, None, true).unwrap();
+    assert_eq!(page(&engine, "alice", false).items.len(), 1);
+    engine
+        .store
+        .db
+        .media_write_blocking(&database::MediaWrite::CleanupDone {
+            records: &[(media.id.clone(), true)],
+            staging: &[],
+            tombstones_before: media::timestamp() + 1,
+        })
+        .unwrap();
+    assert!(engine.stored_media(&media.id).is_err());
+    assert!(page(&engine, "alice", false).items.is_empty());
 }

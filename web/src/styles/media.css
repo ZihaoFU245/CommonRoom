@@ -158,8 +158,11 @@
 }
 .picker-sticker-icon {
   background: currentColor;
+  -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
+  -webkit-mask-position: center;
   mask-position: center;
+  -webkit-mask-size: contain;
   mask-size: contain;
 }
 .library-picker {
@@ -177,6 +180,14 @@
   color: var(--ink);
   box-shadow: var(--shadow-dialog);
   transform-origin: bottom left;
+  /* The panel receives initial focus; only its controls need focus outlines. */
+  outline: none;
+}
+.library-picker[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 200;
 }
 .library-picker:popover-open {
   display: flex;
@@ -237,7 +248,7 @@
   aspect-ratio: 1;
   padding: 2px;
   border-radius: 8px;
-  font-family: "Noto Color Emoji Web", sans-serif;
+  font-family: var(--emoji-fonts);
   font-size: 28px;
   line-height: 1;
 }
@@ -286,14 +297,8 @@
   border-left: 1px solid var(--line);
 }
 .library-modes button[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-ink);
   background: var(--wash);
-}
-.library-management-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 .library-pagination {
   display: flex;
@@ -433,18 +438,6 @@
 .sticker-settings h4 {
   margin: 0;
   font-size: 1rem;
-}
-.sticker-settings .library-management-heading button {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 6px;
-  border-radius: 6px;
-}
-.sticker-settings .library-management-heading .picker-icon {
-  width: 20px;
-  height: 20px;
 }
 .library-picker .library-grid {
   margin: 8px 0 12px;
@@ -596,7 +589,7 @@
   padding: 2px 4px;
   border: 0;
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-ink);
   cursor: pointer;
 }
 
@@ -619,7 +612,7 @@
   padding: 0;
   border-radius: 50%;
   background: var(--paper);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .library-upload-progress svg {
   position: absolute;
@@ -674,7 +667,7 @@
     background-color var(--control-motion-duration) var(--control-motion-easing);
 }
 .library-picker .library-edit[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-ink);
   background: var(--wash);
 }
 .library-motion-exit {

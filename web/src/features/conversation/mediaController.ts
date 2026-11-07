@@ -164,10 +164,13 @@ export function invalidateMediaReads(ids?: readonly string[]): Promise<void> {
   clearing = clearing
     .catch(() => {})
     .then(async () => {
-      if (!directMediaRequired() && script) {
+      if (script && !directMediaRequired()) {
         await ensureMediaCache();
         await workerRequest({ kind: "commonroom-media:clear", ids });
       }
+    })
+    .catch((error: unknown) => {
+      console.error("Media cache invalidation failed", error);
     });
   for (const [href, watcher] of watchers) {
     if (ids && !ids.includes(mediaFileUrl(href)?.id ?? "")) continue;

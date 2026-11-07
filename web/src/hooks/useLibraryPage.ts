@@ -124,7 +124,11 @@ export function useLibraryPage(
         release = request.release;
         result = await request.promise;
       } catch (failure) {
-        if (!controller.signal.aborted) setError(errorMessage(failure));
+        if (
+          !controller.signal.aborted &&
+          !(failure instanceof Error && failure.name === "AbortError")
+        )
+          setError(errorMessage(failure));
         return;
       } finally {
         release();

@@ -456,8 +456,9 @@ Ordinary expiring attachments cannot be converted through library actions.
 
 Removing a saved entry preserves ownership; releasing ownership preserves an
 existing saved entry. Every owner pays the asset's full size once. The last
-release/global removal atomically retires the asset and refunds ownership quota,
-while background deletion can retry independently. Acquisition cannot resurrect a
+release refunds ownership quota and retires unreferenced assets. Existing message
+references preserve bytes after final release. Global removal atomically retires
+the asset and refunds ownership quota, while background deletion can retry independently. Acquisition cannot resurrect a
 retired asset. Retained messages remain in history.
 
 Library media `/info` responses additionally identify `library` and

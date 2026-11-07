@@ -13,10 +13,13 @@
   vertical-align: middle;
   text-align: start;
 }
-.attachment-expired-icon {
+.attachment-expired .attachment-expired-icon {
   display: block;
   width: 2rem;
   height: 2rem;
+  min-width: 2rem;
+  max-width: 2rem;
+  max-height: 2rem;
   flex: 0 0 2rem;
   object-fit: contain;
 }
@@ -50,4 +53,11 @@
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+.attachment-retry {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 0;
+  text-align: start;
 }

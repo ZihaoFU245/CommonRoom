@@ -149,10 +149,24 @@ async fn native_media<T: Send + 'static>(
     super::admission::spawn_io(permit, async move {
         let (identity, store) = native_context(&app, access).await?;
         let _ordering = app.mutations.conversation(format!("@asset:{id}")).await?;
+        let library = store
+            .load(&id)
+            .await
+            .map_err(|cause| super::error::hidden(cause, missing))?
+            .0
+            .conversation
+            == "@library";
         let (scopes, independent) = app
             .inspect_engine({
                 let identity = identity.clone();
-                move |engine, _| identity.media_read_scopes(engine)
+                move |engine, _| {
+                    if library {
+                        identity.media_read_scopes(engine)
+                    } else {
+                        verify_identity(&identity, engine)?;
+                        Ok((Vec::new(), identity.conversation_scope(engine)?.is_none()))
+                    }
+                }
             })
             .await?;
         let row = store

@@ -378,14 +378,16 @@ separately shares up to 128 presentation metadata records and in-flight checks
 across virtual remounts; expiry and visibility resume refresh them. Login,
 logout, unauthorized API responses and server selection clear these records and
 abort their pending requests, as do successful library mutations and socket
-media invalidations. Pending entries retain ownership until completion; at 128
-pending checks, excess cold checks fail without starting more background
-requests. They never authorize cached bytes or provide offline file access.
+media invalidations. Presentation entries stay bounded through eviction; forced
+refreshes replace pending entries, and stale completions cannot overwrite them. They never authorize cached bytes or provide offline file access.
 `ExternalImage.tsx` retains up to 128 intrinsic image sizes, with URL keys
 limited to 4 KiB, as layout hints across virtual remounts. Unknown sizes load
 eagerly; lazy images receive explicit measured width/height attributes. Size
 discovery uses the existing image load and adds no metadata or image-prefetch
-request. See [Media uploads](media-uploads.md).
+request. Failed images reuse `AttachmentPlaceholder.tsx` and the existing missing-file
+asset, with retry on the placeholder itself. `ComposerAttachmentPreview.tsx`
+shares local-upload and authorized library-image preview rendering without taking
+over the upload hook's object ownership. See [Media uploads](media-uploads.md).
 
 `web/library.rs` adapts browser library lists and mutations; `engine/media_store.rs`
 awaits typed native library requests. The SQLite/PostgreSQL `library.rs` modules

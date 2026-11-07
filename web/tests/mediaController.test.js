@@ -280,3 +280,50 @@ test("worker replacement keeps an in-flight backend and never transfers its leas
   assert.equal(fallback, 1);
   assert.deepEqual(requests, ["first", "replacement"]);
 });
+
+test("a failed worker clear does not poison later attachment reads", async (t) => {
+  const serviceWorker = new EventTarget();
+  const worker = {
+    postMessage(message, [port]) {
+      if (message === "commonroom-media:claim") {
+        serviceWorker.controller = worker;
+        port.postMessage("commonroom-media:ready");
+      } else if (message.kind === "commonroom-media:clear") {
+        port.close();
+        throw new Error("Worker restarting");
+      } else
+        port.postMessage({
+          value: {
+            info: {
+              media_id: "d5cd8a44-d8b7-4c63-91fe-3cc63f106178",
+              path: "/chat/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+              size: 6,
+              content_type: "image/png",
+              filename: "test.png",
+              expires: null,
+              expired: false,
+              unavailable: false,
+            },
+            expiresAt: Date.now() + 60000,
+            renewAt: Date.now() + 30000,
+            linkExpiresAt: 0,
+          },
+        });
+      port.close();
+    },
+  };
+  serviceWorker.register = async () => ({ active: worker });
+  const media = await controller(t, { serviceWorker });
+  t.mock.method(console, "error", () => {});
+  media.startMediaCache(new URL("https://ui.test/chat/media-cache.js"));
+  await media.ensureMediaCache();
+  await media.invalidateMediaReads();
+  assert.equal(
+    (
+      await media.resolveMediaRead(
+        "https://api.test/chat/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file",
+      )
+    ).info.size,
+    6,
+  );
+});

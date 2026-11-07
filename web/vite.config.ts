@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { frameCsp } from "./src/features/conversation/framePolicy.ts";
 import { fileURLToPath } from "node:url";
 import {
+  build,
   defineConfig,
   transformWithEsbuild,
   type Plugin,
@@ -195,6 +196,60 @@ function mediaWorker(): Plugin {
   };
 }
 
+// A blocking, same-origin script applies the complete saved palette and fonts
+// before CSS can paint. Bundle the same TypeScript implementation as the app.
+function appearanceBoot(): Plugin {
+  let source = "";
+  let filename = "";
+  return {
+    name: "appearance-boot",
+    async configResolved() {
+      const result = await build({
+        configFile: false,
+        logLevel: "silent",
+        build: {
+          write: false,
+          minify: true,
+          target: "chrome114",
+          lib: {
+            entry: fileURLToPath(
+              new URL("./src/appearanceBoot.ts", import.meta.url),
+            ),
+            name: "CommonroomAppearance",
+            formats: ["iife"],
+          },
+        },
+      });
+      if ("on" in result) throw new Error("Unexpected appearance watcher.");
+      const output = (Array.isArray(result) ? result[0] : result)?.output;
+      const chunk = output?.find((item) => item.type === "chunk");
+      if (!chunk || chunk.type !== "chunk")
+        throw new Error("Missing appearance bootstrap.");
+      source = chunk.code;
+      filename = `appearance-${createHash("sha256").update(source).digest("hex").slice(0, 16)}.js`;
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split("?")[0] !== `/${filename}`) return next();
+        response.setHeader("Content-Type", "text/javascript");
+        response.end(source);
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: filename, source });
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return html.replace(
+          "</title>",
+          `</title><script src="./${filename}"></script>`,
+        );
+      },
+    },
+  };
+}
+
 // Build-only fallback: development HMR has its own inline bootstrap. Header
 // policies still intersect this policy and can name exact storage origins.
 const documentCsp =
@@ -260,6 +315,7 @@ export default defineConfig({
   },
   plugins: [
     preact(),
+    appearanceBoot(),
     debugReadOrigin(process.env.CHAT_DEBUG_ORIGIN),
     documentPolicy(),
     markdownRendererUrl(),

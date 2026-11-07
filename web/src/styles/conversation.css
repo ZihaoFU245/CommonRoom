@@ -6,9 +6,6 @@
   font-size: 1.71429rem;
   line-height: 1;
 }
-.message-list {
-  padding-top: 16px;
-}
 .console-history {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.92857rem;
@@ -501,7 +498,7 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 .message-single-emoji {
-  font-family: "Noto Color Emoji Web", sans-serif;
+  font-family: var(--emoji-fonts);
   font-size: 3em;
   line-height: 1.25;
 }

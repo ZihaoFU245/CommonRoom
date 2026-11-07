@@ -798,7 +798,9 @@ SQLite HEAD is v21; v19/v20 upgrade atomically with library tables and the v19 i
 Exchange issuer tokens for expiring workers before making operational bot calls. Unpublished
 PostgreSQL initializes its current v1 schema, including statement-level deletion
 retention. This unpublished format is not deployed yet; fixes modify v1 directly,
-without historical WIP upgrades. Unsupported schema markers are rejected unchanged.
+without historical WIP upgrades. Older development v1 databases, including those
+created by `release-v0.1.1`, require a fresh current database; see
+[PostgreSQL compatibility](postgresql.md#unpublished-v1-compatibility). Unsupported schema markers are rejected unchanged.
 The offline transfer always maps HEAD SQLite to current PostgreSQL and leaves
 the SQLite source unchanged. Back up the
 database and object store consistently before replacing a deployment ([Data](data.md)).

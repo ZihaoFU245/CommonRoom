@@ -1,4 +1,5 @@
-import { h, render } from "preact";
+import { mediaResolution } from "../../tests/helpers/mediaResolve.js";
+import { h, render, options } from "preact";
 import { useRef, useState } from "preact/hooks";
 import { Settings } from "../../src/components/Settings.tsx";
 import { StickerSettings } from "../../src/components/settings/StickerSettings.tsx";
@@ -797,6 +798,18 @@ export async function libraryRegressions({
         "emoji picker has no toolbar or search",
       );
       check(
+        !tests.querySelector('[aria-label="Show more emoji"]'),
+        "emoji browsing has no extra More control",
+      );
+      const emojiStyle = getComputedStyle(
+        tests.querySelector(".emoji-grid button"),
+      );
+      check(
+        emojiStyle.fontFamily.split(",")[0].trim().replaceAll('"', "") ===
+          "Noto Color Emoji Web",
+        "emoji tiles prefer the original Noto face",
+      );
+      check(
         !tests.textContent.includes("Media storage:"),
         "emoji browsing has no quota",
       );
@@ -828,10 +841,28 @@ export async function libraryRegressions({
         "picker pops from its anchor like the user card",
       );
       await until(() => tests.querySelector('[aria-label="grinning face"]'));
-      click("grinning face");
-      await until(
-        () => input.value === "hello 😀" && input.selectionStart === 8,
-      );
+      const previousVNode = options.vnode;
+      let unchangedTileRenders = 0;
+      options.vnode = (node) => {
+        previousVNode?.(node);
+        if (
+          node.type === "button" &&
+          node.props["aria-label"] === "grinning face with big eyes"
+        )
+          unchangedTileRenders++;
+      };
+      try {
+        click("grinning face");
+        await until(
+          () => input.value === "hello 😀" && input.selectionStart === 8,
+        );
+        check(
+          unchangedTileRenders === 0,
+          "updating recents does not rebuild unrelated emoji tiles",
+        );
+      } finally {
+        options.vnode = previousVNode;
+      }
       check(
         tests.querySelector("dialog"),
         "inserting emoji keeps the picker open for another choice",
@@ -861,7 +892,11 @@ export async function libraryRegressions({
             .length === 2,
       );
       document.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
       );
       await until(() => !tests.querySelector("dialog"));
       click("Open media library");
@@ -1293,9 +1328,14 @@ export async function libraryRegressions({
             actions.join(",") === "release,remove",
             "completed off-page uploads can be removed normally",
           );
+          await until(() =>
+            document.activeElement?.matches(
+              ".library-edit, .library-preview:not(:disabled)",
+            ),
+          );
           check(
-            document.activeElement === tests.querySelector(".library-edit"),
-            "successful deletion returns focus to Edit",
+            document.activeElement?.isConnected,
+            "successful deletion returns focus to a remaining tile or Edit",
           );
         } else if (paginated) {
           [...tests.querySelectorAll('[aria-label="Collections"] button')]
@@ -1499,8 +1539,8 @@ export async function libraryRegressions({
     await until(() => tests.querySelector(".library-confirmation"));
     check(
       actions.length === before &&
-        tests.textContent.includes("permanently removes it for everyone"),
-      "known last owner sees global permanent removal warning before any mutation",
+        tests.textContent.includes("Existing messages keep their attachment"),
+      "known last owner sees retained-message warning before any mutation",
     );
     const popupBounds = tests
       .querySelector(".library-picker")
@@ -1518,14 +1558,24 @@ export async function libraryRegressions({
     check(
       tests.querySelector('[role="alertdialog"]') &&
         tests.querySelector(".library-content").inert,
-      "confirmation is a modal dialog with inert sticker content",
+      "confirmation is a labelled prompt with inert sticker content",
     );
     const button = (name) =>
       [...tests.querySelectorAll("button")].find(
         (button) => button.textContent.trim() === name,
       );
-    button("Keep sticker").click();
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     await until(() => !tests.querySelector(".library-confirmation"));
+    check(
+      tests.querySelector(".library-picker"),
+      "Escape cancels only the confirmation and keeps the picker open",
+    );
     check(
       actions.length === before,
       "cancelling preserves ownership and the entry",
@@ -1648,7 +1698,11 @@ export async function libraryRegressions({
       "keyboard focus still reveals the sticker actions",
     );
     document.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
     );
     await until(() => !tests.querySelector(".library-picker"));
     tests.querySelector('[aria-label="Remove attachment"]').click();
@@ -1761,8 +1815,8 @@ export async function libraryRegressions({
     );
     const row = tests.querySelector('[data-virtual-key="media-row-0"]');
     check(
-      !row.querySelector("[data-media-body]"),
-      "virtual remount rechecks access before displaying media",
+      row.querySelector("[data-media-body]"),
+      "virtual remount retains content geometry while byte access remains independently authorized",
     );
     check(
       Math.abs(row.getBoundingClientRect().height - height) < 1,
@@ -1895,5 +1949,123 @@ export async function libraryRegressions({
       "unavailability preserves the filename",
     );
     await sleep(10);
+  });
+  await test("media library composer preview matches uploaded image preview", async () => {
+    const originalFetch = window.fetch;
+    const serviceWorker = Object.getOwnPropertyDescriptor(
+      navigator,
+      "serviceWorker",
+    );
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: undefined,
+    });
+    const bytes = Uint8Array.from(
+      atob("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"),
+      (char) => char.charCodeAt(0),
+    );
+    const local = URL.createObjectURL(new Blob([bytes], { type: "image/gif" }));
+    const media = {
+      ...sticker,
+      size: bytes.length,
+      path: new URL(`api/media/${id}/file`, serverBaseUrl()).pathname,
+    };
+    let allocations = 0;
+    window.fetch = async (address, options) =>
+      String(address).endsWith("/api/media/resolve")
+        ? mediaResolution(address, options, {
+            content_type: "image/gif",
+            filename: media.filename,
+            size: bytes.length,
+          })
+        : new Response(bytes, {
+            headers: {
+              "Content-Type": "image/gif",
+              "Content-Length": String(bytes.length),
+            },
+          });
+    httpImageCache.invalidate();
+    const input = { current: null };
+    const draw = (preview) =>
+      render(
+        h(Composer, {
+          mediaUpload: {
+            enabled: true,
+            maxSize: 10000,
+            busy: false,
+            status: "",
+            error: "",
+            attachment: { media, preview },
+            start: async () => {
+              allocations++;
+            },
+            cancel() {},
+            retry: undefined,
+          },
+          minimumComposerHeight: 40,
+          actualComposerHeight: 40,
+          hints: [],
+          activeHint: 0,
+          replyTarget: null,
+          input,
+          consoleView: false,
+          draft: "",
+          pending: false,
+          canWrite: true,
+          startResize() {},
+          moveResize() {},
+          endResize() {},
+          resizeComposer() {},
+          acceptHint() {},
+          cancelReply() {},
+          send(event) {
+            event.preventDefault();
+          },
+          edit() {},
+          keydown() {},
+          selectCaret() {},
+        }),
+        tests,
+      );
+    try {
+      draw(local);
+      await until(
+        () => tests.querySelector(".composer-attachment img")?.naturalWidth > 0,
+      );
+      const uploaded = tests
+        .querySelector(".composer-attachment img")
+        .getBoundingClientRect();
+      check(
+        tests.querySelector(".composer-attachment img").src === local,
+        "uploads retain their local preview",
+      );
+      draw(null);
+      await until(() => {
+        const preview = tests.querySelector(".composer-attachment img");
+        return (
+          preview?.naturalWidth > 0 &&
+          preview.src !== local &&
+          !preview.src.includes("attachment-expired")
+        );
+      });
+      const selected = tests.querySelector(".composer-attachment img");
+      const bounds = selected.getBoundingClientRect();
+      check(
+        bounds.width === uploaded.width && bounds.height === uploaded.height,
+        "library images use the same preview dimensions as uploaded images",
+      );
+      check(
+        selected.alt === media.filename && allocations === 0,
+        "previewing library media keeps the filename and never uploads again",
+      );
+    } finally {
+      render(null, tests);
+      URL.revokeObjectURL(local);
+      httpImageCache.invalidate();
+      window.fetch = originalFetch;
+      if (serviceWorker)
+        Object.defineProperty(navigator, "serviceWorker", serviceWorker);
+      else delete navigator.serviceWorker;
+    }
   });
 }

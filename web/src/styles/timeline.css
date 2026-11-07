@@ -18,11 +18,6 @@
   pointer-events: auto;
 }
 
-.message-list {
-  overflow-anchor: none;
-  overscroll-behavior-y: none;
-  position: relative;
-}
 .message-exit {
   position: absolute;
   pointer-events: none;

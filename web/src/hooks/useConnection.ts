@@ -1,6 +1,5 @@
 import { sameMediaAuthority } from "../features/conversation/mediaAuthority.ts";
 import { mediaConfigCache } from "../api/mediaConfigCache.ts";
-import * as mediaReads from "../features/conversation/mediaController.ts";
 import { invalidateMedia } from "../features/conversation/mediaInvalidation.ts";
 import { serverBaseUrl } from "../api/server.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -215,11 +214,7 @@ export function useConnection(
         if (stopped || socket.current !== ws) return;
         clearTimeout(resumeTimer);
         setStatus("offline");
-        mediaReads
-          .invalidateMediaReads()
-          .catch((error: unknown) =>
-            console.error("Media disconnect reset failed", error),
-          );
+
         setBotActivities([]);
         callbacks.current.onDisconnect();
         if (stopped || socket.current !== ws) return;

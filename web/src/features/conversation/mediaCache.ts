@@ -176,6 +176,10 @@ export class MediaCache {
   private readonly recencyWrites = new Set<string>();
   private recencyFlush: Promise<void> | undefined;
   private index: { sizes: Map<string, number>; bytes: number } | null = null;
+  private readonly retries = new Map<
+    string,
+    { token: string; done: Promise<void> }
+  >();
   private readonly storage: MediaCacheStorage;
   private readonly network: typeof fetch;
   private readonly access: MediaAccess;
@@ -440,8 +444,43 @@ export class MediaCache {
     retry = true,
   ): Promise<Response> {
     const key = new URL(url.pathname, url);
-    const cache = await this.storage.open(cacheName);
-    const cached = await cache.match(key.href);
+    let cache: MediaCacheStore | undefined;
+    let cached: Response | undefined;
+    try {
+      cache = await this.storage.open(cacheName);
+      // An explicit retry must replace potentially corrupt immutable bytes.
+      const token = url.searchParams.get("retry");
+      if (token !== null) {
+        let repair = this.retries.get(key.href);
+        if (repair?.token !== token) {
+          const target = cache;
+          await waitForFill(
+            this.fills.get(key.href)?.done ?? Promise.resolve(),
+            request.signal,
+          );
+          const done = this.writes.then(async () => {
+            await maintain(async () => {
+              await target.delete(key.href);
+              this.forget(key.href);
+            });
+          });
+          this.writes = done.catch(() => {});
+          repair = { token, done };
+          this.retries.delete(key.href);
+          this.retries.set(key.href, repair);
+          if (this.retries.size > entryLimit) {
+            const oldest = this.retries.keys().next().value;
+            if (oldest !== undefined) this.retries.delete(oldest);
+          }
+        }
+        await repair.done;
+      }
+      cached = await cache.match(key.href);
+    } catch {
+      cache = undefined;
+      cached = undefined;
+      this.index = null;
+    }
     let resolution: Resolution;
     try {
       resolution = await waitForFill(
@@ -475,26 +514,36 @@ export class MediaCache {
     const range = request.headers.get("Range");
     let reservation: Fill | undefined;
     let cancellation: ReturnType<typeof requestAbort> | undefined;
-    let saved = await this.read(cache, key.href, info, { saved: cached });
-    if (!saved && !range) {
-      // Reserve before the network await so simultaneous misses share the fill.
-      // Waiters share one read authorization lease.
-      const filling = this.fills.get(key.href);
-      if (filling) {
-        await waitForFill(filling.done, request.signal);
-        request.signal.throwIfAborted();
-        saved = await this.read(cache, key.href, info);
-      } else if (info.size <= byteLimit) {
-        reservation = this.reserve(key.href, info.size);
+    if (cache) {
+      try {
+        let saved = await this.read(cache, key.href, info, { saved: cached });
+        if (!saved && !range) {
+          // Reserve before the network await so simultaneous misses share the fill.
+          // Waiters share one read authorization lease.
+          const filling = this.fills.get(key.href);
+          if (filling) {
+            await waitForFill(filling.done, request.signal);
+            request.signal.throwIfAborted();
+            saved = await this.read(cache, key.href, info);
+          } else if (info.size <= byteLimit) {
+            reservation = this.reserve(key.href, info.size);
+          }
+        }
+        if (saved) {
+          const hit = cachedResponse(saved, output, range, request.signal);
+          if (hit) {
+            this.touch(key.href, keepAlive);
+            return hit;
+          }
+          saved.body.cancel().catch(() => {});
+        }
+      } catch {
+        cached?.body?.cancel().catch(() => {});
+        reservation?.release();
+        reservation = undefined;
+        cache = undefined;
+        this.index = null;
       }
-    }
-    if (saved) {
-      const hit = cachedResponse(saved, output, range, request.signal);
-      if (hit) {
-        this.touch(key.href, keepAlive);
-        return hit;
-      }
-      saved.body.cancel().catch(() => {});
     }
     try {
       request.signal.throwIfAborted();
@@ -532,6 +581,7 @@ export class MediaCache {
         headers: output,
       });
       if (
+        cache &&
         reservation &&
         !range &&
         response.status === 200 &&

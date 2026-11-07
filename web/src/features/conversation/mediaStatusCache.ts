@@ -33,7 +33,7 @@ class MediaStatusCache {
     refresh = false,
   ): Promise<MediaInfo> {
     const previous = this.entries.get(key);
-    if (previous?.pending) return previous.pending;
+    if (!refresh && previous?.pending) return previous.pending;
     const info = this.peek(key);
     if (!refresh && info) {
       this.entries.delete(key);
@@ -41,20 +41,8 @@ class MediaStatusCache {
       return Promise.resolve(info);
     }
     if (!previous && this.entries.size >= 128) {
-      // Never evict a pending request: that loses ownership and permits duplicate
-      // background loads. Decline excess cold checks until capacity is available.
-      let oldest: string | undefined;
-      for (const [key, entry] of this.entries) {
-        if (!entry.pending) {
-          oldest = key;
-          break;
-        }
-      }
-      if (oldest === undefined)
-        return Promise.reject(
-          new Error("Attachment status checks are busy. Try again shortly."),
-        );
-      this.entries.delete(oldest);
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
     }
     const entry: Entry = previous?.info ? { info: previous.info } : {};
     const pending = fetchInfo().then(

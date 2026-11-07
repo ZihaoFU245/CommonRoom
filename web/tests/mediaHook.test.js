@@ -217,7 +217,14 @@ test("managed file hooks wait for cache control and never resolve direct storage
   const controlled = draw();
   assert.equal(controlled.url, href);
   controlled.retry();
-  assert.equal(new URL(draw().url).searchParams.get("retry"), "0:1");
+  const retried = new URL(draw().url).searchParams.get("retry");
+  assert.match(retried, /^0:[0-9a-f-]{36}$/u);
+  draw().retry();
+  assert.notEqual(
+    new URL(draw().url).searchParams.get("retry"),
+    retried,
+    "each retry can replace corrupt bytes even after remounting",
+  );
   for (const slot of local.slots) slot?.cleanup?.();
   local = createHookHarness();
   useHarness(local);
@@ -238,9 +245,9 @@ test("managed file hooks wait for cache control and never resolve direct storage
   const localPath = "/chat/api/media/d5cd8a44-d8b7-4c63-91fe-3cc63f106178/file";
   const sameOrigin = draw(localPath);
   sameOrigin.retry();
-  assert.equal(
+  assert.match(
     new URL(draw(localPath).url).searchParams.get("retry"),
-    "0:1",
+    /^0:[0-9a-f-]{36}$/u,
     "same-origin retries also issue a fresh URL",
   );
 });

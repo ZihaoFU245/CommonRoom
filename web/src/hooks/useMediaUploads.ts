@@ -181,7 +181,7 @@ export function useMediaUploads(
     currentAttachment.current = value;
     setAttachment(value);
     setError("");
-    setStatus("Library asset ready.");
+    setStatus("Attachment ready.");
   }
   return {
     enabled,

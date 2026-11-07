@@ -12,6 +12,8 @@ import { Login } from "./components/Login.tsx";
 import { bootAppearance } from "./features/preferences/appearance.ts";
 import { useTheme } from "./hooks/useTheme.ts";
 import "./style.css";
+import { AppErrorBoundary } from "./components/AppErrorBoundary.tsx";
+import { useAppViewport } from "./hooks/useAppViewport.ts";
 
 /* Resolve the saved theme before the first render so it never paints the
    wrong background and then corrects itself. */
@@ -21,9 +23,15 @@ bootAppearance();
 startMediaCache(new URL(mediaWorkerUrl, document.baseURI));
 const root = document.getElementById("app");
 if (!root) throw new Error("Missing application root.");
-render(<App />, root);
+render(
+  <AppErrorBoundary>
+    <App />
+  </AppErrorBoundary>,
+  root,
+);
 
 function App() {
+  useAppViewport();
   const appearance = useTheme();
   const [account, setAccount] = useState<Snapshot | null | undefined>(
     undefined,

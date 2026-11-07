@@ -16,7 +16,10 @@ export function MediaDownload({
     <>
       <a
         class={className}
-        href={file.url}
+        href={file.url ?? href}
+        onClick={(event) => {
+          if (!file.url) event.preventDefault();
+        }}
         target="_blank"
         rel="noopener noreferrer"
         aria-disabled={!file.url}

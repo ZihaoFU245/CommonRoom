@@ -260,3 +260,13 @@ schema as PostgreSQL evolves. Source and target schema versions are independent;
 the transfer checks the SQLite HEAD version and initializes the current target
 schema without changing source bytes. Startup retention reconstruction uses a
 transaction-local unlimited statement timeout, leaving runtime deadlines intact.
+
+
+## Unpublished v1 compatibility
+
+PostgreSQL v1 is an unpublished development format, not an in-place upgrade
+contract. A database initialized from `release-v0.1.1` lacks the current library
+tables and triggers even though its version marker is also v1. Initialize a fresh
+database with the current schema (or transfer a supported HEAD SQLite database)
+before using this release. Do not reuse an older development PostgreSQL data
+directory solely because its schema marker is v1. Back up existing data first.

@@ -12,8 +12,8 @@
     U+1F000-1FAFF, U+E0020-E007F;
 }
 
-/* The picker needs the full face for keycaps. In mixed text, keep ordinary
-   spaces, digits and other Latin characters in the UI font. */
+/* Mixed text keeps digits, spaces and decorative UI symbols in the text font.
+   The full face is used only for emoji tiles and validated single-emoji messages. */
 @font-face {
   font-family: "Noto Color Emoji Text";
   src:
@@ -22,15 +22,17 @@
     url("../assets/NotoColorEmoji-SVG.woff2") format("woff2") tech(color-SVG);
   font-display: swap;
   unicode-range:
-    U+200D, U+203C, U+2049, U+20E3, U+2122, U+2139, U+2194-21FF, U+2300-23FF,
-    U+24C2, U+25AA-27FF, U+2934-2935, U+2B00-2BFF, U+3030, U+303D, U+3297,
-    U+3299, U+FE0E-FE0F, U+1F000-1FAFF, U+E0020-E007F;
+    U+200D, U+203C, U+2049, U+20E3, U+2300-23FF, U+24C2, U+25AA-27FF,
+    U+2934-2935, U+2B00-2BFF, U+3030, U+303D, U+3297, U+3299, U+FE0E-FE0F,
+    U+1F000-1FAFF, U+E0020-E007F;
 }
 
 :root {
   --ui-fonts:
     Inter, "Noto Color Emoji Text", -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
+  --emoji-fonts:
+    "Noto Color Emoji Web", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
   /* First-paint fallback; applyAppearance synchronizes these with controlMotion. */
   --control-motion-duration: 120ms;
   --control-motion-easing: ease-out;
@@ -47,7 +49,7 @@
   --accent-hover: #141d9b;
   --accent-ink: #2d2d2b;
   --field: #ffffffb8;
-  --placeholder: #918c85;
+  --placeholder: #6f6a64;
   --danger: #a04135;
   --online: #22a06b;
   --offline: #bbb2a8;
@@ -85,15 +87,10 @@
   font-weight: 400;
   font-size: var(--ui-font-size, 14px);
   line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
-@supports font-tech(color-COLRv1) {
-  :root {
-    --ui-fonts:
-      Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
-      "Noto Color Emoji Web", sans-serif;
-  }
-}
-
 /* Dark appearance. bootAppearance sets data-theme before the first frame;
    the app-level useTheme keeps it current afterwards. */
 :root[data-theme="dark"] {
@@ -151,7 +148,8 @@ body {
 }
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
   outline-offset: 4px;
 }
@@ -160,6 +158,16 @@ button {
   color: inherit;
   border: 0;
   background: none;
+}
+/* Safari draws password masking glyphs through the field's font stack. Keep
+   those glyphs out of the mixed-text emoji face. */
+input[type="password"] {
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 button:disabled {
   cursor: default;

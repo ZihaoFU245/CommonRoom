@@ -10,7 +10,6 @@ interface Bounds {
 }
 interface Tile {
   bounds: Bounds;
-  copy: HTMLElement;
   from: Bounds;
   opacity: number;
   motion?: Animation;
@@ -114,8 +113,6 @@ export function useLibraryMotion(mode: string) {
       );
       const next = new Map<HTMLElement, Tile>();
       for (const { element, bounds } of measured) {
-        const copy = element.cloneNode(true);
-        if (!(copy instanceof HTMLElement)) continue;
         const prior = previous.get(element);
         if (
           !reduced.matches &&
@@ -124,14 +121,14 @@ export function useLibraryMotion(mode: string) {
           sameBounds(prior.bounds, bounds)
         ) {
           // A load callback or unrelated DOM update must not extend the motion.
-          next.set(element, { ...prior, copy });
+          next.set(element, prior);
           continue;
         }
         prior?.motion?.cancel();
         const oldPaint = before.get(element);
         const old = oldPaint?.bounds;
         const opacity = oldPaint?.opacity ?? (previous.size ? 0 : 1);
-        const tile: Tile = { bounds, copy, from: old ?? bounds, opacity };
+        const tile: Tile = { bounds, from: old ?? bounds, opacity };
         next.set(element, tile);
         if (reduced.matches || !bounds.width || !bounds.height) continue;
         if (old) {
@@ -162,7 +159,8 @@ export function useLibraryMotion(mode: string) {
         const paint = before.get(element);
         if (!paint) continue;
         const { bounds, opacity } = paint;
-        const ghost = tile.copy;
+        const ghost = element.cloneNode(true);
+        if (!(ghost instanceof HTMLElement)) continue;
         ghost.classList.add("library-motion-exit");
         ghost.setAttribute("aria-hidden", "true");
         ghost.inert = true;

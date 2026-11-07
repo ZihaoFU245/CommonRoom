@@ -50,6 +50,11 @@ test("production HTML renderer keeps its exports and stays outside the initial i
       "the CSS references the bundled font relative to the deployment path",
     );
   }
+  assert.ok(
+    document.includes("appearance-") &&
+      document.indexOf("appearance-") < document.indexOf('rel="stylesheet"'),
+    "saved appearance loads before styles can paint",
+  );
   const chunks = outputs.filter((output) => output.type === "chunk");
   const rich = chunks.find((chunk) => chunk.fileName.includes("richMarkdown"));
   assert.ok(rich);
@@ -67,7 +72,7 @@ test("production HTML renderer keeps its exports and stays outside the initial i
     visited.add(chunk.fileName);
     assert.ok(
       !Object.keys(chunk.modules).some((path) =>
-        /(?:markdown-it|plugin-tex|parse5|katex|richMarkdown|HtmlMarkdownGate|MarkdownFrame)/u.test(
+        /(?:markdown-it|plugin-tex|parse5|katex|richMarkdown|HtmlMarkdownGate|MarkdownFrame|emojiData|LibraryPicker)/u.test(
           path,
         ),
       ),

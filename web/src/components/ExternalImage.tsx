@@ -1,6 +1,6 @@
+import { AttachmentPlaceholder } from "./AttachmentPlaceholder.tsx";
 import { serverBaseUrl } from "../api/server.ts";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
-import { managedMediaLink } from "../api/media.ts";
 import { useState } from "preact/hooks";
 
 // Layout hints only: retain real intrinsic sizes across virtual remounts without
@@ -26,18 +26,21 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
     approved === src
   )
     return file.error || (failed !== undefined && failed === file.url) ? (
-      <span class="external-image">
-        <button
-          type="button"
-          onClick={() => {
-            setFailed(undefined);
-            file.retry();
-          }}
-        >
-          Retry image
-        </button>
-        <span role="status">{file.error || "Unable to load image."}</span>
-      </span>
+      <button
+        type="button"
+        class="attachment-retry"
+        aria-label="Retry image"
+        title={file.error || "Image unavailable. Click to retry."}
+        onClick={() => {
+          setFailed(undefined);
+          file.retry();
+        }}
+      >
+        <AttachmentPlaceholder
+          filename={alt || "Image"}
+          label="Image unavailable"
+        />
+      </button>
     ) : file.url ? (
       <img
         {...(file.crossOrigin ? { crossOrigin: file.crossOrigin } : {})}
@@ -58,7 +61,6 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
           setLoaded({ href: url.href, width, height });
         }}
         onError={() => {
-          if (!managedMediaLink(src, base.href)) return;
           setFailed(file.url);
         }}
         alt={alt}

@@ -284,3 +284,20 @@ test("restored virtual content skips loading motion and keeps its final size as 
     f.close();
   }
 });
+
+test("a restore beginning during content motion releases its bottom-pinning loop", () => {
+  const f = fixture();
+  try {
+    f.viewport.scrollTop = 220;
+    f.resize(210);
+    assert.equal(f.viewport.scrollTop, 400);
+    f.restoring(true);
+    f.viewport.scrollTop = 123;
+    f.tick();
+    assert.equal(f.viewport.scrollTop, 123);
+    assert.equal(f.pendingFrames(), 0);
+    assert.equal(f.animations[0].cancelled, true);
+  } finally {
+    f.close();
+  }
+});

@@ -229,6 +229,16 @@ async fn library_read_contract(mut app: App) {
     );
     let read = resolve(&app, "bob", &id).await;
     assert_eq!(read["status"], 200);
+    assert_eq!(read["info"]["unavailable"], false);
+    assert!(
+        read.get("link").is_some(),
+        "final release preserves referenced bytes"
+    );
+    assert_eq!(
+        action(&app, "alice", &id, "delete", false).await,
+        StatusCode::OK
+    );
+    let read = resolve(&app, "bob", &id).await;
     assert_eq!(read["info"]["unavailable"], true);
     assert!(
         read.get("link").is_none(),

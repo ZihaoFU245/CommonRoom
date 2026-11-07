@@ -43,7 +43,7 @@
 }
 
 .login-page {
-  min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
   background: var(--paper);
@@ -191,12 +191,12 @@
 .loading {
   display: grid;
   place-items: center;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
   color: var(--muted);
 }
 .chat-shell {
   position: relative;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
 }
 .navigation-toggle {
   position: absolute;
@@ -212,7 +212,7 @@
   padding-left: 68px;
 }
 .chat-layout {
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
   display: flex;
   overflow: hidden;
 }
@@ -393,8 +393,11 @@
 .message-list {
   flex: 1;
   overflow: auto;
-  padding: 0 38px 20px;
+  padding: 16px 38px 20px;
   scrollbar-width: thin;
+  overflow-anchor: none;
+  overscroll-behavior-y: none;
+  position: relative;
 }
 
 .composer-area {
@@ -433,15 +436,15 @@
   min-width: 0;
   border: 0;
   background: transparent;
-  font-size: 0.85714rem;
   min-height: 24px;
   max-height: min(240px, 40dvh);
   padding: 3px 0;
-  outline: none;
+
   line-height: 1.5;
   transition: height var(--control-motion-duration) var(--control-motion-easing);
   overflow-y: auto;
   scrollbar-width: none;
+  outline: none;
 }
 .composer textarea::-webkit-scrollbar {
   display: none;

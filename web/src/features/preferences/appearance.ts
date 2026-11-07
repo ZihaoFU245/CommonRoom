@@ -1,6 +1,9 @@
 import { controlMotion } from "./motion.ts";
-import { derivePalette, paletteTokens } from "./palette.ts";
+import { defaultSeeds, derivePalette, paletteTokens } from "./palette.ts";
 import {
+  defaultTheme,
+  defaultFonts,
+  loadFonts,
   loadSeeds,
   loadTheme,
   resolvesToDark,
@@ -53,5 +56,26 @@ export function applyAppearance(
  */
 export function bootAppearance() {
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  applyAppearance(loadTheme(), systemDark, loadSeeds());
+  try {
+    const fonts = loadFonts();
+    document.documentElement.style.setProperty(
+      "--chat-font-size",
+      `${fonts.chat}px`,
+    );
+    document.documentElement.style.setProperty(
+      "--ui-font-size",
+      `${fonts.ui}px`,
+    );
+    applyAppearance(loadTheme(), systemDark, loadSeeds());
+  } catch {
+    document.documentElement.style.setProperty(
+      "--chat-font-size",
+      `${defaultFonts.chat}px`,
+    );
+    document.documentElement.style.setProperty(
+      "--ui-font-size",
+      `${defaultFonts.ui}px`,
+    );
+    applyAppearance(defaultTheme, systemDark, { ...defaultSeeds });
+  }
 }

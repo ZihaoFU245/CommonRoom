@@ -1,40 +1,10 @@
-import expiredAttachmentIcon from "../assets/attachment-expired.svg?no-inline";
+import { AttachmentPlaceholder } from "./AttachmentPlaceholder.tsx";
 import type { ComponentChildren } from "preact";
 import { useContext, useEffect, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import type { MediaInfo } from "../api/media.ts";
 import { LibrarySourceContext } from "./LibrarySourceContext.ts";
 import { errorMessage } from "../api/protocol.ts";
-
-function ExpiredAttachment({
-  filename,
-  unavailable = false,
-}: {
-  filename: string;
-  unavailable?: boolean;
-}) {
-  return (
-    <span class="attachment-expired" role="status">
-      <img
-        class="attachment-expired-icon"
-        src={expiredAttachmentIcon}
-        width="32"
-        height="32"
-        alt=""
-        aria-hidden="true"
-        draggable={false}
-      />
-      <span class="attachment-expired-copy">
-        <span class="attachment-expired-name" dir="auto">
-          {filename}
-        </span>
-        <span class="attachment-expired-label">
-          {unavailable ? "Media unavailable" : "Attachment expired"}
-        </span>
-      </span>
-    </span>
-  );
-}
 
 /** Metadata remains readable after expiry; file bytes never do. */
 export function ManagedAttachment({
@@ -129,15 +99,20 @@ export function ManagedAttachment({
   }
   return (
     <span
-      class={loading ? "attachment-loading" : "managed-attachment"}
+      class="managed-attachment"
+      aria-busy={loading}
       data-layout-pending={loading ? "" : undefined}
     >
       {info?.expired ? (
-        <ExpiredAttachment filename={info.filename} />
+        <AttachmentPlaceholder
+          filename={info.filename}
+          label="Attachment expired"
+        />
       ) : info?.unavailable ? (
-        <ExpiredAttachment filename={info.filename} unavailable />
-      ) : loading ? (
-        <span role="status">Loading attachment…</span>
+        <AttachmentPlaceholder
+          filename={info.filename}
+          label="Media unavailable"
+        />
       ) : (
         <>
           {children}

@@ -1269,7 +1269,8 @@ Command catalogue changes must pass `rtk proxy python3 auto/command-reference.py
 
 `library_` Rust tests cover shared identity with multiple owners and borrowers,
 idempotent charges/entries, source access loss, hidden ownership, explicit final
-release, retirement without resurrection, account deletion, quotas and cleanup
+release preserving message references, administrative retirement without
+resurrection, account deletion, quotas and cleanup
 backpressure. Browser HTTP contracts exercise real allocation/completion against
 mock storage, authorized save/acquire, cross-conversation reuse of the same ID,
 placeholder metadata, denied new links and concurrent final-release/acquisition.
@@ -1293,8 +1294,11 @@ reordering, interrupted resize continuity, exit cleanup, and live reduced-motion
 changes, plus inert crossfades for mode switching and removal confirmation.
 Upload cases cover a full first page, immediately usable completed previews on
 later pages, canonical-page deduplication and removal before paging. Confirmation
-cases require focus restoration to the original remove button or Edit after the
-trigger disappears or deletion succeeds.
+cases require focus restoration to the original remove button on cancellation,
+and a remaining tile or Edit after deletion. Escape cancels the confirmation
+without dismissing the picker. Cache regressions cover disabled storage, failed
+invalidation recovery, retry replacement and forced metadata refresh. Appearance
+and viewport tests cover startup palettes/fonts and keyboard resize batching.
 The ordinary web suite validates
 bounded list responses, canonical paths, cookie handling and explicit confirmation.
 

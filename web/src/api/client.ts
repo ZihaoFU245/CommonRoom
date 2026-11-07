@@ -86,7 +86,9 @@ async function request<T>(
     cancellation.signal.throwIfAborted();
     if (response.status === 401) {
       mediaConfigCache.clear();
-      await invalidateMedia(undefined, true);
+      invalidateMedia(undefined, true).catch((error: unknown) => {
+        console.error("Session media invalidation failed", error);
+      });
     }
     if (!response.ok)
       throw new ApiError(

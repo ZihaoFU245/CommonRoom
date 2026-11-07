@@ -1,3 +1,4 @@
+import { randomUuid } from "../api/randomUuid.ts";
 import { useEffect, useState } from "preact/hooks";
 import { mediaDownloadUrl, mediaFileUrl } from "../api/mediaFile.ts";
 import { api } from "../api/client.ts";
@@ -27,7 +28,7 @@ export function useFileUrl(
   const base = serverBaseUrl();
   const parsed = href ? mediaFileUrl(href, base) : null;
   const file = parsed?.base === base ? parsed : null;
-  const [attempt, setAttempt] = useState(0);
+  const [attempt, setAttempt] = useState("");
   const [result, setResult] = useState<{
     key: string;
     error: string;
@@ -55,7 +56,15 @@ export function useFileUrl(
     const controller = new AbortController();
     const loading = direct
       ? image
-        ? httpImageCache.load(managedUrl, controller.signal)
+        ? httpImageCache.load(
+            (() => {
+              const retryUrl = new URL(managedUrl);
+              if (version || attempt)
+                retryUrl.searchParams.set("retry", `${version}:${attempt}`);
+              return retryUrl.href;
+            })(),
+            controller.signal,
+          )
         : api
             .fileLink(managedUrl, controller.signal, download)
             .then((link) => link.url)
@@ -77,7 +86,7 @@ export function useFileUrl(
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [managedUrl, ready, direct, download, image, key]);
+  }, [managedUrl, ready, direct, download, image, key, version, attempt]);
   const current = result?.key === key ? result : undefined;
   const error = direct || !ready ? (current?.error ?? "") : "";
   const source = direct ? current?.url : ready ? file?.url.href : undefined;
@@ -92,6 +101,6 @@ export function useFileUrl(
       : href,
     error,
     crossOrigin: direct && managed ? ("anonymous" as const) : undefined,
-    retry: () => setAttempt((value) => value + 1),
+    retry: () => setAttempt(randomUuid()),
   };
 }

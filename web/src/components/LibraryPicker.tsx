@@ -1,5 +1,13 @@
 import type { RefObject } from "preact";
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { memo } from "preact/compat";
+import { useEvent } from "../hooks/useEvent.ts";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import type { LibraryItem } from "../api/library.ts";
 import type { CompletedMedia } from "../api/media.ts";
 import { serverBaseUrl } from "../api/server.ts";
@@ -33,7 +41,9 @@ const panelMotion: AutoAnimationPlugin = (element, action) => {
   );
 };
 
-function EmojiGrid({
+const smileys = matchingEmoji(1, "", []);
+
+const EmojiGrid = memo(function EmojiGrid({
   items,
   label,
   disabled,
@@ -45,7 +55,7 @@ function EmojiGrid({
   select: (emoji: string) => void;
 }) {
   return (
-    <div class="emoji-grid" aria-label={label}>
+    <div class="emoji-grid" role="group" aria-label={label}>
       {items.map(([, emoji, name]) => (
         <button
           type="button"
@@ -60,7 +70,7 @@ function EmojiGrid({
       ))}
     </div>
   );
-}
+});
 export function LibraryPicker({
   canSelect,
   canEmoji = true,
@@ -84,6 +94,11 @@ export function LibraryPicker({
     anchor,
     closing,
     close,
+    () => {
+      if (!confirmation) return false;
+      if (!busy) cancelConfirmation();
+      return true;
+    },
   );
   const [editing, setEditing] = useState(false);
   const panels = useSettingsMotion<HTMLDivElement>(panelMotion);
@@ -108,6 +123,7 @@ export function LibraryPicker({
   });
   const recentKey = `commonroom-emoji:${serverBaseUrl()}:${account}`;
   const [recent, setRecent] = useState(() => recentEmoji(recentKey));
+  const recentItems = useMemo(() => matchingEmoji(0, "", recent), [recent]);
   const uploads = useMediaUploads("@library");
   const [pendingUpload, setPendingUpload] = useState<{
     filename: string;
@@ -159,7 +175,25 @@ export function LibraryPicker({
     select,
     dismiss,
     (id) => {
-      confirmationReturnFocus.current = null;
+      const trigger = confirmationReturnFocus.current;
+      const tiles = Array.from(
+        content.current?.querySelectorAll<HTMLButtonElement>(
+          ".library-preview",
+        ) ?? [],
+      );
+      const index = tiles.findIndex(
+        (tile) => tile.closest("li") === trigger?.closest("li"),
+      );
+      const next = tiles[index + 1] ?? tiles[index - 1];
+      requestAnimationFrame(() => {
+        const target =
+          next?.isConnected && !next.disabled
+            ? next
+            : (content.current?.querySelector<HTMLButtonElement>(
+                ".library-edit",
+              ) ?? dialog.current);
+        target?.focus({ preventScroll: true });
+      });
       setCompletedUploads((items) =>
         items.filter((item) => item.media_id !== id),
       );
@@ -244,11 +278,11 @@ export function LibraryPicker({
   useEffect(() => {
     if (pendingUpload && !uploads.busy && !uploaded) setPendingUpload(null);
   }, [pendingUpload, uploads.busy, uploaded]);
-  function pickEmoji(emoji: string) {
+  const pickEmoji = useEvent((emoji: string) => {
     if (exiting.current) return;
     selectEmoji?.(emoji);
-    setRecent(rememberEmoji(recentKey, emoji, recent));
-  }
+    setRecent((previous) => rememberEmoji(recentKey, emoji, previous));
+  });
   return (
     <dialog
       ref={dialog}
@@ -277,7 +311,7 @@ export function LibraryPicker({
                 <>
                   <h3 class="library-section-title">Recent</h3>
                   <EmojiGrid
-                    items={matchingEmoji(0, "", recent)}
+                    items={recentItems}
                     label="Recent emoji"
                     disabled={!canEmoji}
                     select={pickEmoji}
@@ -286,7 +320,7 @@ export function LibraryPicker({
               )}
               <h3 class="library-section-title">Smileys &amp; people</h3>
               <EmojiGrid
-                items={matchingEmoji(1, "", [])}
+                items={smileys}
                 label="Smileys & people"
                 disabled={!canEmoji}
                 select={pickEmoji}
@@ -508,7 +542,6 @@ export function LibraryPicker({
             <div
               class="library-confirmation"
               role="alertdialog"
-              aria-modal="true"
               aria-labelledby="library-confirmation-title"
               aria-describedby="library-confirmation-description"
               onKeyDown={(event) => {
@@ -539,8 +572,9 @@ export function LibraryPicker({
                 Remove “{confirmation.filename}”?
               </h3>
               <p id="library-confirmation-description">
-                This permanently removes it for everyone, including existing
-                messages.
+                This releases the last ownership and removes it from your
+                collection. Existing messages keep their attachment until they
+                are removed.
               </p>
               {error && <p role="alert">{error}</p>}
               <div class="library-confirmation-actions">

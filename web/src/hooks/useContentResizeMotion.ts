@@ -86,6 +86,11 @@ export function useContentResizeMotion() {
       );
       animation.current = current;
       const follow = () => {
+        // Restoration can take ownership after this animation has already begun.
+        if (clip.closest("[data-layout-restoring]")) {
+          stop();
+          return;
+        }
         if (pinned.current && viewport)
           viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
         if (pinned.current && viewport && animation.current === current)

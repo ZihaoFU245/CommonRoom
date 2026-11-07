@@ -29,6 +29,7 @@
   min-width: 0;
 }
 .message-preview.folded {
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 24px), transparent);
   mask-image: linear-gradient(#000 calc(100% - 24px), transparent);
 }
 .message-preview.expanded {

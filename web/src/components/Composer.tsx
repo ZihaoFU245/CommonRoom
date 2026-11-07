@@ -1,3 +1,4 @@
+import { ComposerAttachmentPreview } from "./ComposerAttachmentPreview.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import type { Attachment } from "../hooks/useMediaUploads.ts";
 import type { JSX, RefObject } from "preact";
@@ -5,7 +6,12 @@ import type { Hint, ReplyTarget } from "../api/protocol.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { CompletedMedia } from "../api/media.ts";
 import { PickerIcon } from "./PickerIcon.tsx";
-import { LibraryPicker } from "./LibraryPicker.tsx";
+import { lazy, Suspense } from "preact/compat";
+const LibraryPicker = lazy(() =>
+  import("./LibraryPicker.tsx").then((module) => ({
+    default: module.LibraryPicker,
+  })),
+);
 import {
   canAttachFile,
   clipboardAttachment,
@@ -210,12 +216,7 @@ export function Composer({
       )}
       {mediaUpload?.attachment && (
         <div class="composer-attachment">
-          {mediaUpload.attachment.preview && (
-            <img
-              src={mediaUpload.attachment.preview}
-              alt={mediaUpload.attachment.media.filename}
-            />
-          )}
+          <ComposerAttachmentPreview attachment={mediaUpload.attachment} />
           <span>
             {mediaUpload.attachment.media.filename}
             <small>
@@ -254,7 +255,7 @@ export function Composer({
               />
             </label>
           )}
-          {!consoleView && (
+          {!consoleView && canWrite && !pending && (
             <button
               ref={libraryButton}
               type="button"
@@ -324,32 +325,34 @@ export function Composer({
         </div>
       </form>
       {libraryOpen && (
-        <LibraryPicker
-          account={account ?? ""}
-          anchor={libraryButton}
-          closing={libraryClosing}
-          canSelect={attachAllowed}
-          canEmoji={canWrite && !pending}
-          select={(media) => mediaUpload?.select?.(media)}
-          selectEmoji={(emoji) => {
-            const start = input.current?.selectionStart ?? draft.length;
-            const end = input.current?.selectionEnd ?? start;
-            edit(draft.slice(0, start) + emoji + draft.slice(end));
-            requestAnimationFrame(() => {
-              input.current?.focus({ preventScroll: true });
-              input.current?.setSelectionRange(
-                start + emoji.length,
-                start + emoji.length,
-              );
-              selectCaret();
-            });
-          }}
-          close={() => {
-            setLibraryOpen(false);
-            setLibraryClosing(false);
-            input.current?.focus();
-          }}
-        />
+        <Suspense fallback={null}>
+          <LibraryPicker
+            account={account ?? ""}
+            anchor={libraryButton}
+            closing={libraryClosing}
+            canSelect={attachAllowed}
+            canEmoji={canWrite && !pending}
+            select={(media) => mediaUpload?.select?.(media)}
+            selectEmoji={(emoji) => {
+              const start = input.current?.selectionStart ?? draft.length;
+              const end = input.current?.selectionEnd ?? start;
+              edit(draft.slice(0, start) + emoji + draft.slice(end));
+              requestAnimationFrame(() => {
+                input.current?.focus({ preventScroll: true });
+                input.current?.setSelectionRange(
+                  start + emoji.length,
+                  start + emoji.length,
+                );
+                selectCaret();
+              });
+            }}
+            close={() => {
+              setLibraryOpen(false);
+              setLibraryClosing(false);
+              input.current?.focus();
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

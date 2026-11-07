@@ -17,7 +17,7 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
   load(url, context, next) {
-    if (url.endsWith(".svg"))
+    if (new URL(url).pathname.endsWith(".svg"))
       return {
         format: "module",
         shortCircuit: true,

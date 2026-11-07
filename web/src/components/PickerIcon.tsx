@@ -6,7 +6,10 @@ export function PickerIcon({ name }: { name: string }) {
       <span
         class="picker-icon picker-sticker-icon"
         aria-hidden="true"
-        style={{ maskImage: `url("${stickerIcon}")` }}
+        style={{
+          maskImage: `url("${stickerIcon}")`,
+          WebkitMaskImage: `url("${stickerIcon}")`,
+        }}
       />
     );
   const paths: Record<string, string> = {

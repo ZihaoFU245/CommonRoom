@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useLayoutEffect, useMemo, useState } from "preact/hooks";
 import { useAccountPreference } from "./useAccountPreference.ts";
 import type { Fonts } from "../api/protocol.ts";
 import { loadFonts } from "../features/preferences/settings.ts";
@@ -10,7 +10,7 @@ export function useFonts() {
     () => ({ chat: Number(chat), ui: Number(ui) }),
     [chat, ui],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.documentElement.style.setProperty("--chat-font-size", `${chat}px`);
     document.documentElement.style.setProperty("--ui-font-size", `${ui}px`);
   }, [chat, ui]);

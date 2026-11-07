@@ -247,7 +247,11 @@ export function useTimelineMotion(
       baseline.current = null;
     }
     if (ready) {
-      if (old?.scope === scope && old.revision !== revision) {
+      if (
+        old?.scope === scope &&
+        old.entries.length > 0 &&
+        old.revision !== revision
+      ) {
         const previous = pending.current;
         const source = previous?.entries ?? old.entries;
         const changes = timelineChanges(source, entries);

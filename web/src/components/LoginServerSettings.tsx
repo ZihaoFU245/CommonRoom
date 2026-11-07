@@ -75,7 +75,7 @@ export function LoginServerSettings({
         event.target instanceof Node &&
         !container.current?.contains(event.target)
       )
-        setOpen(false);
+        close();
     };
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
