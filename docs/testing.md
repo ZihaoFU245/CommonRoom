@@ -181,8 +181,10 @@ production-mode browser integration. Add `same-origin` in place of `'*'` to
 exercise an API on the UI origin. Add `--built` to exercise release UI artifacts
 through Vite preview rather than development modules. These scenarios use disposable Rust data,
 accounts, a local S3 protocol fixture, ephemeral self-signed TLS certificates,
-and separate `ui.test`, `api.test`, and `store.test` hosts. They verify saved
-server settings, cross-site Secure/HttpOnly/SameSite=None cookies, WSS messaging,
+and separate `ui.test`, `api.test`, and `store.test` hosts. Chrome's certificate
+exception is restricted to the generated certificate's public key; a broad
+certificate-error override leaves certificate errors that disable preflight caching.
+They verify saved server settings, cross-site Secure/HttpOnly/SameSite=None cookies, WSS messaging,
 media upload, image/avatar/audio access, HTML text preview, actual file download,
 reload, and logout. Forty warm image/avatar loads with distinct playback queries
 must issue no storage GETs or signed-link requests, including after hard reload.

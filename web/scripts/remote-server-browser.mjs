@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
+import { createHash, X509Certificate } from "node:crypto";
 import { createServer as httpServer, request as httpRequest } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
@@ -439,6 +440,14 @@ export async function startRemoteServer(
       apiRequests,
       sameOrigin,
       plainHttp,
+      certificateSpki: createHash("sha256")
+        .update(
+          new X509Certificate(tls.cert).publicKey.export({
+            type: "spki",
+            format: "der",
+          }),
+        )
+        .digest("base64"),
       png,
       mediaPaths: [
         image.path,
@@ -627,18 +636,22 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     linksBefore,
     "warm remounts skip signed-link APIs",
   );
+  // A distinct URL keeps application bootstrap requests from warming the
+  // preflight entry measured here.
+  const snapshotPath = "/server/api/me?preflight-cache";
+  const snapshotUrl = new URL("api/me?preflight-cache", fixture.base).href;
   const preflights = () =>
     fixture.apiRequests.filter(
-      (req) => req.method === "OPTIONS" && req.path === "/server/api/me",
+      (req) => req.method === "OPTIONS" && req.path === snapshotPath,
     ).length;
   const beforePreflight = preflights();
   const snapshots = () =>
     fixture.apiRequests.filter(
-      (req) => req.method === "GET" && req.path === "/server/api/me",
+      (req) => req.method === "GET" && req.path === snapshotPath,
     ).length;
   const beforeSnapshots = snapshots();
   const requestSnapshot = () =>
-    evaluate(`fetch(new URL("api/me", ${JSON.stringify(fixture.base)}), {
+    evaluate(`fetch(${JSON.stringify(snapshotUrl)}, {
     credentials: "include", cache: "default", headers: {"X-Chat-Name-Colors": "1"}
   }).then(async r => { if (!r.ok || r.headers.get("Cache-Control") !== "no-store") throw new Error("Snapshot must be fresh and no-store"); await r.json(); return r.status; })`);
   assert.equal(await requestSnapshot(), 200);
@@ -785,7 +798,7 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   await evaluate('document.querySelector(".signout").click()');
   await wait('!!document.querySelector(".login-server-trigger")', "logout UI");
   assert.equal(
-    await evaluate(`fetch(new URL("api/me", ${JSON.stringify(fixture.base)}), {
+    await evaluate(`fetch(${JSON.stringify(snapshotUrl)}, {
     credentials: "include", cache: "default", headers: {"X-Chat-Name-Colors": "1"}
   }).then(r => r.status)`),
     401,

@@ -1247,7 +1247,7 @@ export async function libraryRegressions({
       else localStorage.setItem(key, saved);
     }
   });
-  await test("media library quota preserves the displayed value during refresh and reopens from account cache", async () => {
+  await test("media library quota preserves the displayed value during invalidation and reopens from account cache", async () => {
     let finish;
     api.library = async () => ({ ...page([]), usage: 800 });
     render(h(StickerSettings, { account: "quota-a" }), tests);
@@ -1265,12 +1265,12 @@ export async function libraryRegressions({
       new Promise((resolve) => {
         finish = resolve;
       });
-    click("Refresh media storage");
+    window.dispatchEvent(new Event("commonroom-library-change"));
     await until(() => finish);
     check(
       tests.querySelector(".library-quota") === quota &&
         quota.title.includes("800 /"),
-      "refresh preserves the quota widget and last value",
+      "invalidation preserves the quota widget and last value",
     );
     finish({ ...page([]), usage: 1500 });
     await until(() => quota.title.includes("1,500 /"));
@@ -1748,10 +1748,8 @@ export async function libraryRegressions({
       "Account settings only shows storage usage",
     );
     check(
-      !tests
-        .querySelector('[aria-label="Refresh media storage"]')
-        .textContent.trim(),
-      "storage refresh is an accessible icon-only button",
+      !tests.querySelector("button"),
+      "storage usage updates without extra management controls",
     );
   });
 

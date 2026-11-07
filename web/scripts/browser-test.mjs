@@ -103,7 +103,9 @@ try {
       "--disable-background-networking",
       ...(remote
         ? [
-            "--ignore-certificate-errors",
+            // Broad certificate-error overrides disable preflight caching.
+            // Trust only this fixture's generated key in the isolated profile.
+            `--ignore-certificate-errors-spki-list=${fixture.certificateSpki}`,
             "--no-proxy-server",
             "--host-resolver-rules=MAP ui.test 127.0.0.1, MAP api.test 127.0.0.1, MAP store.test 127.0.0.1",
             "--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd",
