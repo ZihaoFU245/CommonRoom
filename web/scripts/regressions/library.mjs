@@ -1676,11 +1676,44 @@ export async function libraryRegressions({
     await until(() => tests.querySelector(".library-confirmation"));
     check(
       actions.length === before &&
-        tests.textContent.includes(
-          "it expires in 7 days, including in existing messages",
-        ),
+        tests
+          .querySelector("#library-confirmation-description")
+          .textContent.trim() === "It will expire in 7d.",
       "known last owner sees the grace-period warning before any mutation",
     );
+    const previousTheme = document.documentElement.getAttribute("data-theme");
+    const confirmation = tests.querySelector(".library-confirmation");
+    const picker = tests.querySelector(".library-picker");
+    const palette = document.createElement("span");
+    palette.style.cssText =
+      "color:var(--accent-label);background:var(--accent)";
+    confirmation.append(palette);
+    try {
+      for (const theme of ["light", "dark"]) {
+        document.documentElement.setAttribute("data-theme", theme);
+        const surface = getComputedStyle(confirmation);
+        const keep = getComputedStyle(
+          tests.querySelector(".library-confirmation-keep"),
+        );
+        check(
+          surface.backgroundColor ===
+            getComputedStyle(picker).backgroundColor &&
+            surface.color === getComputedStyle(picker).color &&
+            surface.borderTopColor === getComputedStyle(picker).borderTopColor,
+          `confirmation follows the ${theme} picker surface and border`,
+        );
+        check(
+          keep.color === getComputedStyle(palette).color &&
+            keep.backgroundColor === getComputedStyle(palette).backgroundColor,
+          `confirmation uses the ${theme} accent label contrast`,
+        );
+      }
+    } finally {
+      palette.remove();
+      if (previousTheme === null)
+        document.documentElement.removeAttribute("data-theme");
+      else document.documentElement.setAttribute("data-theme", previousTheme);
+    }
     const popupBounds = tests
       .querySelector(".library-picker")
       .getBoundingClientRect();

@@ -573,11 +573,7 @@ export function LibraryPicker({
               <h3 id="library-confirmation-title">
                 Remove “{confirmation.filename}”?
               </h3>
-              <p id="library-confirmation-description">
-                This removes the sticker from your collection. Without an owner,
-                it expires in 7 days, including in existing messages. Acquiring
-                ownership before expiry keeps it available.
-              </p>
+              <p id="library-confirmation-description">It will expire in 7d.</p>
               {error && <p role="alert">{error}</p>}
               <div class="library-confirmation-actions">
                 <button

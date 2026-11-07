@@ -85,7 +85,9 @@ Completion and cleanup serialize mutation of the same object; engine locks are r
 before network I/O. Current identity/grants are rechecked after verification.
 
 The composer holds a separate attachment card/preview with Remove, while text
-remains editable. Uploaded images and library selections use the same preview
+remains editable. Selecting an attachment focuses the message input; successful
+upload completion restores that focus so Enter can send it directly. Uploaded
+images and library selections use the same preview
 layout. Local upload previews reuse their Blob URL; stored images load through
 the authorized media cache without allocating or uploading another object. Pasting an image from the clipboard attaches it through the
 same upload path as the attach picker: the paste is consumed, no Markdown or

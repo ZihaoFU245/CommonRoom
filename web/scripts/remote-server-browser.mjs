@@ -486,6 +486,19 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   async function wait(expression, label) {
     await until(() => evaluate(expression), label);
   }
+  async function pressEnter() {
+    for (const type of ["keyDown", "keyUp"])
+      await command(
+        "Input.dispatchKeyEvent",
+        {
+          type,
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+        },
+        sessionId,
+      );
+  }
   await command("Browser.setDownloadBehavior", {
     behavior: "allow",
     downloadPath: join(fixture.work, "downloads"),
@@ -516,7 +529,14 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     '[...document.querySelectorAll(".room-link")].find((element)=>element.textContent.includes("files")).click()',
   );
   if (fixture.plainHttp) {
-    await runHttpDebug({ command, fixture, events, evaluate, wait });
+    await runHttpDebug({
+      command,
+      fixture,
+      events,
+      evaluate,
+      wait,
+      pressEnter,
+    });
     return;
   }
   await wait(
@@ -697,13 +717,20 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
 
   await wait('!!document.querySelector("input[type=file]")', "upload control");
   await evaluate(
-    'const files=new DataTransfer(); files.items.add(new File(["Browser upload verified"],"browser-upload.txt",{type:"text/plain"})); const picker=document.querySelector("input[type=file]"); picker.files=files.files; picker.dispatchEvent(new Event("change",{bubbles:true}));',
+    'const files=new DataTransfer(); files.items.add(new File(["Browser upload verified"],"browser-upload.txt",{type:"text/plain"})); const picker=document.querySelector("input[type=file]"); picker.focus(); picker.files=files.files; picker.dispatchEvent(new Event("change",{bubbles:true}));',
   );
   await wait(
     'document.querySelector(".media-upload-status")?.textContent.includes("Attachment ready")',
     "cross-site browser upload",
   );
-  await evaluate('document.querySelector(".composer").requestSubmit()');
+  assert.equal(
+    await evaluate(
+      'document.activeElement === document.querySelector(".composer textarea")',
+    ),
+    true,
+    "completed attachment upload focuses the message input",
+  );
+  await pressEnter();
   await wait(
     '[...document.querySelectorAll(".message-markdown a")].some((anchor)=>anchor.textContent==="browser-upload.txt")',
     "published browser upload",
@@ -844,7 +871,7 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   );
 }
 
-async function runHttpDebug({ fixture, events, evaluate, wait }) {
+async function runHttpDebug({ fixture, events, evaluate, wait, pressEnter }) {
   assert.equal(
     await evaluate("window.isSecureContext"),
     false,
@@ -964,13 +991,20 @@ async function runHttpDebug({ fixture, events, evaluate, wait }) {
     fixture.noteBytes,
   );
   await evaluate(
-    'const transfer = new DataTransfer(); transfer.items.add(new File(["Debug upload verified"], "debug-upload.txt", {type:"text/plain"})); const input = document.querySelector(".composer input[type=file]"); input.files = transfer.files; input.dispatchEvent(new Event("change", {bubbles:true}));',
+    'const transfer = new DataTransfer(); transfer.items.add(new File(["Debug upload verified"], "debug-upload.txt", {type:"text/plain"})); const input = document.querySelector(".composer input[type=file]"); input.focus(); input.files = transfer.files; input.dispatchEvent(new Event("change", {bubbles:true}));',
   );
   await wait(
     'document.querySelector(".media-upload-status")?.textContent.includes("Attachment ready")',
     "HTTP attachment upload",
   );
-  await evaluate('document.querySelector(".composer").requestSubmit()');
+  assert.equal(
+    await evaluate(
+      'document.activeElement === document.querySelector(".composer textarea")',
+    ),
+    true,
+    "HTTP attachment upload focuses the message input",
+  );
+  await pressEnter();
   await wait(
     '[...document.querySelectorAll(".message-markdown a")].some(anchor => anchor.textContent === "debug-upload.txt")',
     "HTTP upload message",

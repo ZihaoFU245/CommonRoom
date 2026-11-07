@@ -533,8 +533,10 @@
   background: var(--paper);
   box-shadow: var(--shadow-dialog);
   padding: 16px;
-  border: 1px solid var(--danger);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  outline: none;
   font-size: 0.85rem;
 }
 .library-confirmation h3 {
@@ -553,19 +555,19 @@
 .library-picker .library-confirmation-keep {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--accent-contrast);
+  color: var(--accent-label);
 }
 .library-picker .library-confirmation-keep:hover:not(:disabled) {
   background: var(--accent);
   filter: brightness(0.94);
 }
 .library-picker .library-confirmation-remove {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, var(--paper));
-  color: var(--danger);
+  border-color: var(--line);
+  background: var(--wash);
+  color: var(--ink);
 }
 .library-picker .library-confirmation-remove:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 20%, var(--paper));
+  background: color-mix(in srgb, var(--accent) 8%, var(--wash));
 }
 .managed-attachment,
 .attachment-loading {

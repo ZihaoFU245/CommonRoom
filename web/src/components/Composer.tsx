@@ -87,6 +87,11 @@ export function Composer({
   const [libraryClosing, setLibraryClosing] = useState(false);
   const libraryButton = useRef<HTMLButtonElement>(null);
   const composition = useCompositionGuard(keydown);
+  const attachmentId = mediaUpload?.attachment?.media.media_id;
+  useEffect(() => {
+    if (attachmentId && canWrite && !consoleView && !libraryOpen)
+      input.current?.focus({ preventScroll: true });
+  }, [attachmentId, canWrite, consoleView, libraryOpen, input]);
   useEffect(() => {
     hintList.current
       ?.querySelector('[aria-selected="true"]')
@@ -250,7 +255,10 @@ export function Composer({
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
-                  if (file) mediaUpload.start(file).catch(reportUploadFailure);
+                  if (file) {
+                    input.current?.focus({ preventScroll: true });
+                    mediaUpload.start(file).catch(reportUploadFailure);
+                  }
                 }}
               />
             </label>
