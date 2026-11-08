@@ -8,7 +8,11 @@ import { mediaFileUrl } from "./mediaFile.ts";
 import { invalidateMedia } from "../features/conversation/mediaInvalidation.ts";
 import { mediaStatusCache } from "../features/conversation/mediaStatusCache.ts";
 import { resolveMediaRead } from "../features/conversation/mediaController.ts";
-import { isLibraryPage } from "./library.ts";
+import {
+  isLibraryPage,
+  isLibrarySections,
+  sharedLibrarySections,
+} from "./library.ts";
 import type { LibraryAction, LibraryView } from "./library.ts";
 import { isUploadTicket, isCompletedMedia, isMediaConfig } from "./media.ts";
 import {
@@ -194,13 +198,38 @@ export const api = {
       refresh,
     );
   },
-  library: (view: LibraryView, after: string, signal: AbortSignal) =>
-    request(
-      `library?owned=${view === "owned"}&recent=${view === "recent"}&after=${encodeURIComponent(after)}`,
-      isLibraryPage,
-      undefined,
-      signal,
-    ),
+  library: (
+    view: LibraryView,
+    after: string,
+    signal: AbortSignal,
+    account = "",
+  ) =>
+    view !== "owned" && !after
+      ? sharedLibrarySections(
+          JSON.stringify([serverBaseUrl(), account]),
+          signal,
+          (batchSignal) =>
+            request(
+              "library?sections=true",
+              isLibrarySections,
+              undefined,
+              batchSignal,
+            ),
+        ).then((sections) => sections[view])
+      : request(
+          `library?owned=${view === "owned"}&recent=${view === "recent"}&after=${encodeURIComponent(after)}`,
+          isLibraryPage,
+          undefined,
+          signal,
+        ),
+  libraryMove: (
+    id: string,
+    anchor: { before_id: string } | { after_id: string },
+  ) =>
+    request(`library/${encodeURIComponent(id)}`, isOk, {
+      action: "move",
+      ...anchor,
+    }),
   libraryChange: (
     id: string,
     action: LibraryAction,

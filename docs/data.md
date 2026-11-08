@@ -267,7 +267,8 @@ removal trigger. SQL ready/expiry/deletion columns are authoritative when loadin
 Library assets use `media.conversation='@library'` and permanent object keys.
 `library_owners` and `library_entries` are independent unique `(account_id,media_id)`
 relationships; account IDs survive rename. Saved entries have an indexed,
-account-local insertion position: uploads and saves append at the end, and
+account-local position: uploads and saves append at the end; manual moves update
+the affected ranks transactionally without changing ownership or quota, and
 pagination uses that position rather than the random media ID. This is part of
 the current draft schema in place; it adds no version or migration path.
 Verified upload completion creates the

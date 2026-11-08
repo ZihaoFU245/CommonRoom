@@ -56,3 +56,88 @@ export function isLibraryPage(value: unknown): value is LibraryPage {
     typeof value.uploads_paused === "boolean"
   );
 }
+
+export interface LibrarySections {
+  library: LibraryPage;
+  recent: LibraryPage;
+}
+export function isLibrarySections(value: unknown): value is LibrarySections {
+  return (
+    record(value) && isLibraryPage(value.library) && isLibraryPage(value.recent)
+  );
+}
+
+interface PendingSections {
+  controller: AbortController;
+  readers: number;
+  promise: Promise<LibrarySections>;
+}
+const pendingSections = new Map<string, PendingSections>();
+
+/** Coalesce Recent, Collections and quota consumers without making one reader's
+ * cancellation abort the other readers. Identity is part of the request key.
+ */
+export function sharedLibrarySections(
+  key: string,
+  signal: AbortSignal,
+  load: (signal: AbortSignal) => Promise<LibrarySections>,
+): Promise<LibrarySections> {
+  if (signal.aborted)
+    return Promise.reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException("Library request cancelled", "AbortError"),
+    );
+  let pending = pendingSections.get(key);
+  if (!pending) {
+    const controller = new AbortController();
+    const entry: PendingSections = {
+      controller,
+      readers: 0,
+      promise: Promise.resolve()
+        .then(() => load(controller.signal))
+        .finally(() => {
+          if (pendingSections.get(key) === entry) pendingSections.delete(key);
+        }),
+    };
+    pendingSections.set(key, entry);
+    pending = entry;
+  }
+  const entry = pending;
+  entry.readers++;
+  return new Promise((resolve, reject) => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      signal.removeEventListener("abort", abort);
+      if (--entry.readers === 0 && pendingSections.get(key) === entry) {
+        pendingSections.delete(key);
+        entry.controller.abort();
+      }
+    };
+    const abort = () => {
+      release();
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException("Library request cancelled", "AbortError"),
+      );
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    entry.promise.then(
+      (value) => {
+        release();
+        resolve(value);
+      },
+      (error: unknown) => {
+        release();
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Library sections request failed", { cause: error }),
+        );
+      },
+    );
+  });
+}

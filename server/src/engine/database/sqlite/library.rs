@@ -8,6 +8,9 @@ use super::super::{
 use sqlx::{Connection as _, SqliteConnection};
 
 pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>) -> Result<u64> {
+    if matches!(request.action, LibraryAction::Move) {
+        return reorder(db, request).await;
+    }
     let (media, _) = super::media::load(db, request.id)
         .await?
         .ok_or(Error::MissingMedia)?;
@@ -88,6 +91,7 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
             }
             return Ok(changed);
         }
+        LibraryAction::Move => return reorder(db, request).await,
         LibraryAction::Save | LibraryAction::Acquire => {}
     }
     if !media.available_at(crate::engine::media::timestamp()) {
@@ -467,4 +471,70 @@ pub(super) async fn record_recent(
     sqlx::query("INSERT INTO library_recents(account_id,media_id,used) VALUES(?1,?2,?3) ON CONFLICT(account_id,media_id) DO UPDATE SET used=excluded.used")
         .bind(account).bind(id).bind(next).execute(db).await?;
     Ok(())
+}
+
+// Called inside the native write transaction. Negative ranks are temporary,
+// keeping the unique (account, position) index valid during either direction.
+async fn reorder(db: &mut SqliteConnection, request: &LibraryWrite<'_>) -> Result<u64> {
+    let from: i64 = sqlx::query_scalar("SELECT e.position FROM library_entries e JOIN media m ON m.id=e.media_id WHERE e.account_id=?1 AND e.media_id=?2 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 AND (m.expires IS NULL OR m.expires>?3)")
+        .bind(request.account).bind(request.id).bind(number(crate::engine::media::timestamp())?)
+        .fetch_optional(&mut *db).await?.ok_or(Error::MissingMedia)?;
+    if request.before == Some(request.id) || request.after == Some(request.id) {
+        return Ok(0);
+    }
+    let to: i64 = if let Some(before) = request.before.or(request.after) {
+        let anchor: i64 = sqlx::query_scalar("SELECT e.position FROM library_entries e JOIN media m ON m.id=e.media_id WHERE e.account_id=?1 AND e.media_id=?2 AND m.ready=1 AND m.deleting=0 AND m.deleted=0 AND (m.expires IS NULL OR m.expires>?3)")
+            .bind(request.account).bind(before).bind(number(crate::engine::media::timestamp())?)
+            .fetch_optional(&mut *db).await?.ok_or(Error::MissingMedia)?;
+        if request.before.is_some() {
+            if anchor > from { anchor - 1 } else { anchor }
+        } else if anchor < from {
+            anchor + 1
+        } else {
+            anchor
+        }
+    } else {
+        sqlx::query_scalar("SELECT MAX(position) FROM library_entries WHERE account_id=?1")
+            .bind(request.account)
+            .fetch_one(&mut *db)
+            .await?
+    };
+    if from < 1 || to < 1 {
+        return Err(Error::InvalidData("Invalid library order".into()));
+    }
+    if from == to {
+        return Ok(0);
+    }
+    sqlx::query("UPDATE library_entries SET position=0 WHERE account_id=?1 AND media_id=?2")
+        .bind(request.account)
+        .bind(request.id)
+        .execute(&mut *db)
+        .await?;
+    let shift = if from < to {
+        "UPDATE library_entries SET position=-position WHERE account_id=?1 AND position>?2 AND position<=?3"
+    } else {
+        "UPDATE library_entries SET position=-position WHERE account_id=?1 AND position>=?3 AND position<?2"
+    };
+    sqlx::query(shift)
+        .bind(request.account)
+        .bind(from)
+        .bind(to)
+        .execute(&mut *db)
+        .await?;
+    let restore = if from < to {
+        "UPDATE library_entries SET position=-position-1 WHERE account_id=?1 AND position<0"
+    } else {
+        "UPDATE library_entries SET position=-position+1 WHERE account_id=?1 AND position<0"
+    };
+    sqlx::query(restore)
+        .bind(request.account)
+        .execute(&mut *db)
+        .await?;
+    sqlx::query("UPDATE library_entries SET position=?3 WHERE account_id=?1 AND media_id=?2")
+        .bind(request.account)
+        .bind(request.id)
+        .bind(to)
+        .execute(db)
+        .await?;
+    Ok(1)
 }

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isLibraryPage } from "../src/api/library.ts";
+import {
+  isLibraryPage,
+  isLibrarySections,
+  sharedLibrarySections,
+} from "../src/api/library.ts";
 import { parseFrame } from "../src/api/protocol.ts";
 import { api } from "../src/api/client.ts";
 
@@ -51,6 +55,81 @@ test("library responses validate bounded lists and explicit ownership independen
     ids,
   });
   assert.equal(parseFrame('{"kind":"media","ids":["../foreign"]}'), null);
+});
+
+test("Recent and Collections share one authenticated batch read; pagination stays independent", async (t) => {
+  const previous = globalThis.document;
+  globalThis.document = { baseURI: "https://chat.example.com/commonroom/" };
+  t.after(() => {
+    globalThis.document = previous;
+  });
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url: String(url), options });
+    return Response.json(
+      options.method !== "GET"
+        ? { ok: true }
+        : String(url).includes("sections=true")
+          ? { recent: page, library: page }
+          : page,
+    );
+  });
+  const controller = new AbortController();
+  const results = await Promise.all([
+    api.library("recent", "", controller.signal, "alice"),
+    api.library("library", "", controller.signal, "alice"),
+  ]);
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].url, /library\?sections=true$/u);
+  assert.equal(requests[0].options.credentials, "include");
+  assert.deepEqual(results, [page, page]);
+  await api.library("library", "50", controller.signal, "alice");
+  assert.match(requests[1].url, /after=50$/u);
+  assert.equal(
+    isLibrarySections({ library: page, recent: { ...page, usage: -1 } }),
+    false,
+  );
+  await api.libraryMove(id, { before_id: id });
+  assert.deepEqual(JSON.parse(requests[2].options.body), {
+    action: "move",
+    before_id: id,
+  });
+});
+
+test("batched library reads release cancelled consumers and isolate accounts", async () => {
+  let complete;
+  let calls = 0;
+  let sharedSignal;
+  const load = (signal) => {
+    calls++;
+    sharedSignal = signal;
+    return new Promise((resolve) => {
+      complete = resolve;
+    });
+  };
+  const a = new AbortController(),
+    b = new AbortController();
+  const first = sharedLibrarySections("alice", a.signal, load);
+  const second = sharedLibrarySections("alice", b.signal, load);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  a.abort();
+  await assert.rejects(first, { name: "AbortError" });
+  assert.equal(sharedSignal.aborted, false);
+  complete({ library: page, recent: page });
+  assert.deepEqual(await second, { library: page, recent: page });
+  const c = new AbortController();
+  const cancelled = sharedLibrarySections("alice", c.signal, load);
+  await Promise.resolve();
+  c.abort();
+  await assert.rejects(cancelled, { name: "AbortError" });
+  assert.equal(sharedSignal.aborted, true);
+  const different = sharedLibrarySections(
+    "bob",
+    new AbortController().signal,
+    async () => ({ library: page, recent: page }),
+  );
+  assert.deepEqual(await different, { library: page, recent: page });
 });
 test("library requests preserve base paths, cookies and explicit final-release confirmation", async (t) => {
   const document = globalThis.document;

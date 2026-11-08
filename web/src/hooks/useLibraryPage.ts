@@ -16,16 +16,23 @@ const pendingPages = new Map<string, PendingPage>();
 let cacheGeneration = 0;
 
 /** Releasing one reader keeps other readers' HTTP request alive. */
-function sharePage(key: string, view: LibraryView, after: string) {
+function sharePage(
+  key: string,
+  view: LibraryView,
+  after: string,
+  account: string | undefined,
+) {
   let pending = pendingPages.get(key);
   if (!pending) {
     const controller = new AbortController();
     const entry: PendingPage = {
       controller,
       readers: 0,
-      promise: api.library(view, after, controller.signal).finally(() => {
-        if (pendingPages.get(key) === entry) pendingPages.delete(key);
-      }),
+      promise: api
+        .library(view, after, controller.signal, account)
+        .finally(() => {
+          if (pendingPages.get(key) === entry) pendingPages.delete(key);
+        }),
     };
     pendingPages.set(key, entry);
     pending = entry;
@@ -116,9 +123,9 @@ export function useLibraryPage(
       let result;
       try {
         const request = cacheKey
-          ? sharePage(cacheKey, view, after)
+          ? sharePage(cacheKey, view, after, cacheScope)
           : {
-              promise: api.library(view, after, controller.signal),
+              promise: api.library(view, after, controller.signal, cacheScope),
               release: () => {},
             };
         release = request.release;
@@ -156,6 +163,15 @@ export function useLibraryPage(
       controller.abort();
       release();
     };
-  }, [view, after, version, enabled, key, cacheKey, retainWhileRefreshing]);
+  }, [
+    view,
+    after,
+    version,
+    enabled,
+    key,
+    cacheKey,
+    cacheScope,
+    retainWhileRefreshing,
+  ]);
   return { page, error, refresh };
 }

@@ -26,6 +26,7 @@ import type { AutoAnimationPlugin } from "@formkit/auto-animate";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useSettingsMotion } from "../hooks/useSettingsMotion.ts";
 import { useLibraryMotion } from "../hooks/useLibraryMotion.ts";
+import { useLibraryReorder } from "../hooks/useLibraryReorder.ts";
 import { PickerIcon } from "./PickerIcon.tsx";
 
 // Panel changes fade without resizing or moving the independent preview layout.
@@ -95,6 +96,7 @@ export function LibraryPicker({
     closing,
     close,
     () => {
+      if (reorder.cancel()) return true;
       if (!confirmation) return false;
       if (!busy) cancelConfirmation();
       return true;
@@ -283,12 +285,37 @@ export function LibraryPicker({
     selectEmoji?.(emoji);
     setRecent((previous) => rememberEmoji(recentKey, emoji, previous));
   });
+  const collectionItems = useMemo(
+    () =>
+      [
+        ...(collection.page?.items ?? []),
+        ...completedUploads.filter(
+          (uploaded) =>
+            !collection.page?.items.some(
+              (item) => item.media_id === uploaded.media_id,
+            ),
+        ),
+      ].filter((item) => item.available),
+    [collection.page, completedUploads],
+  );
+  const reorder = useLibraryReorder(
+    content,
+    collectionItems,
+    editing &&
+      enabled &&
+      !busy &&
+      !uploads.busy &&
+      confirmation === null &&
+      pendingUpload === null &&
+      !closing,
+  );
   return (
     <dialog
       ref={dialog}
       popover="manual"
       tabIndex={-1}
       class="library-picker"
+      data-reordering={reorder.dragging}
       aria-labelledby="library-title"
       onCancel={(event) => {
         event.preventDefault();
@@ -328,8 +355,8 @@ export function LibraryPicker({
             </>
           ) : (
             <>
-              {!confirmation && (error || uploads.error) && (
-                <p role="status">{error || uploads.error}</p>
+              {!confirmation && (error || uploads.error || reorder.error) && (
+                <p role="status">{error || uploads.error || reorder.error}</p>
               )}
               {uploadsPaused && (
                 <p role="status">
@@ -359,6 +386,7 @@ export function LibraryPicker({
                               type="button"
                               class="library-edit"
                               aria-pressed={editing}
+                              disabled={reorder.saving || reorder.dragging}
                               onClick={() => setEditing((value) => !value)}
                             >
                               {editing ? "Done" : "Edit"}
@@ -380,58 +408,68 @@ export function LibraryPicker({
                           aria-label={`${title} stickers`}
                         >
                           {[
-                            ...[
-                              ...(page?.items ?? []),
-                              ...(view === "library"
-                                ? completedUploads.filter(
-                                    (uploaded) =>
-                                      !page?.items.some(
-                                        (item) =>
-                                          item.media_id === uploaded.media_id,
-                                      ),
-                                  )
-                                : []),
-                            ]
-                              .filter((item) => item.available)
-                              .map((item) => {
-                                const upload = uploadKeys.current.get(
-                                  item.media_id,
-                                );
-                                return (
-                                  <LibraryStickerTile
-                                    key={upload?.key ?? item.media_id}
-                                    item={item}
-                                    {...(upload?.preview
-                                      ? { localPreview: upload.preview }
-                                      : {})}
-                                    previewLoaded={() => {
-                                      if (upload?.preview) {
-                                        URL.revokeObjectURL(upload.preview);
-                                        uploadKeys.current.set(item.media_id, {
-                                          key: upload.key,
-                                        });
-                                      }
-                                    }}
-                                    editing={editing}
-                                    disabled={
-                                      busy ||
-                                      uploads.busy ||
-                                      confirmation !== null
+                            ...(view === "library"
+                              ? reorder.items
+                              : (page?.items ?? []).filter(
+                                  (item) => item.available,
+                                )
+                            ).map((item) => {
+                              const upload = uploadKeys.current.get(
+                                item.media_id,
+                              );
+                              return (
+                                <LibraryStickerTile
+                                  key={upload?.key ?? item.media_id}
+                                  item={item}
+                                  {...(upload?.preview
+                                    ? { localPreview: upload.preview }
+                                    : {})}
+                                  previewLoaded={() => {
+                                    if (upload?.preview) {
+                                      URL.revokeObjectURL(upload.preview);
+                                      uploadKeys.current.set(item.media_id, {
+                                        key: upload.key,
+                                      });
                                     }
-                                    canSelect={canSelect}
-                                    choose={() => {
-                                      choose(item);
-                                    }}
-                                    remove={(trigger) => {
-                                      confirmationReturnFocus.current = trigger;
-                                      remove(item);
-                                    }}
-                                    acquire={() => {
-                                      acquire(item);
-                                    }}
-                                  />
-                                );
-                              }),
+                                  }}
+                                  {...(view === "library" && editing
+                                    ? {
+                                        reorder: {
+                                          pointerDown: (event) =>
+                                            reorder.pointerDown(
+                                              event,
+                                              item.media_id,
+                                            ),
+                                          keyDown: (event) =>
+                                            reorder.keyDown(
+                                              event,
+                                              item.media_id,
+                                            ),
+                                        },
+                                      }
+                                    : {})}
+                                  editing={view === "library" && editing}
+                                  editable={view === "library"}
+                                  disabled={
+                                    busy ||
+                                    reorder.saving ||
+                                    uploads.busy ||
+                                    confirmation !== null
+                                  }
+                                  canSelect={canSelect}
+                                  choose={() => {
+                                    choose(item);
+                                  }}
+                                  remove={(trigger) => {
+                                    confirmationReturnFocus.current = trigger;
+                                    remove(item);
+                                  }}
+                                  acquire={() => {
+                                    acquire(item);
+                                  }}
+                                />
+                              );
+                            }),
                             view === "library" && pendingUpload && (
                               <LibraryStickerTile
                                 key={pendingUpload.preview}
@@ -474,6 +512,7 @@ export function LibraryPicker({
                                     accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
                                     disabled={
                                       busy ||
+                                      reorder.saving ||
                                       uploads.busy ||
                                       !uploads.enabled ||
                                       uploadsPaused ||
@@ -501,6 +540,7 @@ export function LibraryPicker({
                           {cursors[view] && (
                             <button
                               type="button"
+                              disabled={reorder.saving || reorder.dragging}
                               onClick={() => {
                                 if (view === "library") setCompletedUploads([]);
                                 setCursors((value) => ({
@@ -515,6 +555,7 @@ export function LibraryPicker({
                           {page?.next_cursor && (
                             <button
                               type="button"
+                              disabled={reorder.saving || reorder.dragging}
                               onClick={() => {
                                 if (view === "library") setCompletedUploads([]);
                                 setCursors((value) => ({

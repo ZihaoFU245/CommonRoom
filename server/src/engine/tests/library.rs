@@ -33,6 +33,8 @@ fn change(
             account: engine.principal_id(Some(user)).unwrap(),
             id: &media.id,
             source,
+            before: None,
+            after: None,
             action,
             confirm_last: confirm,
             quota: engine.library_quota(user),
@@ -51,6 +53,197 @@ fn page(engine: &Engine, user: &str, owned: bool) -> database::LibraryPage {
         conversations: &engine.library_read_scopes(user),
     }))
     .unwrap()
+}
+
+fn reorder_contract(engine: Engine) {
+    let media: Vec<_> = (0..5).map(|_| upload(&engine, "alice")).collect();
+    let ids: Vec<_> = media.iter().map(|item| item.id.clone()).collect();
+    let foreign = upload(&engine, "bob");
+    let store = engine.media_store();
+    let request = database::LibraryWrite {
+        account: engine.principal_id(Some("alice")).unwrap(),
+        id: &ids[4],
+        source: None,
+        before: Some(&ids[0]),
+        after: None,
+        action: LibraryAction::Move,
+        confirm_last: false,
+        quota: engine.library_quota("alice"),
+        config: &engine.media.config,
+    };
+    let order = || {
+        page(&engine, "alice", false)
+            .items
+            .into_iter()
+            .map(|item| item.media_id)
+            .collect::<Vec<_>>()
+    };
+    assert!(run(store.library_action(&request)).unwrap());
+    assert_eq!(
+        order(),
+        vec![
+            ids[4].clone(),
+            ids[0].clone(),
+            ids[1].clone(),
+            ids[2].clone(),
+            ids[3].clone()
+        ]
+    );
+    assert!(
+        !run(store.library_action(&request)).unwrap(),
+        "repeated drops are no-ops"
+    );
+    // The after anchor works at the end of a visible page without moving the
+    // sticker past unseen rows elsewhere in the collection.
+    run(store.library_action(&database::LibraryWrite {
+        before: None,
+        after: Some(&ids[1]),
+        ..request
+    }))
+    .unwrap();
+    assert_eq!(
+        order(),
+        vec![
+            ids[0].clone(),
+            ids[1].clone(),
+            ids[4].clone(),
+            ids[2].clone(),
+            ids[3].clone()
+        ]
+    );
+    let before = order();
+    let postgres = engine.store.db.lock().unwrap().is_postgres();
+    engine.store.db.lock().unwrap().execute_batch(if postgres {
+        "CREATE FUNCTION reject_reorder_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.position>0 AND OLD.position<0 THEN RAISE EXCEPTION 'injected reorder failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_reorder BEFORE UPDATE OF position ON library_entries FOR EACH ROW EXECUTE FUNCTION reject_reorder_fn();"
+    } else {
+        "CREATE TRIGGER reject_reorder BEFORE UPDATE OF position ON library_entries WHEN NEW.position>0 AND OLD.position<0 BEGIN SELECT RAISE(ABORT,'injected reorder failure'); END;"
+    }).unwrap();
+    assert!(
+        run(store.library_action(&database::LibraryWrite {
+            before: None,
+            ..request
+        }))
+        .is_err()
+    );
+    assert_eq!(
+        order(),
+        before,
+        "failed rank shifts roll back the entire move"
+    );
+    engine
+        .store
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch(if postgres {
+            "DROP TRIGGER reject_reorder ON library_entries; DROP FUNCTION reject_reorder_fn();"
+        } else {
+            "DROP TRIGGER reject_reorder"
+        })
+        .unwrap();
+    assert!(
+        run(store.library_action(&database::LibraryWrite {
+            before: Some(&foreign.id),
+            ..request
+        }))
+        .is_err()
+    );
+    assert_eq!(order(), before, "foreign anchors cannot change the order");
+    assert!(
+        run(store.library_action(&database::LibraryWrite {
+            id: &foreign.id,
+            ..request
+        }))
+        .is_err()
+    );
+    assert_eq!(page(&engine, "bob", false).items[0].media_id, foreign.id);
+    // Exercise gaps left by removal and both shift directions under the unique index.
+    change(
+        &engine,
+        "alice",
+        &media[1],
+        LibraryAction::Remove,
+        None,
+        false,
+    )
+    .unwrap();
+    run(store.library_action(&database::LibraryWrite {
+        id: &ids[0],
+        before: None,
+        ..request
+    }))
+    .unwrap();
+    assert_eq!(
+        order(),
+        vec![
+            ids[4].clone(),
+            ids[2].clone(),
+            ids[3].clone(),
+            ids[0].clone()
+        ]
+    );
+    run(store.library_action(&database::LibraryWrite {
+        id: &ids[0],
+        before: Some(&ids[4]),
+        ..request
+    }))
+    .unwrap();
+    assert_eq!(
+        order(),
+        vec![
+            ids[0].clone(),
+            ids[4].clone(),
+            ids[2].clone(),
+            ids[3].clone()
+        ]
+    );
+}
+
+#[test]
+fn library_reorder_is_atomic_account_scoped_and_preserves_unseen_rows() {
+    reorder_contract(engine());
+}
+
+#[test]
+fn library_reorder_survives_sqlite_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("order.sqlite");
+    let mut engine = Engine::open(&path).unwrap();
+    engine
+        .provision("alice", "hash".into(), true, false)
+        .unwrap();
+    let first = upload(&engine, "alice");
+    let second = upload(&engine, "alice");
+    run(engine
+        .media_store()
+        .library_action(&database::LibraryWrite {
+            account: engine.active_account_id("alice").unwrap(),
+            id: &second.id,
+            action: LibraryAction::Move,
+            source: None,
+            before: Some(&first.id),
+            after: None,
+            quota: engine.library_quota("alice"),
+            config: &engine.media.config,
+            confirm_last: false,
+        }))
+    .unwrap();
+    drop(engine);
+    let reopened = Engine::open(&path).unwrap();
+    let saved = page(&reopened, "alice", false);
+    assert_eq!(saved.items[0].media_id, second.id);
+    assert_eq!(saved.items[1].media_id, first.id);
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_library_reorder_is_atomic_account_scoped_and_preserves_unseen_rows() {
+    let fixture = database::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    for user in ["alice", "bob"] {
+        engine.provision(user, "hash".into(), true, false).unwrap();
+    }
+    reorder_contract(engine);
 }
 
 #[test]
@@ -401,6 +594,8 @@ fn concurrent_quota(mut engine: Engine) {
         account: &account,
         id: &first.id,
         source: None,
+        before: None,
+        after: None,
         action: LibraryAction::Acquire,
         confirm_last: false,
         quota: 8,
@@ -861,6 +1056,8 @@ fn reacquire_cleanup_race(engine: Engine) {
         account: engine.principal_id(Some("alice")).unwrap(),
         id: &media.id,
         source: None,
+        before: None,
+        after: None,
         action: LibraryAction::Acquire,
         confirm_last: false,
         quota: engine.library_quota("alice"),

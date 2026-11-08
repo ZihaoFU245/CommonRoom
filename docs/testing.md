@@ -1269,6 +1269,19 @@ Command catalogue changes must pass `rtk proxy python3 auto/command-reference.py
 
 ## Media library contracts
 
+Reorder contracts verify per-account rank moves in both directions, repeated-drop
+no-ops, foreign-anchor rejection, atomic rollback after a failed rank shift,
+SQLite restart persistence and the PostgreSQL transaction path. HTTP coverage
+checks targeted sync notifications and combined Recent/Collections reads without
+object storage. Client tests coalesce section reads with independent cancellation
+and account isolation. Drag browser tests sample row/column motion and interrupted
+resize at their painted bounds, check animated drop/cancel, one request per drop,
+failed-save rollback, edge scrolling and cleanup on pointer cancellation/unmount.
+Lift checks measure the grab point in viewport coordinates outside the transformed
+picker, and edge-scroll checks require an outside hold while rejecting incidental
+bottom-row motion. Recent stays selectable without sorting or management controls.
+Real HTTP/HTTPS scenarios require one section request when the picker opens.
+
 `library_` Rust tests cover shared identity with multiple owners and borrowers,
 idempotent charges/entries, source access loss, hidden ownership, explicit final
 release preserving message references, administrative retirement without

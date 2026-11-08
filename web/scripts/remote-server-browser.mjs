@@ -525,6 +525,35 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     'document.querySelector(".connection")?.textContent.includes("Connected") || document.querySelector(".connection")?.classList.contains("online")',
     "cross-site WSS",
   );
+  const libraryRequests = () =>
+    fixture.apiRequests.filter(
+      (request) =>
+        request.method === "GET" &&
+        request.path.startsWith("/server/api/library"),
+    );
+  const librariesBefore = libraryRequests().length;
+  await evaluate(
+    "document.querySelector('[aria-label=\"Open media library\"]').click()",
+  );
+  await wait(
+    "!!document.querySelector('[aria-label=\"Stickers\"]')",
+    "library picker",
+  );
+  await evaluate("document.querySelector('[aria-label=\"Stickers\"]').click()");
+  await wait(
+    "!!document.querySelector('[aria-label=\"Collections\"] .library-grid')",
+    "batched sticker sections",
+  );
+  assert.equal(
+    libraryRequests().length - librariesBefore,
+    1,
+    "opening the picker fetches Recent and Collections in one request",
+  );
+  assert.ok(libraryRequests().at(-1).path.includes("sections=true"));
+  await evaluate(
+    "document.querySelector('[aria-label=\"Open media library\"]').click()",
+  );
+  await wait('!document.querySelector(".library-picker")', "library dismissal");
   await evaluate(
     '[...document.querySelectorAll(".room-link")].find((element)=>element.textContent.includes("files")).click()',
   );

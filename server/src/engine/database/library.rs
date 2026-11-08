@@ -71,12 +71,15 @@ pub(crate) enum LibraryAction {
     Remove,
     Release,
     Delete,
+    Move,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct LibraryWrite<'a> {
     pub(crate) account: &'a str,
     pub(crate) id: &'a str,
     pub(crate) source: Option<&'a str>,
+    pub(crate) before: Option<&'a str>,
+    pub(crate) after: Option<&'a str>,
     pub(crate) action: LibraryAction,
     pub(crate) confirm_last: bool,
     pub(crate) quota: u64,

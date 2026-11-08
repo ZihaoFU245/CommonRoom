@@ -433,11 +433,15 @@ Ordinary expiring attachments cannot be converted through library actions.
   use the returned opaque `next_cursor` as `after`; `limit` accepts 1–100.
   All lists exclude unavailable/expired assets before pagination; hidden expired
   entries do not consume collection slots.
-  Saved entries are ordered by collection insertion, oldest first; their cursor is
+  Saved entries follow account-local collection order; new saves append. Their cursor is
   a nonnegative integer position encoded as a string. Ownership pages retain
   media-ID order and media-ID cursors. Invalid collection cursors return 400.
   Recents return one
   bounded list without a continuation cursor and grant no independent access.
+- `GET /api/library?sections=true` returns `{library, recent}`, each with the
+  page shape below. This batches the initial Collections and Recent reads into
+  one authenticated request; it cannot be combined with `owned`, `recent` or
+  a nonempty `after`. Later collection pages use the ordinary list query.
 - Responses contain `items`, `next_cursor` (string or null), account `usage` and
   `quota` in bytes, plus deployment `cleanup_bytes`, `cleanup_objects`,
   `oldest_cleanup` (Unix seconds or null), and `uploads_paused`. Cleanup budgets
@@ -446,13 +450,20 @@ Ordinary expiring attachments cannot be converted through library actions.
 - Each item contains `media_id`, `filename`, `content_type`, `size`, `available`,
   `owned`, `saved` and `owner_count`. The `remove` action remains idempotent for
   hidden unavailable entries.
-- `POST /api/library/{id}` accepts `{action,source_conversation?,confirm_last?}`.
+- `POST /api/library/{id}` accepts `{action,source_conversation?,confirm_last?,before_id?,after_id?}`.
   Actions are `save` (borrow if owned, acquire-and-save if ownerless), `acquire`,
   `remove` (hide saved and recent entries), `release` (one's own
   ownership), and administrator-only `delete` (global removal). Save/acquire
   require current saved/owned access or an authorized retained message. An
   explicit source is reauthorized; if omitted, current readable retained
   references are checked. A media ID alone grants no access.
+- `move` changes only the caller's saved collection order. Supply `before_id`
+  or `after_id` for a saved, available neighbor, or neither to move to the end.
+  Supplying both is invalid. The source and anchor must belong to the caller's
+  collection. Positions change in one transaction, serialized per account;
+  repeating an already-applied move is a no-op. Recent usage, ownership, quota
+  and S3 objects are unchanged. Account-targeted media notifications invalidate
+  cached lists in other tabs/devices. Unavailable or missing anchors return 404.
 - Success is `{ok:true}`. Final release without `confirm_last:true` returns 409
   and preserves ownership. Invalid quota/count limits return 400, unavailable or
   inaccessible assets return 404, and non-administrator global removal returns

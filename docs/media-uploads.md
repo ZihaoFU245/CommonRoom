@@ -482,8 +482,9 @@ confirmation fade in and out over the short control timing; outgoing controls
 are inert while fading.
 
 Sticker browsing stacks Recent and Collections (saved stickers) with independent
-pagination. Collections lists media in saved order, oldest first, so new uploads
-and saves append at the end. Empty Recent sections and empty emoji recents are hidden. Collections
+pagination. Collections follows a saved per-account order; new uploads and saves
+append at the end. Opening the picker batches Recent and Collections into one
+`GET /api/library?sections=true` request. Empty Recent sections and empty emoji recents are hidden. Collections
 keeps its upload control even when it has no media. Owned assets have no separate
 section, so uploading does not create a duplicate owned grid.
 New static JPEG, PNG and WebP library uploads are processed in the browser before
@@ -515,8 +516,8 @@ using the next available cell (to the right when there is room), even when empty
 An upload immediately inserts a local preview tile with a circular uploading indicator
 and an icon-only cancel control, replacing text upload hints. Preview motion
 coordinates additions, exits, row wrapping, resizing and reordering. Additions,
-resizing, reordering and image fades take 120 ms; deletion fades and their
-reflow retain 180 ms. Unchanged layout notifications do not restart animations.
+resizing, automatic reordering and image fades take 120 ms; active drag reflow,
+drop, deletion fades and their reflow use 180 ms. Unchanged layout notifications do not restart animations.
 Interrupted transitions resume from their current painted positions. Removed
 previews fade outside the flex layout so they cannot displace the upload control.
 Reduced motion skips these effects and cancels effects already running. Existing
@@ -530,7 +531,18 @@ Expired, retired and otherwise unavailable stickers are hidden from Collections
 and Recent. Server lists filter them before pagination, and they do not consume
 collection slots. Message history retains its named attachment placeholder.
 A small themed Edit button beside Collections
-switches to editing; Done returns to browsing. Only while editing does each sticker
+switches to editing; Done returns to browsing. In Edit mode, drag a collection
+preview to reorder it, or use Alt + arrow keys on a focused preview. The sticker
+lifts into its own top-layer overlay, keeping the grab point under the pointer
+without a duplicate in the original slot. Its center must hover over another
+tile's central area before the surrounding rows make room; drop settles into the
+new slot. Edge scrolling requires holding the pointer beyond the content edge,
+so dragging through the bottom row does not scroll. Recent stays selectable and
+has no edit or drag controls. One drop saves a relative move to the server,
+with no S3 work. Ordering survives reload/restart and syncs to the account's other
+devices; Recent remains usage-ordered. Escape cancels the drag, and failed saves
+restore the server order with an inline error. Reordering is within the current
+collection page, with neighbor IDs preserving unseen entries. Only while editing does each sticker
 expose its top-left manipulation control on hover or visible keyboard focus
 (always visible on touch devices). Browsing keeps these controls hidden and out
 of the keyboard and accessibility navigation.

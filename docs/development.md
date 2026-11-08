@@ -284,7 +284,9 @@ an emoji without parsing thousands of unrelated glyphs in the upstream document.
   writes the matching CSS motion variables before rendering; the stylesheet keeps
   first-paint fallbacks. Message and content-preview motion retain their separate
   180 ms timing. Sticker-library additions, reordering, resizing and image fades
-  use 120 ms; deletion and its reflow retain 180 ms. Respect reduced motion and
+  use 120 ms; active drag reflow and drop use `reorderMotion` (180 ms).
+  Deletion and its reflow retain their own 180 ms timing. Keep the lifted preview in its own top-layer popover:
+  the transformed picker cannot own viewport-positioned drag geometry. Respect reduced motion and
   clean up animation controllers/listeners.
 - Keep business permissions in the engine. Browser visibility/completion is not authorization. Keep all SQL, schemas, connection/session and COPY mechanics in the independent SQLite/PostgreSQL modules under `engine/database/`. Shared `engine/storage/` coordinates typed operations and committed publication; `engine/history/` owns shared caches. Avoid holding the engine read/write lock across `.await`.
 - Cargo manifests forbid application unsafe code and ignored must-use values. Clippy rejects narrowing/sign-changing casts, `unwrap`/`expect`, explicit panic/unreachable/todo/debug macros. Return errors for invalid state and conversions. `unwrap`/`expect` are allowed only in test modules; deliberately injected panics need a local documented test allowance. Never recover a poisoned engine with `into_inner`; return unavailable and require a restart.

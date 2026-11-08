@@ -1,4 +1,5 @@
 import { useState } from "preact/hooks";
+import type { JSX } from "preact";
 import { serverBaseUrl } from "../api/server.ts";
 import type { LibraryItem } from "../api/library.ts";
 import { LibraryThumbnail } from "./LibraryThumbnail.tsx";
@@ -12,6 +13,7 @@ export function LibraryStickerTile({
   item,
   disabled,
   editing,
+  editable = true,
   localPreview,
   previewLoaded,
   cancelUpload,
@@ -19,10 +21,12 @@ export function LibraryStickerTile({
   choose,
   remove,
   acquire,
+  reorder,
 }: {
   item: LibraryItem;
   disabled: boolean;
   editing: boolean;
+  editable?: boolean;
   localPreview?: string;
   previewLoaded?: () => void;
   cancelUpload?: () => void;
@@ -30,6 +34,10 @@ export function LibraryStickerTile({
   choose: () => void;
   remove: (trigger: HTMLButtonElement) => void;
   acquire: () => void;
+  reorder?: {
+    pointerDown: JSX.PointerEventHandler<HTMLButtonElement>;
+    keyDown: JSX.KeyboardEventHandler<HTMLButtonElement>;
+  };
 }) {
   const actions = useSettingsMotion<HTMLDivElement>();
   const key = `${serverBaseUrl()}:${item.media_id}`;
@@ -53,13 +61,31 @@ export function LibraryStickerTile({
     <li
       class={`library-sticker-tile${cancelUpload ? " library-pending-upload" : ""}`}
       style={{ "--media-ratio": ratio }}
+      data-library-reorder-id={reorder ? item.media_id : undefined}
     >
       <button
         class="library-preview"
         type="button"
-        title={item.filename}
-        disabled={disabled || !canSelect || !item.available}
-        onClick={choose}
+        title={
+          reorder
+            ? `Drag to reorder ${item.filename}; Alt + arrow keys to move`
+            : item.filename
+        }
+        disabled={disabled || (!canSelect && !reorder) || !item.available}
+        onClick={() => {
+          if (!editing) choose();
+        }}
+        onPointerDown={reorder?.pointerDown}
+        onKeyDown={reorder?.keyDown}
+        onDragStart={(event) => {
+          event.preventDefault();
+        }}
+        draggable={false}
+        aria-keyshortcuts={
+          reorder
+            ? "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"
+            : undefined
+        }
         aria-label={`Use ${item.filename}`}
       >
         {localPreview && cancelUpload ? (
@@ -97,41 +123,43 @@ export function LibraryStickerTile({
           <PickerIcon name="close" />
         </button>
       )}
-      <div
-        ref={actions}
-        inert={!editing}
-        data-editing={editing}
-        class={`library-sticker-actions${item.owned ? " library-owned-actions" : ""}`}
-        role="group"
-        aria-label={`Actions for ${item.filename}`}
-      >
-        <button
-          class="library-remove-sticker"
-          type="button"
-          aria-label={`Remove ${item.filename}`}
-          title="Remove sticker"
-          disabled={disabled}
-          onClick={({ currentTarget }) => remove(currentTarget)}
+      {editable && (
+        <div
+          ref={actions}
+          inert={!editing}
+          data-editing={editing}
+          class={`library-sticker-actions${item.owned ? " library-owned-actions" : ""}`}
+          role="group"
+          aria-label={`Actions for ${item.filename}`}
         >
-          <PickerIcon name="close" />
-        </button>
-        {!item.owned && (
           <button
-            class="library-acquire-sticker"
+            class="library-remove-sticker"
             type="button"
-            aria-label={`Acquire ${item.filename}`}
-            title={
-              !item.available
-                ? "Media unavailable"
-                : `Acquire ownership (${item.size.toLocaleString()} bytes of storage)`
-            }
-            disabled={disabled || !item.available}
-            onClick={acquire}
+            aria-label={`Remove ${item.filename}`}
+            title="Remove sticker"
+            disabled={disabled}
+            onClick={({ currentTarget }) => remove(currentTarget)}
           >
-            <PickerIcon name="plus" />
+            <PickerIcon name="close" />
           </button>
-        )}
-      </div>
+          {!item.owned && (
+            <button
+              class="library-acquire-sticker"
+              type="button"
+              aria-label={`Acquire ${item.filename}`}
+              title={
+                !item.available
+                  ? "Media unavailable"
+                  : `Acquire ownership (${item.size.toLocaleString()} bytes of storage)`
+              }
+              disabled={disabled || !item.available}
+              onClick={acquire}
+            >
+              <PickerIcon name="plus" />
+            </button>
+          )}
+        </div>
+      )}
     </li>
   );
 }

@@ -522,6 +522,426 @@ export async function libraryRegressions({
       "Done restores clean sticker browsing",
     );
   });
+  await test("media library drag reorders rows and columns smoothly and persists one move on drop", async () => {
+    const initial = Array.from({ length: 6 }, (_, index) => ({
+      ...sticker,
+      media_id: `b5cd8a44-d8b7-4c63-91fe-3cc63f10617${index}`,
+      filename: `drag-${index}.png`,
+    }));
+    let serverItems = initial.slice();
+    let finish;
+    const moves = [];
+    let closed = false;
+    api.mediaConfig = async () => ({ enabled: true, max_size: 10000 });
+    api.library = async (view) => page(view === "recent" ? [] : serverItems);
+    api.libraryMove = (id, anchor) => {
+      moves.push({ id, anchor });
+      return new Promise((resolve) => {
+        finish = () => {
+          const item = serverItems.find((item) => item.media_id === id);
+          serverItems = serverItems.filter((item) => item.media_id !== id);
+          const index = anchor.before_id
+            ? serverItems.findIndex(
+                (item) => item.media_id === anchor.before_id,
+              )
+            : serverItems.findIndex(
+                (item) => item.media_id === anchor.after_id,
+              ) + 1;
+          serverItems.splice(index, 0, item);
+          resolve({ ok: true });
+        };
+      });
+    };
+    render(
+      h(LibraryPicker, {
+        account: "drag-layout",
+        canSelect: true,
+        select() {},
+        close() {
+          closed = true;
+        },
+      }),
+      tests,
+    );
+    await manage();
+    await until(
+      () => tests.querySelectorAll(".library-sticker-tile").length === 6,
+    );
+    const picker = tests.querySelector(".library-picker");
+    picker.style.width = "340px";
+    picker.style.height = "700px";
+    picker.style.top = "20px";
+    tests.querySelector(".library-edit").click();
+    await until(
+      () => tests.querySelectorAll("[data-library-reorder-id]").length === 6,
+    );
+    const grid = tests.querySelector(".library-grid");
+    const tiles = () => [...grid.querySelectorAll("[data-library-reorder-id]")];
+    const ids = () => tiles().map((tile) => tile.dataset.libraryReorderId);
+    const ratios = [1.8, 0.65, 1.2, 0.8, 1.4, 1];
+    tiles().forEach((tile, index) =>
+      tile.style.setProperty("--media-ratio", ratios[index]),
+    );
+    await sleep(350);
+    const source = tiles()[0];
+    const sibling = tiles()[1];
+    const content = tests.querySelector(".library-content");
+    const scrollBefore = content.scrollTop;
+    const before = sibling.getBoundingClientRect();
+    function pointer(type, target, x, y) {
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 24,
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY: y,
+        }),
+      );
+    }
+    const start = source.getBoundingClientRect();
+    pointer(
+      "pointerdown",
+      source.querySelector(".library-preview"),
+      start.left + 20,
+      start.top + 20,
+    );
+    check(
+      !document.querySelector(".library-drag-preview"),
+      "clicks do not start a drag before the movement threshold",
+    );
+    const target = tiles()[4].getBoundingClientRect();
+    const dragX = target.left + target.width / 2 - start.width / 2 + 20;
+    const dragY = target.top + target.height / 2 - start.height / 2 + 20;
+    pointer("pointermove", document, dragX, dragY);
+    await until(
+      () =>
+        ids()[4] === initial[0].media_id &&
+        document.querySelector(".library-drag-preview"),
+    );
+    check(
+      moves.length === 0,
+      "pointer movement changes only the local preview",
+    );
+    const lifted = document.querySelector(".library-drag-preview");
+    check(
+      lifted.parentElement === document.body && lifted.matches(":popover-open"),
+      "the lifted sticker escapes the picker's transformed containing block and clipping",
+    );
+    const held = lifted.getBoundingClientRect();
+    const liftScale = held.width / start.width;
+    check(
+      Math.abs(held.left + 20 * liftScale - dragX) < 1 &&
+        Math.abs(held.top + 20 * liftScale - dragY) < 1,
+      "the same point on the lifted sticker stays attached to the pointer",
+    );
+    check(
+      getComputedStyle(source).opacity === "0",
+      "the original slot does not show a duplicate sticker",
+    );
+    await until(() => sibling.getAnimations().length);
+    let motion = sibling.getAnimations()[0];
+    motion.pause();
+    motion.currentTime = 0;
+    let box = sibling.getBoundingClientRect();
+    check(
+      motion.effect.getTiming().duration === 180 &&
+        Math.abs(box.left - before.left) < 1 &&
+        Math.abs(box.top - before.top + content.scrollTop - scrollBefore) < 1,
+      `row and column movement starts at the previous painted box and lasts 180ms: ${JSON.stringify({ before, box, duration: motion.effect.getTiming().duration, scrollBefore, scrollAfter: content.scrollTop })}`,
+    );
+    motion.currentTime = 55;
+    const interrupted = sibling.getBoundingClientRect();
+    picker.style.width = "430px";
+    await until(() => sibling.getAnimations()[0] !== motion);
+    motion = sibling.getAnimations()[0];
+    motion.pause();
+    motion.currentTime = 0;
+    box = sibling.getBoundingClientRect();
+    check(
+      Math.abs(box.width - interrupted.width) < 1 &&
+        Math.abs(box.left - interrupted.left) < 1 &&
+        Math.abs(box.top - interrupted.top) < 1,
+      "resizing during a drag retargets width and both axes without snapping",
+    );
+    motion.play();
+    pointer("pointerup", document, dragX, dragY);
+    await until(
+      () =>
+        moves.length === 1 &&
+        document.querySelector(".library-drag-preview")?.getAnimations().length,
+    );
+    check(
+      moves[0].id === initial[0].media_id &&
+        moves[0].anchor.before_id === initial[5].media_id,
+      "one drop saves a neighboring ID rather than replacing a paginated collection",
+    );
+    finish();
+    await until(
+      () =>
+        !document.querySelector(".library-drag-preview") &&
+        !tests.querySelector(".library-edit").disabled,
+    );
+    check(
+      !picker.querySelector("[data-library-drag-source]"),
+      "drop animation releases its hidden source",
+    );
+    check(
+      ids().join() === serverItems.map((item) => item.media_id).join(),
+      "canonical server refresh preserves the optimistic order",
+    );
+    const saved = ids().join();
+    const last = tiles().at(-1),
+      first = tiles()[0];
+    const lastBox = last.getBoundingClientRect(),
+      firstBox = first.getBoundingClientRect();
+    pointer(
+      "pointerdown",
+      last.querySelector(".library-preview"),
+      lastBox.left + 10,
+      lastBox.top + 10,
+    );
+    pointer(
+      "pointermove",
+      document,
+      firstBox.left + firstBox.width / 2 - lastBox.width / 2 + 10,
+      firstBox.top + firstBox.height / 2 - lastBox.height / 2 + 10,
+    );
+    await until(() => ids()[0] === last.dataset.libraryReorderId);
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(
+      () =>
+        ids().join() === saved &&
+        !document.querySelector(".library-drag-preview"),
+    );
+    await sleep(150);
+    check(
+      moves.length === 1 && picker.isConnected && !closed,
+      "Escape animates back without saving or dismissing the picker",
+    );
+    const persistMove = api.libraryMove;
+    api.libraryMove = async () => {
+      await sleep(60);
+      throw new ApiError(503, "Ordering unavailable");
+    };
+    const current = tiles()[0];
+    const keyboardPreview = current.querySelector(".library-preview");
+    keyboardPreview.focus();
+    keyboardPreview.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowRight",
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(() => tests.textContent.includes("Ordering unavailable"));
+    await until(() => ids().join() === saved);
+    check(
+      !tests.querySelector(".library-edit").disabled,
+      "failed moves restore the server order and allow retry",
+    );
+    await until(() => document.activeElement === keyboardPreview);
+    api.libraryMove = persistMove;
+    document.activeElement.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowRight",
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(() => moves.length === 2);
+    finish();
+    await until(
+      () =>
+        !tests.querySelector(".library-edit").disabled &&
+        document.activeElement === keyboardPreview,
+    );
+    check(
+      ids().join() === serverItems.map((item) => item.media_id).join(),
+      "successful and failed keyboard moves retain focus for the next arrow key",
+    );
+  });
+  await test("media library drag scrolls overflow and releases cancelled or unmounted previews", async () => {
+    const items = Array.from({ length: 20 }, (_, index) => ({
+      ...sticker,
+      media_id: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      filename: `scroll-${index}.gif`,
+    }));
+    api.mediaConfig = async () => ({ enabled: true, max_size: 10000 });
+    api.library = async (view) => page(view === "recent" ? [] : items);
+    let saves = 0;
+    api.libraryMove = async () => {
+      saves++;
+      return { ok: true };
+    };
+    render(
+      h(LibraryPicker, {
+        account: "scroll-drag",
+        canSelect: true,
+        select() {},
+        close() {},
+      }),
+      tests,
+    );
+    await manage();
+    const picker = tests.querySelector(".library-picker");
+    picker.style.width = "300px";
+    picker.style.maxHeight = "350px";
+    tests.querySelector(".library-edit").click();
+    await until(
+      () => tests.querySelectorAll("[data-library-reorder-id]").length === 20,
+    );
+    await sleep(200);
+    const root = tests.querySelector(".library-content");
+    const tile = root.querySelector("[data-library-reorder-id]");
+    const bounds = tile.getBoundingClientRect();
+    const viewport = root.getBoundingClientRect();
+    const pointer = (type, target, x, y) =>
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 31,
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY: y,
+        }),
+      );
+    pointer(
+      "pointerdown",
+      tile.querySelector(".library-preview"),
+      bounds.left + 20,
+      bounds.top + 20,
+    );
+    pointer("pointermove", document, bounds.left + 20, viewport.bottom - 2);
+    await until(() => document.querySelector(".library-drag-preview"));
+    await sleep(450);
+    check(
+      root.scrollTop === 0,
+      "dragging along the last visible row never triggers edge scrolling",
+    );
+    pointer("pointermove", document, bounds.left + 20, viewport.bottom + 26);
+    await sleep(150);
+    check(
+      root.scrollTop === 0,
+      "crossing the panel edge briefly does not scroll",
+    );
+    await until(
+      () =>
+        root.scrollTop > 30 && document.querySelector(".library-drag-preview"),
+    );
+    pointer("pointercancel", document, 0, 0);
+    await until(
+      () =>
+        !document.querySelector(".library-drag-preview") &&
+        !picker.querySelector("[data-library-drag-source]"),
+    );
+    check(
+      saves === 0,
+      "scrolling a cancelled drag never persists an intermediate order",
+    );
+    root.scrollTop = 0;
+    await sleep(200);
+    const first = root
+      .querySelector("[data-library-reorder-id]")
+      .querySelector(".library-preview");
+    const start = first.getBoundingClientRect();
+    pointer("pointerdown", first, start.left + 15, start.top + 15);
+    pointer("pointermove", document, start.left + 30, start.top + 30);
+    await until(() => document.querySelector(".library-drag-preview"));
+    render(null, tests);
+    pointer("pointerup", document, 0, 0);
+    check(
+      saves === 0 && !document.querySelector(".library-drag-preview"),
+      "unmount cancels listeners and removes the floating preview",
+    );
+  });
+  await test("media library Recent stays selectable and never draggable while Collections is edited", async () => {
+    api.mediaConfig = async () => ({ enabled: true, max_size: 10000 });
+    api.library = async () => page([sticker]);
+    let selected = 0,
+      reordered = 0;
+    api.libraryMove = async () => {
+      reordered++;
+      return { ok: true };
+    };
+    render(
+      h(LibraryPicker, {
+        account: "recent-browsing",
+        canSelect: true,
+        select() {
+          selected++;
+        },
+        close() {},
+      }),
+      tests,
+    );
+    await manage();
+    tests.querySelector(".library-edit").click();
+    await until(() =>
+      tests.querySelector(
+        '[aria-label="Collections"] [data-library-reorder-id]',
+      ),
+    );
+    const recent = tests.querySelector('[aria-label="Recent"]');
+    const preview = recent.querySelector(".library-preview");
+    check(
+      !recent.querySelector(
+        "[data-library-reorder-id], .library-sticker-actions",
+      ),
+      "Recent exposes neither sorting nor edit actions",
+    );
+    const bounds = preview.getBoundingClientRect();
+    preview.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 19,
+        isPrimary: true,
+        button: 0,
+        clientX: bounds.left + 5,
+        clientY: bounds.top + 5,
+      }),
+    );
+    document.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 19,
+        isPrimary: true,
+        button: 0,
+        clientX: bounds.left + 35,
+        clientY: bounds.top + 35,
+      }),
+    );
+    check(
+      !document.querySelector(".library-drag-preview"),
+      "moving a Recent sticker does not start a reorder",
+    );
+    check(
+      !preview.dispatchEvent(
+        new DragEvent("dragstart", { bubbles: true, cancelable: true }),
+      ),
+      "Recent also suppresses the browser's native image drag",
+    );
+    preview.click();
+    await until(() => selected === 1);
+    check(
+      reordered === 0,
+      "Recent still selects a sticker normally while Edit is active",
+    );
+  });
   await test("media library motion coordinates removal wrapping reordering and interrupted resize", async () => {
     const initial = Array.from({ length: 4 }, (_, index) => ({
       ...sticker,
@@ -1804,6 +2224,7 @@ export async function libraryRegressions({
       uploads = useMediaUploads("room-id");
       const input = useRef(null);
       return h(Composer, {
+        account: "attachment-selection",
         mediaUpload: uploads,
         minimumComposerHeight: 40,
         actualComposerHeight: 40,

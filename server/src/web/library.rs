@@ -9,6 +9,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct List {
+    sections: bool,
     owned: bool,
     recent: bool,
     after: String,
@@ -17,6 +18,7 @@ pub(crate) struct List {
 impl Default for List {
     fn default() -> Self {
         Self {
+            sections: false,
             owned: false,
             recent: false,
             after: String::new(),
@@ -31,6 +33,8 @@ pub(crate) struct Change {
     source_conversation: Option<String>,
     #[serde(default)]
     confirm_last: bool,
+    before_id: Option<String>,
+    after_id: Option<String>,
 }
 
 pub(crate) async fn list(
@@ -39,6 +43,12 @@ pub(crate) async fn list(
     Query(input): Query<List>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_read_origin(&app, &headers)?;
+    if input.sections && (input.owned || input.recent || !input.after.is_empty()) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "Section batches require the first collection page.",
+        ));
+    }
     let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
         let (identity, store) =
@@ -56,17 +66,27 @@ pub(crate) async fn list(
                 }
             })
             .await?;
-        let page = store
-            .library_page(&crate::engine::database::LibraryList {
-                account: &identity.account,
-                owned: input.owned,
-                recent: input.recent,
-                after: &input.after,
-                limit: input.limit,
-                quota,
-                conversations: &scopes,
-            })
-            .await?;
+        let request = crate::engine::database::LibraryList {
+            account: &identity.account,
+            owned: input.owned,
+            recent: input.recent,
+            after: &input.after,
+            limit: input.limit,
+            quota,
+            conversations: &scopes,
+        };
+        let page = if input.sections {
+            let library = store.library_page(&request).await?;
+            let recent = store
+                .library_page(&crate::engine::database::LibraryList {
+                    recent: true,
+                    ..request
+                })
+                .await?;
+            json!({"library": library, "recent": recent})
+        } else {
+            json!(store.library_page(&request).await?)
+        };
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
             media::verify_identity(&identity, engine)?;
             Ok(Json(json!(page)))
@@ -83,6 +103,21 @@ pub(crate) async fn change(
     Json(input): Json<Change>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
+    if (input.before_id.is_some() && input.after_id.is_some())
+        || (!matches!(input.action, LibraryAction::Move)
+            && (input.before_id.is_some() || input.after_id.is_some()))
+        || input
+            .before_id
+            .iter()
+            .chain(input.after_id.iter())
+            .any(|id| uuid::Uuid::parse_str(id).is_err())
+    {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "Invalid library move anchors.",
+        ));
+    }
+
     let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
         let (identity, store) =
@@ -124,6 +159,8 @@ pub(crate) async fn change(
                 account: &identity.account,
                 id: &id,
                 source: source.as_deref(),
+                before: input.before_id.as_deref(),
+                after: input.after_id.as_deref(),
                 action: input.action,
                 confirm_last: input.confirm_last,
                 quota,
@@ -136,7 +173,8 @@ pub(crate) async fn change(
                 LibraryAction::Delete | LibraryAction::Acquire | LibraryAction::Save
             ) || matches!(input.action, LibraryAction::Release) && input.confirm_last;
             let target = (!global).then(|| identity.account.clone());
-            let asset = (!global).then(|| id.clone());
+            let asset =
+                (!global && !matches!(input.action, LibraryAction::Move)).then(|| id.clone());
             let _ = app.changes.send(super::Change::Media(target, asset));
         }
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {

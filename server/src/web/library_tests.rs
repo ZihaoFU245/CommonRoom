@@ -53,6 +53,102 @@ async fn action(app: &App, user: &str, id: &str, action: &str, confirm: bool) ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn library_http_batches_sections_and_syncs_private_order_without_storage_work() {
+    let mut app = setup(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    let (storage, server) = storage_server().await;
+    app.media = Some(storage);
+    let a = upload(&app, "alice").await;
+    let b = upload(&app, "alice").await;
+    let c = upload(&app, "alice").await;
+    // Reordering and list reads work even with object storage disconnected.
+    app.media = None;
+    let mut changes = app.changes.subscribe();
+    let (status, result) = request(
+        &app,
+        "alice",
+        "POST",
+        &format!("/api/library/{c}"),
+        json!({"action":"move","before_id":a}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let account = app
+        .engine_api()
+        .unwrap()
+        .active_account_id("alice")
+        .unwrap()
+        .to_owned();
+    assert!(
+        matches!(changes.recv().await.unwrap(), super::super::Change::Media(Some(target), None) if target == account)
+    );
+    let (status, batch) = request(
+        &app,
+        "alice",
+        "GET",
+        "/api/library?sections=true",
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{batch}");
+    let ordered: Vec<_> = batch["library"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["media_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ordered, vec![c.as_str(), a.as_str(), b.as_str()]);
+    assert!(
+        batch["recent"]["items"].as_array().unwrap().is_empty(),
+        "manual order does not affect recents"
+    );
+    for payload in [
+        json!({"action":"move","before_id":a,"after_id":b}),
+        json!({"action":"move","before_id":"invalid"}),
+    ] {
+        assert_eq!(
+            request(&app, "alice", "POST", &format!("/api/library/{c}"), payload)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "bob",
+            "POST",
+            &format!("/api/library/{c}"),
+            json!({"action":"move","before_id":a})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, other) = request(
+        &app,
+        "bob",
+        "GET",
+        "/api/library?sections=true",
+        json!(null),
+    )
+    .await;
+    assert!(other["library"]["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        request(
+            &app,
+            "alice",
+            "GET",
+            "/api/library?sections=true&after=1",
+            json!(null)
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn library_http_enforces_access_reuses_bytes_and_preserves_unavailable_messages() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("library.sqlite");

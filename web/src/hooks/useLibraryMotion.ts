@@ -1,5 +1,8 @@
 import { useLayoutEffect, useRef } from "preact/hooks";
-import { controlMotion } from "../features/preferences/motion.ts";
+import {
+  controlMotion,
+  reorderMotion,
+} from "../features/preferences/motion.ts";
 import { messageMotion } from "../features/conversation/timelineMotion.ts";
 
 interface Bounds {
@@ -130,6 +133,9 @@ export function useLibraryMotion(mode: string) {
         const opacity = oldPaint?.opacity ?? (previous.size ? 0 : 1);
         const tile: Tile = { bounds, from: old ?? bounds, opacity };
         next.set(element, tile);
+        // The floating drag preview owns the source's movement. Keep its
+        // placeholder at the actual layout destination for a precise drop.
+        if (element.hasAttribute("data-library-drag-source")) continue;
         if (reduced.matches || !bounds.width || !bounds.height) continue;
         if (old) {
           if (sameBounds(old, bounds) && opacity === 1) continue;
@@ -142,7 +148,11 @@ export function useLibraryMotion(mode: string) {
               },
               { opacity: 1, transformOrigin: "top left", transform: "none" },
             ],
-            removing ? messageMotion : controlMotion,
+            removing
+              ? messageMotion
+              : root.closest('[data-reordering="true"]')
+                ? reorderMotion
+                : controlMotion,
           );
         } else if (previous.size) {
           tile.motion = element.animate(
