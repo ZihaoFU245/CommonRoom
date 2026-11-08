@@ -471,6 +471,12 @@ button:focus-visible {
   top: 16px;
   left: 14px;
 }
+.chat-message > .user-avatar,
+.chat-message > .avatar-trigger,
+.chat-message > .avatar-trigger > .user-avatar {
+  width: 32px;
+  height: 32px;
+}
 .message-content {
   min-width: 0;
 }
