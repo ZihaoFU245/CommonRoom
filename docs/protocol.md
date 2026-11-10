@@ -534,6 +534,9 @@ room policy management do not override the su-only mutation rule.
 value. Values `0` and `-1` mean disabled and unrestricted; positive values are
 minimum message ages in seconds. Browser output formats positive ages as durations
 and labels room values as `set here` or `inherited`; global values have no hints.
+Global account metadata includes read-only `media.usage`, a decimal byte string
+with source `computed`, using the same accounting as upload quota enforcement.
+It requires global/account metadata read authority and never appears in room branches.
 Source detail stays in the wire result. Cleanup accepts `-1` as an explicit all-history
 request. Su/authorized sudo bypass command/action and cleanup-limit checks;
 ordinary execution and previews use the same per-target metadata resolution.

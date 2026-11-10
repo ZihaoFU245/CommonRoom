@@ -117,6 +117,16 @@ pub(crate) struct LibraryPage {
     pub(crate) uploads_paused: bool,
 }
 impl super::Handle {
+    pub(crate) async fn media_usage(&self, account: &str) -> Result<u64> {
+        let mut session = self.acquire_read().await?;
+        let result = match session.backend.get_mut() {
+            Backend::Sqlite(db) => super::sqlite::library::usage(db, account).await,
+            Backend::Postgres(db) => super::postgres::library::usage(db, account).await,
+            Backend::Closed => Err(Error::RestartRequired),
+        };
+        session.checked(result)
+    }
+
     pub(crate) async fn library_source(
         &self,
         id: &str,

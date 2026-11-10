@@ -356,3 +356,56 @@ fn every_explicit_room_scope_requires_hash_and_omitted_scopes_still_work() {
         );
     }
 }
+
+#[test]
+fn media_usage_is_read_only_global_and_requires_account_inspection() {
+    let mut e = crate::engine::tests::engine();
+    let get = |e: &Engine, actor, command| -> serde_json::Value {
+        serde_json::from_str(
+            &e.read_command(actor, Some("lobby"), command)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let before = e.data.clone();
+    let writes = e.store.db.lock().unwrap().total_changes();
+    for actor in [None, Some("alice"), Some("bob")] {
+        let value = get(&e, actor, "/user get bob media.usage");
+        assert_eq!(value["bob"]["@global"]["media.usage"]["value"], "0");
+        assert_eq!(value["bob"]["@global"]["media.usage"]["source"], "computed");
+        assert!(value["bob"]["#lobby"].get("media.usage").is_none());
+        for command in [
+            "/user set bob media.usage 123 @global",
+            "/user set bob media.usage @unset #lobby",
+            "/user set @all media.usage 123",
+            "/user reset bob media.usage @global",
+            "/user reset @all media.usage #lobby",
+        ] {
+            assert!(
+                e.execute(actor, Some("lobby"), command)
+                    .unwrap_err()
+                    .contains("read-only"),
+                "{command}"
+            );
+        }
+    }
+    assert!(e.data == before);
+    assert_eq!(e.store.db.lock().unwrap().total_changes(), writes);
+    assert!(
+        e.read_command(Some("eve"), None, "/user get bob media.usage @global")
+            .unwrap()
+            .is_err()
+    );
+    e.execute(None, None, "/grant eve #lobby x:policy.change")
+        .unwrap();
+    let restricted = get(&e, Some("eve"), "/user get bob #lobby");
+    assert!(restricted["bob"].get("@global").is_none());
+    assert!(restricted["bob"]["#lobby"].get("media.usage").is_none());
+    let bulk = get(&e, Some("alice"), "/user get @all media.usage #lobby");
+    for name in ["alice", "bob", "eve"] {
+        assert_eq!(bulk[name]["@global"]["media.usage"]["value"], "0");
+    }
+    let all = get(&e, Some("alice"), "/user get bob @all");
+    assert_eq!(all["bob"]["@global"]["media.usage"]["value"], "0");
+}

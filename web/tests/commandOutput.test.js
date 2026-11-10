@@ -379,3 +379,20 @@ test("bot credential metadata is formatted without exposing Markdown from fields
     ),
   );
 });
+
+test("media usage renders computed bytes with the other media units", () => {
+  const nodes = output(
+    "/user get bob media.usage",
+    JSON.stringify({
+      bob: {
+        "@global": {
+          "media.usage": { value: "157286400", source: "computed" },
+        },
+      },
+    }),
+  );
+  assert.equal(
+    text(nodesWithTag(nodes, "li")[0].children),
+    "media.usage: 150m",
+  );
+});

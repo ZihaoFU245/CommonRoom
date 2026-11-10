@@ -377,3 +377,15 @@ test("credential completion displays bot labels and inserts only credential IDs"
   assert.deepEqual(values("/bot token new helper "), []);
   assert.deepEqual(values("/bot token ls helper "), []);
 });
+
+test("media usage completes only for metadata inspection", () => {
+  assert.ok(
+    values("/user get bob media.u").includes("/user get bob media.usage "),
+  );
+  for (const operation of ["set", "reset"])
+    assert.ok(
+      !values(`/user ${operation} bob media.u`).includes(
+        `/user ${operation} bob media.usage `,
+      ),
+    );
+});

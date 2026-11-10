@@ -9,6 +9,35 @@ struct MetadataEntry {
     source: String,
 }
 
+type MetadataOutput = BTreeMap<String, BTreeMap<String, BTreeMap<String, MetadataEntry>>>;
+
+pub(crate) struct MetadataQuery {
+    database: database::Handle,
+    output: MetadataOutput,
+    usage_accounts: BTreeMap<String, String>,
+}
+impl MetadataQuery {
+    pub(super) async fn finish_async(mut self) -> Result<String, EngineError> {
+        for (name, account) in self.usage_accounts {
+            let usage = self.database.media_usage(&account).await?;
+            if let Some(global) = self
+                .output
+                .get_mut(&name)
+                .and_then(|sections| sections.get_mut("@global"))
+            {
+                global.insert(
+                    "media.usage".into(),
+                    MetadataEntry {
+                        value: usage.to_string(),
+                        source: "computed".into(),
+                    },
+                );
+            }
+        }
+        serde_json::to_string_pretty(&self.output).map_err(EngineError::unavailable)
+    }
+}
+
 pub(super) struct AccountMetadataPlan {
     before: MetadataChange,
     accounts: BTreeMap<String, Account>,
@@ -174,38 +203,40 @@ impl Engine {
     pub(super) fn query_objects(
         &self,
         context: &dispatch::CommandContext<'_>,
-    ) -> Result<String, EngineError> {
+    ) -> Result<CommandRead, EngineError> {
         let parts = context.parts;
         if parts == ["/room", "ls"] {
-            return Ok(self
-                .data
-                .rooms
-                .iter()
-                .filter(|(_, r)| {
-                    self.allows(context.actor, &Scope::Room(r.id.clone()), Action::Discover)
-                        || self.allows(context.actor, &Scope::Room(r.id.clone()), Action::Read)
-                })
-                .map(|(n, _)| format!("#{n}"))
-                .collect::<Vec<_>>()
-                .join("\n"));
+            return Ok(CommandRead::Text(
+                self.data
+                    .rooms
+                    .iter()
+                    .filter(|(_, r)| {
+                        self.allows(context.actor, &Scope::Room(r.id.clone()), Action::Discover)
+                            || self.allows(context.actor, &Scope::Room(r.id.clone()), Action::Read)
+                    })
+                    .map(|(n, _)| format!("#{n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
         }
         match parts {
             ["/user", "ls", rest @ ..] if rest.len() <= 1 => {
                 let scope =
                     self.object_scope(context.actor, context.view, rest.first().copied())?;
                 self.require_target_command(context.actor, &scope, "/user")?;
-                Ok(self
-                    .scope_users(context.actor, &scope)?
-                    .iter()
-                    .map(|name| {
-                        format!(
-                            "{name}({})",
-                            self.metadata_value(name, &scope, "displayname")
-                                .unwrap_or(name)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"))
+                Ok(CommandRead::Text(
+                    self.scope_users(context.actor, &scope)?
+                        .iter()
+                        .map(|name| {
+                            format!(
+                                "{name}({})",
+                                self.metadata_value(name, &scope, "displayname")
+                                    .unwrap_or(name)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ))
             }
             ["/user", "get", who, rest @ ..] if rest.len() <= 2 => {
                 let (key, scope) = match rest {
@@ -221,6 +252,7 @@ impl Engine {
                 };
                 let scope = self.object_scope(context.actor, context.view, scope)?;
                 let mut output = BTreeMap::new();
+                let mut usage_accounts = BTreeMap::new();
                 for name in self.metadata_targets(context.actor, who, &scope)? {
                     self.metadata_access(context.actor, &name, &scope, false)?;
                     // Room authority must not reveal arbitrary global account metadata.
@@ -229,6 +261,9 @@ impl Engine {
                         .is_ok();
                     let mut sections = BTreeMap::new();
                     if global_read {
+                        if key.is_none_or(|key| key == "media.usage") {
+                            usage_accounts.insert(name.clone(), self.data.users[&name].id.clone());
+                        }
                         sections.insert(
                             "@global".to_owned(),
                             self.metadata_section(&name, &Scope::Server, key, true)?,
@@ -242,7 +277,11 @@ impl Engine {
                     }
                     output.insert(name, sections);
                 }
-                serde_json::to_string_pretty(&output).map_err(EngineError::unavailable)
+                Ok(CommandRead::Metadata(MetadataQuery {
+                    database: self.store.db.clone(),
+                    output,
+                    usage_accounts,
+                }))
             }
             _ => Err("Usage: /user ls [scope] | /user get who [key] [scope] | /room ls".into()),
         }
@@ -308,7 +347,7 @@ impl Engine {
         let mut values = BTreeMap::new();
         if global_read && let Some(root) = metadata.get("@global") {
             for (key, value) in root {
-                if scope != &Scope::Server && key == "media.user_quota" {
+                if key == "media.usage" || (scope != &Scope::Server && key == "media.user_quota") {
                     continue;
                 }
                 values.insert(
@@ -324,7 +363,7 @@ impl Engine {
             && let Some(branch) = metadata.get(Self::metadata_scope_key(scope)?)
         {
             for (key, value) in branch {
-                if key == "media.user_quota" {
+                if matches!(key.as_str(), "media.user_quota" | "media.usage") {
                     continue;
                 }
                 values.insert(
@@ -425,6 +464,9 @@ impl Engine {
         &self,
         context: &dispatch::CommandContext<'_>,
     ) -> Result<Option<AccountMetadataPlan>, EngineError> {
+        if let ["/user", "set" | "reset", _, "media.usage", ..] = context.parts {
+            return Err("media.usage is read-only.".into());
+        }
         if let ["/user", "set" | "reset", _, key, ..] = context.parts
             && key.starts_with(super::preferences::PREFIX)
         {

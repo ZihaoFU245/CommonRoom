@@ -164,6 +164,7 @@ const USER: &str = r#"
 - `media.max_size`: size per file; accepts `k`, `m`, `g` units.
 - `media.max_age`: duration, or `-1` for permanent.
 - `media.user_quota`: root-only account-wide quota; accepts `k`, `m`, `g` units.
+- `media.usage`: read-only account-wide charged bytes, computed live; inspect with `/user get bob media.usage @global`. Requires account metadata read authority; set/unset/reset are rejected.
 - `/user set bob media.user_quota 1g` targets account-wide metadata when scope is omitted.
 - Explicit room scopes cannot set account-wide quota.
 - Size and quota cannot exceed server ceilings.

@@ -80,7 +80,7 @@ impl Engine {
                 self.resolve_cleanup_plan(&context)
                     .map(CommandRead::Preview)
             } else if matches!(command, "/user" | "/room") {
-                self.query_objects(&context).map(CommandRead::Text)
+                self.query_objects(&context)
             } else if parts[0] == "/permissions" {
                 self.apply_permissions(&context).map(CommandRead::Text)
             } else if parts[0] == "/history" {
@@ -314,7 +314,10 @@ impl Engine {
             view,
         };
         match parts[0] {
-            "/user" | "/room" => self.query_objects(&context),
+            "/user" | "/room" => {
+                self.query_objects(&context)?;
+                Err("Expected an account or room mutation.".into())
+            }
             "/enable" | "/disable" => self.apply_accounts(&context),
             "/grant" | "/revoke" | "/permissions" => self.apply_policy(&context),
             "/rm" if subcommand == Some("group") => self.apply_policy(&context),

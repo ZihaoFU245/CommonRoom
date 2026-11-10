@@ -1242,3 +1242,89 @@ fn postgres_library_save_acquires_only_dangling_assets_and_hides_expired_entries
         .unwrap();
     collection_ownership_policy(engine);
 }
+
+fn metadata_media_usage_contract(mut engine: Engine) {
+    let inspect = |engine: &Engine, user: &str| -> u64 {
+        let command = format!("/user get {user} media.usage @global");
+        let result: serde_json::Value = serde_json::from_str(
+            &engine
+                .read_command(Some("alice"), None, &command)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        result[user]["@global"]["media.usage"]["value"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let media = upload(&engine, "alice");
+    assert_eq!(inspect(&engine, "alice"), 8);
+    assert_eq!(inspect(&engine, "bob"), 0);
+    let room = engine.data.rooms["lobby"].id.clone();
+    engine
+        .execute(
+            Some("alice"),
+            Some("lobby"),
+            &format!("![sticker](/api/media/{}/file)", media.id),
+        )
+        .unwrap();
+    change(
+        &engine,
+        "bob",
+        &media,
+        LibraryAction::Acquire,
+        Some(&room),
+        false,
+    )
+    .unwrap();
+    assert_eq!(inspect(&engine, "bob"), 8);
+    let pending = engine
+        .prepare_media_allocation("bob", &room, "pending.png", 5, BTreeMap::new())
+        .unwrap();
+    run(pending.save()).unwrap();
+    assert_eq!(inspect(&engine, "bob"), 13);
+    // A lowered quota does not cap the reported usage or delete existing media.
+    engine
+        .execute(None, None, "/user set bob media.user_quota 7")
+        .unwrap();
+    assert_eq!(inspect(&engine, "bob"), 13);
+    let retiring = pending.media;
+    run(engine
+        .media_store()
+        .abandon(&retiring.id, &retiring.uploader))
+    .unwrap();
+    assert_eq!(
+        inspect(&engine, "bob"),
+        13,
+        "attachment bytes stay charged during cleanup"
+    );
+    run(engine.media_store().cleanup_done(&[retiring], &[])).unwrap();
+    assert_eq!(inspect(&engine, "bob"), 8);
+    change(&engine, "bob", &media, LibraryAction::Release, None, false).unwrap();
+    assert_eq!(inspect(&engine, "bob"), 0);
+    assert_eq!(inspect(&engine, "alice"), 8);
+}
+
+#[test]
+fn library_metadata_media_usage_tracks_live_quota_accounting() {
+    metadata_media_usage_contract(engine());
+}
+
+#[test]
+#[ignore = "requires CHAT_TEST_POSTGRES_URL; run PostgreSQL tests with --test-threads=1"]
+fn postgres_library_metadata_media_usage_tracks_live_quota_accounting() {
+    let fixture = database::tests::PostgresFixture::new();
+    let mut engine = Engine::open_postgres(&fixture.url).unwrap();
+    for (name, admin) in [("alice", true), ("bob", false)] {
+        engine.provision(name, "hash".into(), admin, false).unwrap();
+    }
+    engine
+        .execute(Some("alice"), None, "/new room lobby")
+        .unwrap();
+    engine
+        .execute(Some("alice"), None, "/add bob #lobby")
+        .unwrap();
+    metadata_media_usage_contract(engine);
+}

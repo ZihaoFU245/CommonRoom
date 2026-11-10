@@ -176,7 +176,10 @@ pub(super) async fn apply(db: &mut PgConnection, request: &LibraryWrite<'_>) -> 
     Ok(changed)
 }
 
-pub(super) async fn usage(db: &mut PgConnection, account: &str) -> Result<u64> {
+pub(in crate::engine::database) async fn usage(
+    db: &mut PgConnection,
+    account: &str,
+) -> Result<u64> {
     let bytes: i64 = sqlx::query_scalar(
         r#"
             SELECT COALESCE((SELECT sum(size)::bigint

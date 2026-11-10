@@ -319,7 +319,12 @@ export function suggestions(
     if (position === 3 && operation === "reset" && parts[2] !== "@all")
       values.unshift("password");
     if (position === 3 && operation === "get")
-      values = [...values, "@global", ...rooms.map((r) => `#${r}`)];
+      values = [
+        ...values,
+        "media.usage",
+        "@global",
+        ...rooms.map((r) => `#${r}`),
+      ];
     if (
       (position === 5 && operation === "set") ||
       (position === 4 &&

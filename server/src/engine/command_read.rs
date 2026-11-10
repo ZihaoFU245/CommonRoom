@@ -4,13 +4,14 @@ use authorization::Scope;
 
 pub(crate) enum CommandRead {
     Text(String),
+    Metadata(objects::MetadataQuery),
     History(HistoryCommand),
     Preview(cleanup::CleanupPlan),
 }
 impl CommandRead {
     pub(crate) fn ids(&self) -> BTreeSet<String> {
         match self {
-            Self::Text(_) => BTreeSet::new(),
+            Self::Text(_) | Self::Metadata(_) => BTreeSet::new(),
             Self::History(plan) => [plan.id.clone()].into(),
             Self::Preview(plan) => plan.ids().into_iter().collect(),
         }
@@ -18,6 +19,7 @@ impl CommandRead {
     pub(crate) async fn finish_async(self) -> Result<String, EngineError> {
         match self {
             Self::Text(text) => Ok(text),
+            Self::Metadata(plan) => plan.finish_async().await,
             Self::History(plan) => plan.finish_async().await,
             Self::Preview(mut plan) => {
                 plan.count().await?;

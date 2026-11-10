@@ -50,8 +50,14 @@ account/global read authority, an `@global` section. Global entries show values 
 removes the override and restores inheritance. Custom keys inherit too, but global
 custom values appear only with permission to read that account's global metadata.
 Room managers without that permission see local custom values and effective media/cleanup
-limits. `media.user_quota` appears only in the global section and is never a room
-override. `/user get @all #support` applies the same view to every member.
+limits. `media.user_quota` and read-only `media.usage` appear only in the global
+section and are never room overrides. `/user get bob media.usage @global` returns
+current charged bytes using upload quota accounting, including pending uploads,
+attachments/avatars awaiting storage cleanup, and library ownership charges.
+The value is computed live with source `computed`, never stored as metadata, and
+is included in unfiltered reads. Global admins and other callers with account
+metadata read authority can inspect it; room-only managers cannot. Set, unset and
+reset attempts are rejected; whole-scope resets do not change usage. `/user get @all #support` applies the same view to every member.
 Metadata never grants permissions. The public global avatar link, `displayname`, and the `color` key
 (global value plus room overrides) are public profile projections; color data is sent only to browsers that opt in. `color` accepts one
 of 16 palette names (`red` … `pink`) at `@global` or a room. Accounts change their own color

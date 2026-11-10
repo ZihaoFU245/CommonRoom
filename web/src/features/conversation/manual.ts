@@ -35,7 +35,7 @@ function metadataValue(key: string, value: unknown): string {
   if (key === "history.clean_min_age" && raw === "-1")
     return "-1 (unrestricted)";
   if (
-    ["media.max_size", "media.user_quota"].includes(key) &&
+    ["media.max_size", "media.user_quota", "media.usage"].includes(key) &&
     /^\d+$/u.test(raw)
   ) {
     const bytes = BigInt(raw);

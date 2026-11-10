@@ -490,6 +490,9 @@ Account metadata uses a two-level override tree implemented with ordered maps:
 prefers a room entry, then its global entry, then a known media configuration
 default. Cleanup limits instead fall back to live admin/owner/user role defaults.
 Only explicit values are stored. `media.user_quota` is root-only.
+`media.usage` is a read-only root projection with source `computed`. Owned command
+plans capture authorized account IDs, then query native quota accounting outside
+the engine guard; normal command delivery revalidation protects the result.
 `engine/display_names.rs` owns optional global/room display names, self-service
 validation and the public name projections. Usernames remain protocol identities;
 browser display-name contexts render labels with username tooltips. Paged and live

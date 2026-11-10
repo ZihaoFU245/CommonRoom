@@ -34,7 +34,12 @@ server ceilings. `/grant` clears the room upload restriction; `/revoke` persists
 it across reconnects and renames. Only su may set or remove metadata limits; admins and room managers have
 inspection access only. `/user get bob #files` separates the global root from the room branch. Each
 value shows whether it is set here, inherited from `@global`, or a server default.
-Account-wide `media.user_quota` appears only in the global section.
+Account-wide `media.user_quota` and read-only `media.usage` appear only in the
+global section. Admins can inspect current charged bytes with
+`/user get bob media.usage @global` or alongside the quota in `/user get bob @global`.
+Usage is computed from the same accounting as upload enforcement; setting,
+unsetting or resetting it is rejected. Room-only metadata inspection does not
+expose account-wide usage.
 
 Allocation persists a reservation before returning a five-minute presigned PUT
 URL, signing the exact declared size and `application/octet-stream`. Clients send
