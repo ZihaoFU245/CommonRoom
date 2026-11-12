@@ -362,6 +362,64 @@ fn postgres_sqlite_migration_preserves_every_table_and_retries() {
             .unwrap(),
         9_000_000_001
     );
+    let release = LibraryWrite {
+        account: pg.active_account_id("alice").unwrap(),
+        id: &library.id,
+        source: None,
+        before: None,
+        after: None,
+        action: LibraryAction::ReleaseAndRemove,
+        confirm_last: false,
+        quota: pg.library_quota("alice"),
+        config: &crate::config::MediaConfig::default(),
+    };
+    let store = pg.media_store();
+    let (saved, recent) = runtime::block_on(store.library_pages(
+        &LibraryList {
+            account: release.account,
+            owned: false,
+            recent: false,
+            after: "",
+            limit: 1,
+            quota: release.quota,
+            conversations: &[],
+        },
+        true,
+    ))
+    .unwrap()
+    .unwrap();
+    let recent = recent.unwrap();
+    assert_eq!(saved.items[0].media_id, library.id);
+    assert_eq!(recent.items[0].media_id, library.id);
+    assert_eq!(saved.usage, recent.usage);
+    assert!(
+        runtime::block_on(store.library_action(&release))
+            .unwrap()
+            .unwrap()
+    );
+    let release = LibraryWrite {
+        account: &bob,
+        ..release
+    };
+    assert!(matches!(
+        runtime::block_on(store.library_action(&release)).unwrap(),
+        Err(crate::engine::EngineError::Conflict(_))
+    ));
+    let release = LibraryWrite {
+        confirm_last: true,
+        ..release
+    };
+    assert!(
+        runtime::block_on(store.library_action(&release))
+            .unwrap()
+            .unwrap()
+    );
+    assert!(
+        !runtime::block_on(store.library_action(&release))
+            .unwrap()
+            .unwrap()
+    );
+    drop(store);
     assert!(pg.data.next_sequence > expected_data.next_sequence);
     pg.execute(
         Some("alice"),

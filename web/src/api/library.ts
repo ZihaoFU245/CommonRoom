@@ -18,7 +18,8 @@ export interface LibraryPage {
   oldest_cleanup: number | null;
   uploads_paused: boolean;
 }
-export type LibraryAction = "save" | "acquire" | "remove" | "release";
+export type LibraryAction =
+  "save" | "acquire" | "remove" | "release" | "release_and_remove";
 export type LibraryView = "library" | "owned" | "recent";
 function count(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

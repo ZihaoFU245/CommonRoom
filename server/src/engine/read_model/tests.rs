@@ -76,6 +76,39 @@ fn messages_sessions_presence_and_reads_reuse_metadata_and_refresh_exact_content
     assert_eq!(builds(&engine), 4);
 }
 #[test]
+fn browser_snapshots_skip_history_reads_for_empty_conversations() {
+    let mut engine = super::super::tests::engine();
+    engine.execute(None, None, "/room new empty").unwrap();
+    engine.execute(None, None, "/room add bob #empty").unwrap();
+    engine
+        .execute(Some("alice"), Some("lobby"), "latest message")
+        .unwrap();
+
+    let reads = || {
+        let stats = engine.history_store().stats().unwrap();
+        stats["hits"].as_u64().unwrap() + stats["misses"].as_u64().unwrap()
+    };
+    let before = reads();
+    let (snapshot, complete) = engine.snapshot_plan("bob").unwrap().finish().unwrap();
+    assert!(complete);
+    assert_eq!(reads() - before, 1);
+    assert_eq!(snapshot.unread["empty"].through, 0);
+    assert_eq!(snapshot.unread["lobby"].count, 1);
+    let empty = snapshot
+        .rooms
+        .iter()
+        .find(|room| room.name == "empty")
+        .unwrap();
+    assert!(empty.messages.is_empty());
+    let lobby = snapshot
+        .rooms
+        .iter()
+        .find(|room| room.name == "lobby")
+        .unwrap();
+    assert_eq!(lobby.messages[0].text, "latest message");
+}
+
+#[test]
 fn policy_renames_profiles_private_creation_and_recovery_invalidate_templates() {
     let mut engine = super::super::tests::engine();
     projections(&engine, "bob");
@@ -202,6 +235,48 @@ fn profile_edits_reuse_authorized_templates_and_match_cold_snapshots() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn browser_and_conversation_plans_share_display_names_until_metadata_changes() {
+    let mut engine = super::super::tests::engine();
+    engine.set_avatar_hosts(["example.com".into()].into());
+    let original = engine.snapshot_plan("bob").unwrap();
+    let lobby = engine.data.rooms["lobby"].id.clone();
+    let conversation = engine.conversation_plan("alice", &lobby).unwrap().unwrap();
+    let other_viewer = engine.snapshot_plan("alice").unwrap();
+    assert!(Arc::ptr_eq(
+        &original.display_names,
+        &conversation.display_names
+    ));
+    assert!(Arc::ptr_eq(
+        &original.display_names,
+        &other_viewer.display_names
+    ));
+    engine
+        .set_avatar("alice", Some("https://example.com/avatar".into()), false)
+        .unwrap();
+    let warm = engine.snapshot_plan("bob").unwrap();
+    assert!(Arc::ptr_eq(&original.display_names, &warm.display_names));
+    assert_eq!(
+        original.snapshot.display_name_version,
+        warm.snapshot.display_name_version
+    );
+
+    engine
+        .execute(None, None, "/user set alice displayname Ally @global")
+        .unwrap();
+    let updated = engine.snapshot_plan("bob").unwrap().finish().unwrap().0;
+    assert_ne!(
+        updated.display_name_version,
+        warm.snapshot.display_name_version
+    );
+    assert_eq!(updated.display_names["alice"], "Ally");
+    let original_frame = conversation.finish().unwrap();
+    assert_eq!(
+        original_frame["message_display_names"]["version"],
+        warm.snapshot.display_name_version
     );
 }
 

@@ -2,10 +2,34 @@
 use super::super::{
     Error, Result,
     history::unsigned,
-    library::{LibraryAction, LibraryPage, LibraryWrite},
+    library::{LibraryAction, LibraryList, LibraryPageItems, LibraryWrite},
     message::number,
 };
-use sqlx::{Connection as _, SqliteConnection};
+use sqlx::SqliteConnection;
+
+async fn is_owned(db: &mut SqliteConnection, request: &LibraryWrite<'_>) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM library_owners WHERE account_id=?1 AND media_id=?2)",
+    )
+    .bind(request.account)
+    .bind(request.id)
+    .fetch_one(db)
+    .await?)
+}
+
+async fn remove_entries(db: &mut SqliteConnection, request: &LibraryWrite<'_>) -> Result<u64> {
+    let mut changed = 0;
+    for table in ["library_entries", "library_recents"] {
+        let query = format!("DELETE FROM {table} WHERE account_id=?1 AND media_id=?2");
+        changed += sqlx::query(&query)
+            .bind(request.account)
+            .bind(request.id)
+            .execute(&mut *db)
+            .await?
+            .rows_affected();
+    }
+    Ok(changed)
+}
 
 pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>) -> Result<u64> {
     if matches!(request.action, LibraryAction::Move) {
@@ -17,37 +41,16 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
     if media.conversation != "@library" {
         return Err(Error::MissingMedia);
     }
-    let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM library_owners WHERE account_id=?1 AND media_id=?2)",
-    )
-    .bind(request.account)
-    .bind(request.id)
-    .fetch_one(&mut *db)
-    .await?;
-    let saved: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE account_id=?1 AND media_id=?2)",
-    )
-    .bind(request.account)
-    .bind(request.id)
-    .fetch_one(&mut *db)
-    .await?;
     match request.action {
-        LibraryAction::Remove => {
-            let mut changed = 0;
-            for table in ["library_entries", "library_recents"] {
-                let query = format!("DELETE FROM {table} WHERE account_id=?1 AND media_id=?2");
-                changed += sqlx::query(&query)
-                    .bind(request.account)
-                    .bind(request.id)
-                    .execute(&mut *db)
-                    .await?
-                    .rows_affected();
-            }
-            return Ok(changed);
-        }
-        LibraryAction::Release => {
-            if !owned {
-                return Ok(0);
+        LibraryAction::Remove => return remove_entries(db, request).await,
+        LibraryAction::Release | LibraryAction::ReleaseAndRemove => {
+            let remove = matches!(request.action, LibraryAction::ReleaseAndRemove);
+            if !is_owned(db, request).await? {
+                return if remove {
+                    remove_entries(db, request).await
+                } else {
+                    Ok(0)
+                };
             }
             let others: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM library_owners WHERE media_id=?1 AND account_id!=?2)",
@@ -74,9 +77,12 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
                 )
                 .bind(request.id)
                 .bind(number(crate::engine::media::library_release_deadline(crate::engine::media::timestamp()))?)
-                .execute(db)
+                .execute(&mut *db)
                 .await?
                 .rows_affected();
+            }
+            if remove {
+                changed += remove_entries(db, request).await?;
             }
             return Ok(changed);
         }
@@ -97,6 +103,14 @@ pub(super) async fn apply(db: &mut SqliteConnection, request: &LibraryWrite<'_>)
     if !media.available_at(crate::engine::media::timestamp()) {
         return Err(Error::MissingMedia);
     }
+    let owned = is_owned(db, request).await?;
+    let saved: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE account_id=?1 AND media_id=?2)",
+    )
+    .bind(request.account)
+    .bind(request.id)
+    .fetch_one(&mut *db)
+    .await?;
     let referenced: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM message_media WHERE media_id=?1 AND conversation=?2)",
     )
@@ -190,44 +204,20 @@ pub(in crate::engine::database) async fn usage(
     unsigned(bytes)
 }
 
-pub(in crate::engine::database) async fn page(
+pub(in crate::engine::database) async fn page_items(
     db: &mut SqliteConnection,
-    request: &super::super::library::LibraryList<'_>,
+    request: &LibraryList<'_>,
     config: &crate::config::MediaConfig,
-) -> Result<LibraryPage> {
-    let super::super::library::LibraryList {
+    now: i64,
+) -> Result<LibraryPageItems> {
+    let LibraryList {
         account,
         owned,
         recent,
-        after,
-        limit,
-        quota,
         conversations,
+        ..
     } = *request;
-    if !(1..=100).contains(&limit) {
-        return Err(Error::InvalidRequest("Library page size must be 1..100."));
-    }
-    let limit = if recent {
-        config.library_recent_limit
-    } else {
-        limit
-    };
-    let after = if recent {
-        String::new()
-    } else if owned {
-        after.to_owned()
-    } else if after.is_empty() {
-        "0".to_owned()
-    } else {
-        let position = after
-            .parse::<i64>()
-            .ok()
-            .filter(|position| *position >= 0)
-            .ok_or(Error::InvalidRequest("Invalid collection cursor."))?;
-        position.to_string()
-    };
-    let mut tx = db.begin().await?;
-    let db = &mut *tx;
+    let (limit, after) = request.page_bounds(config)?;
     let selection = if recent {
         "library_recents"
     } else if owned {
@@ -281,46 +271,15 @@ pub(in crate::engine::database) async fn page(
             serde_json::to_string(conversations)
                 .map_err(|_| Error::Conversion("Invalid library scopes"))?,
         )
-        .bind(number(crate::engine::media::timestamp())?)
-        .fetch_all(&mut *db)
+        .bind(now)
+        .fetch_all(db)
         .await?;
-    let mut items = Vec::new();
-    let mut cursors = Vec::new();
-    for row in rows {
-        let cursor = row.cursor.clone();
-        let item = row.into_item()?;
-        cursors.push(cursor);
-        items.push(item);
-    }
-    let page_size =
-        usize::try_from(limit).map_err(|_| Error::Conversion("Invalid library page size"))?;
-    let more = items.len() > page_size;
-    items.truncate(page_size);
-    let next_cursor = if !recent && more {
-        cursors.get(page_size - 1).cloned()
-    } else {
-        None
-    };
-    let usage = usage(db, account).await?;
-    let (bytes, objects, oldest) = backlog(db).await?;
-    let cleanup_bytes = unsigned(bytes)?;
-    let cleanup_objects = unsigned(objects)?;
-    let result = LibraryPage {
-        items,
-        next_cursor,
-        usage,
-        quota,
-        cleanup_bytes,
-        cleanup_objects,
-        oldest_cleanup: oldest.map(unsigned).transpose()?,
-        uploads_paused: cleanup_bytes >= config.library_cleanup_bytes
-            || cleanup_objects >= config.library_cleanup_objects,
-    };
-    tx.commit().await?;
-    Ok(result)
+    LibraryPageItems::from_rows(rows, limit, recent)
 }
 
-pub(super) async fn backlog(db: &mut SqliteConnection) -> Result<(i64, i64, Option<i64>)> {
+pub(in crate::engine::database) async fn backlog(
+    db: &mut SqliteConnection,
+) -> Result<(i64, i64, Option<i64>)> {
     let result = sqlx::query_as(
         r#"
             SELECT bytes,objects,(SELECT COALESCE(unreferenced,created)

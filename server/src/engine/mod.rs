@@ -98,7 +98,7 @@ pub struct Engine {
     pub(crate) data: Data,
     pub revision: u64,
     color_revision: u64,
-    committed_colors: colors::ColorDirectory,
+    committed_colors: std::sync::Arc<colors::ColorDirectory>,
     recovery_failed: bool,
     recovery_attempted: bool,
     metadata_dirty: bool,

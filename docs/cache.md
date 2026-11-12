@@ -147,6 +147,9 @@ Profile-only changes preserve authority templates and patch their cached avatar
 values within the existing profile/byte budget. Serialized baselines still receive
 a new delivery epoch, and their final authorization checks remain mandatory.
 Policy, identity and membership changes invalidate authority templates normally.
+Browser snapshots, conversation updates, and history share one lazily built
+display-name directory and version. Metadata template invalidation also clears
+that directory. Profile-only avatar and color changes preserve it.
 See [Storage benchmarks](storage-benchmarks.md) for cache and engine-inspection
 measurement procedures and work-count assertions.
 

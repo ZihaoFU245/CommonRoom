@@ -75,21 +75,15 @@ pub(crate) async fn list(
             quota,
             conversations: &scopes,
         };
-        let page = if input.sections {
-            let library = store.library_page(&request).await?;
-            let recent = store
-                .library_page(&crate::engine::database::LibraryList {
-                    recent: true,
-                    ..request
-                })
-                .await?;
+        let (library, recent) = store.library_pages(&request, input.sections).await?;
+        let page = if let Some(recent) = recent {
             json!({"library": library, "recent": recent})
         } else {
-            json!(store.library_page(&request).await?)
+            json!(library)
         };
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
             media::verify_identity(&identity, engine)?;
-            Ok(Json(json!(page)))
+            Ok(Json(page))
         })
         .await
     })
@@ -171,7 +165,10 @@ pub(crate) async fn change(
             let global = matches!(
                 input.action,
                 LibraryAction::Delete | LibraryAction::Acquire | LibraryAction::Save
-            ) || matches!(input.action, LibraryAction::Release) && input.confirm_last;
+            ) || matches!(
+                input.action,
+                LibraryAction::Release | LibraryAction::ReleaseAndRemove
+            ) && input.confirm_last;
             let target = (!global).then(|| identity.account.clone());
             let asset =
                 (!global && !matches!(input.action, LibraryAction::Move)).then(|| id.clone());

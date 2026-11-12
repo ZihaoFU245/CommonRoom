@@ -90,6 +90,16 @@ async fn library_http_batches_sections_and_syncs_private_order_without_storage_w
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{batch}");
+    for field in [
+        "usage",
+        "quota",
+        "cleanup_bytes",
+        "cleanup_objects",
+        "oldest_cleanup",
+        "uploads_paused",
+    ] {
+        assert_eq!(batch["library"][field], batch["recent"][field], "{field}");
+    }
     let ordered: Vec<_> = batch["library"]["items"]
         .as_array()
         .unwrap()
@@ -318,15 +328,27 @@ async fn library_read_contract(mut app: App, db: crate::engine::database::Connec
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        action(&app, "bob", &id, "release", false).await,
+        action(&app, "bob", &id, "release_and_remove", false).await,
         StatusCode::CONFLICT
     );
+    let (_, after_conflict) =
+        request(&app, "bob", "GET", "/api/library?owned=true", json!(null)).await;
+    assert_eq!(after_conflict["usage"], 8);
+    assert_eq!(after_conflict["items"][0]["saved"], true);
     assert_eq!(
-        action(&app, "bob", &id, "release", true).await,
+        action(&app, "bob", &id, "release_and_remove", true).await,
         StatusCode::OK
     );
+    assert_eq!(
+        action(&app, "bob", &id, "release_and_remove", false).await,
+        StatusCode::OK
+    );
+    let (_, after_release) =
+        request(&app, "bob", "GET", "/api/library?owned=true", json!(null)).await;
+    assert_eq!(after_release["usage"], 0);
     let read = resolve(&app, "bob", &id).await;
     assert_eq!(read["status"], 200);
+    assert_eq!(read["info"]["saved"], false);
     assert_eq!(read["info"]["unavailable"], false);
     assert!(
         read.get("link").is_some(),

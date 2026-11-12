@@ -2,6 +2,7 @@ use super::security::{check_origin, check_read_origin, client_ip};
 use super::*;
 use crate::engine::{EngineError, valid_name, verify_password};
 use axum::{
+    body::Bytes,
     extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
@@ -375,7 +376,7 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
             })?;
         Ok((
             [(header::CONTENT_TYPE, "application/json")],
-            value.to_string(),
+            Bytes::from(value),
         )
             .into_response())
     })

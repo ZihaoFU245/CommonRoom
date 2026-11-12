@@ -91,7 +91,7 @@ impl Engine {
                 read_positions,
             },
         };
-        engine.committed_colors = engine.color_directory();
+        engine.committed_colors = std::sync::Arc::new(engine.color_directory());
         Ok(engine)
     }
 }

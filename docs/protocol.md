@@ -440,8 +440,10 @@ Ordinary expiring attachments cannot be converted through library actions.
   bounded list without a continuation cursor and grant no independent access.
 - `GET /api/library?sections=true` returns `{library, recent}`, each with the
   page shape below. This batches the initial Collections and Recent reads into
-  one authenticated request; it cannot be combined with `owned`, `recent` or
-  a nonempty `after`. Later collection pages use the ordinary list query.
+  one authenticated request. Both sections use the same database snapshot and
+  report the same usage and cleanup totals. The request cannot be combined with
+  `owned`, `recent` or a nonempty `after`. Later collection pages use the
+  ordinary list query.
 - Responses contain `items`, `next_cursor` (string or null), account `usage` and
   `quota` in bytes, plus deployment `cleanup_bytes`, `cleanup_objects`,
   `oldest_cleanup` (Unix seconds or null), and `uploads_paused`. Cleanup budgets
@@ -453,8 +455,9 @@ Ordinary expiring attachments cannot be converted through library actions.
 - `POST /api/library/{id}` accepts `{action,source_conversation?,confirm_last?,before_id?,after_id?}`.
   Actions are `save` (borrow if owned, acquire-and-save if ownerless), `acquire`,
   `remove` (hide saved and recent entries), `release` (one's own
-  ownership), and administrator-only `delete` (global removal). Save/acquire
-  require current saved/owned access or an authorized retained message. An
+  ownership), `release_and_remove` (release ownership and hide saved and recent
+  entries in one transaction), and administrator-only `delete` (global removal).
+  Save/acquire require current saved/owned access or an authorized retained message. An
   explicit source is reauthorized; if omitted, current readable retained
   references are checked. A media ID alone grants no access.
 - `move` changes only the caller's saved collection order. Supply `before_id`
@@ -465,9 +468,10 @@ Ordinary expiring attachments cannot be converted through library actions.
   and S3 objects are unchanged. Account-targeted media notifications invalidate
   cached lists in other tabs/devices. Unavailable or missing anchors return 404.
 - Success is `{ok:true}`. Final release without `confirm_last:true` returns 409
-  and preserves ownership. Invalid quota/count limits return 400, unavailable or
-  inaccessible assets return 404, and non-administrator global removal returns
-  403. Retry operations never duplicate an entry, charge or refund.
+  and leaves ownership and library entries intact. Invalid quota/count limits
+  return 400, unavailable or inaccessible assets return 404, and
+  non-administrator global removal returns 403. Retry operations never duplicate
+  an entry, charge or refund.
 
 Removing a saved entry preserves ownership; releasing ownership preserves an
 existing saved entry. Every owner pays the asset's full size once. The last

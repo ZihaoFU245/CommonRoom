@@ -1,8 +1,9 @@
 //! Bounded immutable metadata projections, independent of message revisions.
 use super::*;
+use display_names::DisplayNameProjection;
 use snapshot::{BotSnapshotPlan, SnapshotPlan};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -88,10 +89,21 @@ pub(super) struct ReadModel {
     clock: MetadataClock,
     notice: Option<(u64, Arc<MetadataNotice>)>,
     cache: Mutex<Cache>,
+    // Shared across viewers and invalidated with metadata templates.
+    display_names: OnceLock<Arc<DisplayNameProjection>>,
     suspended: u32,
     pub(super) builds: AtomicU64,
 }
 impl ReadModel {
+    pub(super) fn display_names(
+        &self,
+        build: impl FnOnce() -> DisplayNameProjection,
+    ) -> Arc<DisplayNameProjection> {
+        if self.suspended > 0 {
+            return Arc::new(build());
+        }
+        self.display_names.get_or_init(|| Arc::new(build())).clone()
+    }
     pub(super) fn record_notice(&mut self, revision: u64, notice: MetadataNotice) {
         self.notice = Some((revision, Arc::new(notice)));
     }
@@ -112,6 +124,7 @@ impl ReadModel {
         self.revision = self.revision.wrapping_add(1);
         self.clock.0.store(self.revision, Ordering::Release);
         self.cache = Mutex::default();
+        self.display_names.take();
         self.notice = None;
     }
     pub(super) fn refresh_profiles(&mut self, profiles: &BTreeMap<String, Option<String>>) {
@@ -197,9 +210,7 @@ impl ReadModel {
                     .iter()
                     .map(|(name, url)| (name.len() + url.len()) * 2 + 128)
                     .sum::<usize>(),
-            )
-            .saturating_add(plan.colors.bytes())
-            .saturating_add(plan.display_names.bytes());
+            );
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(
                 (id, false),

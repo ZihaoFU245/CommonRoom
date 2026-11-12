@@ -57,31 +57,33 @@ impl Plan {
         headers: &HeaderMap,
         bot: bool,
     ) -> Result<Option<Utf8Bytes>, EngineError> {
-        let value = match self {
-            Self::Ready(frame) => return Ok(Some(frame)),
-            Self::Baseline => {
-                return super::snapshots::value_async(app, headers, bot)
-                    .await
-                    .map(Some);
-            }
-            Self::Avatar(plan) => plan.finish_async().await?,
-            Self::Conversation(plan) => Some(plan.finish_async().await?),
-            Self::Read(plan) => {
-                Some(serde_json::json!({"kind":"read","unread":plan.finish_async().await?}))
-            }
-        };
-        tokio::task::spawn_blocking(move || {
-            value
-                .map(|value| {
-                    serde_json::to_string(&value)
-                        .map(Into::into)
-                        .map_err(EngineError::from)
-                })
-                .transpose()
-        })
-        .await
-        .map_err(EngineError::unavailable)?
+        match self {
+            Self::Ready(frame) => Ok(Some(frame)),
+            Self::Baseline => super::snapshots::value_async(app, headers, bot)
+                .await
+                .map(Some),
+            Self::Avatar(plan) => match plan.finish_async().await? {
+                Some(frame) => encode(frame).await.map(Some),
+                None => Ok(None),
+            },
+            Self::Conversation(plan) => encode(plan.finish_async().await?).await.map(Some),
+            Self::Read(plan) => encode(serde_json::json!({
+                "kind":"read",
+                "unread":plan.finish_async().await?,
+            }))
+            .await
+            .map(Some),
+        }
     }
+}
+
+async fn encode(frame: impl serde::Serialize + Send + 'static) -> Result<Utf8Bytes, EngineError> {
+    Ok(
+        tokio::task::spawn_blocking(move || serde_json::to_string(&frame))
+            .await
+            .map_err(EngineError::unavailable)??
+            .into(),
+    )
 }
 #[cfg(test)]
 pub(crate) fn browser(

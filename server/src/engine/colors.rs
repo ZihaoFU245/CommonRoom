@@ -19,16 +19,6 @@ pub(crate) struct ColorDirectory {
     pub(super) global: BTreeMap<String, String>,
     pub(super) rooms: BTreeMap<String, BTreeMap<String, String>>,
 }
-impl ColorDirectory {
-    pub(super) fn bytes(&self) -> usize {
-        self.global
-            .iter()
-            .chain(self.rooms.values().flatten())
-            .map(|(name, color)| (name.len() + color.len()) * 2 + 128)
-            .sum::<usize>()
-            .saturating_add(self.rooms.keys().map(|id| id.len() * 2 + 128).sum())
-    }
-}
 
 /// Colors for names disclosed by one authorized message page. Null means default ink.
 #[derive(Clone, serde::Serialize)]
@@ -48,17 +38,18 @@ pub(crate) fn message_names(messages: &[Message]) -> BTreeSet<&str> {
         .collect()
 }
 impl ColorDirectory {
-    pub(crate) fn for_messages(
+    pub(super) fn for_names(
         &self,
         version: String,
-        room: Option<&str>,
-        messages: &[Message],
+        room: &str,
+        names: &BTreeSet<&str>,
     ) -> MessageColors {
-        let overrides = room.and_then(|id| self.rooms.get(id));
+        let overrides = self.rooms.get(room);
         MessageColors {
             version,
-            values: message_names(messages)
-                .into_iter()
+            values: names
+                .iter()
+                .copied()
                 .map(|name| {
                     let color = overrides
                         .and_then(|colors| colors.get(name))
@@ -74,45 +65,15 @@ impl Engine {
     /// Called only after committed metadata/account identity changes.
     pub(super) fn advance_colors(&mut self) {
         let colors = self.color_directory();
-        if colors != self.committed_colors {
+        if colors != *self.committed_colors {
             self.color_revision = self.color_revision.wrapping_add(1);
-            self.committed_colors = colors;
+            self.committed_colors = std::sync::Arc::new(colors);
         }
     }
     pub(crate) fn color_version(&self) -> String {
         format!("{}:{}", self.instance, self.color_revision)
     }
-    /// Call only after authorizing the page's conversation and rechecking access.
-    pub(crate) fn message_colors(&self, id: &str, messages: &[Message]) -> MessageColors {
-        self.conversation_color_directory(id)
-            .for_messages(self.color_version(), Some(id), messages)
-    }
-    pub(crate) fn conversation_color_directory(&self, id: &str) -> ColorDirectory {
-        let mut directory = ColorDirectory::default();
-        for (name, account) in self.data.users.iter().filter(|(_, a)| !a.disabled) {
-            for scope in ["@global", id] {
-                let Some(color) = account
-                    .metadata
-                    .get(scope)
-                    .and_then(|entries| entries.get(COLOR_KEY))
-                    .filter(|color| valid_color(color))
-                else {
-                    continue;
-                };
-                if scope == "@global" {
-                    directory.global.insert(name.clone(), color.clone());
-                } else {
-                    directory
-                        .rooms
-                        .entry(id.to_owned())
-                        .or_default()
-                        .insert(name.clone(), color.clone());
-                }
-            }
-        }
-        directory
-    }
-    pub(crate) fn color_directory(&self) -> ColorDirectory {
+    pub(super) fn color_directory(&self) -> ColorDirectory {
         let mut directory = ColorDirectory::default();
         let rooms: BTreeSet<&str> = self.data.rooms.values().map(|r| r.id.as_str()).collect();
         for (name, account) in self.data.users.iter().filter(|(_, a)| !a.disabled) {
@@ -314,6 +275,24 @@ mod tests {
         e.execute(None, None, "/room delete #lobby").unwrap();
         assert!(!e.data.users["bob"].metadata.contains_key(&lobby));
         assert!(e.color_directory().rooms.is_empty());
+    }
+    #[test]
+    fn snapshot_plans_share_committed_colors_and_keep_their_captured_version() {
+        let mut engine = super::super::tests::engine();
+        engine.set_color("bob", None, Some("blue")).unwrap();
+        let original = engine.snapshot_plan("alice").unwrap();
+        let warm = engine.snapshot_plan("alice").unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            original.colors.as_ref().unwrap(),
+            warm.colors.as_ref().unwrap()
+        ));
+
+        engine.set_color("bob", None, Some("red")).unwrap();
+        let updated = engine.snapshot_plan("alice").unwrap().finish().unwrap().0;
+        let original = original.finish().unwrap().0;
+        assert_ne!(updated.color_version, original.color_version);
+        assert_eq!(original.colors["bob"], "blue");
+        assert_eq!(updated.colors["bob"], "red");
     }
     #[test]
     fn color_permissions_are_room_only_and_defaults_follow_account_ownership() {

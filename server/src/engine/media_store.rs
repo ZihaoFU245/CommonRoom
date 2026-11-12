@@ -33,11 +33,22 @@ impl MediaStore {
     ) -> Result<Option<String>, EngineError> {
         Ok(self.database.library_source(id, conversations).await?)
     }
+    #[cfg(test)]
     pub(crate) async fn library_page(
         &self,
         request: &database::LibraryList<'_>,
     ) -> Result<database::LibraryPage, EngineError> {
-        Ok(self.database.library_page(request, &self.config).await?)
+        Ok(self.library_pages(request, false).await?.0)
+    }
+    pub(crate) async fn library_pages(
+        &self,
+        request: &database::LibraryList<'_>,
+        sections: bool,
+    ) -> Result<(database::LibraryPage, Option<database::LibraryPage>), EngineError> {
+        Ok(self
+            .database
+            .library_pages(request, &self.config, sections)
+            .await?)
     }
     pub(crate) async fn library_action(
         &self,

@@ -84,10 +84,7 @@ impl Engine {
             .history_store()
             .page_checked(&id, revision, range, view)
             .map_err(EngineError::from)?;
-        page.message_display_names = Some(self.message_display_names(&id, &page.messages));
-        if colors {
-            page.name_colors = Some(self.message_colors(&id, &page.messages));
-        }
+        self.project_history_names(&id, &mut page, colors);
         Ok(page)
     }
     #[cfg(test)]
@@ -231,18 +228,8 @@ impl Engine {
         };
         Ok(Some(super::snapshot::ConversationPlan {
             user: user.into(),
-            display_names: self.display_name_directory(),
-            display_name_version: self.display_name_version(),
-            colors: if name_colors {
-                self.conversation_color_directory(&id)
-            } else {
-                Default::default()
-            },
-            color_version: if name_colors {
-                self.color_version()
-            } else {
-                String::new()
-            },
+            display_names: self.display_name_projection(),
+            colors: name_colors.then(|| (self.committed_colors.clone(), self.color_version())),
             conversation: super::snapshot::Conversation {
                 view,
                 id,
@@ -281,7 +268,6 @@ impl Engine {
     ) -> Option<super::snapshot::SnapshotPlan> {
         let account = self.data.users.get(name).filter(|u| !u.disabled)?;
         if let Some(mut plan) = self.read_model.browser(&account.id) {
-            plan.snapshot.display_name_version = self.display_name_version();
             for job in &mut plan.jobs {
                 (job.revision, job.read) = self.conversation_position(name, &job.id)?;
             }
@@ -292,7 +278,7 @@ impl Engine {
             plan.snapshot.online = self.online(name);
             if name_colors {
                 plan.snapshot.color_version = self.color_version();
-                plan.colors = self.color_directory();
+                plan.colors = Some(self.committed_colors.clone());
             }
             return Some(plan);
         }
@@ -302,8 +288,9 @@ impl Engine {
         let server_commands = self.commands_for_rights(Some(name), None, rights(&Scope::Server));
         let visible = self.visible_conversations(name, &scope_rights);
         let directory = self.snapshot_directory(name, &scope_rights);
+        let display_names = self.display_name_projection();
         let snapshot = Snapshot {
-            display_name_version: self.display_name_version(),
+            display_name_version: display_names.version.clone(),
             display_names: BTreeMap::new(),
             preferences: self.preferences(name),
             color_version: String::new(),
@@ -360,13 +347,13 @@ impl Engine {
             jobs: visible.jobs,
             history: self.history_store().clone(),
             avatars: directory.avatars,
-            display_names: self.display_name_directory(),
+            display_names,
             colors: Default::default(),
         };
         self.read_model.remember_browser(account.id.clone(), &plan);
         if name_colors {
             plan.snapshot.color_version = self.color_version();
-            plan.colors = self.color_directory();
+            plan.colors = Some(self.committed_colors.clone());
         }
         Some(plan)
     }

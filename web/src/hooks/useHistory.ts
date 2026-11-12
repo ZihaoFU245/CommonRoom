@@ -8,6 +8,7 @@ import {
   useState,
 } from "preact/hooks";
 import type {
+  History,
   HistoryRange,
   Message,
   Snapshot,
@@ -58,9 +59,11 @@ export function useHistory(
     direction?: "older" | "newer";
   }>({ range: {} });
   const unread = state.unread[selected];
-  const id =
-    state.private_access[selected]?.id ??
-    state.rooms.find((room) => room.name === selected)?.id;
+  const roomIds = useMemo(
+    () => new Map(state.rooms.map((room) => [room.name, room.id])),
+    [state.rooms],
+  );
+  const id = state.private_access[selected]?.id ?? roomIds.get(selected);
   const completeTail = useMemo<CachedHistory | null>(() => {
     if (!unread || !id) return null;
     const complete =
@@ -138,6 +141,17 @@ export function useHistory(
     request.current = controller;
     setLoading(true);
     setHistoryError("");
+    const matchesSnapshot = (page: History) => {
+      const latest = currentState.current;
+      return (
+        latest.unread[view]?.revision === page.revision &&
+        (!page.message_display_names ||
+          page.message_display_names.version === latest.display_name_version) &&
+        (!nameColors ||
+          !page.name_colors ||
+          page.name_colors.version === latest.color_version)
+      );
+    };
     try {
       let page;
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -149,16 +163,7 @@ export function useHistory(
             throw new Error(
               "History response belongs to another conversation.",
             );
-          if (
-            currentState.current.unread[view]?.revision === page.revision &&
-            (!page.message_display_names ||
-              page.message_display_names.version ===
-                currentState.current.display_name_version) &&
-            (!nameColors ||
-              !page.name_colors ||
-              page.name_colors.version === currentState.current.color_version)
-          )
-            break;
+          if (matchesSnapshot(page)) break;
         } catch (error) {
           if (
             !(error instanceof ApiError && error.status === 409) ||
@@ -179,16 +184,7 @@ export function useHistory(
           });
         if (controller.signal.aborted) return;
       }
-      if (
-        !page ||
-        currentState.current.unread[view]?.revision !== page.revision ||
-        (page.message_display_names &&
-          page.message_display_names.version !==
-            currentState.current.display_name_version) ||
-        (nameColors &&
-          page.name_colors &&
-          page.name_colors.version !== currentState.current.color_version)
-      ) {
+      if (!page || !matchesSnapshot(page)) {
         paused.current = true;
         throw new Error("History is changing quickly. Retry the current page.");
       }
@@ -260,28 +256,27 @@ export function useHistory(
     () => new Set(tail.map((message) => message.id)),
     [tail],
   );
-  function colorsReady(page: CachedHistory): boolean {
-    if (
-      state.display_name_version !== undefined &&
-      page.message_display_names?.version !== state.display_name_version &&
-      !page.messages.every((message) => tailIds.has(message.id))
-    )
-      return false;
-    return (
+  function projectionsReady(page: CachedHistory): boolean {
+    const namesReady =
+      state.display_name_version === undefined ||
+      page.message_display_names?.version === state.display_name_version;
+    const paletteReady =
       !nameColors ||
       state.color_version === undefined ||
-      page.name_colors?.version === state.color_version ||
+      page.name_colors?.version === state.color_version;
+    return (
+      (namesReady && paletteReady) ||
       page.messages.every((message) => tailIds.has(message.id))
     );
   }
-  const synchronize = useEvent(() => {
+  useEffect(() => {
     // Revocation and resource identity reuse cannot retain accessible cached history.
     for (const [view, page] of cache.current) {
-      const accessId =
-        state.private_access[view]?.id ??
-        state.rooms.find((room) => room.name === view)?.id;
+      const accessId = state.private_access[view]?.id ?? roomIds.get(view);
       if (!accessId || accessId !== page.id) cache.current.delete(view);
     }
+  }, [roomIds, state.private_access]);
+  const synchronize = useEvent(() => {
     if (request.current || paused.current) return;
     setHistoryError("");
     if (!unread || !id) {
@@ -293,7 +288,7 @@ export function useHistory(
       target === undefined &&
       visible?.id === id &&
       visible.revision === unread.revision &&
-      colorsReady(visible)
+      projectionsReady(visible)
     ) {
       if (current.current !== visible) commit(visible);
       return;
@@ -307,7 +302,7 @@ export function useHistory(
       previous?.view === selected &&
       previous.id === id &&
       previous.oldest === unread.oldest &&
-      colorsReady(previous)
+      projectionsReady(previous)
     ) {
       const last = previous.through;
       const additions = tail.filter((message) => message.sequence > last);
@@ -354,8 +349,6 @@ export function useHistory(
     unread?.oldest,
     unread?.through,
     tail,
-    state.rooms,
-    state.private_access,
     state.policy_revision,
     state.color_version,
     state.display_name_version,
@@ -413,6 +406,18 @@ export function useHistory(
     },
     loadLatest: () => {
       setJump(undefined);
+      if (
+        completeTail &&
+        active.current === selected &&
+        currentState.current === state
+      ) {
+        paused.current = false;
+        lastRange.current = { range: {} };
+        cancelRequest();
+        setHistoryError("");
+        commit(completeTail);
+        return;
+      }
       // Start the fetch immediately. A queued synchronization effect can still
       // see the old window and restore it if we only invalidate the cache.
       fetchPage({}).catch((error: unknown) =>

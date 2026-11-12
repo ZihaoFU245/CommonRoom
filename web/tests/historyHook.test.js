@@ -90,6 +90,10 @@ test("completed jumps allow live merging and refresh around the current anchor",
     await settle();
     assert.equal(requests.length, count);
     assert.equal(result.historyReady, true);
+    result.loadLatest();
+    await settle();
+    assert.equal(requests.length, count + 1);
+    assert.deepEqual(requests.at(-1), {});
   } finally {
     api.history = original;
     for (const slot of harness.slots) slot?.cleanup?.();
@@ -320,7 +324,9 @@ test("returning to a cached conversation paints history before a delayed refresh
 
 test("a complete snapshot tail renders immediately without a redundant HTTP page", () => {
   const original = api.history;
+  let requests = 0;
   api.history = () => {
+    requests++;
     assert.fail("complete snapshot must not fetch history");
   };
   const tail = [
@@ -357,6 +363,8 @@ test("a complete snapshot tail renders immediately without a redundant HTTP page
     assert.equal(result.historyReady, true);
     assert.equal(result.messages[0].text, "hello");
     for (const effect of harness.effects) effect();
+    result.loadLatest();
+    assert.equal(requests, 0);
   } finally {
     api.history = original;
     for (const slot of harness.slots) slot?.cleanup?.();

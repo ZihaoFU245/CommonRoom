@@ -68,9 +68,12 @@ export function useLibraryActions(
     setBusy(true);
     setError("");
     try {
-      if (item.owned)
-        await api.libraryChange(item.media_id, "release", undefined, confirmed);
-      await api.libraryChange(item.media_id, "remove");
+      await api.libraryChange(
+        item.media_id,
+        item.owned ? "release_and_remove" : "remove",
+        undefined,
+        confirmed,
+      );
       setConfirmation(null);
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 409)

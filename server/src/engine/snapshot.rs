@@ -17,8 +17,8 @@ pub(crate) struct SnapshotPlan {
     pub(super) jobs: Vec<Conversation>,
     pub(super) history: Arc<HistoryStore>,
     pub(super) avatars: BTreeMap<String, String>,
-    pub(super) display_names: super::display_names::DisplayNameDirectory,
-    pub(super) colors: super::colors::ColorDirectory,
+    pub(super) display_names: Arc<super::display_names::DisplayNameProjection>,
+    pub(super) colors: Option<Arc<super::colors::ColorDirectory>>,
 }
 impl SnapshotPlan {
     #[cfg(test)]
@@ -45,31 +45,33 @@ impl SnapshotPlan {
             .history
             .unread_batch_async(&self.snapshot.username, &requests)
             .await?;
+        // A successful unread projection with no latest sequence proves that
+        // this revision has no tail. If unread failed, still try to read history.
+        let needs_page = |unread: &Result<Unread, EngineError>| !matches!(unread, Ok(unread) if unread.through == 0);
+        let history = &self.history;
         let page_jobs: Vec<_> = self
             .jobs
-            .clone()
-            .into_iter()
-            .map(|conversation| {
-                let history = self.history.clone();
-                async move {
-                    history
-                        .page_checked_async(
-                            &conversation.id,
-                            conversation.revision,
-                            HistoryRange {
-                                limit: Some(VISIBLE_HISTORY),
-                                ..Default::default()
-                            },
-                            "",
-                        )
-                        .await
-                }
+            .iter()
+            .zip(&unreads)
+            .filter(|(_, unread)| needs_page(unread))
+            .map(|(conversation, _)| async move {
+                history
+                    .page_checked_async(
+                        &conversation.id,
+                        conversation.revision,
+                        HistoryRange {
+                            limit: Some(VISIBLE_HISTORY),
+                            ..Default::default()
+                        },
+                        "",
+                    )
+                    .await
             })
             .collect();
         let pages = stream::iter(page_jobs).buffered(4);
         futures_util::pin_mut!(pages);
-        for (conversation, unread) in self.jobs.iter().zip(unreads) {
-            if tail_budget > 0 {
+        for (conversation, unread) in self.jobs.iter().zip(&unreads) {
+            if tail_budget > 0 && byte_budget > 0 && needs_page(unread) {
                 match pages
                     .next()
                     .await
@@ -95,7 +97,7 @@ impl SnapshotPlan {
                 Ok(unread) => {
                     self.snapshot
                         .unread
-                        .insert(conversation.view.clone(), unread);
+                        .insert(conversation.view.clone(), unread.clone());
                 }
                 Err(_) => {
                     tracing::warn!(conversation_id=%conversation.id,"Conversation unread data unavailable; snapshot entry omitted.");
@@ -118,19 +120,43 @@ impl SnapshotPlan {
                     .iter()
                     .map(|message| message.from.as_str()),
             )
-            .chain(
-                self.snapshot
-                    .rooms
-                    .iter()
-                    .flat_map(|room| room.members.iter().map(String::as_str)),
-            )
-            .chain(
-                self.snapshot
-                    .rooms
-                    .iter()
-                    .flat_map(|room| room.messages.iter().map(|message| message.from.as_str())),
-            )
             .collect();
+        let mut room_message_names = Vec::new();
+        // A room override also reveals room access, so it is limited to names
+        // this room already discloses: visible members, tail authors and the viewer.
+        for room in &mut self.snapshot.rooms {
+            visible.extend(room.members.iter().map(String::as_str));
+            visible.extend(room.messages.iter().map(|message| message.from.as_str()));
+            let names = super::colors::message_names(&room.messages);
+            room_message_names.extend(names.iter().copied());
+            let visible_name = |name: &String| {
+                *name == self.snapshot.username
+                    || room.members.contains(name)
+                    || names.contains(name.as_str())
+            };
+            room.display_names = self
+                .display_names
+                .directory
+                .rooms
+                .get(&room.id)
+                .into_iter()
+                .flatten()
+                .filter(|(name, _)| visible_name(name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            let Some(overrides) = self
+                .colors
+                .as_ref()
+                .and_then(|colors| colors.rooms.get(&room.id))
+            else {
+                continue;
+            };
+            room.colors = overrides
+                .iter()
+                .filter(|(name, _)| visible_name(name))
+                .map(|(name, color)| (name.clone(), color.clone()))
+                .collect();
+        }
         self.snapshot
             .user_groups
             .retain(|name, _| visible.contains(name.as_str()));
@@ -140,48 +166,21 @@ impl SnapshotPlan {
             .filter(|(name, _)| visible.contains(name.as_str()))
             .collect();
         visible.extend(super::colors::message_names(&self.snapshot.direct));
-        for room in &self.snapshot.rooms {
-            visible.extend(super::colors::message_names(&room.messages));
-        }
+        visible.extend(room_message_names);
         self.snapshot.display_names = self
             .display_names
+            .directory
             .global
-            .into_iter()
+            .iter()
             .filter(|(name, _)| visible.contains(name.as_str()))
+            .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        self.snapshot.colors = self
-            .colors
-            .global
-            .into_iter()
-            .filter(|(name, _)| visible.contains(name.as_str()))
-            .collect();
-        // A room override also reveals room access, so it is limited to names
-        // this room already discloses: visible members, tail authors and the viewer.
-        for room in &mut self.snapshot.rooms {
-            let names = super::colors::message_names(&room.messages);
-            room.display_names = self
-                .display_names
-                .rooms
-                .remove(&room.id)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(name, _)| {
-                    *name == self.snapshot.username
-                        || room.members.contains(name)
-                        || names.contains(name.as_str())
-                })
-                .collect();
-            let Some(overrides) = self.colors.rooms.remove(&room.id) else {
-                continue;
-            };
-            let names = super::colors::message_names(&room.messages);
-            room.colors = overrides
-                .into_iter()
-                .filter(|(name, _)| {
-                    *name == self.snapshot.username
-                        || room.members.contains(name)
-                        || names.contains(name.as_str())
-                })
+        if let Some(colors) = &self.colors {
+            self.snapshot.colors = colors
+                .global
+                .iter()
+                .filter(|(name, _)| visible.contains(name.as_str()))
+                .map(|(name, color)| (name.clone(), color.clone()))
                 .collect();
         }
         Ok((self.snapshot, complete))
@@ -236,13 +235,22 @@ impl BotSnapshotPlan {
 
 /// A conversation notification owns its authorization result and read coordinates.
 pub(crate) struct ConversationPlan {
-    pub(super) display_names: super::display_names::DisplayNameDirectory,
-    pub(super) display_name_version: String,
-    pub(super) colors: super::colors::ColorDirectory,
-    pub(super) color_version: String,
+    pub(super) display_names: Arc<super::display_names::DisplayNameProjection>,
+    pub(super) colors: Option<(Arc<super::colors::ColorDirectory>, String)>,
     pub(super) user: String,
     pub(super) conversation: Conversation,
     pub(super) history: Arc<HistoryStore>,
+}
+#[derive(serde::Serialize)]
+pub(crate) struct ConversationFrame {
+    kind: &'static str,
+    view: String,
+    id: String,
+    messages: history::MessagePage,
+    unread: Unread,
+    message_display_names: super::display_names::MessageDisplayNames,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name_colors: Option<super::colors::MessageColors>,
 }
 impl ConversationPlan {
     pub(crate) fn id(&self) -> &str {
@@ -250,9 +258,10 @@ impl ConversationPlan {
     }
     #[cfg(test)]
     pub(crate) fn finish(self) -> Result<serde_json::Value, EngineError> {
-        database::block_on_storage(self.finish_async())?
+        let frame = database::block_on_storage(self.finish_async())??;
+        Ok(serde_json::to_value(frame)?)
     }
-    pub(crate) async fn finish_async(self) -> Result<serde_json::Value, EngineError> {
+    pub(crate) async fn finish_async(self) -> Result<ConversationFrame, EngineError> {
         let job = self.conversation;
         let page = self
             .history
@@ -273,20 +282,20 @@ impl ConversationPlan {
             .into_iter()
             .next()
             .ok_or_else(|| EngineError::Internal("Missing unread result.".into()))??;
-        let mut frame = serde_json::json!({"kind":"conversation","view":job.view,"id":job.id,"messages":page.messages,"unread":unread});
-        frame["message_display_names"] = serde_json::to_value(self.display_names.for_messages(
-            self.display_name_version,
-            &job.id,
-            &page.messages,
-        ))?;
-        if !self.color_version.is_empty() {
-            frame["name_colors"] = serde_json::to_value(self.colors.for_messages(
-                self.color_version,
-                Some(&job.id),
-                &page.messages,
-            ))?;
-        }
-        Ok(frame)
+        let names = super::colors::message_names(&page.messages);
+        let message_display_names = self.display_names.for_names(&job.id, &names);
+        let name_colors = self
+            .colors
+            .map(|(colors, version)| colors.for_names(version, &job.id, &names));
+        Ok(ConversationFrame {
+            kind: "conversation",
+            view: job.view,
+            id: job.id,
+            messages: page.messages,
+            unread,
+            message_display_names,
+            name_colors,
+        })
     }
 }
 pub(crate) struct UnreadPlan {

@@ -63,6 +63,30 @@ impl LibraryRow {
     }
 }
 
+pub(super) struct LibraryPageItems {
+    pub(super) items: Vec<LibraryItem>,
+    pub(super) next_cursor: Option<String>,
+}
+
+impl LibraryPageItems {
+    pub(super) fn from_rows(rows: Vec<LibraryRow>, limit: u64, recent: bool) -> Result<Self> {
+        let limit =
+            usize::try_from(limit).map_err(|_| Error::Conversion("Invalid library page size"))?;
+        let next_cursor = if !recent && rows.len() > limit {
+            rows.get(limit.saturating_sub(1))
+                .map(|row| row.cursor.clone())
+        } else {
+            None
+        };
+        let items = rows
+            .into_iter()
+            .take(limit)
+            .map(LibraryRow::into_item)
+            .collect::<Result<_>>()?;
+        Ok(Self { items, next_cursor })
+    }
+}
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LibraryAction {
@@ -70,6 +94,7 @@ pub(crate) enum LibraryAction {
     Acquire,
     Remove,
     Release,
+    ReleaseAndRemove,
     Delete,
     Move,
 }
@@ -93,6 +118,28 @@ pub(crate) struct LibraryList<'a> {
     pub(crate) limit: u64,
     pub(crate) quota: u64,
     pub(crate) conversations: &'a [String],
+}
+impl LibraryList<'_> {
+    pub(super) fn page_bounds(&self, config: &crate::config::MediaConfig) -> Result<(u64, &str)> {
+        if !(1..=100).contains(&self.limit) {
+            return Err(Error::InvalidRequest("Library page size must be 1..100."));
+        }
+        if self.recent {
+            return Ok((config.library_recent_limit, ""));
+        }
+        if self.owned {
+            return Ok((self.limit, self.after));
+        }
+        let after = if self.after.is_empty() {
+            "0"
+        } else {
+            self.after
+        };
+        if !after.parse::<i64>().is_ok_and(|position| position >= 0) {
+            return Err(Error::InvalidRequest("Invalid collection cursor."));
+        }
+        Ok((self.limit, after))
+    }
 }
 #[derive(Serialize)]
 pub(crate) struct LibraryItem {
@@ -158,15 +205,70 @@ impl super::Handle {
         };
         session.checked(result)
     }
-    pub(crate) async fn library_page(
+    pub(crate) async fn library_pages(
         &self,
         request: &LibraryList<'_>,
         config: &crate::config::MediaConfig,
-    ) -> Result<LibraryPage> {
+        sections: bool,
+    ) -> Result<(LibraryPage, Option<LibraryPage>)> {
+        use sqlx::Connection as _;
+
+        macro_rules! read_pages {
+            ($library:ident, $transaction:expr) => {{
+                async {
+                    use super::$library::library::{backlog, page_items, usage};
+                    let mut tx = $transaction.await?;
+                    let now = super::message::number(crate::engine::media::timestamp())?;
+                    let first = page_items(&mut tx, request, config, now).await?;
+                    let recent = if sections {
+                        Some(
+                            page_items(
+                                &mut tx,
+                                &LibraryList {
+                                    recent: true,
+                                    ..*request
+                                },
+                                config,
+                                now,
+                            )
+                            .await?,
+                        )
+                    } else {
+                        None
+                    };
+                    let usage = usage(&mut tx, request.account).await?;
+                    let (bytes, objects, oldest) = backlog(&mut tx).await?;
+                    let cleanup_bytes = super::history::unsigned(bytes)?;
+                    let cleanup_objects = super::history::unsigned(objects)?;
+                    let first = LibraryPage {
+                        items: first.items,
+                        next_cursor: first.next_cursor,
+                        usage,
+                        quota: request.quota,
+                        cleanup_bytes,
+                        cleanup_objects,
+                        oldest_cleanup: oldest.map(super::history::unsigned).transpose()?,
+                        uploads_paused: cleanup_bytes >= config.library_cleanup_bytes
+                            || cleanup_objects >= config.library_cleanup_objects,
+                    };
+                    let recent = recent.map(|page| LibraryPage {
+                        items: page.items,
+                        next_cursor: page.next_cursor,
+                        ..first
+                    });
+                    tx.commit().await?;
+                    Ok((first, recent))
+                }
+                .await
+            }};
+        }
         let mut session = self.acquire_read().await?;
         let result = match session.backend.get_mut() {
-            Backend::Sqlite(db) => super::sqlite::library::page(db, request, config).await,
-            Backend::Postgres(db) => super::postgres::library::page(db, request, config).await,
+            Backend::Sqlite(db) => read_pages!(sqlite, db.begin()),
+            Backend::Postgres(db) => read_pages!(
+                postgres,
+                db.begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            ),
             Backend::Closed => Err(Error::RestartRequired),
         };
         session.checked(result)

@@ -10,6 +10,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Query, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     middleware,
@@ -93,7 +94,7 @@ async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Erro
         let value = crate::web::snapshots::bot_value_async(&app, &context).await?;
         Ok((
             [(axum::http::header::CONTENT_TYPE, "application/json")],
-            value.to_string(),
+            Bytes::from(value),
         )
             .into_response())
     })

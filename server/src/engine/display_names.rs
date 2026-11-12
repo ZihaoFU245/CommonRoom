@@ -68,52 +68,55 @@ pub(super) struct DisplayNameDirectory {
     pub(super) global: BTreeMap<String, String>,
     pub(super) rooms: BTreeMap<String, BTreeMap<String, String>>,
 }
+pub(super) struct DisplayNameProjection {
+    pub(super) directory: DisplayNameDirectory,
+    pub(super) version: String,
+}
 #[derive(Clone, serde::Serialize)]
 pub struct MessageDisplayNames {
     pub version: String,
     pub values: BTreeMap<String, Option<String>>,
 }
-impl DisplayNameDirectory {
-    pub(super) fn for_messages(
-        &self,
-        version: String,
-        room: &str,
-        messages: &[Message],
-    ) -> MessageDisplayNames {
-        let overrides = self.rooms.get(room);
+impl DisplayNameProjection {
+    pub(super) fn for_names(&self, room: &str, names: &BTreeSet<&str>) -> MessageDisplayNames {
+        let overrides = self.directory.rooms.get(room);
         MessageDisplayNames {
-            version,
-            values: colors::message_names(messages)
-                .into_iter()
+            version: self.version.clone(),
+            values: names
+                .iter()
+                .copied()
                 .map(|name| {
                     (
                         name.to_owned(),
                         overrides
                             .and_then(|names| names.get(name))
-                            .or_else(|| self.global.get(name))
+                            .or_else(|| self.directory.global.get(name))
                             .cloned(),
                     )
                 })
                 .collect(),
         }
     }
-    pub(super) fn bytes(&self) -> usize {
-        self.global
-            .iter()
-            .chain(self.rooms.values().flatten())
-            .map(|(name, value)| (name.len() + value.len()) * 2 + 128)
-            .sum::<usize>()
-            .saturating_add(self.rooms.keys().map(|id| id.len() * 2 + 128).sum())
-    }
 }
 impl Engine {
-    pub(crate) fn display_name_version(&self) -> String {
-        use std::hash::{Hash, Hasher};
-        let mut hash = std::hash::DefaultHasher::new();
-        self.display_name_directory().hash(&mut hash);
-        format!("{}:{}", self.instance, hash.finish())
+    pub(super) fn display_name_projection(&self) -> std::sync::Arc<DisplayNameProjection> {
+        self.read_model
+            .display_names(|| self.build_display_name_projection())
     }
-    pub(super) fn display_name_directory(&self) -> DisplayNameDirectory {
+    fn build_display_name_projection(&self) -> DisplayNameProjection {
+        use std::hash::{Hash, Hasher};
+        let directory = self.display_name_directory();
+        let mut hash = std::hash::DefaultHasher::new();
+        directory.hash(&mut hash);
+        DisplayNameProjection {
+            directory,
+            version: format!("{}:{}", self.instance, hash.finish()),
+        }
+    }
+    fn display_name_directory(&self) -> DisplayNameDirectory {
+        // Resolve room scopes once per directory, and only when some account
+        // has a valid display name outside the global scope.
+        let mut rooms: Option<BTreeSet<&str>> = None;
         let mut directory = DisplayNameDirectory::default();
         for (name, account) in &self.data.users {
             for (scope, entries) in &account.metadata {
@@ -125,7 +128,16 @@ impl Engine {
                 };
                 if scope == "@global" {
                     directory.global.insert(name.clone(), value.clone());
-                } else if self.data.rooms.values().any(|room| &room.id == scope) {
+                } else if rooms
+                    .get_or_insert_with(|| {
+                        self.data
+                            .rooms
+                            .values()
+                            .map(|room| room.id.as_str())
+                            .collect()
+                    })
+                    .contains(scope.as_str())
+                {
                     directory
                         .rooms
                         .entry(scope.clone())
@@ -136,13 +148,17 @@ impl Engine {
         }
         directory
     }
-    pub(crate) fn message_display_names(
-        &self,
-        room: &str,
-        messages: &[Message],
-    ) -> MessageDisplayNames {
-        self.display_name_directory()
-            .for_messages(self.display_name_version(), room, messages)
+    /// Call after authorizing the page's conversation and rechecking access.
+    pub(crate) fn project_history_names(&self, room: &str, page: &mut History, name_colors: bool) {
+        let names = colors::message_names(&page.messages);
+        page.message_display_names = Some(self.display_name_projection().for_names(room, &names));
+        if name_colors {
+            page.name_colors = Some(self.committed_colors.for_names(
+                self.color_version(),
+                room,
+                &names,
+            ));
+        }
     }
     pub(super) fn display_name_access(
         &self,
