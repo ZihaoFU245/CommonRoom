@@ -2661,3 +2661,65 @@ async fn expired_attachment_metadata_is_opt_in_and_never_grants_file_access() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn untrusted_origins_are_refused_before_handlers_run() {
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::Request,
+        middleware,
+        routing::post,
+    };
+    use tower::ServiceExt;
+
+    let mut app = login_test_app();
+    Arc::make_mut(&mut app.config).origins = vec!["https://ui.example.com".into()];
+    Arc::make_mut(&mut app.config).base_url = "/server/".into();
+    let router = Router::new()
+        .route(
+            "/server/api/write",
+            post(|| async { StatusCode::NO_CONTENT }),
+        )
+        .layer(middleware::from_fn_with_state(
+            app,
+            super::security::security,
+        ));
+
+    let rejected = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/server/api/write")
+                .header(header::ORIGIN, "https://evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    assert_eq!(rejected.headers()[header::CONTENT_TYPE], "application/json");
+    let body = to_bytes(rejected.into_body(), 1024).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({
+            "error": "Untrusted request origin.",
+            "code": "forbidden",
+            "retryable": false,
+        })
+    );
+
+    let accepted = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/server/api/write")
+                .header(header::ORIGIN, "https://ui.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+}

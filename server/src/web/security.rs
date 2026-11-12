@@ -107,6 +107,15 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
                 StatusCode::FORBIDDEN.into_response()
             }
         }
+        // Reject explicitly untrusted origins before dispatching browser API writes.
+        None if browser_api
+            && request.method() != axum::http::Method::GET
+            && request.method() != axum::http::Method::HEAD
+            && request.headers().contains_key(header::ORIGIN)
+            && client_origin.is_none() =>
+        {
+            error(StatusCode::FORBIDDEN, "Untrusted request origin.").into_response()
+        }
         None => next.run(request).await,
     };
     let mut response = with_security_headers(&app, response);
