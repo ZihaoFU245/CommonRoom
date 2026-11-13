@@ -301,6 +301,7 @@ impl Engine {
                     .saturating_add(self.presence.revision)
                     .saturating_add(self.read_clock),
             },
+            resume: None,
             kind: "snapshot",
             username: name.into(),
             admin: self.is_admin(name),

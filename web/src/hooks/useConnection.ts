@@ -38,6 +38,7 @@ export function useConnection(
     "connecting",
   );
   const socket = useRef<WebSocket | null>(null);
+  const readySocket = useRef<WebSocket | null>(null);
   const callbacks = useRef(handlers);
   callbacks.current = handlers;
   const projection = useRef(nameColors);
@@ -48,6 +49,8 @@ export function useConnection(
     let resumeTimer: ReturnType<typeof setTimeout> | undefined;
     let awaitingBaseline = true;
     let attempts = 0;
+    let everReady = false;
+    let checkpoint = currentState.current.resume;
     const reportApplicationError = (error: unknown) => {
       console.error("Snapshot application failed", error);
     };
@@ -71,6 +74,7 @@ export function useConnection(
         () => api.me(projection.current),
         (data, baseline) => {
           const previous = currentState.current;
+          checkpoint = data.resume;
           currentState.current = data;
           setState(data);
           callbacks.current.onSnapshot(previous, data, baseline);
@@ -82,14 +86,14 @@ export function useConnection(
     changeProjection.current = (enabled) => {
       if (stopped || projection.current === enabled) return;
       projection.current = enabled;
+      checkpoint = undefined;
       // All acknowledgements have arrived. Replace the projection without
       // reporting a transport failure or accepting an old HTTP refresh.
       const previous = socket.current;
       socket.current = null;
+      readySocket.current = null;
       previous?.close();
       clearTimeout(retry);
-      sync.stop();
-      sync = createSync();
       connect();
     };
     const resume = () => {
@@ -122,23 +126,34 @@ export function useConnection(
     function connect() {
       if (stopped) return;
       clearTimeout(resumeTimer);
+      sync.stop();
+      sync = createSync();
       awaitingBaseline = true;
       setStatus("connecting");
       const url = new URL("ws", serverBaseUrl());
       if (projection.current) url.searchParams.set("colors", "1");
+      const offered = checkpoint;
+      if (offered) url.searchParams.set("resume", offered);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       socket.current = ws;
-      ws.onopen = () => {
-        if (stopped || socket.current !== ws) return;
-        attempts = 0;
-        setStatus("online");
-      };
+      const reconnecting = everReady;
       let baseline = true;
       ws.onmessage = (event) => {
         if (stopped || socket.current !== ws) return;
         const data = parseFrame(String(event.data));
         if (!data) return;
+        if (data.kind === "resumed") {
+          if (!awaitingBaseline || !offered) return;
+          awaitingBaseline = false;
+          baseline = false;
+          readySocket.current = ws;
+          setStatus("online");
+          everReady = true;
+          attempts = 0;
+          if (reconnecting) refreshMedia();
+          return;
+        }
         if (data.kind === "media") {
           refreshMedia(data.ids);
           return;
@@ -173,8 +188,16 @@ export function useConnection(
             serverBaseUrl(),
             data.sync?.instance,
           );
-          if (!sameMediaAuthority(currentState.current, data)) refreshMedia();
+          if (
+            (awaitingBaseline && reconnecting) ||
+            !sameMediaAuthority(currentState.current, data)
+          )
+            refreshMedia();
           awaitingBaseline = false;
+          attempts = 0;
+          everReady = true;
+          readySocket.current = ws;
+          setStatus("online");
           clearTimeout(resumeTimer);
           const ids = new Set([
             ...data.rooms.map((room) => room.id),
@@ -194,7 +217,7 @@ export function useConnection(
             sync.refresh().catch(reportApplicationError);
             return;
           }
-          sync.receive(next, false);
+          sync.receive(next, awaitingBaseline);
         } else if (data.kind === "avatar") {
           const old = currentState.current.avatars?.[data.username];
           const id = old
@@ -213,6 +236,7 @@ export function useConnection(
       ws.onclose = () => {
         if (stopped || socket.current !== ws) return;
         clearTimeout(resumeTimer);
+        readySocket.current = null;
         setStatus("offline");
 
         setBotActivities([]);
@@ -237,6 +261,7 @@ export function useConnection(
       window.removeEventListener("online", resume);
       clearTimeout(retry);
       clearTimeout(resumeTimer);
+      readySocket.current = null;
       socket.current?.close();
     };
   }, []);
@@ -255,7 +280,7 @@ export function useConnection(
     state,
     currentState,
     status,
-    socket,
+    socket: readySocket,
     botCommandVersions,
     botActivities,
   };

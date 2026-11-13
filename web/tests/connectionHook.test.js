@@ -27,7 +27,7 @@ const snapshot = {
   available_rooms: [],
   unread: {},
 };
-function fixture(t) {
+function fixture(t, initial = snapshot) {
   const originals = {
     WebSocket: globalThis.WebSocket,
     window: globalThis.window,
@@ -101,8 +101,8 @@ function fixture(t) {
   function render(nameColors = false) {
     useHarness(harness);
     harness.effects = [];
-    useConnection(
-      snapshot,
+    const result = useConnection(
+      initial,
       {
         onSnapshot(previous, next) {
           snapshots.push(next);
@@ -120,6 +120,7 @@ function fixture(t) {
       nameColors,
     );
     for (const effect of harness.effects) effect();
+    return result;
   }
   render();
   t.after(() => {
@@ -160,7 +161,6 @@ function fixture(t) {
     baseline() {
       const ws = sockets.at(-1);
       ws.readyState = Socket.OPEN;
-      ws.onopen();
       ws.onmessage({ data: JSON.stringify(snapshot) });
     },
     async runTimers() {
@@ -174,6 +174,26 @@ function fixture(t) {
     },
   };
 }
+test("checkpoint is offered on reconnect and waits for the resume marker", (t) => {
+  const token = "b3b2a710-eed4-4715-94e4-735566ec8326";
+  const h = fixture(t, { ...snapshot, resume: token });
+  const socket = h.sockets[0];
+  assert.equal(socket.url.searchParams.get("resume"), token);
+  socket.readyState = WebSocket.OPEN;
+  socket.onmessage({
+    data: JSON.stringify({ kind: "presence", online: ["alice"] }),
+  });
+  assert.equal(h.render().status, "connecting");
+  assert.equal(h.render().socket.current, null);
+  socket.onmessage({ data: JSON.stringify({ kind: "resumed" }) });
+  assert.equal(h.render().status, "online");
+  assert.equal(h.render().socket.current, socket);
+  assert.deepEqual(h.render().state.online, ["alice"]);
+  socket.close();
+  h.listeners.get("online")();
+  assert.equal(h.sockets[1].url.searchParams.get("resume"), token);
+});
+
 test("media invalidations refresh viewers without changing conversation state", async (t) => {
   const h = fixture(t);
   t.after(() => mediaStatusCache.clear());
@@ -271,7 +291,6 @@ test("reconnect baseline replaces queued resume refreshes without extra HTTP", a
   const h = fixture(t);
   const ws = h.sockets[0];
   ws.readyState = WebSocket.OPEN;
-  ws.onopen();
   h.listeners.get("focus")();
   assert.equal(
     h.timers.size,

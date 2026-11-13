@@ -167,3 +167,113 @@ fn recovery_retains_independent_invalidations_and_retries_without_a_new_change()
     assert!(retryable(StatusCode::SERVICE_UNAVAILABLE));
     assert!(retryable(StatusCode::INTERNAL_SERVER_ERROR));
 }
+
+#[tokio::test]
+#[allow(clippy::unwrap_used)]
+async fn socket_resumes_changed_tail_and_falls_back_after_access_change() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let app = crate::web::tests::login_test_app();
+    let room = {
+        let mut engine = app.engine_api().unwrap();
+        let hash = engine.password_hash("alice").unwrap().to_owned();
+        engine
+            .login("socket-resume".into(), "alice", &hash, None)
+            .unwrap();
+        engine.execute(None, None, "/room new team").unwrap();
+        engine.execute(None, None, "/room add alice #team").unwrap();
+        engine
+            .execute(Some("alice"), Some("team"), "before disconnect")
+            .unwrap();
+        engine.data.rooms["team"].id.clone()
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", "chat_session=socket-resume".parse().unwrap());
+    let baseline = snapshots::browser_baseline(&app, &headers, false, None)
+        .await
+        .unwrap();
+    let baseline: serde_json::Value = serde_json::from_str(&baseline.frame).unwrap();
+    let checkpoint = baseline["resume"].as_str().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(super::super::http_server::serve(
+        listener,
+        super::super::router(app.clone()),
+        app.config.server.clone(),
+        app.admission.metrics.clone(),
+        std::future::pending(),
+    ));
+    let connect = || {
+        let mut request = format!("ws://{address}/ws?resume={checkpoint}")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().extend(headers.clone());
+        request
+            .headers_mut()
+            .insert("origin", "http://localhost:5173".parse().unwrap());
+        tokio_tungstenite::connect_async(request)
+    };
+
+    app.engine_api()
+        .unwrap()
+        .execute(Some("alice"), Some("team"), "while disconnected")
+        .unwrap();
+    let (mut socket, _) = connect().await.unwrap();
+    let frames = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut frames: Vec<serde_json::Value> = Vec::new();
+        while let Some(Ok(frame)) = socket.next().await {
+            if !frame.is_text() {
+                continue;
+            }
+            let frame: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            let ready = frame["kind"] == "resumed" || frame["kind"] == "snapshot";
+            frames.push(frame);
+            if ready {
+                break;
+            }
+        }
+        frames
+    })
+    .await
+    .unwrap();
+    assert_eq!(frames.last().unwrap()["kind"], "resumed");
+    assert!(frames.iter().any(|frame| frame["kind"] == "conversation"
+        && frame["messages"][1]["text"] == "while disconnected"));
+    app.engine_api()
+        .unwrap()
+        .execute(Some("alice"), Some("team"), "after resume")
+        .unwrap();
+    app.changes.send(Change::Conversation(room)).unwrap();
+    let live = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(Ok(frame)) = socket.next().await {
+            if frame.is_text() {
+                let value: serde_json::Value =
+                    serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                if value["kind"] == "conversation" {
+                    return value;
+                }
+            }
+        }
+        serde_json::Value::Null
+    })
+    .await
+    .unwrap();
+    assert_eq!(live["messages"][2]["text"], "after resume");
+    drop(socket);
+
+    app.engine_api()
+        .unwrap()
+        .execute(None, None, "/room kick alice #team")
+        .unwrap();
+    let (mut socket, _) = connect().await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let first: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+    assert_eq!(first["kind"], "snapshot");
+    assert!(first["rooms"].as_array().unwrap().is_empty());
+    server.abort();
+}

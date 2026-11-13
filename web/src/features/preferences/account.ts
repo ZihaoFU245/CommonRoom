@@ -155,6 +155,7 @@ export async function connectPreferences(
   id: string,
   transport: Transport,
   initial?: PreferenceState,
+  background = false,
 ): Promise<PreferenceState> {
   disconnectPreferences();
   const attempt = generation;
@@ -166,9 +167,12 @@ export async function connectPreferences(
         local[key] = value;
     }
   }
+  const needsSeed =
+    !initial ||
+    Object.keys(local).some((key) => !Object.hasOwn(initial.values, key));
+  const seedInBackground = background && initial !== undefined && needsSeed;
   const state =
-    initial &&
-    Object.keys(local).every((key) => Object.hasOwn(initial.values, key))
+    initial && (!needsSeed || seedInBackground)
       ? initial
       : await transport(local, true);
   if (attempt !== generation)
@@ -179,11 +183,33 @@ export async function connectPreferences(
     state,
     pending: {},
     sending: {},
-    busy: false,
+    busy: seedInBackground,
     error: "",
   };
+  const session = active;
   cache();
   notify();
+  if (seedInBackground) {
+    void transport(local, true)
+      .then(
+        (seeded) => {
+          if (active === session) receivePreferences(seeded);
+        },
+        () => {
+          if (active !== session) return;
+          session.error = "Settings could not initialize.";
+          notify();
+        },
+      )
+      .finally(() => {
+        if (active !== session) return;
+        session.busy = false;
+        return flushPreferences();
+      })
+      .catch((error: unknown) =>
+        console.error("Preference update failed", error),
+      );
+  }
   return state;
 }
 export function disconnectPreferences(): void {

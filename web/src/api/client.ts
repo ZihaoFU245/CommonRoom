@@ -290,15 +290,20 @@ export const api = {
     signal.throwIfAborted();
     return { conversations };
   },
-  me: async (nameColors = false) => {
+  me: async (nameColors = false, startup?: { room?: string | undefined }) => {
     const base = serverBaseUrl();
+    const query = new URLSearchParams();
+    if (startup) {
+      query.set("colors", nameColors ? "1" : "0");
+      if (startup.room) query.set("room", startup.room);
+    }
     const result = await request(
-      "me",
+      startup ? `me?${query}` : "me",
       isSnapshot,
       undefined,
       undefined,
       15000,
-      nameColors,
+      !startup && nameColors,
     );
     if (serverBaseUrl() === base)
       mediaConfigCache.observeInstance(base, result.sync?.instance);

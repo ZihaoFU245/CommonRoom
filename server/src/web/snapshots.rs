@@ -6,12 +6,21 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use tokio::sync::OnceCell;
 
-type Key = (String, bool, crate::engine::SnapshotStamp, u64, bool);
+type Key = (
+    String,
+    bool,
+    crate::engine::SnapshotStamp,
+    u64,
+    bool,
+    Option<String>,
+    String,
+);
 #[derive(Clone)]
 pub(super) struct Baseline {
     pub(super) frame: Utf8Bytes,
     pub(super) etag: Option<axum::http::HeaderValue>,
     complete: bool,
+    resume: Option<String>,
 }
 type Value = Arc<OnceCell<Result<Baseline, SnapshotError>>>;
 #[derive(Default)]
@@ -47,13 +56,21 @@ impl SnapshotCache {
             if value.get().is_none() {
                 self.coalesced += 1;
             }
+            self.order.retain(|entry| entry != key);
+            self.order.push_back(key.clone());
             return value.clone();
         }
         self.misses += 1;
-        // Recency and entries have the same keys. Remove stale profile frames
-        // and their accounting in one pass over the bounded recency queue.
+        // Retain older browser checkpoints within the existing cache budget.
+        // Bot snapshots have no resume protocol.
         self.order.retain(|old| {
-            let keep = old.0 != key.0 || old.1 != key.1 || old.4 != key.4;
+            let keep = old.0 != key.0
+                || old.1 != key.1
+                || if key.1 {
+                    old.4 != key.4
+                } else {
+                    old.2.metadata == key.2.metadata
+                };
             if !keep && let Some((_, size)) = self.entries.remove(old) {
                 self.bytes = self.bytes.saturating_sub(size);
             }
@@ -64,6 +81,21 @@ impl SnapshotCache {
         self.order.push_back(key.clone());
         self.trim();
         value
+    }
+    fn resume_stamp(&self, key: &Key, token: &str) -> Option<crate::engine::SnapshotStamp> {
+        self.entries.iter().find_map(|(previous, (entry, _))| {
+            (previous.0 == key.0
+                && !previous.1
+                && previous.2.metadata == key.2.metadata
+                && previous.4 == key.4
+                && previous.6 == key.6
+                && entry.get().is_some_and(|result| {
+                    result
+                        .as_ref()
+                        .is_ok_and(|baseline| baseline.resume.as_deref() == Some(token))
+                }))
+            .then(|| previous.2.clone())
+        })
     }
     fn finish(&mut self, key: &Key, value: &Value, size: usize) {
         if let Some((current, accounted)) = self.entries.get_mut(key)
@@ -126,6 +158,7 @@ enum Viewer {
     Browser {
         headers: axum::http::HeaderMap,
         bot: bool,
+        view: Option<String>,
     },
     Bot(crate::bots::auth::Context),
 }
@@ -140,7 +173,7 @@ impl Viewer {
         config: &Config,
     ) -> Result<(Key, Arc<crate::engine::HistoryStore>, String), SnapshotError> {
         let (user, profile, bot, name_colors) = match self {
-            Self::Browser { headers, bot } => {
+            Self::Browser { headers, bot, .. } => {
                 let user = super::auth::identity(engine, config, headers)
                     .ok_or_else(|| EngineError::Forbidden("Credential revoked.".into()))?;
                 (user.clone(), user, *bot, super::colors::enabled(headers))
@@ -172,6 +205,14 @@ impl Viewer {
                 engine.snapshot_stamp(&user, bot)?,
                 presence,
                 name_colors,
+                match self {
+                    Self::Browser { view, .. } => view.clone(),
+                    Self::Bot(_) => None,
+                },
+                engine
+                    .active_account_id(&user)
+                    .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
+                    .to_owned(),
             ),
             engine.history_store().clone(),
             user,
@@ -194,7 +235,12 @@ impl Viewer {
                 } else {
                     engine
                         .snapshot_plan_for(&user, expected.4)
-                        .map(|plan| Plan::Browser(Box::new(plan)))
+                        .map(|mut plan| {
+                            if let Some(view) = &expected.5 {
+                                plan.prioritize(view);
+                            }
+                            Plan::Browser(Box::new(plan))
+                        })
                         .ok_or_else(|| {
                             SnapshotError::Engine(EngineError::Unavailable(
                                 "Snapshot unavailable.".into(),
@@ -210,8 +256,10 @@ impl Plan {
     async fn finish(self) -> Result<Baseline, EngineError> {
         match self {
             Self::Browser(plan) => {
-                let (snapshot, complete) = plan.finish_async().await?;
+                let (mut snapshot, complete) = plan.finish_async().await?;
                 tokio::task::spawn_blocking(move || {
+                    let resume = complete.then(|| uuid::Uuid::new_v4().to_string());
+                    snapshot.resume.clone_from(&resume);
                     serde_json::to_string(&snapshot).map(|frame| {
                         let etag = if complete {
                             revalidation::etag(frame.as_bytes())
@@ -222,6 +270,7 @@ impl Plan {
                             frame: frame.into(),
                             etag,
                             complete,
+                            resume,
                         }
                     })
                 })
@@ -240,6 +289,7 @@ impl Plan {
                         frame: frame.into(),
                         etag: None,
                         complete,
+                        resume: None,
                     })
                 })
                 .await
@@ -255,7 +305,7 @@ pub(crate) async fn value_async(
     headers: &axum::http::HeaderMap,
     bot: bool,
 ) -> Result<Utf8Bytes, EngineError> {
-    browser_baseline(app, headers, bot)
+    browser_baseline(app, headers, bot, None)
         .await
         .map(|baseline| baseline.frame)
 }
@@ -263,16 +313,88 @@ pub(super) async fn browser_baseline(
     app: &App,
     headers: &axum::http::HeaderMap,
     bot: bool,
+    view: Option<String>,
 ) -> Result<Baseline, EngineError> {
     value_for(
         app,
         Viewer::Browser {
             headers: headers.clone(),
             bot,
+            view,
         },
     )
     .await
     .map_err(Into::into)
+}
+/// Subscribe before this capture so later commits also reach the live stream.
+pub(super) async fn resume_browser(
+    app: &App,
+    headers: &axum::http::HeaderMap,
+    token: String,
+    interests: &mut super::transport::Interests,
+) -> Result<Option<Vec<Utf8Bytes>>, EngineError> {
+    let viewer = Viewer::Browser {
+        headers: headers.clone(),
+        bot: false,
+        view: None,
+    };
+    let (current, history, user) = app
+        .inspect_engine({
+            let viewer = viewer.clone();
+            move |engine, config| viewer.capture(engine, config)
+        })
+        .await
+        .map_err(EngineError::from)?;
+    history.ensure_available_async().await?;
+    let previous = app
+        .snapshots
+        .lock()
+        .map_err(|_| EngineError::Unavailable("Snapshot cache unavailable.".into()))?
+        .resume_stamp(&current, &token);
+    let Some(previous) = previous else {
+        return Ok(None);
+    };
+
+    // These are complete replacement tails, so replay is idempotent even if
+    // an update was already applied locally or queued by the live subscription.
+    let mut changes = vec![Change::Presence];
+    if previous.read != current.2.read {
+        changes.push(Change::Read(user.clone()));
+    }
+    if previous.history.len() != current.2.history.len() {
+        return Ok(None);
+    }
+    let mut changed = 0;
+    for ((old_id, old_revision), (id, revision)) in previous.history.iter().zip(&current.2.history)
+    {
+        if old_id != id || old_revision > revision {
+            return Ok(None);
+        }
+        if old_revision != revision {
+            changed += 1;
+            if changed > 4 {
+                return Ok(None);
+            }
+            changes.push(Change::Conversation(id.clone()));
+        }
+    }
+    let (resolved, mut frames) =
+        super::updates::browser_with_interests_async(app, headers, false, &changes, interests)
+            .await?;
+    let same = app
+        .inspect_engine(move |engine, config| -> Result<_, EngineError> {
+            let (latest, _, _) = viewer.capture(engine, config)?;
+            Ok(user == resolved
+                && latest.0 == current.0
+                && latest.2 == current.2
+                && latest.6 == current.6)
+        })
+        .await?;
+    if !same || frames.iter().map(|frame| frame.len()).sum::<usize>() > 512 * 1024 {
+        return Ok(None);
+    }
+    frames.push(Utf8Bytes::from_static(r#"{"kind":"resumed"}"#));
+    Ok(Some(frames))
 }
 pub(crate) async fn bot_value_async(
     app: &App,
@@ -391,6 +513,76 @@ async fn cached<F: std::future::Future<Output = Result<Baseline, SnapshotError>>
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn resume_validates_current_viewer_projection_and_history() {
+        use axum::http::{HeaderMap, HeaderValue, header};
+        let app = crate::web::tests::login_test_app();
+        {
+            let mut engine = app.engine_api().unwrap();
+            let hash = engine.password_hash("alice").unwrap().to_owned();
+            engine
+                .login("resume-session".into(), "alice", &hash, None)
+                .unwrap();
+            engine.execute(None, None, "/room new team").unwrap();
+            engine.execute(None, None, "/room add alice #team").unwrap();
+            engine
+                .execute(Some("alice"), Some("team"), "First")
+                .unwrap();
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("chat_session=resume-session"),
+        );
+        let baseline = browser_baseline(&app, &headers, false, Some("team".into()))
+            .await
+            .unwrap();
+        let token = baseline.resume.unwrap();
+        let snapshot: serde_json::Value = serde_json::from_str(&baseline.frame).unwrap();
+        assert_eq!(snapshot["resume"], token);
+        app.update_presence(None, Some("alice")).unwrap();
+        let mut interests = super::super::transport::Interests::default();
+        let resumed = resume_browser(&app, &headers, token.clone(), &mut interests)
+            .await
+            .unwrap()
+            .unwrap();
+        let frames: Vec<serde_json::Value> = resumed
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        assert_eq!(frames.last().unwrap()["kind"], "resumed");
+        assert_eq!(frames[0]["online"], json!(["alice"]));
+        headers.insert("x-chat-name-colors", HeaderValue::from_static("1"));
+        assert!(
+            resume_browser(&app, &headers, token.clone(), &mut interests)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        headers.remove("x-chat-name-colors");
+        app.engine_api()
+            .unwrap()
+            .execute(Some("alice"), Some("team"), "Second")
+            .unwrap();
+        let resumed = resume_browser(&app, &headers, token.clone(), &mut interests)
+            .await
+            .unwrap()
+            .unwrap();
+        let frames: Vec<serde_json::Value> = resumed
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        assert_eq!(frames.last().unwrap()["kind"], "resumed");
+        assert!(frames.iter().any(
+            |frame| frame["kind"] == "conversation" && frame["messages"][1]["text"] == "Second"
+        ));
+        app.engine_api().unwrap().logout("resume-session").unwrap();
+        assert!(matches!(
+            resume_browser(&app, &headers, token, &mut interests).await,
+            Err(EngineError::Forbidden(_))
+        ));
+    }
+
     #[test]
     fn configured_snapshot_limits_evict_entries_and_oversized_frames() {
         let app = crate::web::tests::login_test_app();
@@ -403,8 +595,16 @@ mod tests {
             max_bytes: 4096,
             max_entries: 1,
         });
-        let first = ("alice".into(), false, stamp.clone(), 0, false);
-        let second = ("bob".into(), false, stamp, 0, false);
+        let first = (
+            "alice".into(),
+            false,
+            stamp.clone(),
+            0,
+            false,
+            None,
+            "one".into(),
+        );
+        let second = ("bob".into(), false, stamp, 0, false, None, "two".into());
         let value = cache.claim(&first);
         cache.finish(&first, &value, 1024);
         assert_eq!(cache.stats()["bytes"], 1024);
@@ -428,6 +628,8 @@ mod tests {
                 engine.snapshot_stamp("alice", false).unwrap(),
                 0,
                 false,
+                None,
+                "alice-account".into(),
             )
         };
         let (started, waiting) = tokio::sync::oneshot::channel();
@@ -454,6 +656,7 @@ mod tests {
                         frame: "complete".into(),
                         etag: None,
                         complete: true,
+                        resume: None,
                     })
                 })
                 .await

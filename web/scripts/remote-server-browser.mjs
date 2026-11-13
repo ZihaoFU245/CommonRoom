@@ -80,6 +80,7 @@ export async function startRemoteServer(
     }
   }
   let apiPort;
+  let pauseSockets = false;
   function track(...listeners) {
     for (const server of listeners) {
       servers.push(server);
@@ -245,6 +246,12 @@ export async function startRemoteServer(
       proxy(apiPort, true)(req, res);
     });
     const upgrade = async (req, incoming, head) => {
+      if (pauseSockets) {
+        incoming.end(
+          "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+        );
+        return;
+      }
       const { connect } = await import("node:net");
       const upstream = connect(apiPort, "127.0.0.1", () => {
         upstream.write(
@@ -441,6 +448,9 @@ export async function startRemoteServer(
       notePath: note.path,
       storageRequests,
       apiRequests,
+      pauseSockets(value) {
+        pauseSockets = value;
+      },
       sameOrigin,
       plainHttp,
       certificateSpki: createHash("sha256")
@@ -502,6 +512,7 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
         sessionId,
       );
   }
+  await command("Network.enable", {}, sessionId);
   await command("Browser.setDownloadBehavior", {
     behavior: "allow",
     downloadPath: join(fixture.work, "downloads"),
@@ -528,6 +539,48 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     'document.querySelector(".connection")?.textContent.includes("Connected") || document.querySelector(".connection")?.classList.contains("online")',
     "cross-site WSS",
   );
+  // Warm reload must paint the first message even if the socket handshake
+  // cannot complete. The socket should then resume from the HTTP checkpoint.
+  const eventStart = events.length;
+  const apiStart = fixture.apiRequests.length;
+  fixture.pauseSockets(true);
+  const opener = new URL(fixture.url);
+  opener.searchParams.set("startup-check", "1");
+  opener.hash = "room=files";
+  await command("Page.navigate", { url: opener.href }, sessionId);
+  await wait(
+    'location.search === "?startup-check=1" && document.querySelector(".message-list")?.textContent.includes("remote-note.txt")',
+    "messages paint before a socket can connect",
+  );
+  const startupReads = fixture.apiRequests
+    .slice(apiStart)
+    .filter(
+      (request) =>
+        request.path.startsWith("/server/api/me?colors=") &&
+        request.path.includes("room=files"),
+    );
+  assert.deepEqual(
+    startupReads.map((request) => request.method),
+    ["GET"],
+    "one authenticated snapshot request with no preflight before first messages",
+  );
+  fixture.pauseSockets(false);
+  await evaluate('window.dispatchEvent(new Event("online"));');
+  await wait(
+    'document.querySelector(".connection")?.classList.contains("online")',
+    "live socket resumes after initial message paint",
+  );
+  const resumed = events
+    .slice(eventStart)
+    .filter(
+      (event) =>
+        event.method === "Network.webSocketFrameReceived" &&
+        event.params.response.opcode === 1,
+    )
+    .map((event) => JSON.parse(event.params.response.payloadData));
+  assert.ok(resumed.some((frame) => frame.kind === "resumed"));
+  assert.ok(resumed.every((frame) => frame.kind !== "snapshot"));
+
   const libraryRequests = () =>
     fixture.apiRequests.filter(
       (request) =>

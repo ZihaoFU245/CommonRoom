@@ -15,6 +15,7 @@ use std::time::Instant;
 #[derive(serde::Deserialize, Default)]
 pub(crate) struct Options {
     colors: Option<u8>,
+    resume: Option<String>,
 }
 
 pub(crate) async fn upgrade(
@@ -36,6 +37,9 @@ pub(crate) async fn upgrade(
     }
     let identity = super::auth::authenticated_identity(&app, &headers).await?;
     let username = identity.user;
+    let resume = options
+        .resume
+        .filter(|token| uuid::Uuid::parse_str(token).is_ok());
     let account = identity.account;
     let profile = if super::auth::bearer(&headers).is_some() {
         super::admission::Profile::Bot
@@ -53,7 +57,7 @@ pub(crate) async fn upgrade(
             crate::web::transport::run(
                 &app,
                 lease,
-                connection(app.clone(), headers, username, socket),
+                connection(app.clone(), headers, username, socket, resume),
             )
             .await;
         }))
@@ -234,6 +238,7 @@ pub(crate) async fn connection(
     headers: HeaderMap,
     mut user: String,
     mut socket: WebSocket,
+    resume: Option<String>,
 ) {
     let bot = super::auth::bearer(&headers).is_some();
     let mut events = crate::web::transport::Events::new(&app, true);
@@ -256,11 +261,29 @@ pub(crate) async fn connection(
     if presence.authenticate(&headers).await.is_err() {
         return;
     }
-    if !snapshot(&app, &mut socket, bot, &headers).await {
-        return;
+    let mut interests = crate::web::transport::Interests::default();
+    let resumed = if let Some(token) = resume.filter(|_| !bot) {
+        match snapshots::resume_browser(&app, &headers, token, &mut interests).await {
+            Ok(frames) => frames,
+            Err(crate::engine::EngineError::Forbidden(_)) => return,
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if let Some(frames) = resumed {
+        for frame in frames {
+            if !send(&mut socket, Message::Text(frame)).await {
+                return;
+            }
+        }
+    } else {
+        interests = Default::default();
+        if !snapshot(&app, &mut socket, bot, &headers).await {
+            return;
+        }
     }
     let mut budget = crate::web::transport::Budget::new();
-    let mut interests = crate::web::transport::Interests::default();
 
     loop {
         let event = events.next(&mut socket).await;

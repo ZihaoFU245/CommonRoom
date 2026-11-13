@@ -21,6 +21,11 @@ pub(crate) struct SnapshotPlan {
     pub(super) colors: Option<Arc<super::colors::ColorDirectory>>,
 }
 impl SnapshotPlan {
+    pub(crate) fn prioritize(&mut self, view: &str) {
+        if let Some(index) = self.jobs.iter().position(|job| job.view == view) {
+            self.jobs[..=index].rotate_right(1);
+        }
+    }
     #[cfg(test)]
     pub(crate) fn finish(self) -> Result<(Snapshot, bool), EngineError> {
         database::block_on_storage(self.finish_async())?

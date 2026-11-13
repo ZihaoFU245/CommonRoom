@@ -41,7 +41,7 @@ test("initial and post-login snapshots request colors by default and honor saved
   assert.equal(calls.length, 4, "one bootstrap request per entry");
 });
 
-test("login seeds only missing settings and requests its first visible snapshot using server preferences", async (t) => {
+test("bootstrap seeds settings without a second snapshot request", async (t) => {
   const originalMe = api.me;
   const originalPreferences = api.preferences;
   const descriptor = Object.getOwnPropertyDescriptor(
@@ -90,7 +90,7 @@ test("login seeds only missing settings and requests its first visible snapshot 
     };
   };
   assert.equal(await loadInitialAccount(), account);
-  assert.deepEqual(calls, [true, false]);
+  assert.deepEqual(calls, [true]);
   assert.equal(preferenceValue("name_colors", ""), "false");
   assert.equal(preferenceValue("theme", ""), "light");
 });
@@ -131,7 +131,7 @@ for (const complete of [true, false]) {
   });
 }
 
-test("preference revision changes refetch the snapshot", async (t) => {
+test("first snapshot resolves while preference initialization is pending", async (t) => {
   const originalMe = api.me,
     originalPreferences = api.preferences;
   t.after(() => {
@@ -148,10 +148,15 @@ test("preference revision changes refetch the snapshot", async (t) => {
       sync: { instance: "server", revision: reads },
     };
   };
-  api.preferences = async (values) => ({
-    values,
-    sync: { instance: "server", revision: 2 },
-  });
-  await loadInitialAccount();
-  assert.equal(reads, 2);
+  let finish;
+  api.preferences = (values) =>
+    new Promise((resolve) => {
+      finish = () =>
+        resolve({ values, sync: { instance: "server", revision: 2 } });
+    });
+  const snapshot = await loadInitialAccount();
+  assert.equal(snapshot.sync.revision, 1);
+  assert.equal(reads, 1);
+  assert.equal(typeof finish, "function");
+  finish();
 });

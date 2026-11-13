@@ -7,7 +7,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `POST /api/login` | `{username,password}` | `{ok:true}` and HttpOnly session cookie |
 | `POST /api/logout` | `{}` | `{ok:true}` and cleared cookie |
 | `GET /api/session` | Cookie credential | `{ok:true}` or 401; lightweight reconnect authentication |
-| `GET /api/me` | Session cookie | Authorized `Snapshot` |
+| `GET /api/me?room=...` | Session cookie, optional preferred room view and `colors=0|1` | Authorized `Snapshot` with the preferred visible tail prioritized |
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
 | `POST /api/displayname` | `{value:string|null,room?:string|null}` | `{ok:true,sync}`; self only; omit room for global default; stable room ID requires own/any displayname permission |
@@ -328,10 +328,28 @@ changes on server restart; revision monotonically combines state, presence and
 read-cursor changes during that instance. Clients ignore an older full snapshot
 from the same instance, preventing a queued WebSocket baseline from replacing a
 newer HTTP refresh. A cached baseline retains its captured revision while its viewer-visible content is unchanged; unrelated room/session activity need not advance it. The validator accepts omitted sync metadata from older servers.
-Socket open uses the server's baseline without a redundant HTTP snapshot build.
+On page load the first authorized `/api/me` response is enough to mount the
+selected room and render its tail. The browser sends the room from the URL so
+the server fills its tail before other conversations consume the snapshot budget.
+The startup GET passes the name-color projection in the query to avoid a
+cross-origin preflight.
+Browser HTTP caching can supply the body after an authorized 304. Missing account
+preferences seed in the background, and older history can load after first paint.
 
-Reconnect checks `/api/session` for credential validity and obtains chat state from
-the WebSocket baseline. Focus resynchronization continues to use `/api/me`.
+Complete browser snapshots include an opaque `resume` checkpoint. The browser
+offers it as `/ws?resume=...` on initial socket open and reconnect. The server
+subscribes before checking the checkpoint against the current session, viewer,
+metadata and name-color projection. It sends current presence, changed read
+state and up to four changed conversation tails, followed by `{kind:"resumed"}`.
+The browser treats those catch-up frames as baseline state and enables socket
+actions after the marker. Changes committed after the capture arrive through
+the live subscription. An unknown, evicted or incompatible checkpoint, or a
+catch-up over 512 KiB, falls back to an authorized full snapshot. Checkpoints
+are bounded by the server snapshot cache and expire on restart. Conversation
+tails are complete replacements and can be applied more than once.
+
+Reconnect checks `/api/session` for credential validity while the socket retries.
+Focus resynchronization continues to use `/api/me`.
 
 ## Responsive history and reconnects
 

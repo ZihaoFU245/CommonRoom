@@ -2,7 +2,7 @@ use super::security::{check_origin, check_read_origin, client_ip};
 use super::*;
 use crate::engine::{EngineError, valid_name, verify_password};
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Query, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -361,20 +361,46 @@ pub(crate) async fn logout(
     })
     .await?
 }
-pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
+#[derive(Default, Deserialize)]
+pub(crate) struct SnapshotQuery {
+    room: Option<String>,
+    colors: Option<u8>,
+}
+pub(crate) async fn me(
+    State(app): State<App>,
+    mut headers: HeaderMap,
+    Query(query): Query<SnapshotQuery>,
+) -> Result<Response, ApiError> {
     check_read_origin(&app, &headers)?;
+    let request_headers = headers.clone();
+    if let Some(colors) = query.colors {
+        match colors {
+            0 => {
+                headers.remove("x-chat-name-colors");
+            }
+            1 => {
+                headers.insert("x-chat-name-colors", HeaderValue::from_static("1"));
+            }
+            _ => return Err(error(StatusCode::BAD_REQUEST, "Invalid color preference.")),
+        }
+    }
     let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
-        let baseline = super::snapshots::browser_baseline(&app, &headers, false)
-            .await
-            .map_err(|cause| match cause {
-                crate::engine::EngineError::Forbidden(_) => {
-                    error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
-                }
-                cause => ApiError::from(cause),
-            })?;
-        Ok(revalidation::response(
+        let baseline = super::snapshots::browser_baseline(
+            &app,
             &headers,
+            false,
+            query.room.filter(|view| view.chars().count() <= 74),
+        )
+        .await
+        .map_err(|cause| match cause {
+            crate::engine::EngineError::Forbidden(_) => {
+                error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+            }
+            cause => ApiError::from(cause),
+        })?;
+        Ok(revalidation::response(
+            &request_headers,
             Bytes::from(baseline.frame),
             baseline.etag,
             true,

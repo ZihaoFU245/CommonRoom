@@ -254,9 +254,13 @@ async fn poisoned_history_returns_restart_diagnostics_to_http_and_socket_snapsho
         header::ORIGIN,
         HeaderValue::from_static("http://localhost:5173"),
     );
-    let error = auth::me(axum::extract::State(app.clone()), headers.clone())
-        .await
-        .unwrap_err();
+    let error = auth::me(
+        axum::extract::State(app.clone()),
+        headers.clone(),
+        axum::extract::Query(Default::default()),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(error.message.contains("restart the service"));
     assert!(

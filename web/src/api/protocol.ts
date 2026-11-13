@@ -97,6 +97,7 @@ export interface Snapshot {
   /** Client-only supplemental history colors; snapshots do not send this field. */
   name_colors?: MessageColors | undefined;
   sync?: { instance: string; revision: number };
+  resume?: string | undefined;
   kind: "snapshot";
   username: string;
   groups: string[];
@@ -177,6 +178,7 @@ export type ServerFrame =
   | Snapshot
   | ConversationUpdate
   | Acknowledgement
+  | { kind: "resumed" }
   | { kind: "presence"; online: string[] }
   | { kind: "read"; unread: Record<string, Unread> };
 export interface ClientFrame {
@@ -342,9 +344,16 @@ const messageDisplayNames = (value: unknown): value is MessageDisplayNames =>
   Object.values(value.values).every(
     (name) => name === null || typeof name === "string",
   );
+function resumeToken(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(value)
+  );
+}
 export const isSnapshot = (v: unknown): v is Snapshot =>
   record(v) &&
   v.kind === "snapshot" &&
+  (v.resume === undefined || resumeToken(v.resume)) &&
   (v.preferences === undefined || colorMap(v.preferences)) &&
   snapshotBudget(v) &&
   (v.color_version === undefined || typeof v.color_version === "string") &&
@@ -444,6 +453,7 @@ export function parseFrame(raw: string): ServerFrame | null {
   }
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
+  if (value.kind === "resumed") return { kind: "resumed" };
   if (value.kind === "media") {
     if (value.ids === undefined) return { kind: "media" };
     if (

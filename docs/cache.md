@@ -31,7 +31,9 @@ before cached content is delivered.
 The defaults are 32 MiB of conservative history accounting, 10,000 message
 entries, 256 pages and 1,000 entries per conversation. Unread results default to
 4,096 entries. Serialized snapshots default to 32 MiB and 128 entries by
-account/profile and state, with authorization checks on reuse.
+account/profile and state, with authorization checks on reuse. Recent browser
+baselines also serve as WebSocket checkpoints and share those same entry and
+byte budgets.
 
 Configure these application caches under `server.cache` in `config.json` on
 either database backend; changes require restart. Omitted fields keep defaults:

@@ -120,6 +120,8 @@ pub struct Snapshot {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub color_version: String,
     pub sync: SyncVersion,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
     pub kind: &'static str,
     pub username: String,
     pub groups: Vec<String>,
