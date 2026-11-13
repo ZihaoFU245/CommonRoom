@@ -8,8 +8,9 @@ use tokio::sync::OnceCell;
 
 type Key = (String, bool, crate::engine::SnapshotStamp, u64, bool);
 #[derive(Clone)]
-struct Baseline {
-    frame: Utf8Bytes,
+pub(super) struct Baseline {
+    pub(super) frame: Utf8Bytes,
+    pub(super) etag: Option<axum::http::HeaderValue>,
     complete: bool,
 }
 type Value = Arc<OnceCell<Result<Baseline, SnapshotError>>>;
@@ -206,12 +207,23 @@ impl Viewer {
     }
 }
 impl Plan {
-    async fn finish(self) -> Result<(String, bool), EngineError> {
+    async fn finish(self) -> Result<Baseline, EngineError> {
         match self {
             Self::Browser(plan) => {
                 let (snapshot, complete) = plan.finish_async().await?;
                 tokio::task::spawn_blocking(move || {
-                    serde_json::to_string(&snapshot).map(|frame| (frame, complete))
+                    serde_json::to_string(&snapshot).map(|frame| {
+                        let etag = if complete {
+                            revalidation::etag(frame.as_bytes())
+                        } else {
+                            None
+                        };
+                        Baseline {
+                            frame: frame.into(),
+                            etag,
+                            complete,
+                        }
+                    })
                 })
                 .await
                 .map_err(EngineError::unavailable)?
@@ -224,7 +236,11 @@ impl Plan {
                     .iter()
                     .all(|conversation| conversation.unread.is_some());
                 tokio::task::spawn_blocking(move || {
-                    serde_json::to_string(&snapshot).map(|frame| (frame, complete))
+                    serde_json::to_string(&snapshot).map(|frame| Baseline {
+                        frame: frame.into(),
+                        etag: None,
+                        complete,
+                    })
                 })
                 .await
                 .map_err(EngineError::unavailable)?
@@ -239,6 +255,15 @@ pub(crate) async fn value_async(
     headers: &axum::http::HeaderMap,
     bot: bool,
 ) -> Result<Utf8Bytes, EngineError> {
+    browser_baseline(app, headers, bot)
+        .await
+        .map(|baseline| baseline.frame)
+}
+pub(super) async fn browser_baseline(
+    app: &App,
+    headers: &axum::http::HeaderMap,
+    bot: bool,
+) -> Result<Baseline, EngineError> {
     value_for(
         app,
         Viewer::Browser {
@@ -255,6 +280,7 @@ pub(crate) async fn bot_value_async(
 ) -> Result<Utf8Bytes, crate::bots::error::Error> {
     value_for(app, Viewer::Bot(context.clone()))
         .await
+        .map(|baseline| baseline.frame)
         .map_err(Into::into)
 }
 // Synchronous domain/test callers bridge once for the complete snapshot, rather
@@ -275,7 +301,7 @@ pub(crate) fn bot_value(
     crate::engine::database::block_on_storage(bot_value_async(app, context))
         .map_err(crate::bots::error::Error::storage)?
 }
-async fn value_for(app: &App, viewer: Viewer) -> Result<Utf8Bytes, SnapshotError> {
+async fn value_for(app: &App, viewer: Viewer) -> Result<Baseline, SnapshotError> {
     for _ in 0..3 {
         if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(EngineError::Unavailable("Server is shutting down.".into()).into());
@@ -315,11 +341,11 @@ async fn value_for(app: &App, viewer: Viewer) -> Result<Utf8Bytes, SnapshotError
     }
     Err(EngineError::Conflict("Snapshot changed; retry shortly.".into()).into())
 }
-async fn cached<F: std::future::Future<Output = Result<(String, bool), SnapshotError>>>(
+async fn cached<F: std::future::Future<Output = Result<Baseline, SnapshotError>>>(
     app: &App,
     key: Key,
     build: impl FnOnce() -> F,
-) -> Result<Utf8Bytes, SnapshotError> {
+) -> Result<Baseline, SnapshotError> {
     let value = app
         .snapshots
         .lock()
@@ -329,10 +355,7 @@ async fn cached<F: std::future::Future<Output = Result<(String, bool), SnapshotE
     let result = value
         .get_or_init(|| async {
             built = true;
-            build().await.map(|(frame, complete)| Baseline {
-                frame: frame.into(),
-                complete,
-            })
+            build().await
         })
         .await
         .clone();
@@ -361,7 +384,7 @@ async fn cached<F: std::future::Future<Output = Result<(String, bool), SnapshotE
         cache.entries.remove(&key);
         cache.order.retain(|entry| entry != &key);
     }
-    result.map(|baseline| baseline.frame)
+    result
 }
 
 #[cfg(test)]
@@ -414,7 +437,7 @@ mod tests {
             async move {
                 cached(&app, key, || async {
                     started.send(()).unwrap();
-                    std::future::pending::<Result<(String, bool), SnapshotError>>().await
+                    std::future::pending::<Result<Baseline, SnapshotError>>().await
                 })
                 .await
             }
@@ -426,25 +449,35 @@ mod tests {
             let key = key.clone();
             async move {
                 following.send(()).unwrap();
-                cached(&app, key, || async { Ok(("complete".into(), true)) }).await
+                cached(&app, key, || async {
+                    Ok(Baseline {
+                        frame: "complete".into(),
+                        etag: None,
+                        complete: true,
+                    })
+                })
+                .await
             }
         });
         entered.await.unwrap();
         assert!(!follower.is_finished());
         builder.abort();
-        assert!(builder.await.unwrap_err().is_cancelled());
+        assert!(matches!(builder.await, Err(error) if error.is_cancelled()));
         let frame = tokio::time::timeout(std::time::Duration::from_secs(1), follower)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(frame.as_str(), "complete");
+        assert_eq!(frame.frame.as_str(), "complete");
         let reused = cached(&app, key, || async {
             Err(EngineError::Internal("Completed cache entry was rebuilt.".into()).into())
         })
         .await
         .unwrap();
-        assert_eq!(frame.as_str().as_ptr(), reused.as_str().as_ptr());
+        assert_eq!(
+            frame.frame.as_str().as_ptr(),
+            reused.frame.as_str().as_ptr()
+        );
         let metrics = app.snapshots.lock().unwrap().stats();
         assert_eq!(metrics["misses"], 1);
         assert_eq!(metrics["hits"], 2);

@@ -110,6 +110,8 @@ slightly because reporting does not stop traffic or acquire a global lock.
 History page hit rate is `hits / (hits + misses)`. Requests that reuse a concurrent
 fill count as hits. Counters describe cache/database-load attempts, not HTTP
 success rates. A large around-message lookup may require more than one load.
+An HTTP 304 counts under the route's `not_modified` counter. The history page
+lookup for that request independently counts as a server cache hit or miss.
 For a current workload, compare changes in counters between two reports rather
 than relying only on lifetime averages. A zero denominator displays `n/a`.
 
@@ -172,7 +174,7 @@ limits. `admission.http` contains bounded lifetime counters:
   rejections share one counter across login, credential commands and stdin provisioning.
 - `body_timeouts`, `body_rejections` and `request_timeouts`: absolute body deadlines,
   oversized/invalid body reads, and whole-request response-creation deadlines.
-- `routes`: active/completed/cancelled requests, 4xx/5xx counts, completed total/max
+- `routes`: active/completed/cancelled requests, 304/4xx/5xx counts, completed total/max
   microseconds and nine non-cumulative latency buckets (<=0.5 ms, <=1 ms, <=5 ms,
   <=10 ms, <=50 ms, <=250 ms, <=1 s, <=5 s, >5 s). Labels use registered route patterns; unknown paths share
   `unmatched`. No user IDs, query strings, credentials or message bodies are stored.

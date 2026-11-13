@@ -41,7 +41,7 @@ pub(crate) async fn list(
     State(app): State<App>,
     headers: HeaderMap,
     Query(input): Query<List>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Response, ApiError> {
     security::check_read_origin(&app, &headers)?;
     if input.sections && (input.owned || input.recent || !input.after.is_empty()) {
         return Err(error(
@@ -52,7 +52,7 @@ pub(crate) async fn list(
     let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
         let (identity, store) =
-            media::native_context(&app, media::Access::Browser(headers)).await?;
+            media::native_context(&app, media::Access::Browser(headers.clone())).await?;
         let ordering = app.mutations.conversations(vec![]).await?;
         let (quota, scopes) = app
             .with_conversation(&ordering, {
@@ -83,9 +83,10 @@ pub(crate) async fn list(
         };
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
             media::verify_identity(&identity, engine)?;
-            Ok(Json(page))
+            Ok(())
         })
-        .await
+        .await?;
+        revalidation::json(&headers, &page, false)
     })
     .await?
 }

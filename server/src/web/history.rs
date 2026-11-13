@@ -19,7 +19,7 @@ pub(crate) async fn history(
     State(app): State<App>,
     headers: HeaderMap,
     Query(input): Query<HistoryQuery>,
-) -> Result<Json<crate::engine::History>, ApiError> {
+) -> Result<Response, ApiError> {
     check_read_origin(&app, &headers)?;
     let permit = app.io_permit()?;
     // Detach accepted work from request cancellation so admission remains held
@@ -52,20 +52,24 @@ pub(crate) async fn history(
             .page_checked_async(&id, revision, range, &input.view)
             .await
             .map_err(crate::engine::EngineError::from)?;
-        app.inspect_engine(move |engine, config| -> Result<_, ApiError> {
-            let current = super::auth::identity(engine, config, &headers)
-                .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Invalid or expired credential."))?;
-            let (_, current_id, _) = engine.conversation(&current, &input.view)?;
-            if current != user || current_id != id {
-                return Err(error(
-                    StatusCode::CONFLICT,
-                    "History changed; retry the current page.",
-                ));
-            }
-            engine.project_history_names(&id, &mut page, super::colors::enabled(&headers));
-            Ok(Json(page))
-        })
-        .await
+        let (page, headers) = app
+            .inspect_engine(move |engine, config| -> Result<_, ApiError> {
+                let current = super::auth::identity(engine, config, &headers).ok_or_else(|| {
+                    error(StatusCode::UNAUTHORIZED, "Invalid or expired credential.")
+                })?;
+                let (_, current_id, current_revision) =
+                    engine.conversation(&current, &input.view)?;
+                if current != user || current_id != id || current_revision != revision {
+                    return Err(error(
+                        StatusCode::CONFLICT,
+                        "History changed; retry the current page.",
+                    ));
+                }
+                engine.project_history_names(&id, &mut page, super::colors::enabled(&headers));
+                Ok((page, headers))
+            })
+            .await?;
+        super::revalidation::json(&headers, &page, true)
     })
     .await?
 }

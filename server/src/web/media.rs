@@ -778,9 +778,10 @@ pub(crate) mod tests;
 pub(crate) async fn config(
     State(app): State<App>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Response, ApiError> {
     security::check_read_origin(&app, &headers)?;
-    config_as(State(app), super::media::Access::Browser(headers)).await
+    let Json(value) = config_as(State(app), super::media::Access::Browser(headers.clone())).await?;
+    revalidation::json(&headers, &value, false)
 }
 
 pub(crate) async fn allocate(

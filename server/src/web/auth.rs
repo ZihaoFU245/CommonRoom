@@ -2,7 +2,6 @@ use super::security::{check_origin, check_read_origin, client_ip};
 use super::*;
 use crate::engine::{EngineError, valid_name, verify_password};
 use axum::{
-    body::Bytes,
     extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
@@ -366,7 +365,7 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
     check_read_origin(&app, &headers)?;
     let permit = app.io_permit()?;
     super::admission::spawn_io(permit, async move {
-        let value = super::snapshots::value_async(&app, &headers, false)
+        let baseline = super::snapshots::browser_baseline(&app, &headers, false)
             .await
             .map_err(|cause| match cause {
                 crate::engine::EngineError::Forbidden(_) => {
@@ -374,11 +373,12 @@ pub(crate) async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Res
                 }
                 cause => ApiError::from(cause),
             })?;
-        Ok((
-            [(header::CONTENT_TYPE, "application/json")],
-            Bytes::from(value),
-        )
-            .into_response())
+        Ok(revalidation::response(
+            &headers,
+            Bytes::from(baseline.frame),
+            baseline.etag,
+            true,
+        ))
     })
     .await?
 }

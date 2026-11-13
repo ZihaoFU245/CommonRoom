@@ -162,7 +162,8 @@ fn with_security_headers(app: &App, mut response: Response) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     if app.config.production {
         h.insert(
             header::STRICT_TRANSPORT_SECURITY,

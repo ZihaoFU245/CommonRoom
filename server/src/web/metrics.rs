@@ -32,6 +32,7 @@ struct Route {
     active: AtomicU64,
     completed: AtomicU64,
     cancelled: AtomicU64,
+    not_modified: AtomicU64,
     client_errors: AtomicU64,
     server_errors: AtomicU64,
     total_us: AtomicU64,
@@ -49,6 +50,7 @@ impl Route {
         }
         Some(
             json!({"active":active,"completed":completed,"cancelled":cancelled,
+            "not_modified":self.not_modified.load(Ordering::Relaxed),
             "client_errors":self.client_errors.load(Ordering::Relaxed),
             "server_errors":self.server_errors.load(Ordering::Relaxed),
             "total_us":self.total_us.load(Ordering::Relaxed),
@@ -177,6 +179,9 @@ impl Drop for Request {
     fn drop(&mut self) {
         let route = &self.route;
         if let Some(status) = self.status {
+            if status == axum::http::StatusCode::NOT_MODIFIED {
+                increment(&route.not_modified);
+            }
             if status.is_client_error() {
                 increment(&route.client_errors);
             }

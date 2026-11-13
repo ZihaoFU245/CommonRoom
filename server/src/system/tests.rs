@@ -46,7 +46,7 @@ fn metrics_render_markdown_and_handle_empty_and_large_counters() {
 fn report_summarizes_outcomes_capacity_and_latency_without_losing_raw_counters() {
     let cache = json!({"hits":3,"misses":1,"accounted_bytes":256,"byte_limit":1024,"pages":2,"page_limit":8});
     let runtime = json!({"admission":{"http":{"routes":{
-        "/api/example/{id}":{"completed":100,"client_errors":3,"server_errors":2,"cancelled":4,"total_us":200000,"max_us":20000,"duration_buckets":[10,20,40,20,10,0,0,0,0]}
+        "/api/example/{id}":{"completed":100,"not_modified":12,"client_errors":3,"server_errors":2,"cancelled":4,"total_us":200000,"max_us":20000,"duration_buckets":[10,20,40,20,10,0,0,0,0]}
     }}}});
     let report = render_metrics(&cache, &json!({}), &json!({}), &runtime);
     assert!(report.contains("**95.00%** successful"));
@@ -54,13 +54,14 @@ fn report_summarizes_outcomes_capacity_and_latency_without_losing_raw_counters()
     assert!(report.contains("3.85% cancelled"));
     assert!(report.contains("**90.00%**; within 1 s: **100.00%**"));
     assert!(report.contains("25.00% (256 / 1024)"));
-    assert!(report.contains("| `/api/example/{id}` | 100 | 3.00% | 2.00% | 3.85% | 2.000 ms | <= 50.000 ms | 20.000 ms |"));
+    assert!(report.contains("| `/api/example/{id}` | 100 | 12 | 3.00% | 2.00% | 3.85% | 2.000 ms | <= 50.000 ms | 20.000 ms |"));
     assert!(
         report.contains("| `admission.http.routes./api/example/{id}.duration_buckets[0]` | 10 |")
     );
     let plain = render_metrics_text(&cache, &json!({}), &json!({}), &runtime);
     assert!(plain.contains("duration_buckets[0]: 10"));
     assert!(plain.contains("95.00% successful"));
+    assert!(plain.contains("All routes: completed=100, 304=12"));
     assert_eq!(p95_bound(&json!({})), "n/a");
     assert_eq!(
         p95_bound(&json!({"duration_buckets":[0,0,0,0,0,0,0,0,1]})),

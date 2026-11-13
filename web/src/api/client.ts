@@ -71,7 +71,7 @@ async function request<T>(
     const response = await fetch(new URL(`api/${path}`, serverBaseUrl()), {
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
-      // API responses are no-store; default fetch mode permits preflight reuse.
+      // Let the browser revalidate cached reads and reuse preflight approvals.
       cache: "default",
       signal: cancellation.signal,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

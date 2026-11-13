@@ -47,10 +47,16 @@ Preflights never authenticate or mutate data; Bot API routes do not opt into COR
 Successful browser preflights advertise `Access-Control-Max-Age: 600`, allowing
 the browser to reuse method/header approval for ten minutes per URL and origin.
 Rejected preflights and actual API responses do not advertise this lifetime.
-API data remains `no-store`; every actual request still checks current origin,
-session and permissions. Preflight permission caching grants no file-byte access.
-The API client uses default fetch cache mode and honors those response headers;
-forcing request-side `no-store` would bypass Chromium's preflight cache as well.
+Successful browser reads of `/api/me`, `/api/history`, `/api/bot-commands`,
+`/api/library` and `/api/media/config` use a content-derived weak `ETag` and
+`Cache-Control: private, no-cache`. Every revalidation checks the current
+origin, session and permissions. A matching `If-None-Match` returns a bodyless
+`304 Not Modified` with the cache headers. Representations vary by Origin and
+Cookie, and by `X-Chat-Name-Colors` for snapshots and history. Incomplete
+snapshots, errors and other API responses use `no-store`. The browser handles
+conditional requests and cached bodies in default fetch cache mode. Forcing
+request-side `no-store` would bypass Chromium's preflight cache as well.
+Preflight permission caching grants no file-byte access.
 The same allowlist applies to browser API and WebSocket origin checks. Production
 login/logout requests with an allowed Origin and `Sec-Fetch-Site: cross-site`
 set Secure, HttpOnly, SameSite=None cookies. Same-origin and same-site requests

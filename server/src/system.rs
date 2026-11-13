@@ -194,6 +194,7 @@ fn aggregate_routes(routes: &Value) -> Value {
             for key in [
                 "completed",
                 "cancelled",
+                "not_modified",
                 "client_errors",
                 "server_errors",
                 "total_us",
@@ -235,7 +236,7 @@ fn render_routes(text: &mut String, routes: &Value, plain: bool) {
     if plain {
         text.push_str("\n\nHTTP route summary\n");
     } else {
-        text.push_str("\n\n## HTTP route summary\n\n| Route | Completed | 4xx | 5xx | Cancelled | Average | p95 bound | Maximum |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+        text.push_str("\n\n## HTTP route summary\n\n| Route | Completed | 304 | 4xx | 5xx | Cancelled | Average | p95 bound | Maximum |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     }
     let overall = aggregate_routes(routes);
     let mut entries = vec![("All routes", &overall)];
@@ -247,6 +248,7 @@ fn render_routes(text: &mut String, routes: &Value, plain: bool) {
         let cancelled = number(route, "cancelled");
         let fields = [
             completed.to_string(),
+            number(route, "not_modified").to_string(),
             percentage(number(route, "client_errors"), completed),
             percentage(number(route, "server_errors"), completed),
             percentage(cancelled, completed.saturating_add(cancelled)),
@@ -255,7 +257,7 @@ fn render_routes(text: &mut String, routes: &Value, plain: bool) {
             maximum_ms(number(route, "max_us"), completed),
         ];
         if plain {
-            text.push_str(&format!("\n{name}: completed={}, 4xx={}, 5xx={}, cancelled={}, average={}, p95 bound={}, maximum={}",fields[0],fields[1],fields[2],fields[3],fields[4],fields[5],fields[6]));
+            text.push_str(&format!("\n{name}: completed={}, 304={}, 4xx={}, 5xx={}, cancelled={}, average={}, p95 bound={}, maximum={}",fields[0],fields[1],fields[2],fields[3],fields[4],fields[5],fields[6],fields[7]));
         } else {
             text.push_str(&format!("\n| `{name}` | {} |", fields.join(" | ")));
         }

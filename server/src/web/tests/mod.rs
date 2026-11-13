@@ -1596,6 +1596,7 @@ async fn history_colors_project_older_authors_and_recheck_room_access() {
         first
     };
     let routes = router(app.clone());
+    let mut tag = None;
     for revoked in [false, true] {
         if revoked {
             app.engine_api()
@@ -1603,26 +1604,27 @@ async fn history_colors_project_older_authors_and_recheck_room_access() {
                 .execute(None, None, "/revoke bob #team r:message.read")
                 .unwrap();
         }
+        let mut request = Request::builder()
+            .uri(format!(
+                "/api/history?view=team&before={}&limit=1",
+                first + 1
+            ))
+            .header(header::ORIGIN, "http://localhost:5173")
+            .header(header::COOKIE, "chat_session=color-reader")
+            .header("x-chat-name-colors", "1");
+        if let Some(tag) = &tag {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
         let response = routes
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/history?view=team&before={}&limit=1",
-                        first + 1
-                    ))
-                    .header(header::ORIGIN, "http://localhost:5173")
-                    .header(header::COOKIE, "chat_session=color-reader")
-                    .header("x-chat-name-colors", "1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap();
         if revoked {
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         } else {
             assert_eq!(response.status(), StatusCode::OK);
+            tag = Some(response.headers()[header::ETAG].clone());
             let page: serde_json::Value =
                 serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap())
                     .unwrap();
@@ -2722,4 +2724,119 @@ async fn untrusted_origins_are_refused_before_handlers_run() {
         .await
         .unwrap();
     assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn browser_json_revalidates_only_after_current_access_checks() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+
+    let app = login_test_app();
+    {
+        let mut engine = app.engine_api().unwrap();
+        let hash = engine.password_hash("alice").unwrap().to_owned();
+        engine
+            .login("etag-session".into(), "alice", &hash, None)
+            .unwrap();
+        engine.execute(None, None, "/room new team").unwrap();
+        engine.execute(None, None, "/room add alice #team").unwrap();
+        engine
+            .execute(Some("alice"), Some("team"), "First message")
+            .unwrap();
+    }
+    let routes = router(app.clone());
+    let get = |path: &str, condition: Option<&str>, colors: bool| {
+        let mut request = Request::builder()
+            .uri(path)
+            .header(header::ORIGIN, "http://localhost:5173")
+            .header(header::COOKIE, "chat_session=etag-session");
+        if let Some(condition) = condition {
+            request = request.header(header::IF_NONE_MATCH, condition);
+        }
+        if colors {
+            request = request.header("x-chat-name-colors", "1");
+        }
+        routes.clone().oneshot(request.body(Body::empty()).unwrap())
+    };
+    let history = "/api/history?view=team";
+    let mut history_tag = None;
+    for path in [
+        history,
+        "/api/me",
+        "/api/bot-commands",
+        "/api/library",
+        "/api/media/config",
+    ] {
+        let initial = get(path, None, false).await.unwrap();
+        assert_eq!(initial.status(), StatusCode::OK, "{path}");
+        let tag = initial.headers()[header::ETAG].to_str().unwrap();
+        let strong = tag.strip_prefix("W/").unwrap();
+        let condition = format!(r#""other,tag", {strong}"#);
+        let validated = get(path, Some(&condition), false).await.unwrap();
+        assert_eq!(validated.status(), StatusCode::NOT_MODIFIED, "{path}");
+        for name in [
+            header::ETAG,
+            header::CACHE_CONTROL,
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        ] {
+            assert_eq!(validated.headers()[&name], initial.headers()[&name]);
+        }
+        let vary = validated.headers().get_all(header::VARY);
+        assert!(vary.iter().any(|value| value == "Origin"));
+        assert!(
+            vary.iter()
+                .any(|value| value.to_str().unwrap().contains("Cookie"))
+        );
+        assert_eq!(
+            validated.headers()[header::CACHE_CONTROL],
+            "private, no-cache"
+        );
+        if path == history || path == "/api/me" {
+            assert!(
+                vary.iter()
+                    .any(|value| value.to_str().unwrap().contains("X-Chat-Name-Colors"))
+            );
+            let projected = get(path, Some(tag), true).await.unwrap();
+            assert_eq!(projected.status(), StatusCode::OK);
+            assert_ne!(projected.headers()[header::ETAG], tag);
+        }
+        assert!(to_bytes(validated.into_body(), 0).await.unwrap().is_empty());
+        if path == history {
+            history_tag = Some(tag.to_owned());
+        }
+    }
+    let tag = history_tag.as_deref().unwrap();
+    {
+        let mut engine = app.engine_api().unwrap();
+        engine
+            .execute(Some("alice"), Some("team"), "Second message")
+            .unwrap();
+    }
+    let changed = get(history, Some(tag), false).await.unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+    assert_ne!(changed.headers()[header::ETAG], tag);
+    let body = to_bytes(changed.into_body(), 8192).await.unwrap();
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 2);
+
+    app.engine_api().unwrap().logout("etag-session").unwrap();
+    for path in [
+        history,
+        "/api/me",
+        "/api/bot-commands",
+        "/api/library",
+        "/api/media/config",
+    ] {
+        let revoked = get(path, Some("*"), false).await.unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(revoked.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(!revoked.headers().contains_key(header::ETAG));
+    }
+
+    let metrics = app.admission.metrics.stats();
+    assert_eq!(metrics["routes"]["/api/history"]["not_modified"], 1);
+    assert_eq!(metrics["routes"]["/api/history"]["completed"], 5);
 }

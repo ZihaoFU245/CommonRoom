@@ -63,9 +63,12 @@ export async function startRemoteServer(
   const servers = [];
   const connections = new Set();
   const apiRequests = [];
-  function recordApi(req) {
+  function recordApi(req, res) {
     const record = { method: req.method, path: req.url, mediaIds: [] };
     apiRequests.push(record);
+    res.on("finish", () => {
+      record.status = res.statusCode;
+    });
     if (req.method === "POST" && req.url.endsWith("/api/media/resolve")) {
       const chunks = [];
       req.on("data", (chunk) => chunks.push(chunk));
@@ -133,7 +136,7 @@ export async function startRemoteServer(
     const ui = publicServer((req, res) => {
       // Never send this isolated browser's default bootstrap to an existing dev backend.
       if (sameOrigin && req.url.startsWith("/server/")) {
-        recordApi(req);
+        recordApi(req, res);
         // Match auto/debug.sh's preview: HTTP GETs lack browser Fetch Metadata.
         if (plainHttp && !req.headers.origin && !req.headers["sec-fetch-site"])
           req.headers.origin = uiOrigin;
@@ -238,7 +241,7 @@ export async function startRemoteServer(
     const internalStorageOrigin = `http://127.0.0.1:${await listen(internalStorage)}`;
     const storageOrigin = `${scheme}://${plainHttp ? "ui.test" : "store.test"}:${await listen(publicStorage)}`;
     const apiProxy = publicServer((req, res) => {
-      recordApi(req);
+      recordApi(req, res);
       proxy(apiPort, true)(req, res);
     });
     const upgrade = async (req, incoming, head) => {
@@ -697,14 +700,18 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   const snapshots = () =>
     fixture.apiRequests.filter(
       (req) => req.method === "GET" && req.path === snapshotPath,
-    ).length;
-  const beforeSnapshots = snapshots();
+    );
   const requestSnapshot = () =>
     evaluate(`fetch(${JSON.stringify(snapshotUrl)}, {
     credentials: "include", cache: "default", headers: {"X-Chat-Name-Colors": "1"}
-  }).then(async r => { if (!r.ok || r.headers.get("Cache-Control") !== "no-store") throw new Error("Snapshot must be fresh and no-store"); await r.json(); return r.status; })`);
+  }).then(async r => { if (!r.ok || r.headers.get("Cache-Control") !== "private, no-cache") throw new Error("Snapshot must revalidate privately"); await r.json(); return r.status; })`);
   assert.equal(await requestSnapshot(), 200);
   assert.equal(await requestSnapshot(), 200);
+  assert.deepEqual(
+    snapshots().map((req) => req.status),
+    [200, 304],
+    "the browser revalidates an unchanged snapshot and reuses cached JSON",
+  );
   // Exceed the browser's default five-second preflight lifetime. The explicit
   // server max-age must reuse OPTIONS while actual authenticated GETs stay live.
   await pause(6100);
@@ -714,10 +721,26 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     fixture.sameOrigin ? 0 : 1,
     "three credentialed reads reuse one preflight beyond five seconds",
   );
-  assert.equal(
-    snapshots() - beforeSnapshots,
-    3,
-    "no-store API responses still send every actual GET to the server",
+  assert.equal(snapshots().length, 3, "each read still reaches the server");
+  const historyPath = "/server/api/history?view=files&limit=1";
+  const historyUrl = new URL(historyPath, fixture.base).href;
+  const beforeHistory = fixture.apiRequests.length;
+  const readHistory = () =>
+    evaluate(`fetch(${JSON.stringify(historyUrl)}, {credentials: "include"})
+      .then(async r => {
+        if (!r.ok) throw new Error("History read failed");
+        return (await r.json()).messages;
+      })`);
+  const messages = await readHistory();
+  assert.equal(messages.length, 1);
+  assert.deepEqual(await readHistory(), messages);
+  assert.deepEqual(
+    fixture.apiRequests
+      .slice(beforeHistory)
+      .filter((req) => req.method === "GET" && req.path === historyPath)
+      .map((req) => req.status),
+    [200, 304],
+    "repeated history uses the browser's cached page",
   );
   const cookies = await command("Storage.getCookies");
   const session = cookies.cookies.find(

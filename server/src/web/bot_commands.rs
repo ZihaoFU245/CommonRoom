@@ -17,7 +17,7 @@ pub(crate) async fn get(
     State(app): State<App>,
     headers: HeaderMap,
     Query(input): Query<QueryInput>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Response, ApiError> {
     super::security::check_read_origin(&app, &headers)?;
     if super::auth::bearer(&headers).is_some() {
         return Err(error(StatusCode::UNAUTHORIZED, "Browser session required."));
@@ -38,62 +38,64 @@ pub(crate) async fn get(
         let _permit = permit;
         let identity = super::auth::authenticated_identity(&app, &headers).await?;
         let state = app.clone();
-        app.inspect_engine(move |engine, _| {
-            identity.verify(engine)?;
-            let directory = |id: &str| {
-                state
-                    .bot_runtimes
-                    .commands
-                    .visible(engine, &identity.user, id)
-                    .map(|bots| json!({"conversation_id":id,"bots":bots}))
-            };
-            if let Some(id) = input.conversation_id {
-                return directory(&id).map(Json).map_err(ApiError::from);
-            }
-            let mut conversations: Vec<serde_json::Value> = Vec::new();
-            let mut ids: Vec<_> = engine.bot_index.conversations.keys().collect();
-            ids.sort();
-            let mut bytes = 0;
-            let mut next = None;
-            for id in ids
-                .into_iter()
-                .filter(|id| input.after.as_ref().is_none_or(|after| *id > after))
-            {
-                match directory(id) {
-                    Ok(value) => {
-                        let size = serde_json::to_vec(&value)
-                            .map_err(|_| {
-                                error(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    "Command metadata unavailable.",
-                                )
-                            })?
-                            .len();
-                        if !conversations.is_empty() && bytes + size > DIRECTORY_PAGE_BYTES {
-                            next = conversations
-                                .last()
-                                .and_then(|entry| entry["conversation_id"].as_str())
-                                .map(str::to_owned);
-                            break;
-                        }
-                        bytes += size;
-                        conversations.push(value);
-                        // Include one large conversation to guarantee forward progress.
-                        // Individual catalogues and the publisher count remain bounded.
-                        if conversations.len() >= DIRECTORY_PAGE_CONVERSATIONS
-                            || bytes >= DIRECTORY_PAGE_BYTES
-                        {
-                            next = Some(id.clone());
-                            break;
-                        }
-                    }
-                    Err(EngineError::Forbidden(_) | EngineError::NotFound(_)) => {}
-                    Err(error) => return Err(ApiError::from(error)),
+        let value = app
+            .inspect_engine(move |engine, _| {
+                identity.verify(engine)?;
+                let directory = |id: &str| {
+                    state
+                        .bot_runtimes
+                        .commands
+                        .visible(engine, &identity.user, id)
+                        .map(|bots| json!({"conversation_id":id,"bots":bots}))
+                };
+                if let Some(id) = input.conversation_id {
+                    return directory(&id).map_err(ApiError::from);
                 }
-            }
-            Ok(Json(json!({"conversations":conversations,"next":next})))
-        })
-        .await
+                let mut conversations: Vec<serde_json::Value> = Vec::new();
+                let mut ids: Vec<_> = engine.bot_index.conversations.keys().collect();
+                ids.sort();
+                let mut bytes = 0;
+                let mut next = None;
+                for id in ids
+                    .into_iter()
+                    .filter(|id| input.after.as_ref().is_none_or(|after| *id > after))
+                {
+                    match directory(id) {
+                        Ok(value) => {
+                            let size = serde_json::to_vec(&value)
+                                .map_err(|_| {
+                                    error(
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        "Command metadata unavailable.",
+                                    )
+                                })?
+                                .len();
+                            if !conversations.is_empty() && bytes + size > DIRECTORY_PAGE_BYTES {
+                                next = conversations
+                                    .last()
+                                    .and_then(|entry| entry["conversation_id"].as_str())
+                                    .map(str::to_owned);
+                                break;
+                            }
+                            bytes += size;
+                            conversations.push(value);
+                            // Include one large conversation to guarantee forward progress.
+                            // Individual catalogues and the publisher count remain bounded.
+                            if conversations.len() >= DIRECTORY_PAGE_CONVERSATIONS
+                                || bytes >= DIRECTORY_PAGE_BYTES
+                            {
+                                next = Some(id.clone());
+                                break;
+                            }
+                        }
+                        Err(EngineError::Forbidden(_) | EngineError::NotFound(_)) => {}
+                        Err(error) => return Err(ApiError::from(error)),
+                    }
+                }
+                Ok(json!({"conversations":conversations,"next":next}))
+            })
+            .await?;
+        revalidation::json(&headers, &value, false)
     })
     .await?
 }
