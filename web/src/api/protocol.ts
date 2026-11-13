@@ -175,6 +175,8 @@ export interface BotActivity {
   kind: "activity";
   conversation_id: string;
   account_id: string;
+  /** Older servers omit this; the UI then falls back to a generic label. */
+  username?: string;
   state: "working" | "idle";
   expires: number;
   draft?: string;
@@ -488,6 +490,7 @@ export function parseFrame(raw: string): ServerFrame | null {
     value.kind === "activity" &&
     typeof value.conversation_id === "string" &&
     typeof value.account_id === "string" &&
+    (value.username === undefined || typeof value.username === "string") &&
     (value.state === "working" || value.state === "idle") &&
     integer(value.expires) &&
     (value.draft === undefined ||
@@ -500,6 +503,7 @@ export function parseFrame(raw: string): ServerFrame | null {
       account_id: value.account_id,
       state: value.state,
       expires: value.expires,
+      ...(value.username === undefined ? {} : { username: value.username }),
       ...(value.draft === undefined ? {} : { draft: value.draft }),
     };
   }

@@ -10,7 +10,13 @@ import { useReadTracking } from "../hooks/useReadTracking.ts";
 import { useHistoryNoticeMotion } from "../hooks/useHistoryNoticeMotion.ts";
 import { useHistoryPaging } from "../hooks/useHistoryPaging.ts";
 import { timelineAtBottom } from "../features/conversation/timelineScroll.ts";
-import { useEffect, useRef, useState, useMemo } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useMemo,
+} from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
@@ -120,6 +126,7 @@ export function Chat({
   const desiredRoom = useRef<string | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const historyElement = useRef<HTMLElement>(null);
+  const activityArea = useRef<HTMLDivElement>(null);
   const virtualTimeline = useRef<VirtualTimelineHandle>(null);
   const atBottom = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -448,6 +455,23 @@ export function Chat({
         loadNewer();
     }
   });
+  // Activity sits outside the scroller; keep a bottom-following view pinned
+  // when the row appears, grows while drafting, or clears.
+  useLayoutEffect(() => {
+    const area = activityArea.current;
+    if (!area) return;
+    let height = area.getBoundingClientRect().height;
+    const observer = new ResizeObserver(() => {
+      const next = area.getBoundingClientRect().height;
+      if (Math.abs(next - height) < 0.5) return;
+      height = next;
+      const viewport = historyElement.current;
+      if (viewport && atBottom.current)
+        viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+    });
+    observer.observe(area);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     if (
       (peer && !peers.includes(peer)) ||
@@ -661,13 +685,16 @@ export function Chat({
                 onScroll={handleScroll}
               />
             </LibrarySourceContext.Provider>
-            <BotProgress
-              activities={botActivities.filter(
-                (item) =>
-                  item.conversation_id ===
-                  (room?.id ?? state.private_access[selected]?.id),
-              )}
-            />
+            <div class="bot-progress-area" ref={activityArea}>
+              <BotProgress
+                activities={botActivities.filter(
+                  (item) =>
+                    item.conversation_id ===
+                    (room?.id ?? state.private_access[selected]?.id),
+                )}
+                avatars={state.avatars}
+              />
+            </div>
             <OutgoingPane
               items={commands.outgoing}
               selected={selected}

@@ -560,6 +560,13 @@ test(
             ),
           "browser provisional progress",
         );
+        assert.equal(
+          alice.activities.find(
+            (item) => item.draft === "provisional answer",
+          )?.username,
+          "helper",
+          "browser activity names the sending bot",
+        );
         assert.ok(
           !(
             await api.history({ conversation_id: conversationId })

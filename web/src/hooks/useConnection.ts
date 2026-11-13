@@ -164,19 +164,25 @@ export function useConnection(
           return;
         }
         if (data.kind === "activity") {
-          setBotActivities((items) =>
-            [
-              ...items.filter(
-                (item) =>
-                  item.expires > Date.now() / 1000 &&
-                  !(
-                    item.account_id === data.account_id &&
-                    item.conversation_id === data.conversation_id
-                  ),
-              ),
-              ...(data.state === "working" ? [data] : []),
-            ].slice(-128),
-          );
+          setBotActivities((items) => {
+            const live = items.filter(
+              (item) => item.expires > Date.now() / 1000,
+            );
+            const index = live.findIndex(
+              (item) =>
+                item.account_id === data.account_id &&
+                item.conversation_id === data.conversation_id,
+            );
+            if (data.state === "idle")
+              return index === -1
+                ? live
+                : live.filter((_, position) => position !== index);
+            // Replace in place so a streaming bot keeps its row while others work.
+            if (index === -1) return [...live, data].slice(-128);
+            return live.map((item, position) =>
+              position === index ? data : item,
+            );
+          });
           return;
         }
         if (data.kind === "bot_commands") {

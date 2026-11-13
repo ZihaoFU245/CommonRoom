@@ -5523,6 +5523,87 @@ await test("room selection preserves fragments and restores the default view wit
   }
 });
 
+await test("bot activity names the bot and keeps its draft out of the live region", async () => {
+  const { BotProgress } = await import("../../src/components/BotProgress.tsx");
+  const { NameColorContext } =
+    await import("../../src/components/NameColorContext.ts");
+  const { DisplayNamesContext } =
+    await import("../../src/components/DisplayNamesContext.ts");
+  const expires = Date.now() / 1000 + 30;
+  render(
+    h(
+      NameColorContext.Provider,
+      { value: { helper: "blue" } },
+      h(
+        DisplayNamesContext.Provider,
+        { value: { helper: "Helper" } },
+        h(BotProgress, {
+          avatars: {},
+          activities: [
+            {
+              kind: "activity",
+              conversation_id: "lobby",
+              account_id: "bot-1",
+              username: "helper",
+              state: "working",
+              expires,
+              draft: "one\ntwo\nthree\nfour",
+            },
+            {
+              kind: "activity",
+              conversation_id: "lobby",
+              account_id: "bot-2",
+              username: "scribe",
+              state: "working",
+              expires,
+            },
+          ],
+        }),
+      ),
+    ),
+    tests,
+  );
+  check(
+    tests.querySelectorAll(".bot-activity").length === 2,
+    "one row per bot",
+  );
+  check(
+    tests.querySelector(".bot-activity-name")?.textContent === "Helper",
+    "the display name identifies the bot",
+  );
+  check(
+    tests
+      .querySelector(".bot-activity-name")
+      ?.getAttribute("data-name-color") === "blue",
+    "the bot name keeps its color",
+  );
+  const draft = tests.querySelector(".bot-activity-draft-text");
+  check(
+    draft?.closest(".bot-activity-draft")?.getAttribute("aria-hidden") ===
+      "true",
+    "streaming text stays out of the live region",
+  );
+  check(
+    getComputedStyle(draft).webkitLineClamp === "3",
+    "the draft clamps to three lines",
+  );
+  check(
+    tests.querySelectorAll(".bot-activity-draft").length === 1,
+    "only a drafting bot previews text",
+  );
+  check(
+    tests
+      .querySelectorAll(".bot-activity")[1]
+      ?.querySelector(".bot-activity-state")?.textContent === "is working",
+    "a bot without a draft keeps the working label",
+  );
+  check(
+    tests.querySelector(".bot-progress")?.getAttribute("role") === "status",
+    "progress remains a status region",
+  );
+  render(null, tests);
+});
+
 await libraryRegressions({ test, tests, until, check, sleep, empty });
 
 document.querySelector("#results").textContent = JSON.stringify(

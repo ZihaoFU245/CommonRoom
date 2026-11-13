@@ -445,7 +445,7 @@ async fn connection(app: App, context: Context, mut socket: WebSocket) {
                                     let user = activity_context.user(engine)?;
                                     activity_context.permits(engine, "activity", crate::bots::auth::Scope::Conversation(&activity.conversation_id))?;
                                     engine.bot_target(&user, &activity.conversation_id, Action::Send)?;
-                                    let mut frame = json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"state":activity.state,"expires":super::now()+30});
+                                    let mut frame = json!({"kind":"activity","conversation_id":activity.conversation_id,"account_id":activity_context.account,"username":user,"state":activity.state,"expires":super::now()+30});
                                     if let Some(draft) = activity.draft { frame["draft"] = json!(draft); }
                                     let _ = activity_app.bot_runtimes.activities.send(frame);
                                     Ok(())
