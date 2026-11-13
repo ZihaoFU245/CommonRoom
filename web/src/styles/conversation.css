@@ -554,6 +554,134 @@ button:focus-visible {
   }
 }
 
+/* Activity sits between the transcript and composer. Its gutter mirrors the
+   message avatars, and the live region stays mounted while empty. */
+.bot-progress-area {
+  flex-shrink: 0;
+}
+.bot-progress {
+  max-height: min(200px, 30dvh);
+  padding: 0 42px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.bot-progress.live {
+  padding-block: 6px 10px;
+}
+.bot-activity {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: start;
+}
+.bot-activity + .bot-activity {
+  margin-top: 10px;
+}
+.bot-activity > .user-avatar {
+  margin-top: 2px;
+}
+.bot-activity-content {
+  grid-column: 2;
+  min-width: 0;
+  font-size: var(--chat-font-size, 16px);
+}
+.show-message-bars .bot-activity-content {
+  padding-left: 14px;
+}
+.bot-activity-line {
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.bot-activity-name {
+  margin-right: 6px;
+  color: var(--name, var(--ink));
+  font-weight: 600;
+}
+.bot-activity-state {
+  font-size: 0.875em;
+}
+.bot-activity-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.bot-activity-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  animation: bot-activity-dot 1.4s ease-in-out infinite;
+}
+.bot-activity-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.bot-activity-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+.bot-activity-draft {
+  max-width: min(100%, 760px);
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--wash);
+}
+.bot-activity-draft-text {
+  display: -webkit-box;
+  max-height: calc(1.55em * 3);
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.9375em;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+@keyframes bot-activity-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bot-activity {
+    animation: bot-activity-enter 160ms ease-out;
+  }
+  @keyframes bot-activity-enter {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bot-activity-dots i {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+@media (min-width: 1500px) {
+  .bot-progress {
+    padding-inline: calc(6vw + 4px);
+  }
+}
+@media (max-width: 700px) {
+  .bot-progress {
+    padding-inline: 24px;
+  }
+}
+
 .notification-toggle {
   display: grid;
   place-items: center;

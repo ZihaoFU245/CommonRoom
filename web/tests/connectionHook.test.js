@@ -394,3 +394,37 @@ test("reverting a queued preference cancels reconnect and real disconnect still 
     "idle reconnect must not also schedule backoff",
   );
 });
+
+test("streaming bot drafts keep each bot in place", (t) => {
+  const h = fixture(t);
+  h.baseline();
+  const ws = h.sockets.at(-1);
+  const expires = Math.floor(Date.now() / 1000) + 30;
+  const working = (account, draft) => ({
+    kind: "activity",
+    conversation_id: "lobby",
+    account_id: account,
+    username: account,
+    state: "working",
+    expires,
+    ...(draft === undefined ? {} : { draft }),
+  });
+  ws.onmessage({ data: JSON.stringify(working("alpha")) });
+  ws.onmessage({ data: JSON.stringify(working("beta")) });
+  ws.onmessage({ data: JSON.stringify(working("alpha", "answering")) });
+  const first = h.render();
+  assert.deepEqual(
+    first.botActivities.map((item) => item.account_id),
+    ["alpha", "beta"],
+    "a streaming draft replaces its row instead of moving it",
+  );
+  assert.equal(first.botActivities[0].draft, "answering");
+  ws.onmessage({
+    data: JSON.stringify({ ...working("alpha"), state: "idle" }),
+  });
+  const second = h.render();
+  assert.deepEqual(
+    second.botActivities.map((item) => item.account_id),
+    ["beta"],
+  );
+});

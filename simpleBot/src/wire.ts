@@ -141,6 +141,7 @@ export type ServerFrame =
       conversation_id: string;
       state: "working" | "idle";
       account_id: string;
+      username?: string;
       expires: number;
       draft?: string;
     }
@@ -306,6 +307,7 @@ export function parseServerFrame(value: unknown): ServerFrame | null {
       valid =
         typeof value.conversation_id === "string" &&
         typeof value.account_id === "string" &&
+        (value.username === undefined || typeof value.username === "string") &&
         (value.state === "working" || value.state === "idle") &&
         natural(value.expires) &&
         (value.draft === undefined ||
