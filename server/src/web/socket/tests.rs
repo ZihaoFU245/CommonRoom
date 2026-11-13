@@ -184,7 +184,11 @@ async fn socket_resumes_changed_tail_and_falls_back_after_access_change() {
         engine.execute(None, None, "/room new team").unwrap();
         engine.execute(None, None, "/room add alice #team").unwrap();
         engine
-            .execute(Some("alice"), Some("team"), "before disconnect")
+            .execute(
+                Some("alice"),
+                Some("team"),
+                &"before disconnect ".repeat(40),
+            )
             .unwrap();
         engine.data.rooms["team"].id.clone()
     };
@@ -205,7 +209,7 @@ async fn socket_resumes_changed_tail_and_falls_back_after_access_change() {
         std::future::pending(),
     ));
     let connect = || {
-        let mut request = format!("ws://{address}/ws?resume={checkpoint}")
+        let mut request = format!("ws://{address}/ws?delta=1&resume={checkpoint}")
             .into_client_request()
             .unwrap();
         request.headers_mut().extend(headers.clone());
@@ -238,28 +242,77 @@ async fn socket_resumes_changed_tail_and_falls_back_after_access_change() {
     .await
     .unwrap();
     assert_eq!(frames.last().unwrap()["kind"], "resumed");
-    assert!(frames.iter().any(|frame| frame["kind"] == "conversation"
-        && frame["messages"][1]["text"] == "while disconnected"));
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["kind"] == "conversation_delta"
+                && frame["upsert"][0]["text"] == "while disconnected")
+    );
     app.engine_api()
         .unwrap()
         .execute(Some("alice"), Some("team"), "after resume")
         .unwrap();
-    app.changes.send(Change::Conversation(room)).unwrap();
-    let live = tokio::time::timeout(Duration::from_secs(3), async {
-        while let Some(Ok(frame)) = socket.next().await {
-            if frame.is_text() {
-                let value: serde_json::Value =
-                    serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                if value["kind"] == "conversation" {
-                    return value;
+    app.changes
+        .send(Change::Conversation(room.clone()))
+        .unwrap();
+    async fn next_delta(
+        socket: &mut (
+                 impl futures_util::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin
+             ),
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(Ok(frame)) = socket.next().await {
+                if frame.is_text() {
+                    let value: serde_json::Value =
+                        serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                    if value["kind"] == "conversation_delta" {
+                        return value;
+                    }
                 }
             }
-        }
-        serde_json::Value::Null
-    })
-    .await
-    .unwrap();
-    assert_eq!(live["messages"][2]["text"], "after resume");
+            serde_json::Value::Null
+        })
+        .await
+        .unwrap()
+    }
+    let live = next_delta(&mut socket).await;
+    assert_eq!(live["upsert"].as_array().unwrap().len(), 1);
+    assert_eq!(live["upsert"][0]["text"], "after resume");
+    let id = live["upsert"][0]["id"].as_str().unwrap();
+    app.engine_api()
+        .unwrap()
+        .execute(Some("alice"), Some("team"), &format!("/react {id} 👍"))
+        .unwrap();
+    app.changes
+        .send(Change::Conversation(room.clone()))
+        .unwrap();
+    let reaction = next_delta(&mut socket).await;
+    assert_eq!(reaction["base_revision"], live["unread"]["revision"]);
+    assert_eq!(reaction["upsert"].as_array().unwrap().len(), 1);
+    assert_eq!(reaction["upsert"][0]["reactions"]["👍"], json!(["alice"]));
+    app.engine_api()
+        .unwrap()
+        .execute(Some("alice"), Some("team"), &format!("/edit {id} edited"))
+        .unwrap();
+    app.changes
+        .send(Change::Conversation(room.clone()))
+        .unwrap();
+    let edit = next_delta(&mut socket).await;
+    assert_eq!(edit["upsert"].as_array().unwrap().len(), 1);
+    assert_eq!(edit["upsert"][0]["text"], "edited");
+    app.engine_api()
+        .unwrap()
+        .execute(Some("alice"), Some("team"), &format!("/retract {id}"))
+        .unwrap();
+    app.changes.send(Change::Conversation(room)).unwrap();
+    let deletion = next_delta(&mut socket).await;
+    assert_eq!(deletion["upsert"], json!([]));
+    assert_eq!(deletion["sequences"].as_array().unwrap().len(), 2);
     drop(socket);
 
     app.engine_api()

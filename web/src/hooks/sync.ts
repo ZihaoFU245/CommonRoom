@@ -2,7 +2,11 @@
 // a newer WebSocket snapshot or update a session that has already signed out.
 export function snapshotSync<T>(
   fetchSnapshot: () => Promise<T>,
-  applySnapshot: (snapshot: T, baseline: boolean) => void,
+  applySnapshot: (
+    snapshot: T,
+    baseline: boolean,
+    source: "socket" | "http",
+  ) => void,
   onError: (error: unknown) => void,
   isOlder: (incoming: T, current: T) => boolean = () => false,
 ) {
@@ -16,7 +20,7 @@ export function snapshotSync<T>(
         return;
       current = snapshot;
       generation++;
-      applySnapshot(snapshot, baseline);
+      applySnapshot(snapshot, baseline, "socket");
     },
     refresh() {
       if (!active) return Promise.resolve();
@@ -34,7 +38,7 @@ export function snapshotSync<T>(
               return;
             current = snapshot;
             generation++;
-            applySnapshot(snapshot, true);
+            applySnapshot(snapshot, true, "http");
           },
           (error: unknown) => {
             if (active && generation === started) onError(error);

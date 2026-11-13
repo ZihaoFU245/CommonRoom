@@ -16,6 +16,7 @@ mod bot_commands;
 mod cleanup_commands;
 pub(crate) mod commands;
 mod deadline_io;
+mod deltas;
 pub(crate) mod history;
 pub(crate) mod http_server;
 mod library;

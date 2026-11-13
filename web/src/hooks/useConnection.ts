@@ -15,6 +15,7 @@ import {
   boundSnapshot,
   applyConversation,
 } from "../features/conversation/historyCache.ts";
+import { SocketTails } from "../features/conversation/socketTails.ts";
 import { snapshotSync, olderSnapshot } from "./sync.ts";
 interface Callbacks {
   onSnapshot: (previous: Snapshot, data: Snapshot, baseline: boolean) => void;
@@ -50,7 +51,9 @@ export function useConnection(
     let awaitingBaseline = true;
     let attempts = 0;
     let everReady = false;
-    let checkpoint = currentState.current.resume;
+    let checkpoint = currentState.current.resume
+      ? currentState.current
+      : undefined;
     const reportApplicationError = (error: unknown) => {
       console.error("Snapshot application failed", error);
     };
@@ -70,11 +73,11 @@ export function useConnection(
       );
     };
     const createSync = () =>
-      snapshotSync(
+      snapshotSync<Snapshot>(
         () => api.me(projection.current),
-        (data, baseline) => {
+        (data, baseline, source) => {
+          if (source === "http") checkpoint = data.resume ? data : undefined;
           const previous = currentState.current;
-          checkpoint = data.resume;
           currentState.current = data;
           setState(data);
           callbacks.current.onSnapshot(previous, data, baseline);
@@ -132,7 +135,9 @@ export function useConnection(
       setStatus("connecting");
       const url = new URL("ws", serverBaseUrl());
       if (projection.current) url.searchParams.set("colors", "1");
-      const offered = checkpoint;
+      const offered = checkpoint?.resume;
+      let tails = new SocketTails(checkpoint);
+      url.searchParams.set("delta", "1");
       if (offered) url.searchParams.set("resume", offered);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
@@ -184,6 +189,8 @@ export function useConnection(
           return;
         }
         if (data.kind === "snapshot") {
+          checkpoint = data.resume ? data : undefined;
+          tails = new SocketTails(data);
           mediaConfigCache.observeInstance(
             serverBaseUrl(),
             data.sync?.instance,
@@ -211,8 +218,24 @@ export function useConnection(
           );
           sync.receive(boundSnapshot(data), baseline);
           baseline = false;
-        } else if (data.kind === "conversation") {
-          const next = applyConversation(currentState.current, data);
+        } else if (
+          data.kind === "conversation" ||
+          data.kind === "conversation_delta"
+        ) {
+          const update = tails.apply(data);
+          if (!update) {
+            checkpoint = undefined;
+            readySocket.current = null;
+            ws.close();
+            return;
+          }
+          const previous = currentState.current;
+          if (
+            (previous.unread[update.view]?.revision ?? 0) >
+            update.unread.revision
+          )
+            return;
+          const next = applyConversation(previous, update);
           if (!next) {
             sync.refresh().catch(reportApplicationError);
             return;

@@ -16,6 +16,7 @@ use std::time::Instant;
 pub(crate) struct Options {
     colors: Option<u8>,
     resume: Option<String>,
+    delta: Option<u8>,
 }
 
 pub(crate) async fn upgrade(
@@ -57,20 +58,34 @@ pub(crate) async fn upgrade(
             crate::web::transport::run(
                 &app,
                 lease,
-                connection(app.clone(), headers, username, socket, resume),
+                connection(
+                    app.clone(),
+                    headers,
+                    username,
+                    socket,
+                    resume,
+                    options.delta == Some(1),
+                ),
             )
             .await;
         }))
 }
-pub(crate) async fn snapshot(
+async fn snapshot(
     app: &App,
     socket: &mut WebSocket,
     bot: bool,
     headers: &HeaderMap,
+    tails: Option<&mut deltas::Tails>,
 ) -> bool {
     let value = super::snapshots::value_async(app, headers, bot).await;
     match value {
-        Ok(value) => send(socket, Message::Text(value)).await,
+        Ok(value) => {
+            let value = match tails {
+                Some(tails) => tails.encode(value),
+                None => value,
+            };
+            send(socket, Message::Text(value)).await
+        }
         Err(error) => {
             let frame = if bot {
                 json!({"kind":"error", "id":null, "error":crate::bots::error::Error::storage(error)})
@@ -239,6 +254,7 @@ pub(crate) async fn connection(
     mut user: String,
     mut socket: WebSocket,
     resume: Option<String>,
+    delta: bool,
 ) {
     let bot = super::auth::bearer(&headers).is_some();
     let mut events = crate::web::transport::Events::new(&app, true);
@@ -262,8 +278,10 @@ pub(crate) async fn connection(
         return;
     }
     let mut interests = crate::web::transport::Interests::default();
+    let mut tails = (delta && !bot).then(deltas::Tails::default);
     let resumed = if let Some(token) = resume.filter(|_| !bot) {
-        match snapshots::resume_browser(&app, &headers, token, &mut interests).await {
+        match snapshots::resume_browser(&app, &headers, token, &mut interests, tails.as_mut()).await
+        {
             Ok(frames) => frames,
             Err(crate::engine::EngineError::Forbidden(_)) => return,
             Err(_) => None,
@@ -279,7 +297,7 @@ pub(crate) async fn connection(
         }
     } else {
         interests = Default::default();
-        if !snapshot(&app, &mut socket, bot, &headers).await {
+        if !snapshot(&app, &mut socket, bot, &headers, tails.as_mut()).await {
             return;
         }
     }
@@ -375,6 +393,10 @@ pub(crate) async fn connection(
                 presence.user.clone_from(&user);
                 let mut alive = true;
                 for frame in frames {
+                    let frame = match &mut tails {
+                        Some(tails) => tails.encode(frame),
+                        None => frame,
+                    };
                     if !send(&mut socket, Message::Text(frame)).await {
                         alive = false;
                         break;

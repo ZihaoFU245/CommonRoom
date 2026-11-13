@@ -134,6 +134,7 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 - `{kind:"notice",id,text}` or `{kind:"error",id,text}`: output for that request, visible only to its socket.
 - `Snapshot`: `{kind:"snapshot",username,admin,groups,permissions,account_access,private_access,private_permissions,private_commands,policy_revision,users,online,colors,color_version,rooms,direct,private_peers,commands,available_rooms,unread}`.
 - `{kind:"conversation",view,id,messages,unread,name_colors}`: the affected conversation’s latest up to 50 messages and one unread metadata object. Stable identity must match the directory; otherwise resync. Other conversations preserve their array references.
+- Browsers opt into message deltas with `/ws?delta=1`. A `conversation_delta` carries the conversation identity, `base_revision`, current `unread` and name projections, the ordered `sequences` in the new tail, and `upsert` with only new or modified messages. Sequences omitted from the new tail drop out of that window. Clients apply the frame against the matching socket baseline and reconnect for a fresh snapshot on a gap. The server uses a replacement tail if the base is unavailable or the delta would be larger.
 - `{kind:"media",ids?:string[]}`: invalidate the listed media read
   leases/presentation records; omitted IDs invalidate all.
 - `{kind:"bot_commands",conversation_id}`: invalidate the cached command directory; the ID is one currently readable conversation from the changed batch. Fetch all directory pages in the background.
@@ -340,7 +341,7 @@ Complete browser snapshots include an opaque `resume` checkpoint. The browser
 offers it as `/ws?resume=...` on initial socket open and reconnect. The server
 subscribes before checking the checkpoint against the current session, viewer,
 metadata and name-color projection. It sends current presence, changed read
-state and up to four changed conversation tails, followed by `{kind:"resumed"}`.
+state and up to four changed conversation windows as deltas or replacement tails, followed by `{kind:"resumed"}`.
 The browser treats those catch-up frames as baseline state and enables socket
 actions after the marker. Changes committed after the capture arrive through
 the live subscription. An unknown, evicted or incompatible checkpoint, or a

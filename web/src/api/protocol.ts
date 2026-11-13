@@ -152,6 +152,15 @@ export interface ConversationUpdate {
   messages: Message[];
   unread: Unread;
 }
+export interface ConversationDelta extends Omit<
+  ConversationUpdate,
+  "kind" | "messages"
+> {
+  kind: "conversation_delta";
+  base_revision: number;
+  sequences: number[];
+  upsert: Message[];
+}
 export interface AvatarUpdate {
   kind: "avatar";
   username: string;
@@ -177,6 +186,7 @@ export type ServerFrame =
   | { kind: "bot_commands"; conversation_id: string }
   | Snapshot
   | ConversationUpdate
+  | ConversationDelta
   | Acknowledgement
   | { kind: "resumed" }
   | { kind: "presence"; online: string[] }
@@ -498,6 +508,45 @@ export function parseFrame(raw: string): ServerFrame | null {
     typeof value.conversation_id === "string"
   )
     return { kind: "bot_commands", conversation_id: value.conversation_id };
+  if (value.kind === "conversation_delta") {
+    if (
+      typeof value.view !== "string" ||
+      typeof value.id !== "string" ||
+      !integer(value.base_revision) ||
+      !unread(value.unread) ||
+      value.base_revision >= value.unread.revision ||
+      !Array.isArray(value.sequences) ||
+      value.sequences.length > 50 ||
+      !value.sequences.every(integer) ||
+      !value.sequences.every(
+        (sequence, index, all) =>
+          index === 0 || sequence > (all[index - 1] ?? -1),
+      ) ||
+      !Array.isArray(value.upsert) ||
+      value.upsert.length > value.sequences.length ||
+      !messages(value.upsert) ||
+      !value.upsert.every((message) =>
+        (value.sequences as number[]).includes(message.sequence),
+      ) ||
+      new Set(value.upsert.map((message) => message.sequence)).size !==
+        value.upsert.length ||
+      (value.message_display_names !== undefined &&
+        !messageDisplayNames(value.message_display_names)) ||
+      (value.name_colors !== undefined && !messageColors(value.name_colors))
+    )
+      return null;
+    return {
+      kind: "conversation_delta",
+      view: value.view,
+      id: value.id,
+      base_revision: value.base_revision,
+      sequences: value.sequences,
+      upsert: value.upsert,
+      unread: value.unread,
+      name_colors: value.name_colors,
+      message_display_names: value.message_display_names,
+    };
+  }
   if (
     value.kind === "conversation" &&
     typeof value.view === "string" &&

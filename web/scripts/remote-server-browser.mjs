@@ -850,6 +850,21 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     'document.querySelector(".message-list")?.textContent.includes("Browser remote message verified")',
     "message acknowledgement",
   );
+  const deltas = events
+    .filter(
+      (event) =>
+        event.method === "Network.webSocketFrameReceived" &&
+        event.params.response.opcode === 1,
+    )
+    .map((event) => JSON.parse(event.params.response.payloadData))
+    .filter((frame) => frame.kind === "conversation_delta");
+  assert.ok(
+    deltas.some(
+      (frame) =>
+        frame.upsert.length === 1 &&
+        frame.upsert[0].text === "Browser remote message verified",
+    ),
+  );
   await evaluate(
     '[...document.querySelectorAll("a")].find((anchor)=>anchor.textContent==="remote-note.txt").click()',
   );

@@ -82,19 +82,23 @@ impl SnapshotCache {
         self.trim();
         value
     }
-    fn resume_stamp(&self, key: &Key, token: &str) -> Option<crate::engine::SnapshotStamp> {
+    fn resume_stamp(
+        &self,
+        key: &Key,
+        token: &str,
+    ) -> Option<(crate::engine::SnapshotStamp, Baseline)> {
         self.entries.iter().find_map(|(previous, (entry, _))| {
-            (previous.0 == key.0
-                && !previous.1
-                && previous.2.metadata == key.2.metadata
-                && previous.4 == key.4
-                && previous.6 == key.6
-                && entry.get().is_some_and(|result| {
-                    result
-                        .as_ref()
-                        .is_ok_and(|baseline| baseline.resume.as_deref() == Some(token))
-                }))
-            .then(|| previous.2.clone())
+            if previous.0 != key.0
+                || previous.1
+                || previous.2.metadata != key.2.metadata
+                || previous.4 != key.4
+                || previous.6 != key.6
+            {
+                return None;
+            }
+            let baseline = entry.get()?.as_ref().ok()?;
+            (baseline.resume.as_deref() == Some(token))
+                .then(|| (previous.2.clone(), baseline.clone()))
         })
     }
     fn finish(&mut self, key: &Key, value: &Value, size: usize) {
@@ -332,6 +336,7 @@ pub(super) async fn resume_browser(
     headers: &axum::http::HeaderMap,
     token: String,
     interests: &mut super::transport::Interests,
+    tails: Option<&mut super::deltas::Tails>,
 ) -> Result<Option<Vec<Utf8Bytes>>, EngineError> {
     let viewer = Viewer::Browser {
         headers: headers.clone(),
@@ -351,12 +356,12 @@ pub(super) async fn resume_browser(
         .lock()
         .map_err(|_| EngineError::Unavailable("Snapshot cache unavailable.".into()))?
         .resume_stamp(&current, &token);
-    let Some(previous) = previous else {
+    let Some((previous, baseline)) = previous else {
         return Ok(None);
     };
 
-    // These are complete replacement tails, so replay is idempotent even if
-    // an update was already applied locally or queued by the live subscription.
+    // Render authoritative tails first. Delta-capable clients reconstruct them
+    // from the exact checkpoint and can safely overlap the live subscription.
     let mut changes = vec![Change::Presence];
     if previous.read != current.2.read {
         changes.push(Change::Read(user.clone()));
@@ -390,8 +395,22 @@ pub(super) async fn resume_browser(
                 && latest.6 == current.6)
         })
         .await?;
-    if !same || frames.iter().map(|frame| frame.len()).sum::<usize>() > 512 * 1024 {
+    if !same {
         return Ok(None);
+    }
+    let candidate = tails.as_ref().map(|_| {
+        let mut candidate = super::deltas::Tails::default();
+        candidate.encode(baseline.frame);
+        for frame in &mut frames {
+            *frame = candidate.encode(std::mem::take(frame));
+        }
+        candidate
+    });
+    if frames.iter().map(|frame| frame.len()).sum::<usize>() > 512 * 1024 {
+        return Ok(None);
+    }
+    if let Some((tails, candidate)) = tails.zip(candidate) {
+        *tails = candidate;
     }
     frames.push(Utf8Bytes::from_static(r#"{"kind":"resumed"}"#));
     Ok(Some(frames))
@@ -542,7 +561,7 @@ mod tests {
         assert_eq!(snapshot["resume"], token);
         app.update_presence(None, Some("alice")).unwrap();
         let mut interests = super::super::transport::Interests::default();
-        let resumed = resume_browser(&app, &headers, token.clone(), &mut interests)
+        let resumed = resume_browser(&app, &headers, token.clone(), &mut interests, None)
             .await
             .unwrap()
             .unwrap();
@@ -554,7 +573,7 @@ mod tests {
         assert_eq!(frames[0]["online"], json!(["alice"]));
         headers.insert("x-chat-name-colors", HeaderValue::from_static("1"));
         assert!(
-            resume_browser(&app, &headers, token.clone(), &mut interests)
+            resume_browser(&app, &headers, token.clone(), &mut interests, None)
                 .await
                 .unwrap()
                 .is_none()
@@ -564,7 +583,7 @@ mod tests {
             .unwrap()
             .execute(Some("alice"), Some("team"), "Second")
             .unwrap();
-        let resumed = resume_browser(&app, &headers, token.clone(), &mut interests)
+        let resumed = resume_browser(&app, &headers, token.clone(), &mut interests, None)
             .await
             .unwrap()
             .unwrap();
@@ -578,7 +597,7 @@ mod tests {
         ));
         app.engine_api().unwrap().logout("resume-session").unwrap();
         assert!(matches!(
-            resume_browser(&app, &headers, token, &mut interests).await,
+            resume_browser(&app, &headers, token, &mut interests, None).await,
             Err(EngineError::Forbidden(_))
         ));
     }

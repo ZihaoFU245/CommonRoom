@@ -194,6 +194,30 @@ test("checkpoint is offered on reconnect and waits for the resume marker", (t) =
   assert.equal(h.sockets[1].url.searchParams.get("resume"), token);
 });
 
+test("a delta with a missing base reconnects without a checkpoint", (t) => {
+  const h = fixture(t, {
+    ...snapshot,
+    resume: "b3b2a710-eed4-4715-94e4-735566ec8326",
+  });
+  const socket = h.sockets[0];
+  assert.equal(socket.url.searchParams.get("delta"), "1");
+  socket.readyState = WebSocket.OPEN;
+  socket.onmessage({
+    data: JSON.stringify({
+      kind: "conversation_delta",
+      view: "lobby",
+      id: "unknown",
+      base_revision: 1,
+      sequences: [],
+      upsert: [],
+      unread: { revision: 2, count: 0, first: null, oldest: 0, through: 0 },
+    }),
+  });
+  assert.equal(h.render().status, "offline");
+  h.listeners.get("online")();
+  assert.equal(h.sockets[1].url.searchParams.has("resume"), false);
+});
+
 test("media invalidations refresh viewers without changing conversation state", async (t) => {
   const h = fixture(t);
   t.after(() => mediaStatusCache.clear());
