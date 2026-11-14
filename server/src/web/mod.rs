@@ -275,6 +275,7 @@ pub fn router(app: App) -> Router {
         .route(path("/api/media/{id}/link"), get(media::link))
         .route(path("/api/media/{id}/info"), get(media::info))
         .route(path("/api/login"), post(auth::login))
+        .route(path("/api/register"), post(auth::register))
         .route(path("/api/logout"), post(auth::logout))
         .route(path("/api/me"), get(auth::me))
         .route(path("/api/session"), get(auth::session_status))

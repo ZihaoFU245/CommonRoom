@@ -105,7 +105,7 @@ The permission catalog has individual actions in three families:
   `account.color.own`, `account.color.any` (room-only).
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
   `room.rename`,
-  `room.owner.transfer`, `history.clean`, `account.create`,
+  `room.owner.transfer`, `history.clean`, `account.create`, `invite.manage`,
   `account.password.reset`, `account.disable`, `account.enable`, `account.delete`,
   `group.admin.assign`, `policy.change`, `command.sudo`,
   `account.rename.any`, `bot.credentials`.

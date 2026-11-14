@@ -521,10 +521,22 @@ impl Engine {
                 )?;
             }
         }
+        self.apply_account_credentials(actor, name, hash, admin, reset, None)
+    }
+
+    fn apply_account_credentials(
+        &mut self,
+        actor: Option<&str>,
+        name: &str,
+        hash: String,
+        admin: bool,
+        reset: bool,
+        invite: Option<&str>,
+    ) -> Result<(String, MetadataChange), EngineError> {
         if !valid_name(name) {
             return Err("Invalid username.".into());
         }
-        let before = MetadataChange::accounts(&self.data, [name.to_owned()], true);
+        let mut before = MetadataChange::accounts(&self.data, [name.to_owned()], true);
         if reset {
             let user = self
                 .data
@@ -553,8 +565,9 @@ impl Engine {
                 },
             );
         }
-        self.audit(actor, if reset { "/reset" } else { "/new" }, name);
-        if !reset {
+        if reset {
+            self.audit(actor, "/reset", name);
+        } else {
             let id = self
                 .data
                 .users
@@ -562,6 +575,16 @@ impl Engine {
                 .ok_or_else(|| EngineError::NotFound("User not found.".into()))?
                 .id
                 .clone();
+            if let Some(invite_id) = invite {
+                before.include_invite(&self.data, invite_id);
+                if let Some(invite) = self.data.invites.get_mut(invite_id) {
+                    invite.redeemed_at = Some(now());
+                    invite.redeemed_by = Some(id.clone());
+                }
+                self.audit(Some(name), "/register", invite_id);
+            } else {
+                self.audit(actor, "/new", name);
+            }
             self.assign(
                 id,
                 if admin {
@@ -581,7 +604,7 @@ impl Engine {
             before,
         ))
     }
-    fn prepare_account_change(
+    pub(super) fn prepare_account_change(
         &mut self,
         change: impl FnOnce(&mut Self) -> Result<(String, MetadataChange), EngineError>,
     ) -> Result<(String, metadata_write::PendingMetadata), EngineError> {
@@ -621,6 +644,22 @@ impl Engine {
             engine.apply_provision(actor, name, hash, admin, reset)
         })
     }
+    pub(crate) fn prepare_registration(
+        &mut self,
+        name: &str,
+        hash: String,
+        id: Option<&str>,
+        digest: &str,
+    ) -> Result<metadata_write::PendingMetadata, EngineError> {
+        let (id, invite) = self.valid_invite(id, digest)?;
+        let id = id.to_owned();
+        let expires = invite.expires;
+        let (_, pending) = self.prepare_account_change(|engine| {
+            engine.apply_account_credentials(None, name, hash, false, false, Some(&id))
+        })?;
+        Ok(pending.check_invite_expiry(expires))
+    }
+
     fn apply_account_deletion(
         &mut self,
         actor: Option<&str>,
@@ -677,6 +716,7 @@ impl Engine {
                     })
                     .map(|(id, _)| id.clone())
                     .collect(),
+                ..Default::default()
             },
         );
         self.audit(actor, "/rm user", name);

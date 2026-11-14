@@ -300,6 +300,7 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         "/retract MESSAGE",
         "/history",
         "/clean 1s @all",
+        "/invite new",
         "/bot new created #team",
         "/bot ls #team",
         "/bot info helper #team",
@@ -1550,6 +1551,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
         "w:private.create",
         "w:room.create",
         "x:account.create",
+        "x:invite.manage",
         "x:account.disable",
         "x:account.enable",
         "x:account.delete",
@@ -1737,6 +1739,7 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
     let probes = [
         "/sudo /whoami".into(),
         "/help".into(),
+        "/invite ls".into(),
         "/bot ls @global".into(),
         "/console".into(),
         "/man grant".into(),

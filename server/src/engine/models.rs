@@ -54,6 +54,8 @@ pub struct PrivateChat {
 }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Data {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) invites: BTreeMap<String, super::invites::Invite>,
     pub bots: BTreeMap<String, crate::bots::models::Registration>,
     pub users: BTreeMap<String, Account>,
     pub rooms: BTreeMap<String, Room>,
@@ -138,6 +140,8 @@ pub struct Snapshot {
     pub bots: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bot_credentials: Vec<crate::bots::models::CredentialHint>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub invite_hints: BTreeMap<String, u64>,
     pub avatars: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,

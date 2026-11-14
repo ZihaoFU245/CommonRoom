@@ -11,6 +11,9 @@ pub(crate) struct MetadataWrite<'a> {
     pub(crate) operations: Vec<MetadataOp<'a>>,
 }
 pub(crate) enum MetadataOp<'a> {
+    CheckInviteExpiry {
+        expires: u64,
+    },
     Entity {
         kind: &'static str,
         key: String,
@@ -88,6 +91,15 @@ pub(crate) enum MetadataOp<'a> {
         before: u64,
     },
 }
+pub(super) fn check_invite_expiry(expires: u64) -> Result<u64> {
+    if crate::engine::invites::expired(expires) {
+        return Err(Error::InvalidRequest(
+            crate::engine::invites::INVALID_INVITE,
+        ));
+    }
+    Ok(0)
+}
+
 impl MetadataWrite<'_> {
     pub(crate) fn entity(
         &mut self,

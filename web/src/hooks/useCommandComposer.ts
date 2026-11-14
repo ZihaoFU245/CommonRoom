@@ -97,7 +97,7 @@ export function useCommandComposer({
   useEffect(() => {
     setCycle(null);
     setHintIndex(0);
-  }, [botCommands, state.bot_credentials]);
+  }, [botCommands, state.bot_credentials, state.invite_hints]);
   const completion = useMemo(
     () =>
       cursorSuggestions(draft, caret, (prefix) =>
@@ -114,6 +114,7 @@ export function useCommandComposer({
               {
                 bots: state.bots ?? [],
                 botCredentials: state.bot_credentials ?? [],
+                inviteHints: state.invite_hints ?? {},
                 messages: direct
                   ? state.direct.filter(
                       (message) =>
@@ -151,6 +152,7 @@ export function useCommandComposer({
       state.users,
       state.bots,
       state.bot_credentials,
+      state.invite_hints,
       state.available_rooms,
       state.rooms,
       state.direct,

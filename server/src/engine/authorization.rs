@@ -49,6 +49,7 @@ actions! {
     Transfer => "x:room.owner.transfer",
     Clean => "x:history.clean",
     CreateAccount => "x:account.create",
+    ManageInvites => "x:invite.manage",
     Reset => "x:account.password.reset",
     Disable => "x:account.disable",
     Enable => "x:account.enable",
@@ -201,6 +202,7 @@ const COMMANDS: &[&str] = &[
     "/console",
     "/sudo",
     "/bot",
+    "/invite",
     "/system",
 ];
 fn direct_grant(parts: &[&str]) -> bool {
@@ -336,6 +338,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
                 Action::CreateRoom,
                 Action::AccountMetadataRead,
                 Action::CreateAccount,
+                Action::ManageInvites,
                 Action::Disable,
                 Action::Enable,
                 Action::DeleteAccount,
@@ -348,6 +351,7 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             ],
             &[
                 "/new", "/disable", "/enable", "/rm", "/grant", "/revoke", "/debug", "/bot",
+                "/invite",
             ],
         ));
     }

@@ -39,6 +39,37 @@ test("system subcommands complete only when the server advertises su access", ()
   assert.deepEqual(suggestions("/system ", [], [], []), []);
 });
 
+test("invite completion offers subcommands and active revoke targets", () => {
+  const commands = [
+    {
+      name: "/invite",
+      usage: "/invite new | ls | revoke <id>",
+      description: "Manage invites",
+    },
+  ];
+  const now = Math.floor(Date.now() / 1000);
+  const context = {
+    inviteHints: { "active-id": now + 60, "expired-id": now - 60 },
+  };
+  assert.deepEqual(
+    suggestions("/invite ", commands, [], [], context).map(
+      (hint) => hint.value,
+    ),
+    ["/invite new ", "/invite ls ", "/invite revoke "],
+  );
+  assert.equal(
+    suggestions("/invite r", commands, [], [], context)[0].advance,
+    true,
+  );
+  assert.deepEqual(
+    suggestions("/invite revoke ", commands, [], [], context).map(
+      (hint) => hint.value,
+    ),
+    ["/invite revoke active-id "],
+  );
+  assert.deepEqual(suggestions("/invite revoke ", [], [], [], context), []);
+});
+
 test("sudo completion uses elevated commands without exposing them directly", () => {
   const system = {
     name: "/system",

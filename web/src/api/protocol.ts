@@ -112,6 +112,7 @@ export interface Snapshot {
   users: string[];
   bots?: string[];
   bot_credentials?: BotCredentialHint[];
+  invite_hints?: Record<string, number>;
   avatars?: Record<string, string>;
   online: string[];
   colors?: Record<string, string>;
@@ -397,6 +398,8 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   integer(v.policy_revision) &&
   strings(v.users) &&
   (v.bots === undefined || strings(v.bots)) &&
+  (v.invite_hints === undefined ||
+    (record(v.invite_hints) && Object.values(v.invite_hints).every(integer))) &&
   (v.bot_credentials === undefined ||
     (Array.isArray(v.bot_credentials) &&
       v.bot_credentials.every(

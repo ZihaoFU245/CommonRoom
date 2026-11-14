@@ -109,7 +109,7 @@ pub(crate) fn execution(input: &str) -> Execution {
         | ["/rm", "room" | "group" | "user", ..]
         | ["/user", "set" | "reset", ..]
         | ["/rename", ..]
-        | ["/bot", ..] => Execution::Metadata,
+        | ["/bot" | "/invite", ..] => Execution::Metadata,
         _ => Execution::Unknown,
     }
 }
@@ -154,6 +154,13 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             "/room ls | new #name | delete #name | rename #name new-name | join #name | leave [#name] | add user [#room] | kick user [#room] | owner user [#room]",
             "List and manage rooms and membership",
             false,
+        ),
+        (
+            "Server",
+            "/invite",
+            "/invite new | ls | revoke <id>",
+            "Manage single-use registration invites",
+            true,
         ),
         (
             "Server",
@@ -346,6 +353,7 @@ pub fn requirements(command: &str) -> &'static str {
         }
         "/ls" => "room discovery/read grants; r:account.list for accounts and group members",
         "/rm" => "x:room.delete, x:account.delete, or group-management authority on the target",
+        "/invite" => "x:invite.manage and /invite at @global",
         "/bot" => "Lifecycle/credentials: global admin or su",
         "/system" => "global /system command grant (included for su)",
         "/rename" => {
@@ -443,6 +451,9 @@ fn form_description(command: &Command, usage: &str) -> &'static str {
         ("/room", ["add", ..]) => "Invite a user to a room",
         ("/room", ["kick", ..]) => "Remove a user's room membership and scoped access",
         ("/room", ["owner", ..]) => "Transfer room ownership",
+        ("/invite", ["new", ..]) => "Issue a 24-hour registration code",
+        ("/invite", ["ls", ..]) => "List registration invites",
+        ("/invite", ["revoke", ..]) => "Revoke an active registration invite",
         ("/bot", ["new", ..]) => "Create a bot account in the selected scope",
         ("/bot", ["ls", ..]) => "List bot accounts in a scope",
         ("/bot", ["info", ..]) => "Show bot ownership, status and permissions",

@@ -1,5 +1,6 @@
 mod accounts;
 mod auth_events;
+pub(crate) mod invites;
 pub(crate) use auth_events::{AuthEvent, AuthOutcome};
 pub mod authorization;
 mod avatar_store;

@@ -220,7 +220,22 @@ impl MetadataNotice {
             .chain(before.users.into_iter().flat_map(|users| users.values()))
             .map(|account| account.id.clone())
             .collect();
+        let invites_changed = before.invites.is_some_and(|previous| {
+            keys(
+                before.keys.map(|keys| &keys.invites),
+                before.invites,
+                &data.invites,
+            )
+            .iter()
+            .any(|id| previous.get(id) != data.invites.get(id))
+        });
         for id in ids {
+            if invites_changed {
+                let rights = new.effective_for(&id, &Scope::Server);
+                if rights.has(Action::ManageInvites) && rights.command("/invite") {
+                    notice.accounts.insert(id.clone());
+                }
+            }
             if credentials.iter().any(|target| {
                 manages_credentials(old, &id, target) || manages_credentials(new, &id, target)
             }) || directory

@@ -25,6 +25,12 @@ pub(crate) struct Reservation(Vec<(Key, Instant)>);
 
 #[derive(Default)]
 pub(crate) struct LoginLimits {
+    login: AttemptWindows,
+    registration: AttemptWindows,
+}
+
+#[derive(Default)]
+struct AttemptWindows {
     counts: HashMap<Key, Window>,
     // Windows never refresh: expiration is ordered and each key is queued once.
     expires: VecDeque<(Instant, Key)>,
@@ -36,6 +42,37 @@ impl LoginLimits {
         user: &str,
         now: Instant,
     ) -> Result<Reservation, &'static str> {
+        self.login.reserve(
+            [
+                (Key::Ip(ip.to_canonical()), 10),
+                (Key::Account(user.to_owned()), 20),
+            ],
+            now,
+        )
+    }
+
+    pub(crate) fn admit_registration(
+        &mut self,
+        ip: IpAddr,
+        now: Instant,
+    ) -> Result<(), &'static str> {
+        self.registration
+            .reserve([(Key::Ip(ip.to_canonical()), 10)], now)
+            .map(|_| ())
+            .map_err(|_| "Too many registration attempts. Wait a minute.")
+    }
+
+    pub(crate) fn finish(&mut self, reservation: Reservation, success: Option<bool>, now: Instant) {
+        self.login.finish(reservation, success, now);
+    }
+}
+
+impl AttemptWindows {
+    fn reserve<const N: usize>(
+        &mut self,
+        keys: [(Key, u32); N],
+        now: Instant,
+    ) -> Result<Reservation, &'static str> {
         while self
             .expires
             .front()
@@ -45,10 +82,6 @@ impl LoginLimits {
                 self.counts.remove(&key);
             }
         }
-        let keys = [
-            (Key::Ip(ip.to_canonical()), 10),
-            (Key::Account(user.to_owned()), 20),
-        ];
         let missing = keys
             .iter()
             .filter(|(key, _)| !self.counts.contains_key(key))
@@ -62,7 +95,7 @@ impl LoginLimits {
         {
             return Err(LIMITED);
         }
-        let mut reservation = Vec::with_capacity(2);
+        let mut reservation = Vec::with_capacity(N);
         for (key, _) in keys {
             let count = self.counts.entry(key.clone()).or_insert_with(|| {
                 self.expires.push_back((now, key.clone()));
@@ -79,7 +112,7 @@ impl LoginLimits {
         Ok(Reservation(reservation))
     }
 
-    pub(crate) fn finish(&mut self, reservation: Reservation, success: Option<bool>, now: Instant) {
+    fn finish(&mut self, reservation: Reservation, success: Option<bool>, now: Instant) {
         for (key, started) in reservation.0 {
             if let Some(entry) = self.counts.get_mut(&key)
                 && entry.at == started
@@ -106,6 +139,19 @@ impl LoginLimits {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn registration_capacity_cannot_block_login() {
+        let mut limits = LoginLimits::default();
+        let now = Instant::now();
+        for address in 0..CAPACITY {
+            let ip = std::net::Ipv4Addr::from(0x0a00_0000 + u32::try_from(address).unwrap());
+            limits.admit_registration(ip.into(), now).unwrap();
+        }
+        let ip = "198.51.100.1".parse().unwrap();
+        assert!(limits.admit_registration(ip, now).is_err());
+        assert!(limits.admit(ip, "alice", now).is_ok());
+    }
+
     #[test]
     fn unavailable_completion_preserves_a_concurrent_failure_backoff() {
         let mut limits = LoginLimits::default();
@@ -154,8 +200,8 @@ mod tests {
                 .is_err()
         );
         limits.admit(ip, "target", now + WINDOW).unwrap();
-        assert_eq!(limits.counts.len(), 2);
-        assert_eq!(limits.expires.len(), 2);
+        assert_eq!(limits.login.counts.len(), 2);
+        assert_eq!(limits.login.expires.len(), 2);
     }
     #[test]
     fn successful_and_unavailable_attempts_refund_only_their_reservation() {
@@ -166,7 +212,7 @@ mod tests {
             let reservation = limits.admit(ip, "alice", now).unwrap();
             limits.finish(reservation, Some(true), now);
         }
-        assert_eq!(limits.expires.len(), 2);
+        assert_eq!(limits.login.expires.len(), 2);
         for _ in 0..9 {
             limits.admit(ip, "alice", now).unwrap();
         }
@@ -238,11 +284,11 @@ mod tests {
                 .admit("198.51.100.1".parse().unwrap(), "new", now)
                 .is_err()
         );
-        assert_eq!(limits.counts.len(), CAPACITY);
-        assert_eq!(limits.expires.len(), CAPACITY);
+        assert_eq!(limits.login.counts.len(), CAPACITY);
+        assert_eq!(limits.login.expires.len(), CAPACITY);
         limits
             .admit("198.51.100.1".parse().unwrap(), "new", now + WINDOW)
             .unwrap();
-        assert_eq!(limits.counts.len(), 2);
+        assert_eq!(limits.login.counts.len(), 2);
     }
 }

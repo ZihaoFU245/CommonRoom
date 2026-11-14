@@ -1379,6 +1379,9 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         (None, "/bot token ls helper"),
         (None, "/bot token rm helper $token"),
         (None, "/bot rm helper @global"),
+        (None, "/invite new"),
+        (None, "/invite ls"),
+        (None, "/invite revoke $invite"),
         (None, "/user new created long-created-password user"),
         (None, "/user reset created password long-reset-password"),
         (None, "/user disable created"),
@@ -1393,7 +1396,7 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         let parts = text.split_whitespace().collect::<Vec<_>>();
         let count = match parts.as_slice() {
             ["/bot", "token", ..] => 3,
-            ["/user" | "/room" | "/bot", ..] => 2,
+            ["/user" | "/room" | "/bot" | "/invite", ..] => 2,
             _ => 1,
         };
         parts.into_iter().take(count).collect::<Vec<_>>().join(" ")
@@ -1401,10 +1404,12 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
     let mut covered = std::collections::BTreeSet::new();
     let mut message = String::new();
     let mut token_id = String::new();
+    let mut invite_id = String::new();
     for (room, source) in probes {
         let text = source
             .replace("$message", &message)
-            .replace("$token", &token_id);
+            .replace("$token", &token_id)
+            .replace("$invite", &invite_id);
         let input = super::commands::Input {
             id: 1,
             room: room.map(str::to_owned),
@@ -1436,6 +1441,15 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
                 .unwrap()
                 .id
                 .clone();
+        }
+        if source == "/invite new" {
+            invite_id = reply
+                .lines()
+                .nth(1)
+                .unwrap()
+                .strip_prefix("ID: ")
+                .unwrap()
+                .into();
         }
         if source.starts_with("/bot token new") {
             token_id = reply.split_whitespace().nth(3).unwrap().to_owned();
@@ -2092,8 +2106,11 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
 }
 
 pub(super) fn login_test_app() -> App {
+    auth_test_app(Engine::open(std::path::Path::new(":memory:")).unwrap())
+}
+
+fn auth_test_app(mut engine: Engine) -> App {
     let (changes, _) = broadcast::channel(16);
-    let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
     engine
         .provision(
             "alice",
@@ -2844,3 +2861,6 @@ async fn browser_json_revalidates_only_after_current_access_checks() {
     assert_eq!(metrics["routes"]["/api/history"]["not_modified"], 1);
     assert_eq!(metrics["routes"]["/api/history"]["completed"], 5);
 }
+
+#[path = "registration.rs"]
+mod registration;

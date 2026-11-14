@@ -30,6 +30,12 @@ impl PendingMetadata {
             .map(|room| room.id.as_str())
     }
 
+    pub(super) fn check_invite_expiry(mut self, expires: u64) -> Self {
+        self.operations
+            .push(MetadataOp::CheckInviteExpiry { expires });
+        self
+    }
+
     pub(super) fn account_rename(mut self, old: String, new: String) -> Self {
         self.operations.insert(
             0,
@@ -125,6 +131,9 @@ impl Engine {
         }
         let routed = crate::commands::route(input);
         let parts = routed.split_whitespace().collect::<Vec<_>>();
+        if parts.first() == Some(&"/invite") {
+            return self.prepare_invite_command(actor, view, input, &parts);
+        }
         if parts.first() == Some(&"/bot") {
             crate::limits::validate_input(input).map_err(EngineError::Invalid)?;
             crate::commands::validate_room_arguments(input).map_err(EngineError::Invalid)?;

@@ -318,6 +318,8 @@ export const api = {
     await invalidateMedia(undefined, true);
     return result;
   },
+  register: (username: string, password: string, invite: string) =>
+    request("register", isOk, { username, password, invite }),
   logout: async () => {
     mediaConfigCache.clear();
     await invalidateMedia(undefined, true);

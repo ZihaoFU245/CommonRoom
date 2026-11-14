@@ -21,6 +21,7 @@ pub(in crate::engine::database) async fn apply(
     let mut result = WriteResult::default();
     for operation in &request.operations {
         result.changed += match operation {
+            MetadataOp::CheckInviteExpiry { expires } => super::super::metadata::check_invite_expiry(*expires)?,
             MetadataOp::Entity { kind, key, json } => super::messages::put_entity(db, kind, key, json).await?,
             MetadataOp::RemoveEntity { kind, key } => sqlx::query("DELETE FROM entities WHERE kind=$1 AND key=$2").bind(*kind).bind(key).execute(&mut *db).await?.rows_affected(),
             MetadataOp::Revision { kind, key, expected, revision } => {

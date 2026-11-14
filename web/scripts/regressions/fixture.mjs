@@ -124,6 +124,65 @@ async function test(name, run) {
     await media.invalidateMediaReads();
   }
 }
+await test("invite registration checks confirmation and returns to sign in", async () => {
+  const original = api.register;
+  const calls = [];
+  api.register = async (...args) => {
+    calls.push(args);
+    if (calls.length === 1) throw new Error("Invite unavailable.");
+    return { ok: true };
+  };
+  try {
+    render(h(Login, { initialError: "", onLogin() {} }), tests);
+    const signIn = tests.querySelector(".login-card .primary");
+    const register = tests.querySelector(".login-switch");
+    check(signIn.nextElementSibling === register, "Register follows Sign in");
+    register.click();
+    await until(() => tests.querySelector("#register-invite"));
+    tests.querySelector("#register-invite").value = "example-code";
+    tests.querySelector("#register-username").value = "alice";
+    tests.querySelector("#register-password").value = "new-password";
+    const confirmation = tests.querySelector("#register-confirmation");
+    confirmation.value = "different-password";
+    tests.querySelector("form").requestSubmit();
+    await until(() => tests.querySelector("[role=alert]"));
+    check(calls.length === 0, "Mismatched confirmation never submits");
+    check(
+      tests.querySelector("[role=alert]").textContent ===
+        "Passwords do not match.",
+      "Mismatch is visible",
+    );
+
+    confirmation.value = "new-password";
+    tests.querySelector("form").requestSubmit();
+    await until(
+      () =>
+        tests.querySelector("[role=alert]")?.textContent ===
+        "Invite unavailable.",
+    );
+    check(
+      tests.querySelector("#register-invite").value === "example-code",
+      "Failed registration keeps the form available",
+    );
+    tests.querySelector("form").requestSubmit();
+    await until(() => tests.querySelector("#username"));
+    check(
+      JSON.stringify(calls.at(-1)) ===
+        JSON.stringify(["alice", "new-password", "example-code"]),
+      "User credentials and invite are submitted",
+    );
+    check(
+      tests.querySelector("#username").value === "alice",
+      "Sign in is prefilled",
+    );
+    check(tests.querySelector("#password").value === "", "Password is cleared");
+    check(tests.querySelector("[role=status]"), "Success is visible");
+  } finally {
+    api.register = original;
+    render(null, tests);
+  }
+});
+
 await test("login server settings animate from the gear and persist only on Save", async () => {
   const original = savedServerUrl();
   let selected;

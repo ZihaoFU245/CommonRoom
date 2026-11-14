@@ -8,6 +8,7 @@ pub(super) struct DirtyKeys {
     pub(super) rooms: BTreeSet<String>,
     pub(super) private: BTreeSet<String>,
     pub(super) bots: BTreeSet<String>,
+    pub(super) invites: BTreeSet<String>,
 }
 #[derive(Clone)]
 pub(super) struct MetadataChange {
@@ -17,6 +18,7 @@ pub(super) struct MetadataChange {
     private: Option<BTreeMap<String, PrivateChat>>,
     sessions: Option<BTreeMap<String, Session>>,
     bots: Option<BTreeMap<String, crate::bots::models::Registration>>,
+    invites: Option<BTreeMap<String, invites::Invite>>,
     pub(super) policy: authorization::Policy,
     next_sequence: u64,
 }
@@ -28,6 +30,7 @@ pub(super) struct DataView<'a> {
     pub(super) private: Option<&'a BTreeMap<String, PrivateChat>>,
     pub(super) sessions: Option<&'a BTreeMap<String, Session>>,
     pub(super) bots: Option<&'a BTreeMap<String, crate::bots::models::Registration>>,
+    pub(super) invites: Option<&'a BTreeMap<String, invites::Invite>>,
     pub(super) policy: &'a authorization::Policy,
 }
 impl<'a> From<&'a Data> for DataView<'a> {
@@ -39,6 +42,7 @@ impl<'a> From<&'a Data> for DataView<'a> {
             private: Some(&data.private),
             sessions: Some(&data.sessions),
             bots: Some(&data.bots),
+            invites: Some(&data.invites),
             policy: &data.policy,
         }
     }
@@ -51,6 +55,7 @@ impl MetadataChange {
             || self.private != after.private
             || self.sessions != after.sessions
             || self.bots != after.bots
+            || self.invites != after.invites
             || self.policy.revision != after.policy.revision
             || self.policy.assignments != after.policy.assignments
             || self.policy.grants != after.policy.grants
@@ -162,7 +167,18 @@ impl MetadataChange {
                 .filter_map(|key| data.bots.get(key).map(|value| (key.clone(), value.clone())))
                 .collect()
         });
+        let invites = (!keys.invites.is_empty()).then(|| {
+            keys.invites
+                .iter()
+                .filter_map(|id| {
+                    data.invites
+                        .get(id)
+                        .map(|invite| (id.clone(), invite.clone()))
+                })
+                .collect()
+        });
         Self {
+            invites,
             keys: Some(keys),
             users,
             sessions,
@@ -173,6 +189,16 @@ impl MetadataChange {
             next_sequence: data.next_sequence,
         }
     }
+    pub(super) fn include_invite(&mut self, data: &Data, id: &str) {
+        if let Some(keys) = &mut self.keys {
+            keys.invites.insert(id.into());
+            let before = self.invites.get_or_insert_with(BTreeMap::new);
+            if let Some(invite) = data.invites.get(id) {
+                before.insert(id.into(), invite.clone());
+            }
+        }
+    }
+
     pub(super) fn include_new_bot(&mut self, id: String) {
         if let Some(keys) = &mut self.keys {
             keys.bots.insert(id);
@@ -211,6 +237,10 @@ impl MetadataChange {
                 .bots
                 .iter()
                 .all(|key| data.bots.get(key) == self.bots.as_ref().and_then(|map| map.get(key)))
+            && keys
+                .invites
+                .iter()
+                .all(|id| data.invites.get(id) == self.invites.as_ref().and_then(|map| map.get(id)))
             && data.policy == self.policy
             && data.next_sequence == self.next_sequence
     }
@@ -222,6 +252,7 @@ impl MetadataChange {
             private: self.private.as_ref(),
             sessions: self.sessions.as_ref(),
             bots: self.bots.as_ref(),
+            invites: self.invites.as_ref(),
             policy: &self.policy,
         }
     }
@@ -258,6 +289,11 @@ impl MetadataChange {
             &mut data.bots,
             self.bots,
             self.keys.as_ref().map(|keys| &keys.bots),
+        );
+        restore_map(
+            &mut data.invites,
+            self.invites,
+            self.keys.as_ref().map(|keys| &keys.invites),
         );
         data.policy = self.policy;
         data.next_sequence = self.next_sequence;

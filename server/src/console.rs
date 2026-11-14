@@ -6,7 +6,7 @@ use crate::{
 use std::io::{self, BufRead};
 
 pub(crate) struct Output {
-    reply: String,
+    pub(crate) reply: String,
     secret: bool,
 }
 struct Request {
@@ -123,7 +123,7 @@ async fn execute_inner(app: &App, line: String) -> Result<Output, EngineError> {
     };
     Ok(Output {
         reply,
-        secret: parts.get(0..3) == Some(&["/bot", "token", "new"]),
+        secret: parts.get(0..3) == Some(&["/bot", "token", "new"]) || parts == ["/invite", "new"],
     })
 }
 async fn ordinary(app: &App, input: String) -> Result<String, EngineError> {

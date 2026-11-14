@@ -16,6 +16,31 @@ Type commands in the composer. `/help` lists commands permitted here; `/man user
 the selected context and the target. Output stays in this view and tab until reload.
 Passwords are masked. Enter sends, Shift+Enter adds a line, and Tab completes.
 
+## Registration invites
+
+```text
+/invite new
+/invite ls
+/invite revoke <id>
+```
+
+Issue and manage invites from the Console or a context that allows `/invite`.
+Global admins have both required grants, `/invite` and `x:invite.manage` at
+`@global`. Give the code from `/invite new` to the recipient privately. The
+code has 12 letters or digits in three groups of four, such as `K7MP-4WXH-N8RQ`.
+Lowercase and omitted hyphens are accepted. The recipient selects the issuing
+server on the sign-in screen and chooses
+**Register** to enter the code, a username, and a password twice. Each code
+expires 24 hours after issuance and creates one ordinary user account. An
+account creation failure leaves a valid code usable. A successful registration
+returns the recipient to sign-in with their username filled in.
+
+`/invite ls` shows public IDs, status, and expiry in UTC Unix seconds. Use the ID
+to revoke an active invite. Tab completes `new`, `ls`, `revoke`, and
+active invite IDs after `/invite revoke`. Codes appear only in the issuance response. A server
+holds up to 1,024 invite records and prunes records seven days past expiry when
+issuing new invites.
+
 ## Users
 
 ```text

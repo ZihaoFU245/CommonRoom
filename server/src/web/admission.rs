@@ -324,6 +324,7 @@ pub(crate) async fn http(
     let path = request.uri().path();
     if !path.contains("/api/")
         || path.ends_with("/api/login")
+        || path.ends_with("/api/register")
         || path.ends_with("/api/health")
         || path.ends_with("/ws")
     {

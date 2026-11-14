@@ -72,6 +72,14 @@ List and manage rooms and membership
 
 ## Server
 
+### `/invite`
+
+Manage single-use registration invites
+
+- `/invite new` — Issue a 24-hour registration code
+- `/invite ls` — List registration invites
+- `/invite revoke <id>` — Revoke an active registration invite
+
 ### `/bot`
 
 Manage bot accounts and credentials

@@ -43,6 +43,8 @@ struct PolicyMetadata<'a> {
 }
 #[derive(serde::Serialize)]
 struct StateMetadata<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    invites: &'a BTreeMap<String, invites::Invite>,
     bots: &'a BTreeMap<String, crate::bots::models::Registration>,
     users: BTreeMap<String, ()>,
     rooms: BTreeMap<String, ()>,
@@ -54,6 +56,7 @@ struct StateMetadata<'a> {
 pub(super) fn state_json(data: &Data) -> Result<String, EngineError> {
     let metadata = StateMetadata {
         bots: &data.bots,
+        invites: &data.invites,
         users: BTreeMap::new(),
         rooms: BTreeMap::new(),
         private: BTreeMap::new(),
@@ -302,6 +305,16 @@ pub(super) fn write_delta_entities(
         || data.policy.assignments != before.policy.assignments
         || data.policy.grants != before.policy.grants
         || data.policy.media_revocations != before.policy.media_revocations
+        || before.invites.is_some_and(|previous| {
+            before.keys.map_or_else(
+                || &data.invites != previous,
+                |keys| {
+                    keys.invites
+                        .iter()
+                        .any(|id| data.invites.get(id) != previous.get(id))
+                },
+            )
+        })
         || before.bots.is_some_and(|previous| {
             before.keys.map_or_else(
                 || &data.bots != previous,

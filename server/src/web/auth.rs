@@ -192,6 +192,64 @@ pub(crate) async fn login(
     })
     .await?
 }
+#[derive(Deserialize)]
+pub(crate) struct Registration {
+    username: String,
+    password: String,
+    invite: String,
+}
+
+pub(crate) async fn register(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(input): Json<Registration>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    use crate::engine::invites;
+
+    check_origin(&app, &headers)?;
+    let ip = client_ip(&app.config, peer.ip(), &headers)
+        .map_err(|message| error(StatusCode::BAD_REQUEST, message))?;
+    app.attempts
+        .lock()
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Registration unavailable."))?
+        .admit_registration(ip, std::time::Instant::now())
+        .map_err(|message| error(StatusCode::TOO_MANY_REQUESTS, message))?;
+    let (id, digest) = invites::parse(&input.invite)
+        .ok_or_else(|| error(StatusCode::BAD_REQUEST, invites::INVALID_INVITE))?;
+    if !valid_name(&input.username) {
+        return Err(error(StatusCode::BAD_REQUEST, "Invalid username."));
+    }
+    app.inspect_engine({
+        let id = id.clone();
+        let digest = digest.clone();
+        move |engine, _| engine.check_registration_invite(id.as_deref(), &digest)
+    })
+    .await?;
+    let permit = app.password_permit()?;
+    super::admission::spawn_io(permit, async move {
+        let hash =
+            tokio::task::spawn_blocking(move || crate::engine::hash_password(&input.password))
+                .await??;
+        let ordering = app.mutations.metadata().await?;
+        let pending = app
+            .with_metadata(&ordering, move |engine| {
+                engine.prepare_registration(&input.username, hash, id.as_deref(), &digest)
+            })
+            .await?;
+        let pending = pending.save().await?;
+        let changes = app.changes.clone();
+        app.with_metadata(&ordering, move |engine| {
+            engine.publish_metadata(pending)?;
+            let _ = changes.send(Change::Metadata(engine.metadata_change()));
+            Ok::<_, EngineError>(())
+        })
+        .await?;
+        Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
+    })
+    .await?
+}
+
 fn login_state_unavailable() -> ApiError {
     error(
         StatusCode::SERVICE_UNAVAILABLE,

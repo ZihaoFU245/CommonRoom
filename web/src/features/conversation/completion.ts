@@ -34,6 +34,7 @@ export const permissionNames = [
   "x:room.owner.transfer",
   "x:history.clean",
   "x:account.create",
+  "x:invite.manage",
   "x:account.password.reset",
   "x:account.disable",
   "x:account.enable",

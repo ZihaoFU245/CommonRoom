@@ -187,6 +187,7 @@ export function suggestions(
   context: {
     bots?: string[];
     botCredentials?: BotCredentialHint[];
+    inviteHints?: Record<string, number>;
     messages?: Message[];
     aliases?: string[];
     privateScopes?: string[];
@@ -357,6 +358,13 @@ export function suggestions(
     if (position === 3 && ["add", "kick", "owner"].includes(parts[1] || ""))
       values = rooms.map((r) => `#${r}`);
   }
+  if (name === "/invite") {
+    if (position === 1) values = ["new", "ls", "revoke"];
+    if (position === 2 && parts[1] === "revoke")
+      values = Object.entries(context.inviteHints ?? {})
+        .filter(([, expires]) => expires * 1000 > Date.now())
+        .map(([id]) => id);
+  }
   if (name === "/bot") {
     const operation = parts[1];
     if (
@@ -480,6 +488,7 @@ export function suggestions(
         description: describe(spec),
         advance:
           (position === 1 && ["/user", "/room", "/bot"].includes(name)) ||
+          (name === "/invite" && position === 1 && value === "revoke") ||
           (name === "/bot" &&
             position === 2 &&
             (parts[1] === "token" ||

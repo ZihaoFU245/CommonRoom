@@ -439,6 +439,8 @@ impl Engine {
                         parts[3],
                         "w:room.create"
                             | "x:account.create"
+                            | "x:invite.manage"
+                            | "/invite"
                             | "w:private.create"
                             | "r:server.config"
                             | "r:account.list"

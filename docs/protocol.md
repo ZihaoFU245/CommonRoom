@@ -4,6 +4,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
+| `POST /api/register` | `{username,password,invite}` | 201 `{ok:true}` |
 | `POST /api/login` | `{username,password}` | `{ok:true}` and HttpOnly session cookie |
 | `POST /api/logout` | `{}` | `{ok:true}` and cleared cookie |
 | `GET /api/session` | Cookie credential | `{ok:true}` or 401; lightweight reconnect authentication |
@@ -27,6 +28,11 @@ session and an allowed Origin. It returns
 `{items:[{kind,id,status,info?,lease_seconds?,link?,error?}]}`; optional links
 contain `{url,expires_in}`. Read-only leases default to 900 seconds, with
 per-item errors.
+
+Registration requires an allowed browser origin. The API accepts up to ten
+registration attempts per minute per verified client IP. Empty, malformed, or unusable
+invite codes return 400, and a taken username returns 409. Account creation and
+redemption commit together. Sign-in uses the existing login endpoint.
 
 Browser API errors contain `{error:string}`. Bot API errors contain `{error:{code,message,retryable}}`; see [Bots](bots.md). Production requests must come from the configured trusted socket-peer IP. Browser and proxied requests require `X-Forwarded-Proto: https`; direct bearer-authenticated bot requests under `/api/bot/v1/` can omit it only with explicit `direct_bot_http` opt-in (default false). Login/logout/read and the WebSocket handshake check browser Origin. The reverse proxy must overwrite forwarded headers. Cookies are HttpOnly, SameSite Strict by default, scoped to `base_url`, and Secure in production. No bearer token is exposed to JavaScript. Browser routes and `/ws` reject Authorization headers; bot bearer authentication is confined to `/api/bot/v1/`. Media/profile bot counterparts are listed in [Bots](bots.md#media-and-profiles-v1-extension).
 

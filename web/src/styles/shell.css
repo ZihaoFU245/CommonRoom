@@ -89,6 +89,18 @@
 .login-card input::placeholder {
   color: var(--placeholder);
 }
+.login-switch {
+  align-self: center;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.85714rem;
+}
+.login-switch:hover {
+  background: var(--wash);
+  color: var(--ink);
+}
 .login-server-settings {
   position: fixed;
   right: max(20px, env(safe-area-inset-right));

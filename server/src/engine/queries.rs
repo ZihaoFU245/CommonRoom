@@ -336,6 +336,7 @@ impl Engine {
             users: directory.users,
             bots: self.bot_completion_names(name),
             bot_credentials: self.bot_credential_hints(name),
+            invite_hints: self.invite_hints(name),
             rooms: visible.rooms,
             direct: Vec::new(),
             private_peers: visible.peers,
