@@ -336,6 +336,10 @@ test("v1 media and profile extension validates requests and responses", () => {
       { conversation_id: "room-id", filename: "photo.png", size: 8 },
     ],
     [
+      "MediaUploadRequest",
+      { conversation_id: "@library", filename: "photo.png", size: 8 },
+    ],
+    [
       "UploadResponse",
       {
         media_id: "upload-id",

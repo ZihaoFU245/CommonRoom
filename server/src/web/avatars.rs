@@ -139,7 +139,11 @@ pub(crate) async fn download_as(
     Ok(Redirect::temporary(&url))
 }
 
-async fn download_url_as(app: &App, access: Access, id: String) -> Result<String, ApiError> {
+pub(crate) async fn download_url_as(
+    app: &App,
+    access: Access,
+    id: String,
+) -> Result<String, ApiError> {
     let storage = storage(app)?;
     let avatar = readable(app, &access, id).await?;
     let url = storage

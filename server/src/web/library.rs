@@ -1,4 +1,4 @@
-//! Browser library membership/ownership routes. Asset and account constraints are
+//! Account library membership/ownership routes. Asset and account constraints are
 //! enforced again by the native transaction; no engine guard spans SQL I/O.
 use super::*;
 use crate::engine::database::LibraryAction;
@@ -43,6 +43,20 @@ pub(crate) async fn list(
     Query(input): Query<List>,
 ) -> Result<Response, ApiError> {
     security::check_read_origin(&app, &headers)?;
+    let value = list_as(
+        State(app),
+        media::Access::Browser(headers.clone()),
+        Query(input),
+    )
+    .await?;
+    revalidation::json(&headers, &value.0, false)
+}
+
+pub(crate) async fn list_as(
+    State(app): State<App>,
+    access: media::Access,
+    Query(input): Query<List>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if input.sections && (input.owned || input.recent || !input.after.is_empty()) {
         return Err(error(
             StatusCode::BAD_REQUEST,
@@ -51,14 +65,13 @@ pub(crate) async fn list(
     }
     let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
-        let (identity, store) =
-            media::native_context(&app, media::Access::Browser(headers.clone())).await?;
+        let (identity, store) = media::native_context(&app, access).await?;
         let ordering = app.mutations.conversations(vec![]).await?;
         let (quota, scopes) = app
             .with_conversation(&ordering, {
                 let identity = identity.clone();
                 move |engine| -> Result<_, ApiError> {
-                    media::verify_identity(&identity, engine)?;
+                    identity.permit_library(engine)?;
                     Ok((
                         engine.library_quota(&identity.user),
                         engine.library_read_scopes(&identity.user),
@@ -82,11 +95,11 @@ pub(crate) async fn list(
             json!(library)
         };
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
-            media::verify_identity(&identity, engine)?;
+            identity.permit_library(engine)?;
             Ok(())
         })
         .await?;
-        revalidation::json(&headers, &page, false)
+        Ok(Json(page))
     })
     .await?
 }
@@ -98,6 +111,21 @@ pub(crate) async fn change(
     Json(input): Json<Change>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
+    change_as(
+        State(app),
+        media::Access::Browser(headers),
+        Path(id),
+        Json(input),
+    )
+    .await
+}
+
+pub(crate) async fn change_as(
+    State(app): State<App>,
+    access: media::Access,
+    Path(id): Path<String>,
+    Json(input): Json<Change>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if (input.before_id.is_some() && input.after_id.is_some())
         || (!matches!(input.action, LibraryAction::Move)
             && (input.before_id.is_some() || input.after_id.is_some()))
@@ -115,15 +143,14 @@ pub(crate) async fn change(
 
     let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
-        let (identity, store) =
-            media::native_context(&app, media::Access::Browser(headers)).await?;
+        let (identity, store) = media::native_context(&app, access).await?;
         let ordering = app.mutations.conversation(format!("@asset:{id}")).await?;
         let (quota, scopes) = app
             .with_conversation(&ordering, {
                 let identity = identity.clone();
                 let source = input.source_conversation.clone();
                 move |engine| -> Result<_, ApiError> {
-                    media::verify_identity(&identity, engine)?;
+                    identity.permit_library(engine)?;
                     if let Some(source) = source {
                         engine.authorize_library_source(&identity.user, &source)?;
                     }
@@ -176,7 +203,7 @@ pub(crate) async fn change(
             let _ = app.changes.send(super::Change::Media(target, asset));
         }
         app.with_conversation(&ordering, move |engine| -> Result<_, ApiError> {
-            media::verify_identity(&identity, engine)?;
+            identity.permit_library(engine)?;
             Ok(Json(json!({"ok":true})))
         })
         .await

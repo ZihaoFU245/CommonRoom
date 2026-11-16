@@ -152,3 +152,61 @@ pub(super) async fn color_set(
         .await
         .map_err(Error::from)
 }
+
+pub(super) async fn library_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    input: Query<crate::web::library::List>,
+) -> Result<Json<Value>, Error> {
+    let access = access(&app, &headers, "library").await?;
+    Ok(crate::web::library::list_as(State(app), access, input).await?)
+}
+
+pub(super) async fn library_change(
+    State(app): State<App>,
+    headers: HeaderMap,
+    id: Path<String>,
+    input: Json<crate::web::library::Change>,
+) -> Result<Json<Value>, Error> {
+    let access = access(&app, &headers, "library").await?;
+    Ok(crate::web::library::change_as(State(app), access, id, input).await?)
+}
+
+pub(super) async fn media_resolve(
+    State(app): State<App>,
+    headers: HeaderMap,
+    input: Json<crate::web::media_resolve::Input>,
+) -> Result<Json<Value>, Error> {
+    let access = access(&app, &headers, "read").await?;
+    Ok(crate::web::media_resolve::resolve_as(State(app), access, input).await?)
+}
+
+pub(super) async fn media_link(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(options): Query<crate::web::media::Download>,
+) -> Result<Json<Value>, Error> {
+    let access = access(&app, &headers, "read").await?;
+    let url = crate::web::media::download_url_as(&app, access, id, options).await?;
+    Ok(Json(serde_json::json!({"url":url})))
+}
+
+pub(super) async fn avatar_link(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Error> {
+    let access = access(&app, &headers, "read").await?;
+    let url = crate::web::avatars::download_url_as(&app, access, id).await?;
+    Ok(Json(serde_json::json!({"url":url})))
+}
+
+pub(super) async fn bot_commands(
+    State(app): State<App>,
+    headers: HeaderMap,
+    input: Query<crate::web::bot_commands::QueryInput>,
+) -> Result<Json<Value>, Error> {
+    let access = access(&app, &headers, "read").await?;
+    Ok(crate::web::bot_commands::get_as(State(app), access, input).await?)
+}

@@ -49,7 +49,8 @@ export class BotApi {
         /^(media|avatars)\/uploads\/[^/]+\/(complete|abandon)$/,
         "$1/uploads/:id/$2",
       )
-      .replace(/^(media|avatars)\/[^/]+\/(info|file)$/, "$1/:id/$2");
+      .replace(/^(media|avatars)\/[^/]+\/(info|file|link)$/, "$1/:id/$2")
+      .replace(/^library\/[^/]+$/, "library/:id");
     const requests = {
       messages: "MessageRequest",
       read: "ReadRequest",
@@ -57,6 +58,8 @@ export class BotApi {
       credentials: "CredentialRequest",
       conversations: "ConversationRequest",
       "media/uploads": "MediaUploadRequest",
+      "media/resolve": "MediaResolveRequest",
+      "library/:id": "LibraryChangeRequest",
       "avatars/uploads": "AvatarUploadRequest",
       avatars: "AvatarRequest",
       color: "ColorRequest",
@@ -70,6 +73,12 @@ export class BotApi {
       credentials: "CredentialResponse",
       conversations: "ConversationResponse",
       "media/config": "MediaConfig",
+      "media/resolve": "MediaResolveResponse",
+      "media/:id/link": "SignedLink",
+      "avatars/:id/link": "SignedLink",
+      library: "LibraryListResponse",
+      "library/:id": "Ok",
+      "bot-commands": "BotCommandDirectoryResponse",
       "media/uploads": "UploadResponse",
       "media/uploads/:id/complete": "MediaResponse",
       "media/uploads/:id/abandon": "Ok",

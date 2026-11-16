@@ -2260,6 +2260,16 @@ async fn production_ingress_rejections_always_have_security_headers() {
                 .headers()
                 .contains_key(header::CONTENT_SECURITY_POLICY)
         );
+        if status == StatusCode::OK {
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "text/plain; charset=utf-8"
+            );
+            assert_eq!(
+                axum::body::to_bytes(response.into_body(), 2).await.unwrap(),
+                "ok"
+            );
+        }
     }
 }
 

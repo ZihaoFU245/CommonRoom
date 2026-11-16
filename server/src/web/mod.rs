@@ -12,17 +12,17 @@ mod profiles;
 mod query_commands;
 mod revalidation;
 pub(crate) use error::{ApiError, error};
-mod bot_commands;
+pub(crate) mod bot_commands;
 mod cleanup_commands;
 pub(crate) mod commands;
 mod deadline_io;
 mod deltas;
 pub(crate) mod history;
 pub(crate) mod http_server;
-mod library;
+pub(crate) mod library;
 pub(crate) mod login_limits;
 pub(crate) mod media;
-mod media_resolve;
+pub(crate) mod media_resolve;
 pub(crate) mod mutations;
 pub(crate) mod security;
 pub(crate) mod snapshots;
@@ -288,10 +288,7 @@ pub fn router(app: App) -> Router {
             post(display_names::set_display_name),
         )
         .route(path("/api/bot-commands"), get(bot_commands::get))
-        .route(
-            path("/api/health"),
-            get(|| async { Json(json!({ "ok": true })) }),
-        )
+        .route(path("/api/health"), get(|| async { "ok" }))
         .route(path("/ws"), get(socket::upgrade));
     let routes = if app.config.base_url == "/" {
         routes

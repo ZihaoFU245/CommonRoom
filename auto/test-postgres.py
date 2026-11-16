@@ -41,13 +41,14 @@ def start(binary, env, log):
                                stdout=log, stderr=subprocess.STDOUT, text=True)
     deadline = time.monotonic() + 15
     port = int(env["CHAT_BIND"].rsplit(":", 1)[1])
+    health_url = f"http://127.0.0.1:{port}/api/health"
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("Server exited before readiness; inspect the smoke log")
         try:
-            body, _ = request(port, "/api/health")
-            if body.get("ok"):
-                return process
+            with urllib.request.urlopen(health_url, timeout=3) as response:
+                if response.read() == b"ok":
+                    return process
         except (OSError, urllib.error.URLError):
             time.sleep(0.05)
     stop(process)

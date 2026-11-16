@@ -58,8 +58,38 @@ impl Access {
     }
 }
 impl Identity {
+    pub(super) fn permit_library(&self, engine: &Engine) -> Result<(), ApiError> {
+        verify_identity(self, engine)?;
+        if let Access::Bot { context, .. } = &self.access {
+            use crate::bots::auth::Scope;
+            for op in ["read", "library"] {
+                context.permits(engine, op, Scope::Global)?;
+            }
+            if self.conversation_scope(engine)?.is_some() {
+                return Err(error(
+                    StatusCode::FORBIDDEN,
+                    "Library access requires an account-wide worker.",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn expires_at(&self, engine: &Engine) -> Result<u64, ApiError> {
+        match &self.access {
+            Access::Browser(headers) => {
+                auth::token(&self.config, headers).and_then(|token| engine.session_expires(token))
+            }
+            Access::Bot { context, .. } => context.metadata(engine)?.expires,
+        }
+        .ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Credential expired."))
+    }
+
     pub(super) fn permit_conversation(&self, engine: &Engine, id: &str) -> Result<(), ApiError> {
         if let Access::Bot { context, operation } = &self.access {
+            if id == "@library" && *operation == "media_upload" {
+                return self.permit_library(engine);
+            }
             context.permits(
                 engine,
                 operation,
@@ -529,7 +559,7 @@ pub(crate) async fn download_as(
     Ok(Redirect::temporary(&url))
 }
 
-async fn download_url_as(
+pub(crate) async fn download_url_as(
     app: &App,
     access: Access,
     id: String,

@@ -424,6 +424,42 @@ async fn browser_catalogues_are_session_authenticated_and_conversation_authorize
     assert!(value["conversations"].as_array().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn advertised_bot_command_directory_honors_worker_scope() {
+    let (app, token) = fixture();
+    let mut runtime = Runtime::default();
+    let room = publish(&app, &context(&app, &token), &mut runtime);
+    let reader = scoped_worker(&app, "catalogue-reader", &[&room], &["read"]).await;
+    let excluded = scoped_worker(&app, "catalogue-excluded", &[], &["read"]).await;
+    let path = "/api/bot/v1/bot-commands";
+    let (status, page) = request(&app, Some(&reader), "GET", path, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(page["conversations"][0]["conversation_id"], room);
+    assert_eq!(
+        page["conversations"][0]["bots"][0]["commands"][0]["name"],
+        "/model"
+    );
+    let (_, empty) = request(&app, Some(&excluded), "GET", path, json!({})).await;
+    assert_eq!(empty["conversations"], json!([]));
+    assert_eq!(
+        request(
+            &app,
+            Some(&excluded),
+            "GET",
+            &format!("{path}?conversation_id={room}"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(&app, None, "GET", path, json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 #[test]
 fn private_catalogues_are_visible_only_to_authorized_participants() {
     let (app, token) = fixture();

@@ -1,5 +1,4 @@
 use super::*;
-use crate::engine::EngineError;
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
@@ -22,6 +21,20 @@ pub(crate) async fn get(
     if super::auth::bearer(&headers).is_some() {
         return Err(error(StatusCode::UNAUTHORIZED, "Browser session required."));
     }
+    let value = get_as(
+        State(app),
+        media::Access::Browser(headers.clone()),
+        Query(input),
+    )
+    .await?;
+    revalidation::json(&headers, &value.0, false)
+}
+
+pub(crate) async fn get_as(
+    State(app): State<App>,
+    access: media::Access,
+    Query(input): Query<QueryInput>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if input
         .after
         .as_ref()
@@ -36,20 +49,22 @@ pub(crate) async fn get(
     let permit = app.io_permit()?;
     tokio::spawn(async move {
         let _permit = permit;
-        let identity = super::auth::authenticated_identity(&app, &headers).await?;
+        let (identity, store) = media::native_context(&app, access).await?;
+        store.health().await?;
         let state = app.clone();
         let value = app
             .inspect_engine(move |engine, _| {
-                identity.verify(engine)?;
-                let directory = |id: &str| {
-                    state
+                media::verify_identity(&identity, engine)?;
+                let directory = |id: &str| -> Result<_, ApiError> {
+                    identity.permit_conversation(engine, id)?;
+                    Ok(state
                         .bot_runtimes
                         .commands
                         .visible(engine, &identity.user, id)
-                        .map(|bots| json!({"conversation_id":id,"bots":bots}))
+                        .map(|bots| json!({"conversation_id":id,"bots":bots}))?)
                 };
                 if let Some(id) = input.conversation_id {
-                    return directory(&id).map_err(ApiError::from);
+                    return directory(&id);
                 }
                 let mut conversations: Vec<serde_json::Value> = Vec::new();
                 let mut ids: Vec<_> = engine.bot_index.conversations.keys().collect();
@@ -88,14 +103,18 @@ pub(crate) async fn get(
                                 break;
                             }
                         }
-                        Err(EngineError::Forbidden(_) | EngineError::NotFound(_)) => {}
-                        Err(error) => return Err(ApiError::from(error)),
+                        Err(cause)
+                            if matches!(
+                                cause.status,
+                                StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+                            ) => {}
+                        Err(cause) => return Err(cause),
                     }
                 }
                 Ok(json!({"conversations":conversations,"next":next}))
             })
             .await?;
-        revalidation::json(&headers, &value, false)
+        Ok(Json(value))
     })
     .await?
 }

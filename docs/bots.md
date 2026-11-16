@@ -68,16 +68,19 @@ returned once. Worker tokens cannot issue tokens, including account-wide workers
 All request fields are required. `conversations` is an array of stable IDs or
 explicit `null` to delegate the account's live conversation scope. An empty array
 grants no chat access. Operations are `read`, `send`, `react`, `read_ack`,
-`activity`, `config`, `commands`, `media_upload`, `profile`, and `create`.
-`commands` and `create` require `conversations:null`. Uploads require all of
-`read`, `send` and `media_upload`.
+`activity`, `config`, `commands`, `media_upload`, `profile`, `create`, and `library`.
+`commands`, `create`, and `library` require `conversations:null`. Library management
+requires `read` and `library`. Uploads require `read`, `send`, and `media_upload`,
+with `library` additionally required for uploads to `@library`.
 
 Issuance checks current account permissions: every explicitly listed conversation
 must support every requested operation. For `null`, each operation must be possible
 under the account's current grants somewhere; it does not grant access everywhere.
 During use, the worker's operations and scope also intersect live account grants.
 Permission revocation therefore applies before token expiry. Own appearance is
-self-service through explicit `profile` delegation.
+self-service through explicit `profile` delegation. Personal library management
+is self-service through explicit `library` delegation, subject to the library
+service’s normal ownership, quota, source and administrator checks.
 
 `/me` exposes the worker's credential kind, ID, expiry, scope and operations.
 Issuer and worker tokens cannot authenticate browser transports. Revocation and
@@ -177,6 +180,8 @@ no Origin header. Existing production ingress rules apply.
 | Media configuration | `read` (no conversation-specific data) |
 | Media info/download | `read` and the attachment's conversation ID |
 | Media allocation/completion/abandon | `media_upload`, `read`, `send` and the upload's conversation ID |
+| Batch media resolution and individual signed links | `read` and the same access as the corresponding media or avatar read |
+| Personal library list and management | `read`, `library`, and account-wide scope |
 | Avatar info/download | `read`; another account must be visible through an allowed conversation's members/peer or retained history |
 | Own avatar set/upload/complete | `profile` |
 | Own global name color | `profile` |
@@ -188,7 +193,7 @@ conversation; independent account ownership or a saved library entry cannot wide
 the token's scope. Scoped sends may reuse an asset already referenced in the target
 conversation, and cannot publish a hidden asset solely because the account owns
 it. Account-wide workers retain the account's independent library access. Library
-membership/ownership management remains on browser session routes.
+membership and ownership management use the dedicated library routes.
 
 `profile` explicitly delegates the bot account's own global appearance, even on a
 conversation-scoped token. It does not authorize another account's profile or
@@ -201,6 +206,11 @@ scope restrictions, but still need the same account grants and ownership checks.
 | Method and endpoint (under `/api/bot/v1`) | Request / response schema |
 | --- | --- |
 | `GET /media/config` | `MediaConfig` |
+| `GET /library` | `LibraryQuery` → `LibraryListResponse` |
+| `POST /library/{id}` | `LibraryChangeRequest` → `Ok` |
+| `POST /media/resolve` | `MediaResolveRequest` → `MediaResolveResponse` |
+| `GET /media/{id}/link` | Optional `MediaDownloadQuery` → `SignedLink` |
+| `GET /avatars/{id}/link` | `SignedLink` |
 | `POST /media/uploads` | `MediaUploadRequest` → `UploadResponse` |
 | `POST /media/uploads/{id}/complete` | No request body required; `MediaResponse` |
 | `POST /media/uploads/{id}/abandon` | No request body required; `Ok` |
@@ -231,6 +241,25 @@ Downloads return a presigned bucket URL in Location, valid for at most 60 second
 and shortened to remaining retention. Follow it without forwarding the bot bearer
 header to storage. Retraction/expiry/access revocation prevents issuance of new
 URLs; an already-issued URL can remain usable until it expires.
+
+Library list filters, cursor pagination, collection and recent sections, and
+management actions follow the [personal media library contract](protocol.md#personal-media-library).
+Pass a stable conversation ID as `source_conversation` when saving or acquiring
+from a retained message. To create a library asset, allocate a raster image
+upload with `conversation_id:"@library"`, perform the signed PUT, then complete
+it. Completion saves the asset and establishes ownership. To send an existing
+asset, put its canonical `/api/media/{id}/file` path in the message Markdown,
+including the configured base path. The destination conversation’s send and
+media authorization checks still apply.
+
+`POST /media/resolve` accepts 1–32 items with `kind` (`media` or `avatars`),
+canonical UUID `id`, and optional `link` and `download` booleans. Items are
+returned in request order, with `status`, either `info` and `lease_seconds` or
+an item-level `error` string, and an optional `link:{url,expires_in}`.
+Read leases are capped by worker credential expiry and any future asset expiry.
+Scoped workers only get library results backed by a retained reference in an
+allowed readable conversation. Each individual `/link` returns `{url}` using
+the same authorization and signing path as its `/file` redirect.
 
 Avatar allocation uses `{size,upload_id?}` (1–65,536 bytes); the optional canonical
 UUID supports allocation retries. PUT and complete as above. Completion validates
@@ -370,6 +399,16 @@ Accepted command/activity controls receive `{kind:"config_ack",id}` (the existin
 acknowledgement name is retained); errors use `{kind:"error",id,error}`.
 
 ## Command discovery
+
+`GET /api/bot/v1/bot-commands?conversation_id=ID` returns
+`{conversation_id,bots:[{account_id,username,commands}]}` for live advertised
+mention commands. Omit `conversation_id` for `{conversations,next}`, and pass
+`next` as `after` to read the next page. The query and both response shapes are
+described by `BotCommandDirectoryQuery` and `BotCommandDirectoryResponse`.
+The route requires the worker’s `read` operation and restricts results to its
+allowed conversations. The existing account read, send, member visibility and
+operator-only command filters still apply. Use `GET /commands` for the native
+server command catalogue.
 
 Command discovery is part of Bot API v1. A worker registers its catalogue
 handler with `{kind:"commands_ready"}` after receiving its baseline snapshot,

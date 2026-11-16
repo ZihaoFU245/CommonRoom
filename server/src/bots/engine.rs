@@ -251,6 +251,12 @@ impl Engine {
         user: &str,
         input: &models::CredentialInput,
     ) -> Result<(), Error> {
+        if input.operations.contains("library") && !input.operations.contains("read") {
+            return Err(Error::new(
+                Code::InvalidRequest,
+                "Library access requires the read operation.",
+            ));
+        }
         if input.operations.contains("media_upload")
             && !["read", "send"]
                 .iter()
@@ -265,11 +271,11 @@ impl Engine {
             && input
                 .operations
                 .iter()
-                .any(|op| matches!(op.as_str(), "commands" | "create"))
+                .any(|op| matches!(op.as_str(), "commands" | "create" | "library"))
         {
             return Err(Error::new(
                 Code::Forbidden,
-                "Commands and conversation creation require an explicit account-wide worker scope (conversations:null).",
+                "Commands, conversation creation and library access require an explicit account-wide worker scope (conversations:null).",
             ));
         }
         let targets = match &input.conversations {
@@ -285,7 +291,7 @@ impl Engine {
                 .collect(),
         };
         for operation in &input.operations {
-            if operation == "profile" {
+            if matches!(operation.as_str(), "profile" | "library") {
                 continue;
             } // Own appearance is self-service.
             if operation == "create" {

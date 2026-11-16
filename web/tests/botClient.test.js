@@ -411,3 +411,46 @@ test("media/profile calls validate v1 payloads and return redirects without forw
   );
   assert.equal(calls.length, 4);
 });
+
+test("library, batch media, signed links, and advertised commands use their v1 contracts", async () => {
+  const id = "54388f09-70a5-4977-afda-4f4c0057d723";
+  const link = { url: "https://storage.example/signed" };
+  const result = {
+    items: [{ kind: "media", id, status: 404, error: "Missing" }],
+  };
+  const directory = { conversations: [], next: null };
+  const responses = new Map([
+    [`library/${id}`, { ok: true }],
+    ["media/resolve", result],
+    [`media/${id}/link`, link],
+    [`avatars/${id}/link`, link],
+    ["bot-commands", directory],
+  ]);
+  const api = new BotApi({
+    url: "https://chat.example.com/",
+    token: "secret",
+    fetchImpl: async (url) =>
+      Response.json(responses.get(url.pathname.replace("/api/bot/v1/", ""))),
+  });
+
+  assert.deepEqual(
+    await api.request(`library/${id}`, { body: { action: "save" } }),
+    {
+      ok: true,
+    },
+  );
+  assert.deepEqual(
+    await api.request("media/resolve", {
+      body: { items: [{ kind: "media", id }] },
+    }),
+    result,
+  );
+  assert.deepEqual(await api.request(`media/${id}/link?download=true`), link);
+  assert.deepEqual(await api.request(`avatars/${id}/link`), link);
+  assert.deepEqual(await api.request("bot-commands"), directory);
+  responses.set("bot-commands", { commands: [] });
+  await assert.rejects(
+    api.request("bot-commands"),
+    /Invalid BotCommandDirectoryResponse/,
+  );
+});

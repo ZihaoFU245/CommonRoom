@@ -22,6 +22,7 @@ async fn bearer_authentication_is_confined_to_bot_routes_including_base_paths() 
             ("POST", "api/avatars/uploads/missing/complete"),
             ("GET", "api/avatars/missing/info"),
             ("GET", "api/avatars/missing/file"),
+            ("GET", "api/avatars/missing/link"),
             ("GET", "api/media/config"),
             ("GET", "api/library"),
             ("POST", "api/library/missing"),
@@ -30,6 +31,8 @@ async fn bearer_authentication_is_confined_to_bot_routes_including_base_paths() 
             ("POST", "api/media/uploads/missing/abandon"),
             ("GET", "api/media/missing/info"),
             ("GET", "api/media/missing/file"),
+            ("GET", "api/media/missing/link"),
+            ("POST", "api/media/resolve"),
             ("GET", "api/bot-commands?conversation_id=missing"),
             ("GET", "ws"),
             ("GET", "api/health"),
@@ -153,6 +156,141 @@ async fn scoped_workers_cannot_launder_independent_library_access_into_messages(
         .0,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn worker_library_upload_management_and_scoped_resolution() {
+    let (mut app, token) = fixture();
+    let (storage, server) = web::media::tests::storage_server().await;
+    app.media = Some(storage);
+    let room = conversation(&app);
+    app.engine()
+        .unwrap()
+        .execute(None, None, "/grant helper #support w:media.upload")
+        .unwrap();
+    let scoped = scoped_worker(
+        &app,
+        "library-reader",
+        &[&room],
+        &["read", "send", "media_upload"],
+    )
+    .await;
+    let (status, issued) = request(
+        &app,
+        Some(&issuer(&app)),
+        "POST",
+        "/api/bot/v1/credentials",
+        json!({"label":"library","expires":crate::bots::now()+600,"conversations":null,
+            "operations":["read","send","media_upload","library"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let worker = issued["token"].as_str().unwrap();
+    let listing = "/api/bot/v1/library";
+    assert_eq!(
+        request(&app, Some(&scoped), "GET", listing, json!({}))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &app,
+            Some(&scoped),
+            "POST",
+            "/api/bot/v1/media/uploads",
+            json!({"conversation_id":"@library","filename":"image.png","size":8}),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+
+    let asset = upload(&app, worker, "@library").await;
+    let (status, completed) = request(
+        &app,
+        Some(worker),
+        "POST",
+        &format!("/api/bot/v1/media/uploads/{asset}/complete"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    let (status, page) = request(&app, Some(worker), "GET", listing, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["items"][0]["media_id"], asset);
+    let change = format!("{listing}/{asset}");
+    assert_eq!(
+        request(
+            &app,
+            Some(worker),
+            "POST",
+            &change,
+            json!({"action":"remove"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, page) = request(
+        &app,
+        Some(worker),
+        "GET",
+        &format!("{listing}?sections=true"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(page["library"]["items"], json!([]));
+    assert_eq!(
+        request(
+            &app,
+            Some(worker),
+            "POST",
+            &change,
+            json!({"action":"save"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let link = format!("/api/bot/v1/media/{asset}/link?download=true");
+    let (status, signed) = request(&app, Some(worker), "GET", &link, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{signed}");
+    assert!(signed["url"].as_str().unwrap().contains("X-Amz-Signature="));
+    assert_eq!(
+        request(&app, Some(&scoped), "GET", &link, json!({}))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    let item = json!({"kind":"media","id":asset,"link":true});
+    let resolve = |secret| {
+        request(
+            &app,
+            Some(secret),
+            "POST",
+            "/api/bot/v1/media/resolve",
+            json!({"items":[item.clone(),item.clone()]}),
+        )
+    };
+    let (status, result) = resolve(worker).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["items"][0], result["items"][1]);
+    assert_eq!(result["items"][0]["info"]["saved"], true);
+    assert!(result["items"][0]["lease_seconds"].as_u64().unwrap() <= 600);
+    let (_, hidden) = resolve(&scoped).await;
+    assert_eq!(hidden["items"][0]["status"], 404);
+
+    let sent = send(&app, &token, "publish-library-asset", json!({
+        "conversation_id":room,"text":format!("![image]({})",completed["path"].as_str().unwrap())
+    })).await;
+    assert_eq!(sent.0, StatusCode::OK, "{}", sent.1);
+    let (_, visible) = resolve(&scoped).await;
+    assert_eq!(visible["items"][0]["status"], 200);
+    assert_eq!(visible["items"][0]["info"]["saved"], false);
+    server.abort();
 }
 
 #[tokio::test]
@@ -431,6 +569,27 @@ async fn bot_avatar_and_color_routes_preserve_self_service_and_revocation() {
         redirect(&app, &token, &file).await.0,
         StatusCode::TEMPORARY_REDIRECT
     );
+    let (status, link) = request(
+        &app,
+        Some(&token),
+        "GET",
+        &format!("/api/bot/v1/avatars/{media}/link"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{link}");
+    assert!(link["url"].as_str().unwrap().contains("X-Amz-Signature="));
+    let (status, resolved) = request(
+        &app,
+        Some(&token),
+        "POST",
+        "/api/bot/v1/media/resolve",
+        json!({"items":[{"kind":"avatars","id":media,"link":true}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(resolved["items"][0]["status"], 200);
+    assert!(resolved["items"][0]["link"]["url"].is_string());
     let context = context(&app, &token);
     app.engine()
         .unwrap()

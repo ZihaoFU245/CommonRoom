@@ -222,6 +222,7 @@ pub(crate) const OPERATIONS: &[&str] = &[
     "config",
     "commands",
     "media_upload",
+    "library",
     "profile",
     "create",
 ];

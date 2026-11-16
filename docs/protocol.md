@@ -19,7 +19,7 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `POST /api/media/resolve` | Media read batch | See the contract below |
 | `GET /api/media/{id}/link?download=true` | Session cookie and allowed Origin; `download` defaults to false | `{url}`; short-lived signed storage URL after current conversation access/reference/expiry checks; true forces download disposition |
 | `GET /api/avatars/{id}/link` | Session cookie and allowed Origin | `{url}`; short-lived signed storage URL after current avatar visibility checks |
-| `GET /api/health` | No session required | `{ok:true}` |
+| `GET /api/health` | No session required | 200 `ok` (`text/plain; charset=utf-8`) |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
 
 `POST /api/media/resolve` accepts

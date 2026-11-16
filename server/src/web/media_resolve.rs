@@ -1,4 +1,4 @@
-//! Browser media reads share admission, native reads and final authorization.
+//! Batch media reads share admission, native reads and final authorization.
 use super::*;
 use crate::engine::{EngineError, avatars::AvatarPlan, database::MediaRead};
 use axum::{extract::State, http::HeaderMap};
@@ -23,7 +23,7 @@ struct Item {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Input {
+pub(crate) struct Input {
     items: Vec<Item>,
 }
 
@@ -33,6 +33,14 @@ pub(super) async fn resolve(
     Json(input): Json<Input>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
+    resolve_as(State(app), media::Access::Browser(headers), Json(input)).await
+}
+
+pub(crate) async fn resolve_as(
+    State(app): State<App>,
+    access: media::Access,
+    Json(input): Json<Input>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if input.items.is_empty()
         || input.items.len() > 32
         || input.items.iter().any(|item| !canonical_id(&item.id))
@@ -43,12 +51,12 @@ pub(super) async fn resolve(
         ));
     }
     let permit = app.io_permit()?;
-    admission::spawn_io(permit, resolve_batch(app, headers, input)).await?
+    admission::spawn_io(permit, resolve_batch(app, access, input)).await?
 }
 
 async fn resolve_batch(
     app: App,
-    headers: HeaderMap,
+    access: media::Access,
     input: Input,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Preserve response order while resolving exact duplicates only once.
@@ -66,7 +74,6 @@ async fn resolve_batch(
             }
         })
         .collect();
-    let access = media::Access::Browser(headers.clone());
     let (identity, store) = media::native_context(&app, access).await?;
     let ids: Vec<_> = items
         .iter()
@@ -82,28 +89,30 @@ async fn resolve_batch(
     // Discover only requested media kinds. Discard these authorization facts;
     // the authoritative reread below follows its delivery stamp capture.
     let discovered = store.read_batch(&ids, &identity.account, &[]).await?;
-    let (scopes, mut stamp) = app
+    let (scopes, independent, mut stamp) = app
         .inspect_engine({
             let identity = identity.clone();
             move |engine, _| -> Result<_, ApiError> {
                 media::verify_identity(&identity, engine)?;
-                let scopes = if discovered
+                let (scopes, independent) = if discovered
                     .iter()
                     .any(|row| row.media.conversation == "@library")
                 {
-                    identity.media_read_scopes(engine)?.0
+                    identity.media_read_scopes(engine)?
                 } else {
-                    discovered
+                    let scopes = discovered
                         .iter()
                         .filter_map(|row| {
                             let id = &row.media.conversation;
                             (id != "@avatar"
+                                && identity.permit_conversation(engine, id).is_ok()
                                 && engine.authorize_library_source(&identity.user, id).is_ok())
                             .then(|| id.clone())
                         })
                         .collect::<BTreeSet<_>>()
                         .into_iter()
-                        .collect()
+                        .collect();
+                    (scopes, identity.conversation_scope(engine)?.is_none())
                 };
                 let mut stamp_ids: BTreeSet<_> = scopes.iter().cloned().collect();
                 // Unknown avatar authors need historical witnesses. Capture only
@@ -111,24 +120,31 @@ async fn resolve_batch(
                 // read scopes for every ordinary avatar/media request.
                 for row in &discovered {
                     if row.media.conversation == "@avatar"
-                        && let Ok(plan) =
-                            engine.avatar_read_plan_scoped(&identity.user, &row.media, None)
+                        && let Ok(plan) = engine.avatar_read_plan_scoped(
+                            &identity.user,
+                            &row.media,
+                            identity.conversation_scope(engine)?,
+                        )
                     {
                         stamp_ids.extend(plan.history_ids().map(str::to_owned));
                     }
                 }
                 let stamp = engine.delivery_stamp(&identity.user, &stamp_ids, false)?;
-                Ok((scopes, stamp))
+                Ok((scopes, independent, stamp))
             }
         })
         .await?;
-    let rows = store.read_batch(&ids, &identity.account, &scopes).await?;
+    let account = if independent {
+        identity.account.clone()
+    } else {
+        String::new()
+    };
+    let rows = store.read_batch(&ids, &account, &scopes).await?;
     let (items, rows, mut authorized) = app
         .inspect_engine({
             let identity = identity.clone();
             move |engine, _| -> Result<_, ApiError> {
                 media::verify_identity(&identity, engine)?;
-                let user = &identity.user;
                 let mut authorized = BTreeMap::new();
                 for item in &items {
                     authorized
@@ -137,7 +153,7 @@ async fn resolve_batch(
                             rows.iter()
                                 .find(|row| row.media.id == item.id)
                                 .ok_or_else(missing_media)
-                                .and_then(|row| item.authorize(engine, user, row))
+                                .and_then(|row| item.authorize(engine, &identity, row))
                         });
                 }
                 Ok((items, rows, authorized))
@@ -201,7 +217,7 @@ async fn resolve_batch(
     }
     // Recheck references and mutable columns after signing.
     let rows = if links.iter().any(|link| matches!(link, Ok(Some(_)))) {
-        store.read_batch(&ids, &identity.account, &scopes).await?
+        store.read_batch(&ids, &account, &scopes).await?
     } else {
         rows
     };
@@ -218,12 +234,9 @@ async fn resolve_batch(
             ));
         }
         let now = crate::engine::media::timestamp();
-        let unauthorized = StatusCode::UNAUTHORIZED;
-        let session_expires = auth::token(config, &headers)
-            .and_then(|token| engine.session_expires(token))
-            .ok_or_else(|| error(unauthorized, "Session expired."))?;
-        if session_expires <= now {
-            return Err(error(unauthorized, "Session expired."));
+        let credential_expires = identity.expires_at(engine)?;
+        if credential_expires <= now {
+            return Err(error(StatusCode::UNAUTHORIZED, "Credential expired."));
         }
         let mut authorized = BTreeMap::new();
         let results: Vec<_> = items
@@ -238,10 +251,10 @@ async fn resolve_batch(
                         .ok_or_else(missing_media)?;
                     authorized
                         .entry((item.kind, item.id.clone()))
-                        .or_insert_with(|| item.authorize(engine, user, row))
+                        .or_insert_with(|| item.authorize(engine, &identity, row))
                         .as_ref()
                         .map_err(|cause| error(cause.status, &cause.message))?;
-                    Ok(item.value(row, config, now, session_expires, link))
+                    Ok(item.value(row, config, now, credential_expires, link))
                 })();
                 result.unwrap_or_else(|cause| {
                     json!({
@@ -275,18 +288,27 @@ impl Item {
     fn authorize(
         &self,
         engine: &Engine,
-        user: &str,
+        identity: &media::Identity,
         row: &MediaRead,
     ) -> Result<Option<AvatarPlan>, ApiError> {
         match self.kind {
             Kind::Media => {
+                if row.media.conversation != "@library" {
+                    identity
+                        .permit_conversation(engine, &row.media.conversation)
+                        .map_err(|_| missing_media())?;
+                }
                 engine
-                    .authorize_media_read(user, &row.media, row.attached, true)
+                    .authorize_media_read(&identity.user, &row.media, row.attached, true)
                     .map_err(hidden_media)?;
                 Ok(None)
             }
             Kind::Avatars => engine
-                .avatar_read_plan_scoped(user, &row.media, None)
+                .avatar_read_plan_scoped(
+                    &identity.user,
+                    &row.media,
+                    identity.conversation_scope(engine)?,
+                )
                 .map(Some)
                 .map_err(hidden_media),
         }
@@ -296,7 +318,7 @@ impl Item {
         row: &MediaRead,
         config: &Config,
         now: u64,
-        session_expires: u64,
+        credential_expires: u64,
         link: Option<String>,
     ) -> serde_json::Value {
         let media = &row.media;
@@ -305,7 +327,7 @@ impl Item {
         let lease_seconds = config
             .media
             .authorization_lease_seconds
-            .min(session_expires.saturating_sub(now))
+            .min(credential_expires.saturating_sub(now))
             .min(
                 media
                     .expires

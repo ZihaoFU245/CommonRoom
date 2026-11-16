@@ -47,6 +47,12 @@ pub(super) fn routes(registry: &mut crate::web::metrics::Registry) -> Router<App
                 .route(path("/reactions"), put(react))
                 .route(path("/ws"), get(upgrade))
                 .route(path("/schema"), get(schema))
+                .route(path("/bot-commands"), get(super::media::bot_commands))
+                .route(path("/library"), get(super::media::library_list))
+                .route(path("/library/{id}"), post(super::media::library_change))
+                .route(path("/media/resolve"), post(super::media::media_resolve))
+                .route(path("/media/{id}/link"), get(super::media::media_link))
+                .route(path("/avatars/{id}/link"), get(super::media::avatar_link))
                 .route(path("/media/config"), get(super::media::media_config))
                 .route(path("/media/uploads"), post(super::media::media_allocate))
                 .route(
