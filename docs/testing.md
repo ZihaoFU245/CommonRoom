@@ -126,6 +126,10 @@ rtk pnpm --dir web test:integration
 running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 
+The amd64 build uploads `ui.tar.xz` as the standalone `release-ui` workflow
+artifact before the dependency audit. The publish job downloads it alongside
+the architecture archives after the audit passes.
+
 The release workflow runs `./auto/audit.sh` with a POSIX shell, AWK, Git,
 Cargo and cargo-audit. The script fetches a fresh RustSec database and audits
 the locked workspace graph with all workspace features and target platforms.

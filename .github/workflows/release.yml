@@ -38,15 +38,20 @@ jobs:
           pnpm --dir web install --frozen-lockfile
           ./auto/check.sh
           ./auto/build.sh release
+      - name: Upload UI archive
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-ui
+          path: ui.tar.xz
+          if-no-files-found: error
+          retention-days: 7
       - name: Package release
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           mkdir release-assets
           tar -cJf "release-assets/chat-linux-${ARCH}.tar.xz" chat
-          if [ "$ARCH" = amd64 ]; then
-            mv ui.tar.xz release-assets/
-          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.arch }}
