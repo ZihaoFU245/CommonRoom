@@ -509,7 +509,7 @@ pub(crate) async fn info_as(
     Path(id): Path<String>,
     Query(options): Query<MediaInfoQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let (media, saved) = native_media(
+    let media = native_media(
         &app,
         &access,
         id,
@@ -523,16 +523,13 @@ pub(crate) async fn info_as(
                     options.include_expired,
                 )
                 .map_err(|cause| super::error::hidden(cause, "Attachment not found."))?;
-            Ok((row.media, row.saved))
+            Ok(row.media)
         },
     )
     .await?;
     let Json(mut value) = media_json(&app, &media);
     if media.conversation == "@library" {
         value["library"] = json!(true);
-        if matches!(access, Access::Browser(_)) {
-            value["saved"] = json!(saved);
-        }
         value["unavailable"] = json!(!media.ready || media.deleting || media.deleted);
     }
     value["expires"] = json!(media.expires);
@@ -598,18 +595,6 @@ pub(crate) async fn download_url_as(
     )
     .await?;
     Ok(url)
-}
-
-/// Resolve a signed storage URL without navigating through a cookie-authenticated redirect.
-pub(crate) async fn link(
-    State(app): State<App>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Query(options): Query<Download>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin(&app, &headers)?;
-    let url = download_url_as(&app, Access::Browser(headers), id, options).await?;
-    Ok(Json(json!({"url":url})))
 }
 
 pub(crate) fn start_cleanup(app: App) {
@@ -844,22 +829,6 @@ pub(crate) async fn abandon(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     abandon_as(State(app), super::media::Access::Browser(headers), Path(id)).await
-}
-
-pub(crate) async fn info(
-    State(app): State<App>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Query(options): Query<MediaInfoQuery>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin(&app, &headers)?;
-    info_as(
-        State(app),
-        super::media::Access::Browser(headers),
-        Path(id),
-        Query(options),
-    )
-    .await
 }
 
 pub(crate) async fn download(

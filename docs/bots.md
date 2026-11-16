@@ -96,8 +96,7 @@ shows bot names, labels and kinds, then inserts the credential ID. These hints
 are filtered by the same account/credential grants and protected-su checks as
 revocation and refresh after issuance, rename and revocation.
 Deleting the bot removes all issuer and worker credentials and retry receipts.
-Credentials persist across restart. SQLite v19 upgrades to v21 atomically to add
-explicit credential kinds; PostgreSQL retains its current unpublished v1 marker.
+Credentials persist across restart in SQLite v21 and PostgreSQL v1.
 Never log credentials or message bodies.
 
 ## HTTP contract
@@ -244,6 +243,7 @@ URLs; an already-issued URL can remain usable until it expires.
 
 Library list filters, cursor pagination, collection and recent sections, and
 management actions follow the [personal media library contract](protocol.md#personal-media-library).
+Use `sections=true` to read recents alongside the first collection page.
 Pass a stable conversation ID as `source_conversation` when saving or acquiring
 from a retained message. To create a library asset, allocate a raster image
 upload with `conversation_id:"@library"`, perform the signed PUT, then complete

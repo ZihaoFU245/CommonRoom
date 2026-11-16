@@ -40,7 +40,7 @@ Startup initializes an empty schema transactionally; an existing application sch
 must match PostgreSQL schema v1. PostgreSQL is not deployed yet, so fixes are
 incorporated directly into v1, including statement-level deletion retention.
 There are no historical WIP upgrade paths; unsupported schema versions are
-rejected unchanged. SQLite HEAD is v21, with v19/v20 startup upgrades for library tables and the v19 bot credential conversion.
+rejected unchanged. SQLite startup requires v21 for existing databases.
 The offline transfer requires v21 and preserves issuer/worker credential metadata. See [Data](data.md#database-compatibility).
 The PostgreSQL representation has its own schema marker and indexed
 JSONB projections alongside the original JSON text; the two database files/formats

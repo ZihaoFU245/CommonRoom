@@ -9,15 +9,11 @@ and worker files, but chat accounts/history live in PostgreSQL.
 
 ## Database compatibility
 
-SQLite HEAD is **v21**. Empty databases initialize as v21. Startup upgrades v20
-transactionally with independent media-library ownership, saved entries, bounded
-recents and derived cleanup accounting. The v19 upgrade adds these same tables
-and assigns explicit `issuer` or `worker` kinds to bot credentials in one
-transaction; worker operations, expiry and conversation scopes are preserved.
-Malformed legacy credentials or a failed schema/metadata write roll back the
-entire upgrade, including the schema marker. Other versions and unversioned
-existing databases are rejected before journal, schema or data changes. Back up
-v19/v20 before upgrading; older binaries cannot open v21.
+SQLite uses **v21**, the schema shipped in `release-0.2.1`. Empty databases
+initialize as v21. Existing databases must already be v21. To bring a v19 or
+v20 database forward, back it up and open it with `release-0.2.1` before
+starting this release. Unsupported versions and unversioned existing databases
+are rejected before journal, schema or data changes.
 
 PostgreSQL is unpublished and uses its own **v1** schema marker. Fixes are folded
 directly into this unused format. Empty targets initialize transactionally with
@@ -82,7 +78,7 @@ service/
 SQLite may also have `chat.sqlite-wal` and `chat.sqlite-shm`; copy the whole
 folder, never just the database while it is running. The stored format uses
 portable SQLite and JSON, with no machine-specific paths or secrets outside
-the data folder. Only one process can use a folder at once. This binary opens the current v21 schema and upgrades v19/v20 as described above. Browser login sessions keep their original 12-hour expiry across
+the data folder. Only one process can use a folder at once. This binary opens the v21 schema shipped in `release-0.2.1`. Browser login sessions keep their original 12-hour expiry across
 restart and moving the folder. Accounts, roles, memberships, message timestamps and
 IDs remain the same. Proxy certificates, DNS, and OS-specific binaries are
 deployment infrastructure and must be supplied on the destination.
@@ -155,9 +151,8 @@ modify it. A separately deployed agent keeps its own local data folder.
 Bot credential JSON requires `kind` (`issuer` or `worker`). Operator-issued
 issuer credentials have null conversation/operation scopes and can only issue
 workers. Workers require explicit operations and expiry; conversation scope is
-an array or null for account-wide delegation. SQLite v19-to-v21 startup conversion
-infers the kind from the previous operation scopes. PostgreSQL v1 uses this current
-format in place; historical WIP PostgreSQL metadata is not upgraded. Latest SQLite
+an array or null for account-wide delegation. SQLite v21 and PostgreSQL v1 use
+this credential format. SQLite
 v21-to-PostgreSQL v1 transfer preserves both kinds and their metadata unchanged.
 The operation set includes `media_upload`, `profile` and `create`; older binaries
 may reject these operations and cannot read the new required credential kind.
@@ -279,8 +274,7 @@ bounded distinct IDs and grants neither access nor retention. Its `used` integer
 is an account-local increasing order, assigned inside the message transaction;
 it is not a wall-clock timestamp. New uses advance past existing values, including
 legacy second timestamps, so tied timestamps or clock changes cannot evict the
-newest use. This needs no schema change: SQLite remains v21 (with the existing
-v19/v20 upgrades) and PostgreSQL remains v1. The read-only SQLite-to-PostgreSQL
+newest use. This needs no schema change: SQLite remains v21 and PostgreSQL remains v1. The read-only SQLite-to-PostgreSQL
 transfer preserves these values exactly.
 
 Final release and global administrative removal durably set the media deletion

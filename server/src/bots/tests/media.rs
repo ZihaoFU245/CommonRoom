@@ -20,18 +20,14 @@ async fn bearer_authentication_is_confined_to_bot_routes_including_base_paths() 
             ("POST", "api/avatars"),
             ("POST", "api/avatars/uploads"),
             ("POST", "api/avatars/uploads/missing/complete"),
-            ("GET", "api/avatars/missing/info"),
             ("GET", "api/avatars/missing/file"),
-            ("GET", "api/avatars/missing/link"),
             ("GET", "api/media/config"),
             ("GET", "api/library"),
             ("POST", "api/library/missing"),
             ("POST", "api/media/uploads"),
             ("POST", "api/media/uploads/missing/complete"),
             ("POST", "api/media/uploads/missing/abandon"),
-            ("GET", "api/media/missing/info"),
             ("GET", "api/media/missing/file"),
-            ("GET", "api/media/missing/link"),
             ("POST", "api/media/resolve"),
             ("GET", "api/bot-commands?conversation_id=missing"),
             ("GET", "ws"),
@@ -187,6 +183,18 @@ async fn worker_library_upload_management_and_scoped_resolution() {
     assert_eq!(status, StatusCode::OK, "{issued}");
     let worker = issued["token"].as_str().unwrap();
     let listing = "/api/bot/v1/library";
+    assert_eq!(
+        request(
+            &app,
+            Some(worker),
+            "GET",
+            &format!("{listing}?recent=true"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(
         request(&app, Some(&scoped), "GET", listing, json!({}))
             .await

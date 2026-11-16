@@ -215,15 +215,14 @@ pub(crate) async fn register(
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Registration unavailable."))?
         .admit_registration(ip, std::time::Instant::now())
         .map_err(|message| error(StatusCode::TOO_MANY_REQUESTS, message))?;
-    let (id, digest) = invites::parse(&input.invite)
+    let digest = invites::parse(&input.invite)
         .ok_or_else(|| error(StatusCode::BAD_REQUEST, invites::INVALID_INVITE))?;
     if !valid_name(&input.username) {
         return Err(error(StatusCode::BAD_REQUEST, "Invalid username."));
     }
     app.inspect_engine({
-        let id = id.clone();
         let digest = digest.clone();
-        move |engine, _| engine.check_registration_invite(id.as_deref(), &digest)
+        move |engine, _| engine.check_registration_invite(&digest)
     })
     .await?;
     let permit = app.password_permit()?;
@@ -234,7 +233,7 @@ pub(crate) async fn register(
         let ordering = app.mutations.metadata().await?;
         let pending = app
             .with_metadata(&ordering, move |engine| {
-                engine.prepare_registration(&input.username, hash, id.as_deref(), &digest)
+                engine.prepare_registration(&input.username, hash, &digest)
             })
             .await?;
         let pending = pending.save().await?;

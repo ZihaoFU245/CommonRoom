@@ -17,8 +17,6 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
 | `POST /api/media/resolve` | Media read batch | See the contract below |
-| `GET /api/media/{id}/link?download=true` | Session cookie and allowed Origin; `download` defaults to false | `{url}`; short-lived signed storage URL after current conversation access/reference/expiry checks; true forces download disposition |
-| `GET /api/avatars/{id}/link` | Session cookie and allowed Origin | `{url}`; short-lived signed storage URL after current avatar visibility checks |
 | `GET /api/health` | No session required | 200 `ok` (`text/plain; charset=utf-8`) |
 | `GET /ws` | Session cookie and allowed Origin | WebSocket upgrade |
 
@@ -425,15 +423,11 @@ unavailable. Try again later.” Authorization is rechecked after that I/O. The
 probe needs no listing/write permission; missing-object 403/404 responses prove
 reachability, while S3 still enforces actual PUT permissions and size constraints.
 
-Media attachment metadata: authenticated `GET /api/media/{id}/info` returns the
-upload-completion fields `{media_id,path,filename,content_type,size}` plus
-`expires` (Unix seconds, or null for permanent files) and `expired` (boolean).
-Only retained, published attachments readable by the current viewer are visible
-(otherwise 404). Normal info and file reads reject expiry with 404, preserving
-access enforcement for existing clients and media workers. The browser resolver retrieves metadata, including the original filename,
-for expired attachments even after object cleanup; it grants no access to bytes.
-No storage request is made. `GET /api/media/{id}/file?download=true` forces
-attachment disposition; the default permits native recognized media playback.
+Use `POST /api/media/resolve` for attachment and avatar metadata and signed
+links. Authorized attachment metadata includes the original filename after
+expiry and object cleanup. Expired attachments yield no signed link and direct
+file reads return 404. `GET /api/media/{id}/file?download=true` forces attachment
+disposition. The default permits native recognized media playback.
 Markdown link titles `media:audio`, `media:video`, `media:html`, and `media:svg`
 are optional UI hints; the client verifies MIME with the resolver on click.
 
@@ -517,12 +511,12 @@ acquisition are denied even before physical cleanup. Global removal atomically r
 the asset and refunds ownership quota, while background deletion can retry independently. Acquisition cannot resurrect a
 retired asset. Retained messages remain in history.
 
-Library media `/info` responses additionally identify `library` and
-`unavailable`. Browser responses also include account-local `saved` collection
-membership; bot responses omit this field. Normal `/info`, `/file` and `/link`
-reject retired assets. Authorized saved users, owners or message readers can use
-`/info?include_expired=true` for placeholder metadata after retirement; it never
-authorizes storage bytes. The service worker requires a valid read lease and
+Browser resolver results for library media include `library`, `unavailable`,
+and account-local `saved` collection membership. Authorized saved users,
+owners, and message readers can resolve placeholder metadata after retirement.
+Retired assets yield no signed link, and direct `/file` reads return 404.
+Bot v1 also exposes single-object `/info`, including retired metadata when
+`include_expired=true` is authorized. The service worker requires a valid read lease and
 rejects resolver results marked unavailable; existing leases can remain usable
 until expiry if invalidation is missed. Scoped bot reads require a retained
 reference in an allowed conversation and cannot inherit independent account
@@ -603,7 +597,6 @@ General metadata commands retain their su requirement.
 | `POST /api/avatars` | `{url:"https://…"}` or `{url:null}` | `{ok:true}`; set or remove own avatar |
 | `POST /api/avatars/uploads` | `{size,upload_id?}` (1 byte–64 KiB, optional canonical UUID) | Existing media upload ticket shape; same owned pending ID/size replays without another allocation |
 | `POST /api/avatars/uploads/{id}/complete` | `{}` | `{ok:true,media_id,path}`; verify bytes and set own avatar |
-| `GET /api/avatars/{id}/info` | Authenticated same-origin read | `{size,content_type,filename}` after current profile/visibility checks; `no-store` |
 | `GET /api/avatars/{id}/file` | Authenticated same-origin read | 307 to private, 60-second signed S3 GET; `no-store` |
 
 Upload PUTs target staging `uploads/<id>` with the returned headers and no chat

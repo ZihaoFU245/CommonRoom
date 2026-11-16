@@ -206,54 +206,13 @@ async fn library_read_contract(mut app: App, db: crate::engine::database::Connec
         .unwrap()
         .execute(Some("alice"), Some("source"), &text)
         .unwrap();
-    assert_eq!(
-        request(
-            &app,
-            "bob",
-            "GET",
-            &format!("/api/media/{id}/info"),
-            json!(null)
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    let (_, before_save) = request(
-        &app,
-        "bob",
-        "GET",
-        &format!("/api/media/{id}/info"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(before_save["saved"], false);
     let read = resolve(&app, "bob", &id).await;
     assert_eq!(read["status"], 200);
     assert_eq!(read["info"]["library"], true);
     assert_eq!(read["info"]["saved"], false);
     assert_eq!(resolve(&app, "carol", &id).await["status"], 404);
 
-    let (_, owner_info) = request(
-        &app,
-        "alice",
-        "GET",
-        &format!("/api/media/{id}/info"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(owner_info["saved"], true);
-    assert_eq!(
-        request(
-            &app,
-            "carol",
-            "GET",
-            &format!("/api/media/{id}/info"),
-            json!(null)
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(resolve(&app, "alice", &id).await["info"]["saved"], true);
     let source = app.engine_read().unwrap().data.rooms["source"].id.clone();
     assert_ne!(
         request(
@@ -277,15 +236,7 @@ async fn library_read_contract(mut app: App, db: crate::engine::database::Connec
             StatusCode::OK
         );
     }
-    let (_, after_save) = request(
-        &app,
-        "bob",
-        "GET",
-        &format!("/api/media/{id}/info"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(after_save["saved"], true);
+    assert_eq!(resolve(&app, "bob", &id).await["info"]["saved"], true);
     app.engine_api()
         .unwrap()
         .execute(Some("alice"), Some("source"), "/kick bob #source")
@@ -310,15 +261,7 @@ async fn library_read_contract(mut app: App, db: crate::engine::database::Connec
         action(&app, "alice", &id, "remove", false).await,
         StatusCode::OK
     );
-    let (_, after_remove) = request(
-        &app,
-        "alice",
-        "GET",
-        &format!("/api/media/{id}/info"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(after_remove["saved"], false);
+    assert_eq!(resolve(&app, "alice", &id).await["info"]["saved"], false);
     assert_eq!(
         action(&app, "alice", &id, "release", false).await,
         StatusCode::OK
@@ -393,20 +336,18 @@ async fn library_read_contract(mut app: App, db: crate::engine::database::Connec
         action(&app, "bob", &id, "acquire", false).await,
         StatusCode::NOT_FOUND
     );
-    for endpoint in ["info", "link", "file"] {
-        assert_eq!(
-            request(
-                &app,
-                "bob",
-                "GET",
-                &format!("/api/media/{id}/{endpoint}"),
-                json!(null)
-            )
-            .await
-            .0,
-            StatusCode::NOT_FOUND
-        );
-    }
+    assert_eq!(
+        request(
+            &app,
+            "bob",
+            "GET",
+            &format!("/api/media/{id}/file"),
+            json!(null)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     let (_, expired_list) = request(&app, "bob", "GET", "/api/library", json!(null)).await;
     assert!(expired_list["items"].as_array().unwrap().is_empty());
     assert_eq!(
@@ -420,58 +361,16 @@ async fn library_read_contract(mut app: App, db: crate::engine::database::Connec
         "retired media never gets a signed link"
     );
 
-    assert_eq!(
-        request(
-            &app,
-            "bob",
-            "GET",
-            &format!("/api/media/{id}/info"),
-            json!(null)
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        request(
-            &app,
-            "bob",
-            "GET",
-            &format!("/api/media/{id}/link"),
-            json!(null)
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
-    let (status, info) = request(
-        &app,
-        "bob",
-        "GET",
-        &format!("/api/media/{id}/info?include_expired=true"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(info["unavailable"], true);
-    assert_eq!(info["filename"], "sticker.png");
+    assert_eq!(read["info"]["filename"], "sticker.png");
     let store = app.engine_read().unwrap().media_store();
     let (retired, _) = store.load(&id).await.unwrap();
     store
         .cleanup_done(std::slice::from_ref(&retired), std::slice::from_ref(&id))
         .await
         .unwrap();
-    let (status, cleaned) = request(
-        &app,
-        "bob",
-        "GET",
-        &format!("/api/media/{id}/info?include_expired=true"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(cleaned["unavailable"], true);
-    assert_eq!(cleaned["filename"], "sticker.png");
+    let cleaned = resolve(&app, "bob", &id).await;
+    assert_eq!(cleaned["info"]["unavailable"], true);
+    assert_eq!(cleaned["info"]["filename"], "sticker.png");
     assert_eq!(
         action(&app, "bob", &id, "acquire", false).await,
         StatusCode::NOT_FOUND

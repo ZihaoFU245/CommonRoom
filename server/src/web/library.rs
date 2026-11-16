@@ -11,7 +11,7 @@ use serde::Deserialize;
 pub(crate) struct List {
     sections: bool,
     owned: bool,
-    recent: bool,
+    recent: Option<bool>,
     after: String,
     limit: u64,
 }
@@ -20,7 +20,7 @@ impl Default for List {
         Self {
             sections: false,
             owned: false,
-            recent: false,
+            recent: None,
             after: String::new(),
             limit: 50,
         }
@@ -57,7 +57,14 @@ pub(crate) async fn list_as(
     access: media::Access,
     Query(input): Query<List>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if input.sections && (input.owned || input.recent || !input.after.is_empty()) {
+    if matches!(access, media::Access::Bot { .. }) && input.recent.is_some() {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "Use sections=true to list recent library assets.",
+        ));
+    }
+    let recent_only = input.recent.unwrap_or_default();
+    if input.sections && (input.owned || recent_only || !input.after.is_empty()) {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "Section batches require the first collection page.",
@@ -82,7 +89,7 @@ pub(crate) async fn list_as(
         let request = crate::engine::database::LibraryList {
             account: &identity.account,
             owned: input.owned,
-            recent: input.recent,
+            recent: recent_only,
             after: &input.after,
             limit: input.limit,
             quota,

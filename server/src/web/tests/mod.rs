@@ -2066,7 +2066,7 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
         media
     };
     let routes = router(app.clone());
-    let info_path = format!("/api/avatars/{}/info", media.id);
+    let body = json!({"items":[{"kind":"avatars","id":media.id}]}).to_string();
     for (cookie, origin, status) in [
         ("", "http://localhost:5173", StatusCode::UNAUTHORIZED),
         ("bob", "https://evil.example", StatusCode::FORBIDDEN),
@@ -2076,10 +2076,12 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(&info_path)
+                    .method("POST")
+                    .uri("/api/media/resolve")
+                    .header(header::CONTENT_TYPE, "application/json")
                     .header(header::ORIGIN, origin)
                     .header(header::COOKIE, format!("chat_session={cookie}"))
-                    .body(Body::empty())
+                    .body(Body::from(body.clone()))
                     .unwrap(),
             )
             .await
@@ -2094,15 +2096,24 @@ async fn avatar_api_is_self_service_authenticated_origin_checked_and_broadcast()
     let response = routes
         .oneshot(
             Request::builder()
-                .uri(&info_path)
+                .method("POST")
+                .uri("/api/media/resolve")
+                .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ORIGIN, "http://localhost:5173")
                 .header(header::COOKIE, "chat_session=bob")
-                .body(Body::empty())
+                .body(Body::from(body.clone()))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["items"][0]["status"], 404);
 }
 
 pub(super) fn login_test_app() -> App {
@@ -2384,14 +2395,19 @@ async fn media_and_avatar_storage_failures_are_retryable_instead_of_invalid_requ
         assert!(!value["error"].as_str().unwrap().contains("injected"));
     }
     db.execute_batch("DROP TABLE media;").unwrap();
-    for path in ["/api/media/missing/info", "/api/avatars/missing/info"] {
+    for kind in ["media", "avatars"] {
         let response = router(app.clone())
             .oneshot(
                 Request::builder()
-                    .uri(path)
+                    .method("POST")
+                    .uri("/api/media/resolve")
+                    .header(header::CONTENT_TYPE, "application/json")
                     .header(header::COOKIE, "chat_session=fixture")
                     .header(header::ORIGIN, "http://localhost:5173")
-                    .body(Body::empty())
+                    .body(Body::from(
+                        json!({"items":[{"kind":kind,"id":uuid::Uuid::nil().to_string()}]})
+                            .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -2559,7 +2575,7 @@ async fn avatar_http_budget_preserves_noops_other_accounts_and_committed_profile
 }
 
 #[tokio::test]
-async fn expired_attachment_metadata_is_opt_in_and_never_grants_file_access() {
+async fn expired_attachment_resolution_never_grants_file_access() {
     use axum::{
         body::{Body, to_bytes},
         http::Request,
@@ -2592,78 +2608,49 @@ async fn expired_attachment_metadata_is_opt_in_and_never_grants_file_access() {
     let mut app = login_test_app();
     app.engine = Arc::new(RwLock::new(engine));
     app.media = Some(crate::media::tests::test_storage("http://127.0.0.1:1"));
-    let info = format!("/api/media/{}/info", media.id);
-    let status_path = format!("{info}?include_expired=true");
+    let resolve = |app: App, user: &str| {
+        router(app).oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/media/resolve")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("chat_session={user}"))
+                .body(Body::from(
+                    json!({"items":[{"kind":"media","id":media.id,"link":true}]}).to_string(),
+                ))
+                .unwrap(),
+        )
+    };
     for cleaned in [false, true] {
         if cleaned {
             let engine = app.engine_read().unwrap();
             engine.expired_media().unwrap();
             engine.remove_media_record(&media.id).unwrap();
         }
-        for (uri, user, origin, expected) in [
-            (
-                info.as_str(),
-                "alice",
-                "http://localhost:5173",
-                StatusCode::NOT_FOUND,
-            ),
-            (
-                file.as_str(),
-                "alice",
-                "http://localhost:5173",
-                StatusCode::NOT_FOUND,
-            ),
-            (
-                status_path.as_str(),
-                "alice",
-                "http://localhost:5173",
-                StatusCode::OK,
-            ),
-            (
-                status_path.as_str(),
-                "bob",
-                "http://localhost:5173",
-                StatusCode::NOT_FOUND,
-            ),
-            (
-                status_path.as_str(),
-                "",
-                "http://localhost:5173",
-                StatusCode::UNAUTHORIZED,
-            ),
-            (
-                status_path.as_str(),
-                "alice",
-                "https://evil.example",
-                StatusCode::FORBIDDEN,
-            ),
-        ] {
-            let response = router(app.clone())
-                .oneshot(
-                    Request::builder()
-                        .uri(uri)
-                        .header(header::ORIGIN, origin)
-                        .header(header::COOKIE, format!("chat_session={user}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                expected,
-                "{uri} / {user} / cleaned={cleaned}"
-            );
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-            if expected == StatusCode::OK {
-                let value: serde_json::Value =
-                    serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
-                        .unwrap();
-                assert_eq!(value["filename"], "report-原稿.pdf");
-                assert_eq!(value["expired"], true);
-                assert_eq!(value["expires"], 1);
-            }
-        }
+        let response = resolve(app.clone(), "alice").await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        let item = &value["items"][0];
+        assert_eq!(item["status"], 200);
+        assert_eq!(item["info"]["filename"], "report-原稿.pdf");
+        assert_eq!(item["info"]["expired"], true);
+        assert_eq!(item["info"]["expires"], 1);
+        assert!(item.get("link").is_none());
+
+        let response = router(app.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(&file)
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::COOKIE, "chat_session=alice")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
     let message_id = app
         .engine_read()
@@ -2681,18 +2668,10 @@ async fn expired_attachment_metadata_is_opt_in_and_never_grants_file_access() {
             &format!("/retract {message_id}"),
         )
         .unwrap();
-    let response = router(app)
-        .oneshot(
-            Request::builder()
-                .uri(status_path)
-                .header(header::ORIGIN, "http://localhost:5173")
-                .header(header::COOKIE, "chat_session=alice")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = resolve(app, "alice").await.unwrap();
+    let value: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(value["items"][0]["status"], 404);
 }
 
 #[tokio::test]

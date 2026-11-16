@@ -286,7 +286,7 @@ returns an unavailable response and never reuses potentially partial state.
 
 `web/scripts/smoke.mjs` starts isolated debug/release processes on ephemeral ports and uses HTTP and real WebSockets. Every received frame passes the same runtime validator as the application. It checks authorization, commands, privacy, second-device directories, bounded room/private history, read cursors, account deletion, restart, API-only routing, base paths, trusted proxy/TLS headers, origin rejection, secure cookies, and logout disconnection. It never uses the working `data/` folder. Build both binaries first.
 
-Current-schema persistence tests cover HEAD SQLite v21 initialization and restart, lazy history loading, state/cursor preservation, unchanged v21 reopen, atomic v19/v20-to-v21 library/credential upgrades, independent PostgreSQL schema initialization, and rejection of every unsupported schema without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
+Current-schema persistence tests cover HEAD SQLite v21 initialization and restart, lazy history loading, state/cursor preservation, unchanged v21 reopen, independent PostgreSQL schema initialization, and rejection of unsupported schemas including SQLite v19 and v20 without modification. Object-command tests cover scoped listings, removed media-grant arguments, and group-removal authorization.
 
 The trust-model regressions additionally cover su group delegation and revocation,
 protected su accounts (including disabled targets), creator ownership,
@@ -1076,8 +1076,8 @@ Room-only color tests verify grant rejection at global/account/private scopes, n
 root-to-room authority inheritance, ordinary-admin revocation, cross-room and
 cross-account isolation, bulk/protected-target atomicity, non-color metadata denial,
 owner transfer, restart/rename/regrant behavior and failed-write rollback.
-SQLite startup tests reject unsupported schemas unchanged and verify the supported
-v19-to-v21 credential upgrade atomically. HTTP tests reject set/reset/no-op room writes after
+SQLite startup tests reject unsupported schemas unchanged. HTTP tests reject
+set/reset/no-op room writes after
 revocation without metadata/version changes or notifications, while root writes remain
 available without global grants. Browser coverage keeps root settings available and
 filters room choices using own/any grants, including live revocation fallback.
@@ -1220,9 +1220,7 @@ account-directory grants. Account-wide and browser-session coverage is retained.
 
 Issuer/worker regressions cover issuer-only exchange, mandatory worker expiry,
 issuance-time account permission checks, worker delegation denial and deletion of
-all bot credentials. SQLite v19-to-v21 tests cover exact scope preservation,
-restart, malformed legacy metadata and atomic rollback after a rejected write.
-PostgreSQL transfer fixtures include both credential kinds. Browser command-cache
+all bot credentials. PostgreSQL transfer fixtures include both credential kinds. Browser command-cache
 tests require one logical directory load across 200 conversations, 120-second refresh, immediate
 invalidation and stale-response rejection. Server discovery tests cover catalogue
 expiry, refresh scheduling, per-runtime byte/count limits and aggregate response

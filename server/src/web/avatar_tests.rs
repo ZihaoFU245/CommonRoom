@@ -152,11 +152,6 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
     assert_eq!(app.engine_read().unwrap().revision, published);
     assert_eq!(app.engine_read().unwrap().color_version(), color);
     assert!(notices.try_recv().is_err());
-    let info = format!("/api/avatars/{id}/info");
-    assert_eq!(
-        request(&app, "bob", "GET", &info, json!(null)).await.0,
-        StatusCode::OK
-    );
     assert_eq!(
         request(
             &app,
@@ -168,21 +163,6 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
         .await
         .0,
         StatusCode::TEMPORARY_REDIRECT
-    );
-    let link = request(
-        &app,
-        "bob",
-        "GET",
-        &format!("/api/avatars/{id}/link"),
-        json!(null),
-    )
-    .await;
-    assert_eq!(link.0, StatusCode::OK, "{}", link.1);
-    let signed = url::Url::parse(link.1["url"].as_str().unwrap()).unwrap();
-    assert!(
-        signed
-            .query_pairs()
-            .any(|(key, _)| key == "X-Amz-Signature")
     );
     let resolved = request(
         &app,
@@ -214,18 +194,16 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
             .execute(Some("alice"), Some("shared"), "historical author")
             .unwrap();
     }
-    assert_eq!(
-        request(&app, "bob", "GET", &info, json!(null)).await.0,
-        StatusCode::OK
-    );
-    let resolved = request(
-        &app,
-        "bob",
-        "POST",
-        "/api/media/resolve",
-        json!({"items":[{"kind":"avatars","id":id}]}),
-    )
-    .await;
+    let resolve_avatar = || {
+        request(
+            &app,
+            "bob",
+            "POST",
+            "/api/media/resolve",
+            json!({"items":[{"kind":"avatars","id":id}]}),
+        )
+    };
+    let resolved = resolve_avatar().await;
     assert_eq!(
         resolved.1["items"][0]["status"], 200,
         "historical author visibility: {}",
@@ -235,10 +213,7 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
         .unwrap()
         .execute(None, None, "/clean -1 #shared")
         .unwrap();
-    assert_eq!(
-        request(&app, "bob", "GET", &info, json!(null)).await.0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(resolve_avatar().await.1["items"][0]["status"], 404);
     app.engine()
         .unwrap()
         .execute(None, None, "/grant bob user")
@@ -247,10 +222,7 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
         .unwrap()
         .execute(None, None, "/disable alice")
         .unwrap();
-    assert_eq!(
-        request(&app, "bob", "GET", &info, json!(null)).await.0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(resolve_avatar().await.1["items"][0]["status"], 404);
     assert!(
         store
             .expired(crate::engine::media::timestamp() + 1)
@@ -310,10 +282,7 @@ async fn contract(mut app: App, db: crate::engine::database::Connection, postgre
     );
     assert!(super::super::media::cleanup(&app).await.unwrap());
     assert!(store.load(&id).await.unwrap().0.deleted);
-    assert_eq!(
-        request(&app, "bob", "GET", &info, json!(null)).await.0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(resolve_avatar().await.1["items"][0]["status"], 404);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
@@ -503,7 +472,8 @@ async fn postgres_linkless_media_fences_reference_changes_during_avatar_lookup()
 
 async fn avatar_read_race(reference_change: bool) {
     let fixture = crate::engine::database::tests::PostgresFixture::new();
-    let app = app(Engine::open_postgres(&fixture.url).unwrap());
+    let mut app = app(Engine::open_postgres(&fixture.url).unwrap());
+    app.media = Some(crate::media::tests::test_storage("http://127.0.0.1:1"));
     let (avatar, attachment) = {
         let mut engine = app.engine().unwrap();
         let mut avatar = engine.allocate_avatar("alice", 8).unwrap();
@@ -575,7 +545,7 @@ async fn avatar_read_race(reference_change: bool) {
                     &app,
                     "bob",
                     "GET",
-                    &format!("/api/avatars/{avatar}/info"),
+                    &format!("/api/avatars/{avatar}/file"),
                     json!(null),
                 )
                 .await

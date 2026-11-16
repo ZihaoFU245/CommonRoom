@@ -800,7 +800,7 @@ in [Bots](bots.md).
 
 ## Upgrades and backups
 
-SQLite HEAD is v21; v19/v20 upgrade atomically with library tables and the v19 issuer/worker credential conversion.
+SQLite startup requires v21 for existing databases.
 Exchange issuer tokens for expiring workers before making operational bot calls. Unpublished
 PostgreSQL initializes its current v1 schema, including statement-level deletion
 retention. This unpublished format is not deployed yet; fixes modify v1 directly,

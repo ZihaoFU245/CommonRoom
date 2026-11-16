@@ -80,19 +80,11 @@ async fn assert_registration_contract(app: App, reopen: impl FnOnce() -> Engine)
     ));
     assert!(!engine.data.users.contains_key(loser));
     for invalid in [&code, &revoked] {
-        let (id, digest) = crate::engine::invites::parse(invalid).unwrap();
-        assert!(
-            engine
-                .check_registration_invite(id.as_deref(), &digest)
-                .is_err()
-        );
+        let digest = crate::engine::invites::parse(invalid).unwrap();
+        assert!(engine.check_registration_invite(&digest).is_err());
     }
-    let (id, digest) = crate::engine::invites::parse(&unused).unwrap();
-    assert!(
-        engine
-            .check_registration_invite(id.as_deref(), &digest)
-            .is_ok()
-    );
+    let digest = crate::engine::invites::parse(&unused).unwrap();
+    assert!(engine.check_registration_invite(&digest).is_ok());
 }
 
 #[tokio::test]

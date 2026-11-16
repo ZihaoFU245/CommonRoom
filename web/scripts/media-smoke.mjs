@@ -305,13 +305,6 @@ try {
   );
 
   assert.equal((await request(avatarPath, null)).status, 401);
-  const avatarInfo = avatarPath.replace(/\/file$/u, "/info");
-  assert.equal((await request(avatarInfo, null)).status, 401);
-  assert.deepEqual(await (await request(avatarInfo, alice)).json(), {
-    size: avatarBytes.length,
-    content_type: "image/png",
-    filename: "avatar.png",
-  });
   const avatarRedirect = await request(avatarPath, alice);
   assert.equal(avatarRedirect.status, 307);
   assert.equal(avatarRedirect.headers.get("cache-control"), "no-store");
@@ -453,15 +446,23 @@ try {
     media,
   );
   const path = media.path.replace("/commonroom", "");
-  const infoPath = `/api/media/${ticket.media_id}/info`;
-  assert.equal((await request(infoPath, alice)).status, 404);
   assert.equal((await request(path, alice)).status, 404);
   await send(`[note](${new URL(media.path, base).href})`);
-  const info = await (await request(infoPath, bob)).json();
-  assert.deepEqual(info, { ...media, expires: info.expires, expired: false });
-  assert.ok(Number.isSafeInteger(info.expires));
-  assert.equal((await request(infoPath, eve)).status, 404);
-  assert.equal((await request(infoPath, null)).status, 401);
+  const resolved = await request("/api/media/resolve", bob, {
+    items: [{ kind: "media", id: ticket.media_id }],
+  });
+  assert.equal(resolved.status, 200);
+  const {
+    items: [item],
+  } = await resolved.json();
+  assert.equal(item.status, 200);
+  assert.deepEqual(item.info, {
+    ...media,
+    expires: item.info.expires,
+    expired: false,
+    unavailable: false,
+  });
+  assert.ok(Number.isSafeInteger(item.info.expires));
   const response = await request(path, bob);
   assert.equal(response.status, 307);
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -484,7 +485,6 @@ try {
   ).json();
   await send(`/retract ${history.messages[0].id}`);
   assert.equal((await request(path, bob)).status, 404);
-  assert.equal((await request(infoPath, bob)).status, 404);
   await until(
     async () => (await fetch(response.headers.get("location"))).status === 404,
     "last-reference storage deletion",
@@ -689,21 +689,26 @@ try {
   assert.equal((await libraryAction(bob, "release", true)).status, 200);
   assert.equal(
     (await request(libraryFile, bob)).status,
-    404,
-    "Final release immediately revokes new storage reads",
+    307,
+    "Saved users retain read access during the release grace period",
   );
-  const unavailable = await (
-    await request(
-      `/api/media/${libraryMedia.media_id}/info?include_expired=true`,
-      bob,
-    )
-  ).json();
-  assert.equal(unavailable.unavailable, true);
-  assert.equal((await libraryAction(bob, "acquire")).status, 404);
-  assert.equal(
-    (await request(`/api/media/${retainedMedia.media_id}/info`, bob)).status,
-    200,
-  );
+  const libraryReads = await request("/api/media/resolve", bob, {
+    items: [
+      { kind: "media", id: libraryMedia.media_id, link: true },
+      { kind: "media", id: retainedMedia.media_id },
+    ],
+  });
+  assert.equal(libraryReads.status, 200);
+  const {
+    items: [released, retained],
+  } = await libraryReads.json();
+  assert.equal(released.status, 200);
+  assert.equal(released.info.saved, true);
+  assert.equal(released.info.expired, false);
+  assert.ok(released.info.expires > Date.now() / 1000);
+  assert.equal(typeof released.link.url, "string");
+  assert.equal((await libraryAction(bob, "acquire")).status, 200);
+  assert.equal(retained.status, 200);
   assert.equal(
     (await request(avatarPath, alice)).status,
     307,
@@ -722,7 +727,6 @@ try {
     404,
     "Replacing avatar revokes new reads",
   );
-  assert.equal((await request(avatarInfo, alice)).status, 404);
   assert.equal((await request("/api/avatars", bob, { url: null })).status, 200);
   assert.equal(
     (await (await request("/api/me", alice)).json()).avatars.bob,
@@ -803,7 +807,7 @@ try {
     404,
   );
   console.log(
-    "Media smoke passed: shared library ownership, borrowing, restart and final-release revocation; avatars (private upload, ownership, immutable bytes, restart, replacement/removal), RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
+    "Media smoke passed: shared library ownership, borrowing, restart and final-release grace; avatars (private upload, ownership, immutable bytes, restart, replacement/removal), RustFS, base paths, auth, upload, idempotent completion, message binding, private downloads, retraction, origin checks, daily startup cleanup, referenced-file preservation, storage outage rejection, and recovery.",
   );
 } finally {
   for (const ws of sockets) ws.terminate();

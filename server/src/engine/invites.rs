@@ -30,27 +30,10 @@ fn digest(secret: &str) -> String {
     format!("{:x}", Blake2s256::digest(secret.as_bytes()))
 }
 
-pub(crate) fn parse(code: &str) -> Option<(Option<String>, String)> {
-    let code = code.trim();
-    let Some((id, secret)) = code.split_once('.') else {
-        let normalized = code.replace('-', "").to_ascii_uppercase();
-        return (normalized.len() == CODE_LENGTH
-            && normalized.bytes().all(|byte| ALPHABET.contains(&byte)))
-        .then(|| (None, digest(&normalized)));
-    };
-    if id.len() != 32
-        || secret.len() != 64
-        || !id
-            .bytes()
-            .chain(secret.bytes())
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    Some((
-        Some(id.to_ascii_lowercase()),
-        digest(&secret.to_ascii_lowercase()),
-    ))
+pub(crate) fn parse(code: &str) -> Option<String> {
+    let normalized = code.trim().replace('-', "").to_ascii_uppercase();
+    (normalized.len() == CODE_LENGTH && normalized.bytes().all(|byte| ALPHABET.contains(&byte)))
+        .then(|| digest(&normalized))
 }
 
 impl Invite {
@@ -73,25 +56,15 @@ impl Engine {
             .collect()
     }
 
-    pub(crate) fn check_registration_invite(
-        &self,
-        id: Option<&str>,
-        digest: &str,
-    ) -> Result<(), EngineError> {
-        self.valid_invite(id, digest).map(|_| ())
+    pub(crate) fn check_registration_invite(&self, digest: &str) -> Result<(), EngineError> {
+        self.valid_invite(digest).map(|_| ())
     }
 
-    pub(super) fn valid_invite(
-        &self,
-        id: Option<&str>,
-        digest: &str,
-    ) -> Result<(&str, &Invite), EngineError> {
+    pub(super) fn valid_invite(&self, digest: &str) -> Result<(&str, &Invite), EngineError> {
         self.data
             .invites
             .iter()
-            .find(|(key, invite)| {
-                id.is_none_or(|id| id == key.as_str()) && invite.digest == digest && invite.active()
-            })
+            .find(|(_, invite)| invite.digest == digest && invite.active())
             .map(|(id, invite)| (id.as_str(), invite))
             .ok_or_else(|| INVALID_INVITE.into())
     }
@@ -259,26 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_invite_codes_remain_redeemable() {
-        let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
-        let id = "0123456789abcdef0123456789abcdef";
-        let secret = "ab".repeat(32);
-        engine.data.invites.insert(
-            id.into(),
-            Invite {
-                digest: digest(&secret),
-                issuer: "console".into(),
-                expires: now() + LIFETIME,
-                redeemed_at: None,
-                redeemed_by: None,
-                revoked_at: None,
-            },
-        );
-        let (id, digest) = parse(&format!("{id}.{secret}")).unwrap();
+    fn rejects_legacy_invite_code_format() {
         assert!(
-            engine
-                .prepare_registration("legacy-user", "hash".into(), id.as_deref(), &digest)
-                .is_ok()
+            parse(&format!(
+                "0123456789abcdef0123456789abcdef.{}",
+                "ab".repeat(32)
+            ))
+            .is_none()
         );
     }
 
@@ -286,13 +246,13 @@ mod tests {
     fn expired_and_failed_redemptions_leave_accounts_unchanged() {
         let mut engine = Engine::open(std::path::Path::new(":memory:")).unwrap();
         let reply = engine.execute(None, None, "/invite new").unwrap();
-        let (_, digest) = parse(reply.lines().last().unwrap()).unwrap();
+        let digest = parse(reply.lines().last().unwrap()).unwrap();
         let id = engine.data.invites.keys().next().unwrap().clone();
-        let expected = engine.valid_invite(None, &digest).unwrap().1.expires;
+        let expected = engine.valid_invite(&digest).unwrap().1.expires;
         assert!((now() + LIFETIME - 1..=now() + LIFETIME).contains(&expected));
 
         let pending = engine
-            .prepare_registration("new-user", "hash".into(), None, &digest)
+            .prepare_registration("new-user", "hash".into(), &digest)
             .unwrap()
             .check_invite_expiry(now());
         assert!(database::block_on_storage(pending.save()).unwrap().is_err());
@@ -312,7 +272,7 @@ mod tests {
         engine.data.invites.get_mut(&id).unwrap().expires = now();
         assert!(
             engine
-                .prepare_registration("new-user", "hash".into(), None, &digest)
+                .prepare_registration("new-user", "hash".into(), &digest)
                 .is_err()
         );
         assert!(!engine.data.users.contains_key("new-user"));

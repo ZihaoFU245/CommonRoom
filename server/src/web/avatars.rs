@@ -154,16 +154,6 @@ pub(crate) async fn download_url_as(
     Ok(url)
 }
 
-pub(crate) async fn link(
-    State(app): State<App>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin(&app, &headers)?;
-    let url = download_url_as(&app, Access::Browser(headers), id).await?;
-    Ok(Json(json!({"url":url})))
-}
-
 async fn owner(
     app: &App,
     access: &Access,
@@ -296,15 +286,6 @@ pub(crate) async fn complete(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
     complete_as(State(app), super::media::Access::Browser(headers), Path(id)).await
-}
-
-pub(crate) async fn info(
-    State(app): State<App>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    security::check_read_origin(&app, &headers)?;
-    info_as(State(app), super::media::Access::Browser(headers), Path(id)).await
 }
 
 pub(crate) async fn download(

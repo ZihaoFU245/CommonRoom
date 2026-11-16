@@ -72,73 +72,24 @@ fn sqlite_head_v21_opens_without_a_postgres_index_upgrade() {
 }
 
 #[test]
-fn sqlite_v20_library_upgrade_preserves_history_and_rolls_back_on_failure() {
-    for fail in [false, true] {
+fn sqlite_rejects_old_schemas_without_rewriting_the_database() {
+    for version in [19, 20] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("chat.sqlite");
-        let mut engine = Engine::open(&path).unwrap();
-        engine
-            .provision("alice", "hash".into(), true, false)
-            .unwrap();
-        engine
-            .execute(None, None, "/room new library-test")
-            .unwrap();
-        engine
-            .execute(None, None, "/room add alice #library-test")
-            .unwrap();
-        engine
-            .execute(Some("alice"), Some("library-test"), "preserved history")
-            .unwrap();
-        let data = engine.data.clone();
-        let history =
-            serde_json::to_value(engine.history("alice", "library-test").unwrap().messages)
-                .unwrap();
-        drop(engine);
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("DROP TRIGGER library_storage_insert; DROP TRIGGER library_storage_update; DROP TRIGGER library_storage_delete; DROP TABLE library_storage; DROP TABLE library_recents; DROP TABLE library_entries; DROP TABLE library_owners; DROP INDEX media_library_backlog; PRAGMA user_version=20;").unwrap();
-        if fail {
-            db.execute_batch("CREATE TABLE library_entries(marker TEXT);")
-                .unwrap();
-        }
+        db.execute_batch(
+            "CREATE TABLE preserved(value TEXT); INSERT INTO preserved VALUES ('old data');",
+        )
+        .unwrap();
+        db.execute_batch(&format!("PRAGMA user_version={version}"))
+            .unwrap();
         drop(db);
-        if fail {
-            let before = std::fs::read(&path).unwrap();
-            assert!(Engine::open(&path).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), before);
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                20
-            );
-            assert_eq!(
-                db.query_row::<u64, _, _>(
-                    "SELECT count(*) FROM sqlite_master WHERE name='library_owners'",
-                    [],
-                    |r| r.get(0)
-                )
-                .unwrap(),
-                0
-            );
-        } else {
-            let engine = Engine::open(&path).unwrap();
-            assert!(engine.data == data);
-            assert_eq!(
-                serde_json::to_value(engine.history("alice", "library-test").unwrap().messages)
-                    .unwrap(),
-                history
-            );
-            drop(engine);
-            // A second open must not rerun the upgrade.
-            let engine = Engine::open(&path).unwrap();
-            let db = engine.store.db.lock().unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))
-                    .unwrap(),
-                21
-            );
-            assert_eq!(db.query_row::<u64, _, _>("SELECT count(*) FROM sqlite_master WHERE name IN ('library_owners','library_entries','library_recents')", [], |r| r.get(0)).unwrap(), 3);
-        }
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            Engine::open(&path),
+            Err(error) if error.to_string().contains("Unsupported SQLite schema")
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
 
@@ -1420,103 +1371,4 @@ fn postgres_append_uses_one_forced_ownership_probe() {
         "50 PostgreSQL appends: {probes} forced ownership probes, {} ms",
         started.elapsed().as_millis()
     );
-}
-
-#[test]
-fn sqlite_v19_bot_credentials_upgrade_atomically_and_preserve_worker_scopes() {
-    use axum::http::{HeaderMap, header};
-    for failure in [None, Some("malformed"), Some("write")] {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("chat.sqlite");
-        let mut engine = Engine::open(&path).unwrap();
-        engine.execute(None, None, "/room new support").unwrap();
-        engine
-            .execute(None, Some("support"), "/bot new helper")
-            .unwrap();
-        let issuer = engine
-            .execute(None, None, "/bot token new helper issuer")
-            .unwrap()
-            .lines()
-            .last()
-            .unwrap()
-            .to_owned();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            format!("Bearer {issuer}").parse().unwrap(),
-        );
-        let context = crate::bots::auth::Context::from_headers(&engine, &headers).unwrap();
-        let worker = engine
-            .issue_bot_credential(
-                &context,
-                crate::bots::models::CredentialInput {
-                    label: "reader".into(),
-                    expires: crate::bots::now() + 600,
-                    conversations: Some([engine.data.rooms["support"].id.clone()].into()),
-                    operations: ["read".into()].into(),
-                },
-            )
-            .unwrap();
-        let expected = serde_json::to_value(&engine.data.bots).unwrap();
-        drop(engine);
-        let db = Connection::open(&path).unwrap();
-        let state: String = db
-            .query_row("SELECT json FROM state WHERE id=1", [], |row| row.get(0))
-            .unwrap();
-        let mut state: serde_json::Value = serde_json::from_str(&state).unwrap();
-        for bot in state["bots"].as_object_mut().unwrap().values_mut() {
-            for token in bot["tokens"].as_object_mut().unwrap().values_mut() {
-                token.as_object_mut().unwrap().remove("kind");
-            }
-            if failure == Some("malformed") {
-                bot["tokens"][worker["id"].as_str().unwrap()]["expires"] = serde_json::Value::Null;
-            }
-        }
-        let legacy = state.to_string();
-        db.execute("UPDATE state SET json=?1 WHERE id=1", [&legacy])
-            .unwrap();
-        db.execute_batch("DROP TRIGGER library_storage_insert; DROP TRIGGER library_storage_update; DROP TRIGGER library_storage_delete; DROP TABLE library_storage; DROP TABLE library_recents; DROP TABLE library_entries; DROP TABLE library_owners; DROP INDEX media_library_backlog; PRAGMA user_version=19;").unwrap();
-        if failure == Some("write") {
-            db.execute_batch("CREATE TRIGGER reject_upgrade BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
-        }
-        drop(db);
-        if failure.is_some() {
-            let bytes = std::fs::read(&path).unwrap();
-            assert!(Engine::open(&path).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
-            let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row::<u32, _, _>("PRAGMA user_version", [], |row| row.get(0))
-                    .unwrap(),
-                19
-            );
-            assert_eq!(
-                db.query_row::<String, _, _>("SELECT json FROM state WHERE id=1", [], |row| row
-                    .get(0))
-                    .unwrap(),
-                legacy
-            );
-        } else {
-            let engine = Engine::open(&path).unwrap();
-            assert_eq!(serde_json::to_value(&engine.data.bots).unwrap(), expected);
-            let issuer = crate::bots::auth::Context::from_headers(&engine, &headers).unwrap();
-            assert!(issuer.issuer(&engine).is_ok());
-            assert!(issuer.user(&engine).is_err());
-            headers.insert(
-                header::AUTHORIZATION,
-                format!("Bearer {}", worker["token"].as_str().unwrap())
-                    .parse()
-                    .unwrap(),
-            );
-            assert!(
-                crate::bots::auth::Context::from_headers(&engine, &headers)
-                    .unwrap()
-                    .user(&engine)
-                    .is_ok()
-            );
-            drop(engine);
-            let engine = Engine::open(&path).unwrap();
-            assert_eq!(serde_json::to_value(&engine.data.bots).unwrap(), expected);
-        }
-    }
 }

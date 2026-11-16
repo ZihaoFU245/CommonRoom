@@ -125,9 +125,8 @@ an already-expired reference while editing surrounding text is allowed.
 Downloads require read access, an unexpired verified object and a retained
 message reference. Browser reads use `POST /api/media/resolve` to obtain
 metadata, read authorization and, on a byte-cache miss, a signed GET URL
-together. The page and its scoped `media-cache.js` worker share the result; they
-do not perform independent `/info` checks. The resolver accepts at most 32
-items, shares one admission job, and reads metadata, references and library
+together. The page and its scoped `media-cache.js` worker share the result.
+The resolver accepts at most 32 items, shares one admission job, and reads metadata, references and library
 visibility in a batch statement on either database backend. A discovery read first
 identifies requested media kinds; only library requests enumerate all readable
 conversation scopes. The authoritative reread follows revision capture. Batches
@@ -163,8 +162,9 @@ revocation or retraction can leave an existing lease usable until its deadline
 if an invalidation is absent or missed. Already downloaded copies cannot be
 revoked.
 
-Authorized readers can retrieve expired presentation metadata from the resolver
-or `/info?include_expired=true`; normal `/info` and file routes reject expiry.
+Authorized readers can retrieve expired presentation metadata from the resolver.
+Bot v1 also supports `/media/{id}/info?include_expired=true`. Direct file routes
+reject expired assets.
 The cache never serves bytes beyond media expiry. The UI replaces expired
 images, players, previews and file links with an “Attachment expired” card and
 filename. Up to 128 presentation records and pending checks survive virtual
@@ -197,11 +197,8 @@ unchanged.
 Storage fetches omit chat credentials. Downloads use signed attachment
 disposition and, on secure pages, navigate through a UI-scoped
 `media-download?file=...` worker route. Only top-level document navigations can
-use that route. Legacy `/info` and `/link` endpoints are deprecated for new
-browser clients; use `/api/media/resolve` instead. They remain available for
-existing scripts with no removal date scheduled. Legacy `/file` endpoints remain
-available and always authorize on the server; bot read APIs retain their existing live
-checks. Signed URLs and leases are never persisted in preferences or
+use that route. Use `POST /api/media/resolve` for browser metadata and signed
+links. The direct `/file` endpoints authorize on the server. Signed URLs and leases are never persisted in preferences or
 localStorage. A shared startup handshake claims the page after hard reload;
 controls wait for acknowledgement and show a retryable error after 15 seconds.
 Secure worker pages require HTTPS or loopback. Presentation metadata can resolve
@@ -395,8 +392,8 @@ caching or listing. Serve storage from a separate origin without chat cookies.
 Provider-specific bucket, CORS, credential, and lifecycle setup (AWS S3, Cloudflare R2,
 self-hosted RustFS) is in [Deployment](deployment.md#object-storage).
 
-SQLite HEAD is v21, with atomic v19/v20 upgrades for library tables and the v19 credential conversion. Other SQLite versions
-are rejected unchanged; PostgreSQL has an independent current schema.
+SQLite startup requires v21 for existing databases. PostgreSQL has an
+independent current schema.
 
 ```sh
 rtk cargo build --locked

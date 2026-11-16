@@ -648,10 +648,9 @@ impl Engine {
         &mut self,
         name: &str,
         hash: String,
-        id: Option<&str>,
         digest: &str,
     ) -> Result<metadata_write::PendingMetadata, EngineError> {
-        let (id, invite) = self.valid_invite(id, digest)?;
+        let (id, invite) = self.valid_invite(digest)?;
         let id = id.to_owned();
         let expires = invite.expires;
         let (_, pending) = self.prepare_account_change(|engine| {
