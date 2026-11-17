@@ -32,6 +32,7 @@
   }
 }
 .composer-area {
+  min-height: calc(var(--chat-footer-height) + env(safe-area-inset-bottom));
   padding-bottom: max(12px, env(safe-area-inset-bottom));
   padding-left: max(24px, env(safe-area-inset-left));
   padding-right: max(24px, env(safe-area-inset-right));
@@ -42,7 +43,14 @@
   min-height: calc(var(--chat-header-height) + env(safe-area-inset-top));
 }
 .sidebar {
-  padding-left: max(20px, env(safe-area-inset-left));
+  padding-left: env(safe-area-inset-left);
+}
+.sidebar-bottom {
+  height: calc(var(--chat-footer-height) + env(safe-area-inset-bottom));
+  min-height: calc(var(--chat-footer-height) + env(safe-area-inset-bottom));
+  padding-bottom: 0;
+}
+.profile {
   padding-bottom: env(safe-area-inset-bottom);
 }
 .navigation-toggle {
