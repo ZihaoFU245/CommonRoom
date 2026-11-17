@@ -372,6 +372,7 @@ button:focus-visible {
   min-width: 0;
   flex: 0 1 auto;
   max-width: 100%;
+  margin-left: auto;
   pointer-events: none;
 }
 .online-users {

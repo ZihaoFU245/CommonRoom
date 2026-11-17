@@ -601,12 +601,10 @@ export function Chat({
             <ChatHeader
               consoleView={consoleView}
               direct={direct}
-              peer={peer}
               selected={selected}
               online={state.online}
               username={state.username}
               status={status}
-              avatars={state.avatars}
             />
             <div class="history-notices" ref={historyNotices}>
               {preferenceSyncError && (
