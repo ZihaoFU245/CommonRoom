@@ -209,7 +209,7 @@
   left: 224px;
 }
 .chat-shell:not(.navigation-open) .chat-header {
-  padding-left: 68px;
+  padding-left: max(68px, var(--chat-title-inset));
 }
 .chat-layout {
   height: var(--app-height, 100dvh);
@@ -346,36 +346,84 @@
   width: calc(100% - 280px);
 }
 .chat-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  box-sizing: border-box;
   min-height: var(--chat-header-height);
-  padding: 10px 24px;
+  padding: 12px 24px 12px var(--chat-title-inset);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--line);
-  gap: 12px;
+  gap: 10px;
+  border-bottom: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.chat-header-pill {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  height: 36px;
+  max-width: 100%;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wash) 72%, var(--paper));
+  box-shadow: var(--shadow-header);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  pointer-events: auto;
 }
 .room-title {
   display: flex;
-  gap: 13px;
+  gap: 10px;
   align-items: center;
   min-width: 0;
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: min(100%, calc(100% - 12rem));
+  height: 44px;
+  /* Room titles (# name) need balanced inset; avatar DMs override below. */
+  padding: 0 20px;
+}
+.room-title:has(.room-title-avatar) {
+  gap: 8px;
+  /* Start pad is subtracted from --chat-title-inset so the peer avatar
+     shares the same vertical as message avatars — not the pill edge. */
+  padding-left: var(--room-title-pad-start);
 }
 .room-title > span {
-  font-size: 1.92857rem;
+  flex-shrink: 0;
+  font-size: 1.42857rem;
   color: var(--ink);
-  font-weight: 300;
+  font-weight: 650;
+  line-height: 1;
+}
+.room-title .room-title-avatar {
+  width: var(--message-avatar-size);
+  height: var(--message-avatar-size);
+}
+.room-title .room-title-avatar .user-avatar {
+  width: var(--message-avatar-size);
+  height: var(--message-avatar-size);
 }
 .room-title h1 {
+  min-width: 0;
   font-size: 1.21429rem;
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  overflow-wrap: anywhere;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+  overflow-wrap: normal;
 }
 
 .connection {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   font-size: 0.71429rem;
   color: var(--muted);
   white-space: nowrap;
@@ -393,7 +441,8 @@
 .message-list {
   flex: 1;
   overflow: auto;
-  padding: 16px 38px 20px;
+  padding: calc(var(--chat-header-height) + 4px) var(--message-list-inline)
+    20px;
   scrollbar-width: thin;
   overflow-anchor: none;
   overscroll-behavior-y: none;
@@ -482,12 +531,14 @@
   flex-shrink: 0;
 }
 @media (min-width: 1500px) {
-  .message-list {
-    padding-left: 6vw;
-    padding-right: 6vw;
+  :root {
+    --message-list-inline: 6vw;
   }
 }
 @media (max-width: 700px) {
+  :root {
+    --message-list-inline: 20px;
+  }
   .navigation-open .conversation {
     width: 100%;
   }
@@ -498,7 +549,7 @@
     left: calc(min(290px, 85vw) - 54px);
   }
   .chat-shell .chat-header {
-    padding-left: 60px;
+    padding-left: max(60px, var(--chat-title-inset));
   }
   .sidebar {
     display: none;
@@ -526,19 +577,37 @@
     padding: 0;
   }
   .chat-header {
-    padding: 8px 16px;
+    padding: 10px 16px 10px var(--chat-title-inset);
     min-height: var(--chat-header-height);
+  }
+  .chat-header-pill,
+  .online-toggle {
+    height: 34px;
+    padding: 0 12px;
   }
   .room-title {
     gap: 8px;
+    height: 40px;
+    padding: 0 16px;
+    max-width: min(100%, calc(100% - 9.5rem));
+  }
+  .room-title:has(.room-title-avatar) {
+    padding-left: var(--room-title-pad-start);
+  }
+  .room-title > span {
+    font-size: 1.28571rem;
+  }
+  .room-title h1 {
+    font-size: 1.07143rem;
   }
 
   .header-actions {
-    gap: 10px;
+    gap: 6px;
   }
   .connection {
     font-size: 0;
     gap: 0;
+    padding-inline: 10px;
   }
   .connection i {
     width: 7px;
@@ -546,7 +615,8 @@
   }
 
   .message-list {
-    padding: 0 20px 12px;
+    padding: calc(var(--chat-header-height) + 2px) var(--message-list-inline)
+      12px;
   }
   .composer-area {
     padding: 12px 16px;

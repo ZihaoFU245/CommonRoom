@@ -1,3 +1,4 @@
+import { Avatar } from "./Avatar.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import { OnlineUsers } from "./OnlineUsers.tsx";
 export function ChatHeader({
@@ -8,6 +9,7 @@ export function ChatHeader({
   online,
   username,
   status,
+  avatars,
 }: {
   consoleView: boolean;
   direct: boolean;
@@ -16,11 +18,25 @@ export function ChatHeader({
   online: string[];
   username: string;
   status: string;
+  avatars?: Record<string, string>;
 }) {
   return (
     <header class="chat-header">
-      <div class="room-title">
-        <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
+      <div class="room-title chat-header-pill">
+        {consoleView ? (
+          <span>{">"}</span>
+        ) : direct && peer ? (
+          <span class="private-chat-icon room-title-avatar">
+            <span class="hash" aria-hidden="true">
+              ↗
+            </span>
+            <Avatar url={avatars?.[peer]} name={peer} />
+          </span>
+        ) : direct ? (
+          <span>↗</span>
+        ) : (
+          <span>#</span>
+        )}
         <h1>
           {consoleView ? (
             "Command"
@@ -42,7 +58,7 @@ export function ChatHeader({
           connected={status === "online"}
         />
         <span
-          class={`connection ${status}`}
+          class={`connection chat-header-pill ${status}`}
           role="status"
           aria-label={
             status === "online"

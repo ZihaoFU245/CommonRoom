@@ -355,9 +355,6 @@ button:focus-visible {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.room-title {
-  flex: 1;
-}
 .room-title h1 {
   white-space: nowrap;
   overflow: hidden;
@@ -366,26 +363,44 @@ button:focus-visible {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 100%;
+  pointer-events: none;
 }
 .online-users {
   position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   font-size: 0.85714rem;
+  pointer-events: auto;
 }
 .online-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wash) 72%, var(--paper));
+  box-shadow: var(--shadow-header);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   cursor: pointer;
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .online-toggle:hover,
 .online-users.open .online-toggle {
-  background: var(--wash);
+  background: color-mix(in srgb, var(--wash) 88%, var(--paper));
   color: var(--ink);
 }
 .online-toggle svg {
@@ -451,8 +466,9 @@ button:focus-visible {
 .chat-message {
   --message-top-gap: 16px;
   position: relative;
-  padding: 16px 10px 2px 56px;
-  margin: 0 -10px;
+  padding: 16px var(--message-gutter) 2px
+    calc(var(--message-avatar-inset) + var(--message-avatar-size) + 10px);
+  margin: 0 calc(var(--message-gutter) * -1);
   border-radius: 5px;
   font-family: var(--ui-fonts);
   font-size: var(--chat-font-size, 16px);
@@ -469,13 +485,13 @@ button:focus-visible {
 .chat-message > .avatar-trigger {
   position: absolute;
   top: 16px;
-  left: 14px;
+  left: var(--message-avatar-inset);
 }
 .chat-message > .user-avatar,
 .chat-message > .avatar-trigger,
 .chat-message > .avatar-trigger > .user-avatar {
-  width: 32px;
-  height: 32px;
+  width: var(--message-avatar-size);
+  height: var(--message-avatar-size);
 }
 .message-content {
   min-width: 0;

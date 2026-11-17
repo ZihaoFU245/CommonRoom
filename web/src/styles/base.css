@@ -38,6 +38,16 @@
   --control-motion-easing: ease-out;
   --chat-header-height: 64px;
   --chat-footer-height: 80px;
+  /* Keep DM title-pill avatar on the message-avatar vertical. */
+  --message-list-inline: 38px;
+  --message-gutter: 10px;
+  --message-avatar-inset: 14px;
+  --message-avatar-size: 32px;
+  --room-title-pad-start: 5px;
+  --chat-title-inset: calc(
+    var(--message-list-inline) - var(--message-gutter) +
+      var(--message-avatar-inset) - 1px - var(--room-title-pad-start)
+  );
   /* Light appearance. Every themed surface reads from this palette. */
   --paper: #fcfcfc;
   --ink: #2d2d2b;
@@ -58,6 +68,8 @@
   --shadow-float: 0 6px 20px #00000012;
   --shadow-pop: 0 4px 15px #2d2d2b12;
   --shadow-dialog: 0 12px 50px #2d2d2b20;
+  /* Quiet lift for floating header chips — soft enough to stay secondary. */
+  --shadow-header: 0 1px 2px #2d2d2b0a, 0 4px 12px #2d2d2b12;
   /* Foregrounds remain readable on each theme's accent fill. */
   --accent-label: #fff;
   --accent-contrast: #fff;
@@ -115,6 +127,7 @@
   --shadow-float: 0 6px 20px #00000059;
   --shadow-pop: 0 4px 15px #00000059;
   --shadow-dialog: 0 12px 50px #00000073;
+  --shadow-header: 0 1px 0 #ffffff0a, 0 6px 16px #00000066;
   --name-red: #f87171;
   --name-orange: #fb923c;
   --name-amber: #fbbf24;

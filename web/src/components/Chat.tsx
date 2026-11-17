@@ -606,6 +606,7 @@ export function Chat({
               online={state.online}
               username={state.username}
               status={status}
+              avatars={state.avatars}
             />
             <div class="history-notices" ref={historyNotices}>
               {preferenceSyncError && (
