@@ -37,27 +37,41 @@
   --control-motion-duration: 120ms;
   --control-motion-easing: ease-out;
   --chat-header-height: 64px;
-  --chat-footer-height: 80px;
-  /* Light appearance. Every themed surface reads from this palette. */
-  --paper: #fcfcfc;
-  --ink: #2d2d2b;
-  --muted: #2d2d2b;
-  --subtle: #666661;
-  --line: #e5e1db;
-  --wash: #efefec;
+  --chat-footer-height: 84px;
+  /* Keep DM title-pill avatar on the message-avatar vertical. */
+  --message-list-inline: 38px;
+  --message-gutter: 10px;
+  --message-avatar-inset: 14px;
+  --message-avatar-size: 32px;
+  --room-title-pad-start: 5px;
+  --chat-title-inset: calc(
+    var(--message-list-inline) - var(--message-gutter) +
+      var(--message-avatar-inset) - 1px - var(--room-title-pad-start)
+  );
+  /* Light appearance. Neutral zinc ramp from white — no warm/olive mix. */
+  --paper: #ffffff;
+  --sidebar: #f4f4f5;
+  --sidebar-module: #e4e4e7;
+  --ink: #18181b;
+  --muted: #52525b;
+  --subtle: #71717a;
+  --line: #e4e4e7;
+  --wash: #f4f4f5;
   --accent: #1924be;
   --accent-hover: #141d9b;
-  --accent-ink: #2d2d2b;
-  --field: #ffffffb8;
-  --placeholder: #6f6a64;
+  --accent-ink: #18181b;
+  --field: #ffffffcc;
+  --placeholder: #a1a1aa;
   --danger: #a04135;
-  --online: #22a06b;
-  --offline: #bbb2a8;
-  --scrim: #2d2d2b55;
-  --hairline: #9c9c95;
-  --shadow-float: 0 6px 20px #00000012;
-  --shadow-pop: 0 4px 15px #2d2d2b12;
-  --shadow-dialog: 0 12px 50px #2d2d2b20;
+  --online: #16a34a;
+  --offline: #a1a1aa;
+  --scrim: #18181b55;
+  --hairline: #a1a1aa;
+  --shadow-float: 0 6px 20px #18181b14;
+  --shadow-pop: 0 4px 15px #18181b12;
+  --shadow-dialog: 0 12px 50px #18181b20;
+  /* Quiet lift for floating header chips — soft enough to stay secondary. */
+  --shadow-header: 0 1px 2px #18181b0a, 0 4px 12px #18181b12;
   /* Foregrounds remain readable on each theme's accent fill. */
   --accent-label: #fff;
   --accent-contrast: #fff;
@@ -94,27 +108,31 @@
 /* Dark appearance. bootAppearance sets data-theme before the first frame;
    the app-level useTheme keeps it current afterwards. */
 :root[data-theme="dark"] {
-  --paper: #070708;
-  --ink: #e5e9f2;
-  --muted: #a3abbd;
-  --subtle: #959fb3;
-  --line: #2f3646;
-  --wash: #232838;
+  /* Neutral black ramp — no blue cast on surfaces or chrome. */
+  --paper: #0a0a0a;
+  --sidebar: #000000;
+  --sidebar-module: #171717;
+  --ink: #fafafa;
+  --muted: #a3a3a3;
+  --subtle: #737373;
+  --line: #262626;
+  --wash: #262626;
   --accent: #878787;
   --accent-hover: #999999;
-  --accent-ink: #e5e9f2;
-  --accent-label: #1f1d1a;
-  --accent-contrast: #1f1d1a;
-  --field: #1f2430;
-  --placeholder: #8892a6;
+  --accent-ink: #fafafa;
+  --accent-label: #0a0a0a;
+  --accent-contrast: #0a0a0a;
+  --field: #171717;
+  --placeholder: #737373;
   --danger: #f08c7f;
-  --online: #2fbf8f;
-  --offline: #6b7280;
+  --online: #22c55e;
+  --offline: #737373;
   --scrim: #000000a6;
-  --hairline: #3d4557;
+  --hairline: #525252;
   --shadow-float: 0 6px 20px #00000059;
   --shadow-pop: 0 4px 15px #00000059;
   --shadow-dialog: 0 12px 50px #00000073;
+  --shadow-header: 0 1px 0 #ffffff0a, 0 6px 16px #00000066;
   --name-red: #f87171;
   --name-orange: #fb923c;
   --name-amber: #fbbf24;

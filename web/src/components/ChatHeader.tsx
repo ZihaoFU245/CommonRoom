@@ -1,9 +1,7 @@
-import { DisplayName } from "./DisplayName.tsx";
 import { OnlineUsers } from "./OnlineUsers.tsx";
 export function ChatHeader({
   consoleView,
   direct,
-  peer,
   selected,
   online,
   username,
@@ -11,7 +9,6 @@ export function ChatHeader({
 }: {
   consoleView: boolean;
   direct: boolean;
-  peer: string | null;
   selected: string;
   online: string[];
   username: string;
@@ -19,22 +16,12 @@ export function ChatHeader({
 }) {
   return (
     <header class="chat-header">
-      <div class="room-title">
-        <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
-        <h1>
-          {consoleView ? (
-            "Command"
-          ) : direct ? (
-            peer ? (
-              <DisplayName name={peer} interactive />
-            ) : (
-              "Private messages"
-            )
-          ) : (
-            selected
-          )}
-        </h1>
-      </div>
+      {!direct && (
+        <div class="room-title chat-header-pill">
+          <span>{consoleView ? ">" : "#"}</span>
+          <h1>{consoleView ? "Command" : selected}</h1>
+        </div>
+      )}
       <div class="header-actions">
         <OnlineUsers
           names={online}
@@ -42,7 +29,7 @@ export function ChatHeader({
           connected={status === "online"}
         />
         <span
-          class={`connection ${status}`}
+          class={`connection chat-header-pill ${status}`}
           role="status"
           aria-label={
             status === "online"

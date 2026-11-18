@@ -73,15 +73,24 @@ export function useLibraryPopover(
       const width = visual?.width ?? innerWidth;
       const height = visual?.height ?? innerHeight;
       const bounds = anchor?.current?.getBoundingClientRect();
+      // Sit above the message bar: left-aligned with it, ~20px clear of its top.
+      const board = anchor?.current
+        ?.closest(".composer-area")
+        ?.querySelector(".composer-input")
+        ?.getBoundingClientRect();
       const panelWidth = Math.max(0, Math.min(420, width - 24));
-      const bottom = bounds
-        ? Math.min(bounds.top - 8, top + height - 12)
-        : top + height - 24;
+      const gap = 20;
+      const bottom = board
+        ? Math.min(board.top - gap, top + height - 12)
+        : bounds
+          ? Math.min(bounds.top - 8, top + height - 12)
+          : top + height - 24;
       const panelHeight = Math.max(0, Math.min(460, bottom - top - 12));
+      const panelLeft = board?.left ?? bounds?.left ?? left + 12;
       element.style.width = `${panelWidth}px`;
       element.style.height = `${panelHeight}px`;
       // Entry motion scales the painted box; positioning uses its layout size.
-      element.style.left = `${Math.max(left + 12, Math.min(bounds?.left ?? left + 12, left + width - panelWidth - 12))}px`;
+      element.style.left = `${Math.max(left + 12, Math.min(panelLeft, left + width - panelWidth - 12))}px`;
       element.style.top = `${Math.max(top + 12, bottom - panelHeight)}px`;
       const x = bounds
         ? bounds.left + bounds.width / 2
@@ -118,7 +127,11 @@ export function useLibraryPopover(
     window.visualViewport?.addEventListener("resize", schedule);
     window.visualViewport?.addEventListener("scroll", schedule);
     const resize = new ResizeObserver(schedule);
-    if (anchor?.current?.parentElement)
+    const board = anchor?.current
+      ?.closest(".composer-area")
+      ?.querySelector(".composer-input");
+    if (board) resize.observe(board);
+    else if (anchor?.current?.parentElement)
       resize.observe(anchor.current.parentElement);
     return () => {
       cancelAnimationFrame(frame);

@@ -601,7 +601,6 @@ export function Chat({
             <ChatHeader
               consoleView={consoleView}
               direct={direct}
-              peer={peer}
               selected={selected}
               online={state.online}
               username={state.username}
