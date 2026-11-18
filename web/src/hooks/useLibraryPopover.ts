@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import type { RefObject } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { controlMotion } from "../features/preferences/motion.ts";
@@ -65,7 +66,7 @@ export function useLibraryPopover(
     else element.setAttribute("open", "");
     // Reopening with a queued attachment disables previews. Keep the browser
     // from focusing the first remove control and revealing its actions.
-    element.focus({ preventScroll: true });
+    focusControl(element, { preventScroll: true });
     const position = () => {
       const visual = window.visualViewport;
       const left = visual?.offsetLeft ?? 0;

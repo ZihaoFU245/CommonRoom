@@ -1,3 +1,4 @@
+import { focusControl } from "../../features/preferences/inputFocus.ts";
 import { useEvent } from "../../hooks/useEvent.ts";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
@@ -10,7 +11,7 @@ export function focusSettingsControl(
   // macOS Safari can focus the surrounding dialog instead of a clicked button,
   // causing the outside-focus listener to dismiss the menu before activation.
   event.preventDefault();
-  event.currentTarget.focus({ preventScroll: true });
+  focusControl(event.currentTarget, { preventScroll: true });
 }
 
 export function Chevron() {
@@ -31,7 +32,7 @@ export function useSettingsMenu() {
       ?.querySelector("[data-name-popup]:not([inert])")
       ?.setAttribute("inert", "");
     setOpen(false);
-    if (restoreFocus) toggle.current?.focus();
+    if (restoreFocus) focusControl(toggle.current);
   });
   // Position and focus the popup before its entrance animation is painted.
   useLayoutEffect(() => {
@@ -58,7 +59,7 @@ export function useSettingsMenu() {
       panel?.querySelector<HTMLButtonElement>(
         '[aria-selected="true"], [aria-pressed="true"]',
       ) ?? panel?.querySelector<HTMLButtonElement>("button");
-    selected?.focus({ preventScroll: true });
+    focusControl(selected, { preventScroll: true });
     if (panel && selected)
       panel.scrollTop = Math.max(
         0,
@@ -206,7 +207,7 @@ export function ScopePicker({
             }
             if (next) {
               event.preventDefault();
-              next.focus();
+              focusControl(next);
             }
           }}
         >

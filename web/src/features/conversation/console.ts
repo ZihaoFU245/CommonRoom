@@ -123,7 +123,8 @@ export function privatePeers(
   snapshot: Pick<Snapshot, "username" | "direct"> &
     Partial<Pick<Snapshot, "private_peers">>,
 ): string[] {
-  if (snapshot.private_peers) return [...snapshot.private_peers].sort();
+  const peers = snapshot.private_peers;
+  if (peers) return peers.toSorted?.() ?? peers.slice().sort();
   return [
     ...new Set(
       [

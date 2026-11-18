@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -108,7 +109,7 @@ export function UserCards({
     const initialPosition = reposition();
     const observer = new ResizeObserver(reposition);
     observer.observe(element);
-    element.focus();
+    focusControl(element);
     closing.current = false;
     const animation = window.matchMedia("(prefers-reduced-motion: reduce)")
       .matches
@@ -164,7 +165,7 @@ export function UserCards({
       if (event.key === "Escape") {
         event.stopPropagation();
         close();
-        target.anchor.focus();
+        focusControl(target.anchor);
       }
     };
     const focus = (event: FocusEvent) => {

@@ -697,7 +697,7 @@
 .library-picker .library-edit {
   padding: 2px 8px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 8px;
   color: var(--muted);
   font-size: 0.75rem;
   transition:

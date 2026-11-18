@@ -1,3 +1,4 @@
+import { focusControl } from "../../features/preferences/inputFocus.ts";
 import { DisplayNameRecords } from "./DisplayNameRecords.tsx";
 import { ScopePicker } from "./ScopePicker.tsx";
 import { api } from "../../api/client.ts";
@@ -103,7 +104,7 @@ export function AccountEditor({
   useEffect(() => {
     if (!savingDisplayName && restoreDisplayNameFocus.current) {
       restoreDisplayNameFocus.current = false;
-      editorInput.current?.focus({ preventScroll: true });
+      focusControl(editorInput.current, { preventScroll: true });
     }
   }, [savingDisplayName]);
   const canRename =
@@ -130,8 +131,8 @@ export function AccountEditor({
     setFeedback("");
   }
   useEffect(() => {
-    if (editor) editorInput.current?.focus();
-    else if (restoreEditorFocus.current) editorButton.current?.focus();
+    if (editor) focusControl(editorInput.current);
+    else if (restoreEditorFocus.current) focusControl(editorButton.current);
     restoreEditorFocus.current = false;
   }, [editor]);
   useEffect(() => {

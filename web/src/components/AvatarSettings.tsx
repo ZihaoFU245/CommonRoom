@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { DisplayName } from "./DisplayName.tsx";
 import { controlMotion } from "../features/preferences/motion.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -141,7 +142,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
       .finally(() => {
         setBusy(false);
         setUploading(false);
-        avatarButton.current?.focus();
+        focusControl(avatarButton.current);
       });
   }
   async function upload() {
@@ -169,7 +170,7 @@ export function AvatarSettings({ state }: { state: Snapshot }) {
     signal.throwIfAborted();
     setPreview(URL.createObjectURL(blob));
     setMenu(false);
-    avatarButton.current?.focus();
+    focusControl(avatarButton.current);
     const uploadId = randomUuid();
     let allocated = false;
     try {

@@ -215,6 +215,9 @@
   top: 16px;
   left: 24px;
   z-index: 101;
+  color: var(--ink);
+  font-size: 1.42857rem;
+  border-radius: 6px;
   transition: left var(--control-motion-duration) var(--control-motion-easing);
 }
 .navigation-open .navigation-toggle {
@@ -480,66 +483,65 @@
   color: var(--muted);
   font-size: 0.78571rem;
 }
-.scrim {
-  display: none;
-}
-.mobile-menu {
-  display: block;
-  color: var(--ink);
-  font-size: 1.42857rem;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  flex-shrink: 0;
-}
 @media (min-width: 1500px) {
   .message-list {
     padding-left: 6vw;
     padding-right: 6vw;
   }
 }
-@media (max-width: 700px) {
-  .navigation-open .conversation {
-    width: 100%;
-  }
-  .navigation-toggle {
-    left: 16px;
-  }
-  .navigation-open .navigation-toggle {
-    left: calc(min(290px, 85vw) - 54px);
-  }
-  .chat-shell .chat-header {
-    padding-left: 60px;
-  }
-  .sidebar {
+@media (max-width: 700px),
+  (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  .chat-shell:not(.mobile-conversation-list) .sidebar {
     display: none;
   }
-  .sidebar.visible {
-    display: flex;
-    position: fixed;
-    inset: 0 auto 0 0;
-    z-index: 20;
-    width: 250px;
-  }
-  .scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: var(--scrim);
-    z-index: 19;
+  .mobile-conversation-list .sidebar {
     width: 100%;
-    height: 100%;
+    padding-right: max(16px, env(safe-area-inset-right));
+    border: 0;
   }
-  .mobile-menu {
-    display: block;
-    color: var(--accent-ink);
-    font-size: 1.42857rem;
-    padding: 0;
+  .mobile-conversation-list .conversation {
+    visibility: hidden;
+  }
+  .sidebar-heading h1 {
+    font-size: 1.57143rem;
+  }
+  .sidebar .room-link,
+  .sidebar .nav-group summary {
+    min-height: 44px;
+    font-size: 1rem;
+  }
+  .sidebar .profile > :is(.settings-toggle, .notification-toggle, .signout) {
+    width: 44px;
+    height: 44px;
   }
   .chat-header {
-    padding: 8px 16px;
+    padding: 8px max(16px, env(safe-area-inset-right)) 8px
+      max(8px, env(safe-area-inset-left));
     min-height: var(--chat-header-height);
+  }
+  .chat-shell:not(.navigation-open) .chat-header {
+    padding-left: max(8px, env(safe-area-inset-left));
+  }
+  .conversation-back {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 6px;
+  }
+  .conversation-back:active {
+    background: var(--wash);
+  }
+  .conversation-back svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .room-title {
     gap: 8px;
@@ -573,5 +575,62 @@
   .composer textarea,
   .navigation-toggle {
     transition: none;
+  }
+  ::view-transition-group(root),
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:is(
+      :active-view-transition-type(mobile-forward),
+      :active-view-transition-type(mobile-back)
+    )::view-transition-group(root),
+  :root:is(
+      :active-view-transition-type(mobile-forward),
+      :active-view-transition-type(mobile-back)
+    )::view-transition-old(root),
+  :root:is(
+      :active-view-transition-type(mobile-forward),
+      :active-view-transition-type(mobile-back)
+    )::view-transition-new(root) {
+    animation-duration: 180ms;
+    animation-timing-function: var(--control-motion-easing);
+  }
+  :root:is(
+      :active-view-transition-type(mobile-forward),
+      :active-view-transition-type(mobile-back)
+    )::view-transition {
+    pointer-events: none;
+  }
+  :root:active-view-transition-type(mobile-forward)::view-transition-old(root) {
+    animation-name: mobile-slide-out;
+  }
+  :root:active-view-transition-type(mobile-forward)::view-transition-new(root) {
+    animation-name: mobile-slide-in;
+  }
+  :root:active-view-transition-type(mobile-back)::view-transition-old(root) {
+    animation-name: mobile-slide-in;
+    animation-direction: reverse;
+  }
+  :root:active-view-transition-type(mobile-back)::view-transition-new(root) {
+    animation-name: mobile-slide-out;
+    animation-direction: reverse;
+  }
+}
+
+@keyframes mobile-slide-in {
+  from {
+    transform: translateX(12%);
+    opacity: 0;
+  }
+}
+
+@keyframes mobile-slide-out {
+  to {
+    transform: translateX(-12%);
+    opacity: 0;
   }
 }

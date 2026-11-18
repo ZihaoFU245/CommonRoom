@@ -4,13 +4,30 @@ import { resolveDisplayNames } from "../features/preferences/displayNames.ts";
 import { DisplayNamesContext } from "./DisplayNamesContext.ts";
 import { usePreferenceSync } from "../hooks/usePreferenceSync.ts";
 import { controlMotion } from "../features/preferences/motion.ts";
+import { animateNavigation } from "../features/preferences/navigationMotion.ts";
+import {
+  settingsScreen,
+  settingsDepth,
+  type SettingsScreen,
+  type SettingsSection,
+} from "../features/preferences/settingsRoute.ts";
 import { useLocalConsole } from "../hooks/useLocalConsole.ts";
 import { useCommands } from "../hooks/useCommands.ts";
 import { useReadTracking } from "../hooks/useReadTracking.ts";
 import { useHistoryNoticeMotion } from "../hooks/useHistoryNoticeMotion.ts";
 import { useHistoryPaging } from "../hooks/useHistoryPaging.ts";
+import {
+  mobileLayout,
+  focusControl,
+} from "../features/preferences/inputFocus.ts";
 import { timelineAtBottom } from "../features/conversation/timelineScroll.ts";
-import { useEffect, useRef, useState, useMemo } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useMemo,
+} from "preact/hooks";
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
@@ -74,7 +91,26 @@ export function Chat({
     setAllowHtml,
   } = useChatPreferences();
   const { theme, setTheme, seeds, setSeeds } = appearance;
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [desktopSettingsOpen, setDesktopSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState(() =>
+    settingsScreen(new URLSearchParams(location.hash.slice(1))),
+  );
+  const settingsOpen = desktopSettingsOpen || settings !== undefined;
+  const [narrow, setNarrow] = useState(() => matchMedia(mobileLayout).matches);
+  const [mobileHome, setMobileHome] = useState(
+    () => !new URLSearchParams(location.hash.slice(1)).has("room"),
+  );
+  const conversationListOpen = narrow && mobileHome;
+  useEffect(() => {
+    const media = matchMedia(mobileLayout);
+    const update = () => {
+      if (media.matches)
+        setMobileHome(!new URLSearchParams(location.hash.slice(1)).has("room"));
+      setNarrow(media.matches);
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   const [selected, setSelected] = useState(() => {
     const requested =
       new URLSearchParams(location.hash.slice(1)).get("room") || "";
@@ -92,31 +128,48 @@ export function Chat({
   const [menu, setMenu] = useState(() => {
     const saved = readStorage("commonroom-sidebar-open");
     if (saved === "true" || saved === "false") return saved === "true";
-    return window.matchMedia("(min-width: 701px)").matches;
+    return true;
   });
   useEffect(() => {
     writeStorage("commonroom-sidebar-open", String(menu));
   }, [menu]);
   const menuButton = useRef<HTMLButtonElement>(null);
+  const listHeading = useRef<HTMLHeadingElement>(null);
+  const conversationHeading = useRef<HTMLHeadingElement>(null);
+  const previousMobilePage = useRef({ narrow, mobileHome, selected });
+  useLayoutEffect(() => {
+    const previous = previousMobilePage.current;
+    previousMobilePage.current = { narrow, mobileHome, selected };
+    if (
+      !narrow ||
+      (previous.narrow &&
+        previous.mobileHome === mobileHome &&
+        (mobileHome || previous.selected === selected))
+    )
+      return;
+    focusControl((mobileHome ? listHeading : conversationHeading).current, {
+      preventScroll: true,
+    });
+  }, [narrow, mobileHome, selected]);
   const animatedLayout = useRef<HTMLDivElement>(null);
   const historyNotices = useHistoryNoticeMotion();
   useEffect(() => {
-    if (!animatedLayout.current) return;
+    if (narrow || !animatedLayout.current) return;
     const animation = autoAnimate(animatedLayout.current, controlMotion);
     return () => animation.destroy?.();
-  }, []);
+  }, [narrow]);
   function closeMenu() {
     setMenu(false);
-    requestAnimationFrame(() => menuButton.current?.focus());
+    requestAnimationFrame(() => focusControl(menuButton.current));
   }
   useEffect(() => {
-    if (!menu || settingsOpen) return;
+    if (narrow || !menu || settingsOpen) return;
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeMenu();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [menu, settingsOpen]);
+  }, [narrow, menu, settingsOpen]);
   const desiredRoom = useRef<string | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const historyElement = useRef<HTMLElement>(null);
@@ -168,7 +221,8 @@ export function Chat({
             selected: selectedRef.current,
             open: (view) => {
               window.focus();
-              setSelected(view);
+              if (narrow) choose(view, { focusComposer: false });
+              else setSelected(view);
             },
           });
 
@@ -372,7 +426,7 @@ export function Chat({
     resetCleared: () =>
       setCleared((previous) => ({ ...previous, [selected]: 0 })),
     settingsOpen,
-    menu,
+    conversationListOpen,
     status,
     loadSequence,
     virtualTimeline,
@@ -400,7 +454,7 @@ export function Chat({
   );
   const handleReply = useEvent((message: Message) => {
     setReplyTarget({ ...message, view: selected });
-    input.current?.focus();
+    focusControl(input.current);
   });
   const handleLoadSequence = useEvent(loadSequence);
   const previousScroll = useRef<{ view: string; top: number } | null>(null);
@@ -461,26 +515,59 @@ export function Chat({
     const params = new URLSearchParams(location.hash.slice(1));
     if (
       params.get("room") === selected ||
-      (!params.has("room") && selected === initialSelection.current)
+      (!params.has("room") && (narrow || selected === initialSelection.current))
     )
       return;
     params.set("room", selected);
     history.replaceState(history.state, "", `#${params.toString()}`);
-  }, [selected]);
-  const restoreSelection = useEvent(() => {
-    const requested =
-      new URLSearchParams(location.hash.slice(1)).get("room") ||
-      initialSelection.current;
-    if (
-      requested &&
-      (requested === "@command" ||
-        state.rooms.some((room) => room.name === requested) ||
-        (requested.startsWith("@direct:") &&
-          peers.includes(requested.slice(8))))
-    ) {
-      rememberPosition();
-      setSelected(requested);
-    }
+  }, [selected, narrow]);
+  const traversedHash = useRef<string>();
+  const traversingHistory = useRef(false);
+  function goBack(steps = 1) {
+    if (traversingHistory.current) return;
+    traversingHistory.current = true;
+    history.go(-steps);
+  }
+  const restoreSelection = useEvent((event: Event) => {
+    traversingHistory.current = false;
+    const hash = location.hash;
+    const duplicate =
+      event.type === "hashchange" && traversedHash.current === hash;
+    traversedHash.current = event.type === "popstate" ? hash : undefined;
+    if (duplicate) return;
+    const params = new URLSearchParams(hash.slice(1));
+    const room = params.get("room");
+    const nextSettings = settingsScreen(params);
+    const home = !room;
+    const requested = room || initialSelection.current;
+    const restore = () => {
+      setSettings(nextSettings);
+      setMobileHome(home);
+      if (narrow && home) return;
+      if (
+        requested &&
+        (requested === "@command" ||
+          state.rooms.some((room) => room.name === requested) ||
+          (requested.startsWith("@direct:") &&
+            peers.includes(requested.slice(8))))
+      ) {
+        rememberPosition();
+        setSelected(requested);
+      }
+    };
+    const depthChange = settingsDepth(nextSettings) - settingsDepth(settings);
+    const direction = !narrow
+      ? undefined
+      : depthChange
+        ? depthChange > 0
+          ? "forward"
+          : "back"
+        : home !== mobileHome
+          ? home
+            ? "back"
+            : "forward"
+          : undefined;
+    animateNavigation(direction, restore);
   });
   useEffect(() => {
     window.addEventListener("popstate", restoreSelection);
@@ -501,37 +588,134 @@ export function Chat({
   function reportUnexpectedError(error: unknown) {
     append("Error", errorMessage(error), true);
   }
-  function choose(name: string) {
-    if (name !== selected) {
-      const params = new URLSearchParams(location.hash.slice(1));
-      params.set("room", name);
-      history.pushState(history.state, "", `#${params.toString()}`);
+  function choose(
+    name: string,
+    { focusComposer = true }: { focusComposer?: boolean } = {},
+  ) {
+    const select = () => {
+      if (name !== selected || conversationListOpen) {
+        const params = new URLSearchParams(location.hash.slice(1));
+        params.set("room", name);
+        history.pushState(
+          { ...history.state, commonroomFromList: conversationListOpen },
+          "",
+          `#${params.toString()}`,
+        );
+      }
+      rememberPosition();
+      setMobileHome(false);
+      setSelected(name);
+    };
+    animateNavigation(
+      narrow && (conversationListOpen || selected !== name)
+        ? "forward"
+        : undefined,
+      select,
+    );
+    if (focusComposer) focusControl(input.current);
+  }
+  function backToConversations() {
+    const entry: unknown = history.state;
+    if (
+      entry &&
+      typeof entry === "object" &&
+      "commonroomFromList" in entry &&
+      entry.commonroomFromList === true
+    ) {
+      goBack();
+      return;
     }
-    rememberPosition();
-    setSelected(name);
-    if (window.matchMedia("(max-width: 700px)").matches) setMenu(false);
-    input.current?.focus();
+    const params = new URLSearchParams(location.hash.slice(1));
+    params.delete("room");
+    history.replaceState(
+      entry,
+      "",
+      params.size ? `#${params}` : location.pathname + location.search,
+    );
+    animateNavigation("back", () => setMobileHome(true));
+  }
+  function ownedSettingsDepth() {
+    const entry: unknown = history.state;
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      !("commonroomSettingsDepth" in entry)
+    )
+      return 0;
+    const depth = entry.commonroomSettingsDepth;
+    return depth === 1 || depth === 2 ? depth : 0;
+  }
+  function writeSettingsRoute(
+    screen: SettingsScreen | undefined,
+    replace: boolean,
+  ) {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (screen) params.set("settings", screen);
+    else params.delete("settings");
+    const url = params.size
+      ? `#${params}`
+      : location.pathname + location.search;
+    const existing: unknown = history.state;
+    const entry = {
+      ...(existing && typeof existing === "object" ? existing : {}),
+      commonroomSettingsDepth: replace ? 0 : settingsDepth(screen),
+    };
+    if (replace) history.replaceState(entry, "", url);
+    else history.pushState(entry, "", url);
+    setSettings(screen);
+  }
+  function openSettings() {
+    if (narrow)
+      animateNavigation("forward", () => writeSettingsRoute("index", false));
+    else setDesktopSettingsOpen(true);
+  }
+  function openSettingsSection(section: SettingsSection) {
+    animateNavigation("forward", () => {
+      if (!settings) {
+        writeSettingsRoute("index", false);
+        setDesktopSettingsOpen(false);
+      }
+      writeSettingsRoute(section, !ownedSettingsDepth());
+    });
+  }
+  function backToSettingsIndex() {
+    if (ownedSettingsDepth() === 2) goBack();
+    else animateNavigation("back", () => writeSettingsRoute("index", true));
+  }
+  function closeSettings() {
+    setDesktopSettingsOpen(false);
+    if (!settings) return;
+    const depth = ownedSettingsDepth();
+    if (depth) goBack(depth);
+    else
+      animateNavigation(narrow ? "back" : undefined, () =>
+        writeSettingsRoute(undefined, true),
+      );
   }
   async function changeNameColor(color: NameColor | null, room: string | null) {
     await api.color(color, room);
   }
   const view = (
     <div
-      class={`chat-shell ${menu ? "navigation-open" : ""} ${messageBars ? "show-message-bars" : ""} ${nameBorders ? "show-name-borders" : ""}`}
+      class={`chat-shell ${!narrow && menu ? "navigation-open" : ""} ${conversationListOpen ? "mobile-conversation-list" : ""} ${messageBars ? "show-message-bars" : ""} ${nameBorders ? "show-name-borders" : ""}`}
       style={{ "--message-bar-opacity": `${messageBarOpacity}%` }}
     >
-      <button
-        class="mobile-menu navigation-toggle"
-        ref={menuButton}
-        aria-label={menu ? "Close navigation" : "Open navigation"}
-        aria-expanded={menu}
-        aria-controls="navigation"
-        onClick={() => (menu ? closeMenu() : setMenu(true))}
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d={menu ? "m6 6 12 12M18 6 6 18" : "M5 6h14M5 12h14M5 18h14"} />
-        </svg>
-      </button>
+      {!narrow && (
+        <button
+          class="navigation-toggle"
+          ref={menuButton}
+          aria-label={menu ? "Close navigation" : "Open navigation"}
+          aria-expanded={menu}
+          aria-controls="navigation"
+          onClick={() => (menu ? closeMenu() : setMenu(true))}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d={menu ? "m6 6 12 12M18 6 6 18" : "M5 6h14M5 12h14M5 18h14"}
+            />
+          </svg>
+        </button>
+      )}
       {commands.deleteConfirmation && (
         <DeleteConfirmation
           kind={commands.deleteConfirmation}
@@ -568,25 +752,23 @@ export function Chat({
           onThemeChange={setTheme}
           onSeedsChange={setSeeds}
           onNameColorChange={changeNameColor}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
-      {menu && (
-        <button
-          class="scrim"
-          aria-label="Close navigation"
-          onClick={closeMenu}
+          screen={settings}
+          onSection={openSettingsSection}
+          onBack={backToSettingsIndex}
+          onClose={closeSettings}
         />
       )}
       <div class="chat-layout" ref={animatedLayout}>
-        {menu && (
+        {(narrow || menu) && (
           <Sidebar
+            mobile={narrow}
+            heading={listHeading}
             state={state}
             selected={selected}
             peers={peers}
             peer={peer}
             choose={choose}
-            openSettings={() => setSettingsOpen(true)}
+            openSettings={openSettings}
             toggleNotifications={() => {
               toggleNotifications().catch(reportUnexpectedError);
             }}
@@ -597,8 +779,10 @@ export function Chat({
           />
         )}
         <DisplayNamesContext.Provider value={viewDisplayNames}>
-          <main class="conversation">
+          <main class="conversation" inert={conversationListOpen}>
             <ChatHeader
+              heading={conversationHeading}
+              onBack={narrow ? backToConversations : undefined}
               consoleView={consoleView}
               direct={direct}
               peer={peer}

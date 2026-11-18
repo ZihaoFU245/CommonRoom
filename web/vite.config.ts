@@ -242,8 +242,8 @@ function appearanceBoot(): Plugin {
       order: "post",
       handler(html) {
         return html.replace(
-          "</title>",
-          `</title><script src="./${filename}"></script>`,
+          "<!-- appearance bootstrap -->",
+          `<script src="./${filename}"></script>`,
         );
       },
     },

@@ -2,9 +2,12 @@ import { UserCardTrigger } from "./UserCardTrigger.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
 import type { Snapshot } from "../api/protocol.ts";
+import type { RefObject } from "preact";
 import { Brand } from "./Brand.tsx";
 import { UnreadBadge } from "./UnreadBadge.tsx";
 interface Props {
+  mobile: boolean;
+  heading: RefObject<HTMLHeadingElement>;
   state: Snapshot;
   selected: string;
   peers: string[];
@@ -16,6 +19,8 @@ interface Props {
   logout: () => void;
 }
 export function Sidebar({
+  mobile,
+  heading,
   state,
   selected,
   peers,
@@ -29,7 +34,13 @@ export function Sidebar({
   return (
     <aside id="navigation" class="sidebar visible">
       <div class="sidebar-heading">
-        <Brand />
+        {mobile ? (
+          <h1 ref={heading} tabIndex={-1}>
+            Conversations
+          </h1>
+        ) : (
+          <Brand />
+        )}
       </div>
       <nav class="navigation" aria-label="Conversations">
         <details class="nav-group" open>

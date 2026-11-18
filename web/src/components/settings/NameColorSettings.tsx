@@ -1,3 +1,4 @@
+import { focusControl } from "../../features/preferences/inputFocus.ts";
 import {
   ScopePicker,
   Chevron,
@@ -178,7 +179,7 @@ function NameColorField({
                 aria-disabled={saving}
                 onMouseDown={focusSettingsControl}
                 onClick={(event) => {
-                  event.currentTarget.focus({ preventScroll: true });
+                  focusControl(event.currentTarget, { preventScroll: true });
                   apply();
                 }}
               >

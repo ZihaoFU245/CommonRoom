@@ -3,6 +3,7 @@ import { httpImageCache } from "./httpImageCache.ts";
 import { isResolution, MediaAccess, MediaAccessError } from "./mediaAccess.ts";
 import type { Resolution } from "./mediaAccess.ts";
 import { requestAbort } from "../../api/requestAbort.ts";
+import { promiseWithResolvers } from "../../api/promiseWithResolvers.ts";
 
 let script: URL | undefined;
 let pending: Promise<void> | undefined;
@@ -47,12 +48,11 @@ async function connect(): Promise<void> {
   const cancellation = requestAbort(15000);
   let registration: ServiceWorkerRegistration | undefined;
   let channel: MessageChannel | undefined;
-  let finish = () => {};
-  let fail: (error: unknown) => void = () => {};
-  const ready = new Promise<void>((resolve, reject) => {
-    finish = resolve;
-    fail = reject;
-  });
+  const {
+    promise: ready,
+    resolve: finish,
+    reject: fail,
+  } = promiseWithResolvers<void>();
   function claim() {
     const worker = registration?.active ?? service.controller;
     if (!worker) return;

@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { JSX, RefObject } from "preact";
 import type { LibraryItem } from "../api/library.ts";
@@ -146,7 +147,7 @@ export function useLibraryReorder(
               !keyboardFocus.closest("[inert]") &&
               document.activeElement === document.body
             )
-              keyboardFocus.focus({ preventScroll: true });
+              focusControl(keyboardFocus, { preventScroll: true });
           });
       }
     },
@@ -237,7 +238,7 @@ export function useLibraryReorder(
       )
         return;
       event.preventDefault();
-      event.currentTarget.focus({ preventScroll: true });
+      focusControl(event.currentTarget, { preventScroll: true });
       // Native capture keeps a release outside the tile/window from stranding
       // the drag. Scripted PointerEvents have no active browser pointer ID.
       if (event.isTrusted) content.setPointerCapture(event.pointerId);

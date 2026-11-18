@@ -195,7 +195,8 @@
   font-family: inherit;
   font-size: var(--chat-font-size, 16px);
 }
-@media (max-width: 700px) {
+@media (max-width: 700px),
+  (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .command-hints {
     left: 16px;
     right: 16px;
@@ -279,7 +280,7 @@ button:focus-visible {
 
 .signout:hover,
 .sidebar-close:hover,
-.mobile-menu:hover {
+.navigation-toggle:hover {
   background: var(--wash);
 }
 .composer-resize {
@@ -310,21 +311,8 @@ button:focus-visible {
 .composer-resize:focus-visible {
   outline: 1px solid var(--ink);
 }
-@media (max-width: 700px) {
-  .sidebar.visible {
-    width: min(290px, 85vw);
-    padding: 0 18px;
-  }
-  .sidebar .brand {
-    font-size: 1.14286rem;
-    gap: 8px;
-  }
-  .mobile-menu {
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    flex-shrink: 0;
-  }
+@media (max-width: 700px),
+  (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .profile {
     padding: 12px 0 max(12px, env(safe-area-inset-bottom));
   }
@@ -333,7 +321,7 @@ button:focus-visible {
 /* Shared icon geometry keeps controls centered independently of font metrics. */
 .sidebar-close,
 .signout,
-.mobile-menu,
+.navigation-toggle,
 .send-button {
   display: grid;
   place-items: center;
@@ -344,7 +332,7 @@ button:focus-visible {
 }
 .sidebar-close svg,
 .signout svg,
-.mobile-menu svg,
+.navigation-toggle svg,
 .send-button svg {
   display: block;
   width: 18px;
@@ -462,9 +450,6 @@ button:focus-visible {
   --message-top-gap: 2px;
   padding-top: 2px;
 }
-.chat-message:hover {
-  background: var(--wash);
-}
 .chat-message > .user-avatar,
 .chat-message > .avatar-trigger {
   position: absolute;
@@ -522,9 +507,6 @@ button:focus-visible {
   top: 6px;
   opacity: 0;
 }
-.chat-message:hover .continuation-time {
-  opacity: 1;
-}
 .message-day {
   display: flex;
   align-items: center;
@@ -548,12 +530,6 @@ button:focus-visible {
 .message-day time {
   white-space: nowrap;
 }
-@media (hover: none) {
-  .continuation-time {
-    opacity: 1;
-  }
-}
-
 .notification-toggle {
   display: grid;
   place-items: center;
@@ -607,6 +583,87 @@ button:focus-visible {
 .message-actions details {
   position: relative;
 }
+.message-action-trigger {
+  display: none;
+}
+.message-action-menu {
+  position: fixed;
+  z-index: 30;
+  inset: auto;
+  min-width: min(152px, calc(100vw - 16px));
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+}
+.message-action-items > button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  text-align: start;
+}
+.message-action-items > button:active,
+.message-action-items > button:focus-visible {
+  background: var(--wash);
+}
+.message-action-items > button[data-destructive] {
+  color: var(--danger);
+}
+.chat-message[data-touch-pressed] {
+  background: var(--wash);
+}
+.chat-message[data-touch-pressed] .message-body {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+@media (hover: none) and (pointer: coarse) {
+  .message-actions {
+    display: none;
+  }
+  .chat-message:has(.message-action-trigger:enabled) .message-body {
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+  .chat-message .message-body :is(a, video, audio, pre, code) {
+    -webkit-touch-callout: default;
+    user-select: text;
+  }
+}
+@media (any-pointer: coarse) {
+  .message-action-trigger {
+    display: block;
+  }
+  .chat-message:has(> .message-action-trigger:enabled):has(
+      .message-body :is(a, audio, button, code, iframe, pre, video)
+    ) {
+    min-height: 44px;
+    padding-right: 54px;
+  }
+  .message-action-trigger:focus-visible,
+  .chat-message:has(
+      .message-body :is(a, audio, button, code, iframe, pre, video)
+    )
+    > .message-action-trigger:enabled {
+    display: grid;
+    place-items: center;
+    z-index: 1;
+    inset: 0 4px auto auto;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    clip-path: none;
+    border-radius: 6px;
+    background: var(--paper);
+    font-size: 1.25rem;
+  }
+}
 .reaction-picker {
   position: absolute;
   z-index: 3;
@@ -623,6 +680,32 @@ button:focus-visible {
   top: auto;
   bottom: calc(100% + 4px);
 }
+.message-action-panel {
+  width: 280px;
+  padding: 10px;
+}
+.message-copy-menu textarea {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+}
+.message-copy-menu button {
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--wash);
+}
+.message-reaction-menu .reaction-choices {
+  flex-wrap: wrap;
+}
+.message-reaction-menu .reaction-choices button {
+  min-width: 44px;
+  min-height: 44px;
+}
 .reaction-choices {
   display: flex;
   gap: 6px;
@@ -636,11 +719,11 @@ button:focus-visible {
 .reaction-choices button:hover {
   background: var(--wash);
 }
-.reaction-picker form {
+:is(.reaction-picker, .message-reaction-menu) form {
   display: flex;
   gap: 6px;
 }
-.reaction-picker input {
+:is(.reaction-picker, .message-reaction-menu) input {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--line);
@@ -648,7 +731,7 @@ button:focus-visible {
   padding: 6px;
   background: var(--field);
 }
-.reaction-picker form button {
+:is(.reaction-picker, .message-reaction-menu) form button {
   background: var(--accent);
   color: var(--accent-label);
   padding: 5px 8px;
@@ -743,6 +826,12 @@ button:focus-visible {
   stroke-linecap: round;
 }
 @media (hover: hover) {
+  .chat-message:hover {
+    background: var(--wash);
+  }
+  .chat-message:hover .continuation-time {
+    opacity: 1;
+  }
   .message-actions {
     opacity: 0;
   }

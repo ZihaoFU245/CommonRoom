@@ -20,7 +20,7 @@ interface Context {
   cleared: Record<string, number>;
   resetCleared: () => void;
   settingsOpen: boolean;
-  menu: boolean;
+  conversationListOpen: boolean;
   status: string;
   loadSequence: (sequence: number) => void;
   virtualTimeline: RefObject<VirtualTimelineHandle>;
@@ -40,7 +40,7 @@ export function useReadTracking({
   cleared,
   resetCleared,
   settingsOpen,
-  menu,
+  conversationListOpen,
   status,
   loadSequence,
   virtualTimeline,
@@ -261,7 +261,7 @@ export function useReadTracking({
       document.hidden ||
       !document.hasFocus() ||
       settingsOpen ||
-      (menu && window.matchMedia("(max-width: 700px)").matches)
+      conversationListOpen
     )
       return;
     if (readBusy.current) {
@@ -318,7 +318,7 @@ export function useReadTracking({
     messages,
     unread,
     historyReady,
-    menu,
+    conversationListOpen,
     settingsOpen,
     status,
     acknowledgeVisible,

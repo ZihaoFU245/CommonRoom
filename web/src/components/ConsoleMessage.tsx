@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { UserCardTrigger } from "./UserCardTrigger.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import { Avatar } from "./Avatar.tsx";
@@ -19,6 +20,11 @@ import { useMessageEditorLayout } from "../hooks/useMessageEditorLayout.ts";
 import { useReactionPlacement } from "../hooks/useReactionPlacement.ts";
 import { Mention } from "./Mention.tsx";
 import { useNameColor } from "./NameColorContext.ts";
+import {
+  MessageActionMenu,
+  useMessageActionMenu,
+  type MessageAction,
+} from "./MessageActionMenu.tsx";
 
 export const ConsoleMessage = memo(function ConsoleMessage({
   message,
@@ -89,6 +95,47 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   const [editError, setEditError] = useState("");
   const [reaction, setReaction] = useState("");
   const [reactionOpen, setReactionOpen] = useState(false);
+  const reactionLabel = `Add reaction to ${message.from}'s message`;
+  function renderReactionChoices(onDone: () => void) {
+    return (
+      <>
+        <div class="reaction-choices">
+          {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
+            <button
+              key={value}
+              type="button"
+              disabled={pending}
+              aria-label={`Add reaction ${value}`}
+              onClick={() => {
+                onReact(message, value);
+                onDone();
+              }}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (pending || !reaction.trim()) return;
+            onReact(message, reaction);
+            setReaction("");
+            onDone();
+          }}
+        >
+          <input
+            name="reaction"
+            aria-label="Custom reaction"
+            placeholder="Emoji or text"
+            value={reaction}
+            onInput={(event) => setReaction(event.currentTarget.value)}
+          />
+          <button disabled={pending || !reaction.trim()}>Add</button>
+        </form>
+      </>
+    );
+  }
   const placement = useReactionPlacement(reactionOpen);
   useEffect(() => {
     if (!reactionOpen) return;
@@ -103,7 +150,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
     const dismissEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setReactionOpen(false);
-        placement.anchor.current?.querySelector("summary")?.focus();
+        focusControl(placement.anchor.current?.querySelector("summary"));
       }
     };
     document.addEventListener("pointerdown", dismissOutside, true);
@@ -124,17 +171,75 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   const text = mentionedText(message.text, message.mentions);
   const invocation = mentionedCommand(message.text, message.mentions);
   const emoji = singleEmoji(message.text);
+  const actions: MessageAction[] = [];
+  if (canReply)
+    actions.push({
+      label: "Reply",
+      accessibleLabel: `Reply to ${message.from}'s message`,
+      disabled: pending,
+      run: () => onReply(message),
+    });
+  if (canEdit)
+    actions.push({
+      label: "Edit",
+      accessibleLabel:
+        message.from === self ? "Edit your message" : "Edit message",
+      disabled: pending || editing,
+      run: () => {
+        editOriginal.current = message.text;
+        setEditText(message.text);
+        setEditError("");
+        changeEditing(true);
+      },
+    });
+  if (canDelete)
+    actions.push({
+      label: "Delete",
+      accessibleLabel:
+        message.from === self ? "Delete your message" : "Delete message",
+      disabled: pending,
+      run: () => onDelete(message),
+    });
+  const hasMobileActions =
+    actions.length > 0 || canReact || debug || Boolean(message.text);
+  const mobileActions = useMessageActionMenu(
+    !editing && !pending && hasMobileActions,
+  );
   return (
     <article
       id={`message-${message.id}`}
       data-sequence={message.sequence}
       class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""} ${connectsPrevious ? "message-bar-continued" : ""} ${connectsNext ? "message-bar-continues" : ""}`}
-      title={date.full}
+      {...mobileActions.gesture}
     >
+      {hasMobileActions && (
+        <button
+          class="message-action-trigger visually-hidden"
+          type="button"
+          ref={mobileActions.trigger}
+          disabled={pending || editing}
+          aria-label="Message actions"
+          aria-haspopup="menu"
+          aria-expanded={Boolean(mobileActions.position)}
+          onClick={(event) =>
+            mobileActions.position
+              ? mobileActions.close()
+              : mobileActions.openFromTrigger(event.detail === 0)
+          }
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowDown") return;
+            event.preventDefault();
+            mobileActions.openFromTrigger(true);
+          }}
+        >
+          <span aria-hidden="true">⋯</span>
+        </button>
+      )}
       {grouped && (
         <time
           class="continuation-time"
           dateTime={date.iso}
+          title={date.full}
           aria-label={date.full}
         >
           {date.time}
@@ -304,45 +409,18 @@ export const ConsoleMessage = memo(function ConsoleMessage({
         <div
           class={`message-actions ${editing || reactionOpen || (debug && detailsOpen) ? "open" : ""}`}
         >
-          {canReply && (
+          {actions.map((action) => (
             <button
+              key={action.label}
+              class="message-inline-action"
               type="button"
-              disabled={pending}
-              onClick={() => onReply(message)}
-              aria-label={`Reply to ${message.from}'s message`}
+              disabled={action.disabled}
+              aria-label={action.accessibleLabel}
+              onClick={action.run}
             >
-              Reply
+              {action.label}
             </button>
-          )}
-          {canEdit && (
-            <button
-              type="button"
-              disabled={pending || editing}
-              aria-label={
-                message.from === self ? "Edit your message" : "Edit message"
-              }
-              onClick={() => {
-                editOriginal.current = message.text;
-                setEditText(message.text);
-                setEditError("");
-                changeEditing(true);
-              }}
-            >
-              Edit
-            </button>
-          )}
-          {canDelete && (
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => onDelete(message)}
-              aria-label={
-                message.from === self ? "Delete your message" : "Delete message"
-              }
-            >
-              Delete
-            </button>
-          )}
+          ))}
           {canReact && (
             <details
               ref={placement.anchor}
@@ -350,7 +428,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
               onToggle={(event) => setReactionOpen(event.currentTarget.open)}
             >
               <summary
-                aria-label={`Add reaction to ${message.from}'s message`}
+                aria-label={reactionLabel}
                 onClick={(event) => {
                   event.preventDefault();
                   setReactionOpen(!reactionOpen);
@@ -362,39 +440,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 ref={placement.picker}
                 class={`reaction-picker ${placement.above ? "above" : ""}`}
               >
-                <div class="reaction-choices">
-                  {["👍", "❤️", "😂", "🎉", "👀"].map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      disabled={pending}
-                      aria-label={`Add reaction ${value}`}
-                      onClick={() => {
-                        onReact(message, value);
-                        setReactionOpen(false);
-                      }}
-                    >
-                      {value}
-                    </button>
-                  ))}
-                </div>
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    onReact(message, reaction);
-                    setReaction("");
-                    setReactionOpen(false);
-                  }}
-                >
-                  <input
-                    name="reaction"
-                    aria-label="Custom reaction"
-                    placeholder="Emoji or text"
-                    value={reaction}
-                    onInput={(e) => setReaction(e.currentTarget.value)}
-                  />
-                  <button disabled={pending || !reaction.trim()}>Add</button>
-                </form>
+                {renderReactionChoices(() => setReactionOpen(false))}
               </div>
             </details>
           )}
@@ -411,6 +457,34 @@ export const ConsoleMessage = memo(function ConsoleMessage({
           )}
         </div>
       </div>
+      {mobileActions.position && (
+        <MessageActionMenu
+          position={mobileActions.position}
+          trigger={mobileActions.trigger}
+          copyText={message.text}
+          actions={
+            debug
+              ? [
+                  ...actions,
+                  {
+                    label: detailsOpen ? "Hide details" : "Show details",
+                    accessibleLabel: detailsOpen
+                      ? "Hide message details"
+                      : "Show message details",
+                    disabled: false,
+                    run: () => setDetailsOpen(!detailsOpen),
+                  },
+                ]
+              : actions
+          }
+          reaction={
+            canReact
+              ? { label: reactionLabel, render: renderReactionChoices }
+              : undefined
+          }
+          onClose={mobileActions.close}
+        />
+      )}
     </article>
   );
 });

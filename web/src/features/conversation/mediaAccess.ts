@@ -5,6 +5,7 @@ import {
   isFileLink,
 } from "../../api/mediaFile.ts";
 import { requestAbort } from "../../api/requestAbort.ts";
+import { promiseWithResolvers } from "../../api/promiseWithResolvers.ts";
 
 export interface FileInfo {
   media_id: string;
@@ -167,12 +168,7 @@ export class MediaAccess {
         429,
         "Media reads are busy. Try again shortly.",
       );
-    let resolve: Pending["resolve"] = () => {};
-    let reject: Pending["reject"] = () => {};
-    const promise = new Promise<Resolution>((accept, fail) => {
-      resolve = accept;
-      reject = fail;
-    });
+    const { promise, resolve, reject } = promiseWithResolvers<Resolution>();
     existing = {
       file,
       key,

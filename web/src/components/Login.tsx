@@ -1,6 +1,7 @@
 import { loadInitialAccount } from "../api/bootstrap.ts";
 import type { JSX } from "preact";
-import { useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import type { Snapshot } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
@@ -22,6 +23,10 @@ export function Login({
   const [registering, setRegistering] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [registrationKey, setRegistrationKey] = useState(0);
+  const usernameInput = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    if (!registering) focusControl(usernameInput.current);
+  }, [registering]);
   async function submit(event: JSX.TargetedSubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
@@ -68,7 +73,7 @@ export function Login({
             <input
               id="username"
               autoComplete="username"
-              autoFocus
+              ref={usernameInput}
               maxLength={64}
               value={username}
               onInput={(e) => setUsername(e.currentTarget.value)}

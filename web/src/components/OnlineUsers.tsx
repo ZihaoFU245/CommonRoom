@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { DisplayName } from "./DisplayName.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useNameColor } from "./NameColorContext.ts";
@@ -38,7 +39,7 @@ export function OnlineUsers({
       if (event.key !== "Escape") return;
       event.stopPropagation();
       setOpen(false);
-      button.current?.focus();
+      focusControl(button.current);
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);

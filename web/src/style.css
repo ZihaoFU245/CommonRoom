@@ -13,7 +13,7 @@
 
 /* Keep editable text legible without triggering iOS focus zoom. This follows
    component styles so small UI font preferences cannot override it. */
-@media (hover: none) and (pointer: coarse) {
+@media (any-pointer: coarse) {
   input:not([type="range"], [type="checkbox"], [type="radio"]),
   textarea,
   select {
@@ -24,6 +24,7 @@
     font-size: max(16px, var(--chat-font-size, 16px));
   }
   .attach-button,
+  .send-button,
   .library-modes button,
   .library-edit,
   .palette-swatch {

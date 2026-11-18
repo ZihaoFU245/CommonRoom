@@ -42,6 +42,26 @@ export default tseslint.config(
     },
   },
   {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/features/preferences/inputFocus.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            'CallExpression[callee.property.name="focus"]:not([callee.object.name="window"])',
+          message: "Use focusControl to keep mobile text entry opt-in.",
+        },
+        {
+          selector:
+            'JSXOpeningElement:not([name.name="button"]) > JSXAttribute[name.name=/^autofocus$/i]',
+          message:
+            "Use focusControl for automatic focus on non-button elements.",
+        },
+      ],
+    },
+  },
+  {
     files: ["tests/**/*.{js,mjs}", "scripts/**/*.{js,mjs}"],
     extends: [js.configs.recommended],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },

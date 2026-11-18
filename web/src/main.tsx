@@ -9,15 +9,11 @@ import { errorMessage } from "./api/protocol.ts";
 import { isUnauthorized } from "./api/client.ts";
 import { Chat } from "./components/Chat.tsx";
 import { Login } from "./components/Login.tsx";
-import { bootAppearance } from "./features/preferences/appearance.ts";
 import { useTheme } from "./hooks/useTheme.ts";
 import "./style.css";
 import { AppErrorBoundary } from "./components/AppErrorBoundary.tsx";
 import { useAppViewport } from "./hooks/useAppViewport.ts";
-
-/* Resolve the saved theme before the first render so it never paints the
-   wrong background and then corrects itself. */
-bootAppearance();
+import { trackFocusInput } from "./features/preferences/inputFocus.ts";
 
 // Production HTTPS redirects and HSTS are configured by the serving proxy.
 startMediaCache(new URL(mediaWorkerUrl, document.baseURI));
@@ -32,6 +28,7 @@ render(
 
 function App() {
   useAppViewport();
+  useEffect(trackFocusInput, []);
   const appearance = useTheme();
   const [account, setAccount] = useState<Snapshot | null | undefined>(
     undefined,

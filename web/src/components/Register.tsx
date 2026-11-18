@@ -1,5 +1,6 @@
 import type { JSX } from "preact";
-import { useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { api } from "../api/client.ts";
 import { errorMessage } from "../api/protocol.ts";
 
@@ -15,6 +16,10 @@ export function Register({
   onRegistered: (username: string) => void;
 }) {
   const [error, setError] = useState("");
+  const inviteInput = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    focusControl(inviteInput.current);
+  }, []);
 
   async function submit(event: JSX.TargetedSubmitEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -63,7 +68,7 @@ export function Register({
           autoComplete="off"
           autoCapitalize="off"
           spellcheck={false}
-          autoFocus
+          ref={inviteInput}
           maxLength={128}
           required
           readOnly={busy}

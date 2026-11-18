@@ -219,6 +219,8 @@ supported at their latest releases; older versions are best-effort. Production J
 pin `chrome114` in Vite while preserving the other existing browser targets.
 Build targets handle syntax, not missing runtime APIs. Feature-detect newer APIs
 and keep fallbacks in focused helpers; do not infer support from the user agent.
+Media promise settlement uses native `Promise.withResolvers()` where available
+and the standard Promise constructor on Chrome 114.
 
 All request cancellation/deadlines go through `api/requestAbort.ts`. It uses native
 `AbortSignal.any` when available and `AbortController` forwarding on Chrome 114.
@@ -228,15 +230,35 @@ and listeners in `finally`, after response bodies finish. ESLint rejects direct
 Node/Deno development and bot-worker requirements remain separate.
 
 Noto Color Emoji renders emoji tiles and messages, using the COLRv1 or SVG source
-supported by the engine. The mixed-text face excludes ordinary arrows, digits and
-spaces, so decorative login text does not request an emoji font. The picker and
+supported by the engine. iOS WebKit uses the installed Apple Color Emoji face for
+tiles and messages to avoid blank glyphs in downloaded color fonts. The
+mixed-text Noto face excludes ordinary arrows, digits and spaces, so decorative
+login text does not request an emoji font. The picker and
 its catalogue load on demand. A blocking same-origin appearance
 bootstrap applies the saved theme, custom palette and font sizes before styles
 paint; keep it ahead of the stylesheet in the emitted HTML. Editable fields on
 coarse pointers stay at least 16px. The shell follows VisualViewport height at
 normal zoom so the composer stays above the keyboard, and preserves pinch zoom.
-Device checks should cover login focus, keyboard dismissal, rotation, safe areas
-and the picker with VoiceOver.
+The conversation list is the home screen on narrow viewports and short touch
+viewports in landscape. A room link opens its conversation directly, and the
+header back button returns to the list.
+Browser Back and Forward follow the same navigation. The desktop sidebar gives
+keyboard and mouse users immediate composer focus after conversation selection.
+Touch users can hold a message to open its commands, reactions, and Copy
+message. Messages with interactive content also have a dedicated action button.
+Tapping a conversation leaves the composer unfocused on hybrid devices.
+Use `focusControl` for scripted focus. It keeps text entry manual on narrow
+viewports and touch devices, including touch interactions on hybrids. Dialogs
+can still focus their container or a button. ESLint enforces the shared helper
+for scripted focus and disallows field `autoFocus` in web components.
+The same input policy makes mobile Return insert a newline. The Send button
+submits the draft.
+In the phone layout, Settings opens full-screen. The Settings index and its
+sections are browser history entries, so Back and Forward work across those
+screens. These screens use directional View Transitions when supported and
+switch instantly with reduced motion.
+Device checks should cover login focus, keyboard dismissal, rotation, safe areas,
+message actions, and the picker with VoiceOver.
 
 The Noto Color Emoji source faces come from Google Fonts'
 [`NotoColorEmoji-Regular.ttf` at revision `142c8963`](https://github.com/google/fonts/blob/142c8963e7606b510c93a644c82a4c4cdeae6ef9/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf).

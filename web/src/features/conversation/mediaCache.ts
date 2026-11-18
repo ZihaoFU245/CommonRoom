@@ -1,6 +1,7 @@
 /** Immutable bytes served under bounded, read-only authorization leases. */
 import { rangeStream } from "./rangeStream.ts";
 import { requestAbort } from "../../api/requestAbort.ts";
+import { promiseWithResolvers } from "../../api/promiseWithResolvers.ts";
 import { MediaAccess, MediaAccessError } from "./mediaAccess.ts";
 import type { Resolution } from "./mediaAccess.ts";
 const cacheName = "commonroom-media";
@@ -197,10 +198,7 @@ export class MediaCache {
       this.fillingBytes + size > fillByteLimit
     )
       return undefined;
-    let finish = () => {};
-    const done = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
+    const { promise: done, resolve: finish } = promiseWithResolvers<void>();
     const fill: Fill = {
       done,
       size,

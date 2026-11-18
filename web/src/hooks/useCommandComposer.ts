@@ -20,6 +20,10 @@ import { suggestions } from "../features/conversation/console.ts";
 import { mentionSuggestions } from "../features/conversation/interactions.ts";
 import { botCommandSuggestions } from "../features/conversation/botCommands.ts";
 import {
+  focusControl,
+  prefersManualTextInput,
+} from "../features/preferences/inputFocus.ts";
+import {
   cursorSuggestions,
   nextHint,
 } from "../features/conversation/completion.ts";
@@ -187,7 +191,7 @@ export function useCommandComposer({
     if (!hint.value) return;
     const position = hint.value.length - currentCompletion.suffix.length;
     expectedCaret.current = position;
-    input.current?.focus();
+    focusControl(input.current);
     setDraft(hint.value);
     setCaret(position);
   }
@@ -236,13 +240,13 @@ export function useCommandComposer({
       }
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !prefersManualTextInput()) {
       event.preventDefault();
       send(event);
     }
   }
   useEffect(() => {
-    if (!pending) input.current?.focus();
+    if (!pending) focusControl(input.current);
   }, [pending, input]);
   return {
     draft,

@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import type { RefObject } from "preact";
 import { memo } from "preact/compat";
 import { useEvent } from "../hooks/useEvent.ts";
@@ -194,7 +195,7 @@ export function LibraryPicker({
             : (content.current?.querySelector<HTMLButtonElement>(
                 ".library-edit",
               ) ?? dialog.current);
-        target?.focus({ preventScroll: true });
+        focusControl(target, { preventScroll: true });
       });
       setCompletedUploads((items) =>
         items.filter((item) => item.media_id !== id),
@@ -203,7 +204,7 @@ export function LibraryPicker({
   );
   useLayoutEffect(() => {
     if (confirmation) {
-      if (!confirmationWasOpen.current) confirmationPanel.current?.focus();
+      if (!confirmationWasOpen.current) focusControl(confirmationPanel.current);
       confirmationWasOpen.current = true;
     } else if (confirmationWasOpen.current && !busy) {
       const trigger = confirmationReturnFocus.current;
@@ -211,7 +212,7 @@ export function LibraryPicker({
         trigger?.isConnected && !trigger.disabled && !trigger.closest("[inert]")
           ? trigger
           : content.current?.querySelector<HTMLButtonElement>(".library-edit");
-      target?.focus({ preventScroll: true });
+      focusControl(target, { preventScroll: true });
       confirmationWasOpen.current = false;
       confirmationReturnFocus.current = null;
     }
@@ -606,7 +607,7 @@ export function LibraryPicker({
                       : (index + 1) % buttons.length
                   ];
                 event.preventDefault();
-                next?.focus();
+                focusControl(next);
               }}
               ref={confirmationPanel}
               tabIndex={-1}

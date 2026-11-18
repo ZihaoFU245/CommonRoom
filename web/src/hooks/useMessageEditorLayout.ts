@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { useEvent } from "./useEvent.ts";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { editorScrollTop } from "../features/conversation/editorSizing.ts";
@@ -149,7 +150,7 @@ export function useMessageEditorLayout({
   }, [active]);
   useEffect(() => stopAnimation, []);
   useEffect(() => {
-    if (active) input.current?.focus();
+    if (active) focusControl(input.current);
   }, [active]);
 
   return { input, body, prepareTransition };

@@ -56,6 +56,10 @@
   font-size: 1.28571rem;
   font-weight: 600;
 }
+.settings-back,
+.settings-section-title {
+  display: none;
+}
 .theme-setting {
   min-width: 0;
   margin: 0 0 20px;
@@ -274,9 +278,6 @@
   color: var(--accent-label);
 }
 
-.mobile-menu[hidden] {
-  display: none;
-}
 .send-button {
   border-radius: 50%;
 }
@@ -570,17 +571,74 @@
 .account-error {
   overflow-wrap: anywhere;
 }
-@media (max-width: 520px) {
+@media (max-width: 700px),
+  (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .settings-dialog {
-    padding: 16px;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: var(--app-height, 100dvh);
+    max-height: none;
+    margin: 0;
+    padding: max(12px, env(safe-area-inset-top))
+      max(16px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+    border: 0;
+    border-radius: 0;
+  }
+  .settings-heading {
+    justify-content: flex-start;
+    margin-bottom: 12px;
+  }
+  .settings-heading h2 {
+    flex: 1;
+  }
+  .settings-back,
+  .settings-close {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+  }
+  .settings-section-open .settings-back {
+    display: grid;
+    place-items: center;
+  }
+  .settings-back svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .settings-layout {
-    grid-template-columns: 100px minmax(0, 1fr);
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
   .settings-navigation {
-    padding-right: 8px;
+    padding: 0;
+    border: 0;
   }
+  .settings-navigation button {
+    min-height: 48px;
+    border: 1px solid var(--line);
+  }
+  .settings-navigation button[aria-current="page"] {
+    background: var(--paper);
+    font-weight: inherit;
+  }
+  .settings-section-open .settings-navigation,
+  .settings-section-open .settings-index-title {
+    display: none;
+  }
+  .settings-section-open .settings-section-title {
+    display: inline;
+  }
+}
+@media (max-width: 520px) {
   .theme-choices {
     grid-template-columns: repeat(2, 1fr);
   }

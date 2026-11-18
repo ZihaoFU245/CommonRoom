@@ -495,6 +495,10 @@ export async function libraryRegressions({
         edit.getAttribute("aria-pressed") === "false",
       "Edit begins off beside Collections",
     );
+    check(
+      getComputedStyle(edit).borderRadius === "8px",
+      "Edit uses rounded-square corners",
+    );
     remove.focus();
     check(
       document.activeElement !== remove && actions.inert,

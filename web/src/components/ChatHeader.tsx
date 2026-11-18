@@ -1,6 +1,9 @@
 import { DisplayName } from "./DisplayName.tsx";
 import { OnlineUsers } from "./OnlineUsers.tsx";
+import type { RefObject } from "preact";
 export function ChatHeader({
+  heading,
+  onBack,
   consoleView,
   direct,
   peer,
@@ -9,6 +12,8 @@ export function ChatHeader({
   username,
   status,
 }: {
+  heading: RefObject<HTMLHeadingElement>;
+  onBack: (() => void) | undefined;
   consoleView: boolean;
   direct: boolean;
   peer: string | null;
@@ -19,9 +24,21 @@ export function ChatHeader({
 }) {
   return (
     <header class="chat-header">
+      {onBack && (
+        <button
+          type="button"
+          class="conversation-back"
+          aria-label="Back to conversations"
+          onClick={onBack}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m14 6-6 6 6 6" />
+          </svg>
+        </button>
+      )}
       <div class="room-title">
         <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
-        <h1>
+        <h1 ref={heading} tabIndex={-1}>
           {consoleView ? (
             "Command"
           ) : direct ? (

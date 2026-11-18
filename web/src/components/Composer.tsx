@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { ComposerAttachmentPreview } from "./ComposerAttachmentPreview.tsx";
 import { DisplayName } from "./DisplayName.tsx";
 import type { Attachment } from "../hooks/useMediaUploads.ts";
@@ -90,7 +91,7 @@ export function Composer({
   const attachmentId = mediaUpload?.attachment?.media.media_id;
   useEffect(() => {
     if (attachmentId && canWrite && !consoleView && !libraryOpen)
-      input.current?.focus({ preventScroll: true });
+      focusControl(input.current, { preventScroll: true });
   }, [attachmentId, canWrite, consoleView, libraryOpen, input]);
   useEffect(() => {
     hintList.current
@@ -256,7 +257,7 @@ export function Composer({
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
                   if (file) {
-                    input.current?.focus({ preventScroll: true });
+                    focusControl(input.current, { preventScroll: true });
                     mediaUpload.start(file).catch(reportUploadFailure);
                   }
                 }}
@@ -287,6 +288,7 @@ export function Composer({
           <textarea
             name="message"
             ref={input}
+            enterkeyhint="enter"
             dir="auto"
             rows={1}
             style={{ height: `${actualComposerHeight}px` }}
@@ -313,6 +315,7 @@ export function Composer({
           />
           <button
             class="send-button"
+            type="submit"
             disabled={
               pending ||
               mediaUpload?.busy ||
@@ -346,7 +349,7 @@ export function Composer({
               const end = input.current?.selectionEnd ?? start;
               edit(draft.slice(0, start) + emoji + draft.slice(end));
               requestAnimationFrame(() => {
-                input.current?.focus({ preventScroll: true });
+                focusControl(input.current, { preventScroll: true });
                 input.current?.setSelectionRange(
                   start + emoji.length,
                   start + emoji.length,
@@ -357,7 +360,7 @@ export function Composer({
             close={() => {
               setLibraryOpen(false);
               setLibraryClosing(false);
-              input.current?.focus();
+              focusControl(input.current);
             }}
           />
         </Suspense>

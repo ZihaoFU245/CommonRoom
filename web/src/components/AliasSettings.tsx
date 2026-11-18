@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import { useRef, useState } from "preact/hooks";
 import { errorMessage } from "../api/protocol.ts";
 import type { Aliases } from "../features/conversation/aliases.ts";
@@ -96,7 +97,7 @@ export function AliasSettings({
                     setName(alias);
                     setTarget(expansion);
                     setFeedback("");
-                    nameInput.current?.focus();
+                    focusControl(nameInput.current);
                   }}
                 >
                   Edit

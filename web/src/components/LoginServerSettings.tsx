@@ -1,3 +1,4 @@
+import { focusControl } from "../features/preferences/inputFocus.ts";
 import autoAnimate from "@formkit/auto-animate";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { savedServerUrl, saveServerUrl } from "../api/server.ts";
@@ -18,10 +19,11 @@ export function LoginServerSettings({
   const motion = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const dialog = useRef<HTMLFormElement>(null);
 
   function close() {
     setOpen(false);
-    trigger.current?.focus();
+    focusControl(trigger.current);
   }
 
   useEffect(() => {
@@ -69,7 +71,7 @@ export function LoginServerSettings({
 
   useEffect(() => {
     if (!open) return;
-    input.current?.focus();
+    if (!focusControl(input.current)) focusControl(dialog.current);
     const outside = (event: PointerEvent) => {
       if (
         event.target instanceof Node &&
@@ -95,10 +97,12 @@ export function LoginServerSettings({
       <div ref={motion} class="login-server-motion">
         {open && (
           <form
+            ref={dialog}
             class="login-server-card"
             id="login-server-card"
             role="dialog"
             aria-labelledby="login-server-title"
+            tabIndex={-1}
             onSubmit={(event) => {
               event.preventDefault();
               try {

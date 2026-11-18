@@ -91,6 +91,16 @@
   text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
 }
+
+/* iOS WebKit can accept a downloaded color face and still paint blank glyphs.
+   Use its installed emoji font for both emoji tiles and mixed text. */
+@supports (-webkit-touch-callout: none) {
+  :root {
+    --ui-fonts:
+      Inter, -apple-system, BlinkMacSystemFont, "Apple Color Emoji", sans-serif;
+    --emoji-fonts: "Apple Color Emoji", sans-serif;
+  }
+}
 /* Dark appearance. bootAppearance sets data-theme before the first frame;
    the app-level useTheme keeps it current afterwards. */
 :root[data-theme="dark"] {

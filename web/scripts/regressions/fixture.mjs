@@ -18,6 +18,11 @@ import { useTheme } from "../../src/hooks/useTheme.ts";
 import { useExternalAvatars } from "../../src/hooks/useExternalAvatars.ts";
 import { h, render } from "preact";
 import { useHistory } from "../../src/hooks/useHistory.ts";
+import {
+  mobileLayout,
+  prefersManualTextInput,
+  trackFocusInput,
+} from "../../src/features/preferences/inputFocus.ts";
 import { useSettingsMotion } from "../../src/hooks/useSettingsMotion.ts";
 import { useReadTracking } from "../../src/hooks/useReadTracking.ts";
 import { useHistoryNoticeMotion } from "../../src/hooks/useHistoryNoticeMotion.ts";
@@ -111,12 +116,14 @@ function probe(hook) {
 async function test(name, run) {
   if (testFilter && !name.includes(testFilter)) return;
   const originals = { ...api };
+  const stopTracking = trackFocusInput();
   try {
     await run();
     results.push({ name });
   } catch (error) {
     results.push({ name, error: `${String(error)}\n${error.stack ?? ""}` });
   } finally {
+    stopTracking();
     Object.assign(api, originals);
     render(null, tests);
     tests.replaceChildren();
@@ -124,6 +131,11 @@ async function test(name, run) {
     await media.invalidateMediaReads();
   }
 }
+const serverSettingsFocus = () =>
+  tests.querySelector(
+    prefersManualTextInput() ? ".login-server-card" : "#login-server-url",
+  ) === document.activeElement;
+
 await test("invite registration checks confirmation and returns to sign in", async () => {
   const original = api.register;
   const calls = [];
@@ -198,9 +210,7 @@ await test("login server settings animate from the gear and persist only on Save
     );
     const gear = tests.querySelector(".login-server-trigger");
     gear.click();
-    await until(
-      () => tests.querySelector("#login-server-url") === document.activeElement,
-    );
+    await until(serverSettingsFocus);
     let input = tests.querySelector("#login-server-url");
     check(input.value === original, "shows saved server URL");
     const card = tests.querySelector(".login-server-card");
@@ -238,9 +248,7 @@ await test("login server settings animate from the gear and persist only on Save
       "Cancel keeps saved server",
     );
     gear.click();
-    await until(
-      () => tests.querySelector("#login-server-url") === document.activeElement,
-    );
+    await until(serverSettingsFocus);
     input = tests.querySelector("#login-server-url");
     check(input.value === original, "discarded draft is not restored");
     input.value = "ftp://invalid.example.com";
@@ -264,9 +272,7 @@ await test("login server settings animate from the gear and persist only on Save
     );
     await until(() => !tests.querySelector(".login-server-card"));
     gear.click();
-    await until(
-      () => tests.querySelector("#login-server-url") === document.activeElement,
-    );
+    await until(serverSettingsFocus);
     check(
       tests.querySelector("#login-server-url").value === selected,
       "reopening shows saved URL",
@@ -308,10 +314,7 @@ await test("login server settings shrink visibly back to the gear on every dismi
     for (const dismissal of ["gear", "cancel", "escape", "outside"]) {
       exit = undefined;
       gear.click();
-      await until(
-        () =>
-          tests.querySelector("#login-server-url") === document.activeElement,
-      );
+      await until(serverSettingsFocus);
       await sleep(180);
       const card = tests.querySelector(".login-server-card");
       const before = card.getBoundingClientRect();
@@ -1071,7 +1074,7 @@ await test("slow read acknowledgements drain the latest conversation without ano
     cleared: {},
     resetCleared() {},
     settingsOpen: false,
-    menu: false,
+    conversationListOpen: false,
     status: "online",
     loadSequence() {},
     virtualTimeline: { current: null },
@@ -1475,6 +1478,223 @@ await test("single emoji messages render large in plain text and Markdown", asyn
   }
 });
 
+await test("message actions support a touch hold and preserve desktop buttons", async () => {
+  let action;
+  render(
+    h(ConsoleMessage, {
+      message: message(1),
+      self: "alice",
+      date: messageDate(1),
+      grouped: true,
+      canReply: true,
+      canEdit: true,
+      canDelete: true,
+      canReact: true,
+      onReact: (_message, value) => {
+        action = value;
+      },
+      onReply: () => {
+        action = "reply";
+      },
+      onDelete: () => {
+        action = "delete";
+      },
+      onExpandedChange() {},
+    }),
+    tests,
+  );
+  const inline = tests.querySelector(".message-inline-action");
+  const trigger = tests.querySelector(".message-action-trigger");
+  const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+  if (!touch) {
+    check(
+      getComputedStyle(trigger).display === "none",
+      "desktop retains inline actions",
+    );
+    inline.click();
+    check(action === "reply", "desktop Reply uses the existing action");
+    tests.querySelector(".message-actions summary").click();
+    await until(() => tests.querySelector(".message-actions details").open);
+    tests
+      .querySelector('.reaction-choices [aria-label="Add reaction 👍"]')
+      .click();
+    check(action === "👍", "desktop Add reaction stays available");
+  } else {
+    check(
+      getComputedStyle(tests.querySelector(".message-actions")).display ===
+        "none" && getComputedStyle(trigger).clipPath !== "none",
+      "touch hides the inline action row and keeps the keyboard trigger offscreen",
+    );
+  }
+  const body = tests.querySelector(".message-body");
+  const menu = () => document.querySelector(".message-action-menu");
+  const pointer = (type, clientY = innerHeight - 10) =>
+    body.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        pointerType: "touch",
+        pointerId: 1,
+        isPrimary: true,
+        clientX: innerWidth - 6,
+        clientY,
+      }),
+    );
+  pointer("pointerdown");
+  const row = body.closest(".chat-message");
+  const highlighted = () =>
+    getComputedStyle(row).backgroundColor !== "rgba(0, 0, 0, 0)";
+  check(highlighted(), "a touch press highlights the row");
+  const mouseMenu = new PointerEvent("contextmenu", {
+    pointerType: "mouse",
+    bubbles: true,
+    cancelable: true,
+  });
+  body.dispatchEvent(mouseMenu);
+  check(
+    !mouseMenu.defaultPrevented,
+    "a real mouse keeps its context menu on touch-capable layouts",
+  );
+  pointer("pointermove", innerHeight - 50);
+  check(!highlighted(), "scroll movement clears the pressed highlight");
+  pointer("pointerup");
+  await sleep(520);
+  check(!menu(), "scroll movement cancels a hold");
+  const hold = async () => {
+    pointer("pointerdown");
+    await until(menu);
+    pointer("pointerup");
+    check(!highlighted(), "releasing a long press clears the highlight");
+  };
+  await hold();
+  const bounds = menu().getBoundingClientRect();
+  check(
+    bounds.right <= innerWidth && bounds.bottom <= innerHeight,
+    "menu fits near the viewport edge",
+  );
+  check(
+    [...menu().querySelectorAll("button")]
+      .map((button) => button.textContent)
+      .join(",") === "Add reaction,Copy message,Reply,Edit,Delete",
+    "allowed commands are arranged in order",
+  );
+  const actionList = menu().querySelector(".message-action-items");
+  actionList.querySelector("button").click();
+  await until(() => menu()?.querySelector(".message-reaction-menu"));
+  check(
+    !actionList.isConnected,
+    "the reaction picker replaces the menu focusgroup",
+  );
+  menu().querySelector('[aria-label="Add reaction 👍"]').click();
+  await until(() => !menu());
+  check(action === "👍", "the touch menu submits a preset reaction");
+
+  await hold();
+  menu().querySelector("button").click();
+  await until(() => menu()?.querySelector(".message-reaction-menu"));
+  const custom = menu().querySelector("input");
+  custom.focus();
+  window.visualViewport?.dispatchEvent(new Event("resize"));
+  check(
+    custom === document.activeElement,
+    "keyboard viewport changes keep the custom reaction open",
+  );
+  custom.value = "nice";
+  custom.dispatchEvent(new Event("input", { bubbles: true }));
+  await until(() => !menu().querySelector("form button").disabled);
+  menu()
+    .querySelector("form")
+    .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await until(() => !menu());
+  check(action === "nice", "the touch menu submits a custom reaction");
+
+  await hold();
+  menu().querySelector('[aria-label*="Reply"]').click();
+  await until(() => !menu());
+  check(action === "reply", "Reply invokes the existing message action");
+
+  await hold();
+  menu().querySelector('[aria-label^="Edit"]').click();
+  await until(() => tests.querySelector('textarea[name="message-edit"]'));
+  const editor = tests.querySelector('textarea[name="message-edit"]');
+  await sleep(100);
+  check(
+    document.activeElement !== editor,
+    "touch Edit opens without focusing the field",
+  );
+  tests.querySelector('.message-editor button[type="button"]').click();
+  await until(() => tests.querySelector(".message-body"));
+
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  let copied;
+  const installClipboard = (writeText) =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+  const copy = () =>
+    [...menu().querySelectorAll("button")]
+      .find((button) => button.textContent === "Copy message")
+      .click();
+  try {
+    installClipboard(async (text) => {
+      copied = text;
+    });
+    await hold();
+    copy();
+    await until(() => !menu());
+    check(copied === message(1).text, "Copy message writes the full message");
+
+    installClipboard(async () => {
+      throw new DOMException("Denied", "NotAllowedError");
+    });
+    await hold();
+    copy();
+    await until(() => menu()?.querySelector(".message-copy-menu"));
+    const field = menu().querySelector("textarea");
+    check(
+      field.readOnly && field.value === message(1).text,
+      "clipboard denial leaves selectable text",
+    );
+    menu().querySelector("button").click();
+    await until(() => !menu());
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else delete navigator.clipboard;
+  }
+
+  if (!touch) return;
+  trigger.focus();
+  trigger.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+  );
+  await until(() => menu()?.contains(document.activeElement));
+  document.activeElement.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "End", bubbles: true }),
+  );
+  check(
+    document.activeElement.textContent === "Delete",
+    "keyboard reaches the last item",
+  );
+  document.activeElement.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  await until(() => !menu());
+  check(
+    document.activeElement === trigger && action === "reply",
+    "Escape restores focus without invoking an action",
+  );
+  const link = document.createElement("a");
+  link.href = "#test-link";
+  link.textContent = "Linked message";
+  body.append(link);
+  check(
+    getComputedStyle(trigger).clipPath === "none" && trigger.offsetWidth >= 44,
+    "rich messages have a visible touch target for actions",
+  );
+  trigger.click();
+  await until(menu);
+});
+
 await test("same-minute message bars join without gaps and break on minute, author and unread changes", async () => {
   const start = Math.floor(Date.now() / 60000) * 60;
   let entries = [
@@ -1807,7 +2027,7 @@ await test("unread shortcut hides at its target and returns only above it", asyn
     cleared: {},
     resetCleared() {},
     settingsOpen: false,
-    menu: false,
+    conversationListOpen: false,
     status: "online",
     loadSequence() {
       throw new Error("target is already loaded");
@@ -1882,7 +2102,7 @@ await test("unread navigation resolves a deleted target after paging and within 
     cleared: {},
     resetCleared() {},
     settingsOpen: false,
-    menu: false,
+    conversationListOpen: false,
     status: "online",
     loadSequence: (sequence) => loads.push(sequence),
     virtualTimeline: {
@@ -4094,6 +4314,7 @@ await test("Safari IME confirmation never sends or selects composer hints", asyn
   textarea.value = "中文";
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
   await sleep(10);
+  const touchFirst = prefersManualTextInput();
   const key = (init = {}) => {
     const event = new KeyboardEvent("keydown", {
       key: "Enter",
@@ -4142,15 +4363,49 @@ await test("Safari IME confirmation never sends or selects composer hints", asyn
     !key({ shiftKey: true }).defaultPrevented && sent === 0,
     "Shift+Enter still inserts a newline after composition",
   );
-  key();
-  check(sent === 1, "a deliberate later Enter sends normally");
+  check(
+    key().defaultPrevented === !touchFirst && sent === (touchFirst ? 0 : 1),
+    "a deliberate Return inserts a mobile newline and sends on desktop",
+  );
   textarea.dispatchEvent(
     new CompositionEvent("compositionstart", { bubbles: true }),
   );
   textarea.focus();
   textarea.blur();
   key();
-  check(sent === 2, "leaving the input resets an interrupted composition");
+  check(
+    sent === (touchFirst ? 0 : 2),
+    "leaving the input resets an interrupted composition",
+  );
+  const point = (pointerType) =>
+    textarea.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        pointerType,
+        isPrimary: true,
+        bubbles: true,
+      }),
+    );
+  point("touch");
+  check(
+    textarea.enterKeyHint === "enter",
+    "the soft keyboard advertises Return",
+  );
+  const previous = sent;
+  check(
+    !key().defaultPrevented && sent === previous,
+    "touch typing keeps Return for newlines on a hybrid device",
+  );
+  tests.querySelector(".send-button").click();
+  check(
+    sent === previous + 1,
+    "the Send button still submits the mobile draft",
+  );
+  point("mouse");
+  check(
+    key().defaultPrevented === !touchFirst &&
+      sent === previous + (touchFirst ? 1 : 2),
+    "switching to a mouse restores the desktop shortcut on a hybrid device",
+  );
 });
 
 await test("name-color menus survive mouse clicks without native button focus", async () => {
@@ -5012,6 +5267,60 @@ await test("display name records show explicit scopes and remove only the select
   }
 });
 
+await test("text editors only take automatic focus for desktop input", async () => {
+  const { AccountEditor } =
+    await import("../../src/components/settings/AccountEditor.tsx");
+  const { AliasSettings } =
+    await import("../../src/components/AliasSettings.tsx");
+  const state = {
+    ...empty,
+    account_access: {
+      ...empty.account_access,
+      commands: [{ name: "/user" }],
+      permissions: ["w:account.rename.own", "w:account.password.own"],
+    },
+  };
+  const desktop = !prefersManualTextInput();
+  async function checkEditor(selector, shouldFocus) {
+    await until(() => tests.querySelector(selector));
+    const field = tests.querySelector(selector);
+    if (shouldFocus) await until(() => document.activeElement === field);
+    else {
+      // Let the newly mounted editor's focus effect run before checking.
+      await sleep(100);
+      check(document.activeElement !== field, `${selector} stays unfocused`);
+    }
+  }
+  for (const [editor, input, section] of [
+    ["rename", "name", "account"],
+    ["displayname", "displayname", "account"],
+    ["password", "old-password", "security"],
+  ]) {
+    render(h(AccountEditor, { state, section, pending: false }), tests);
+    tests.querySelector(`[aria-controls="account-${editor}-editor"]`).click();
+    await checkEditor(`#account-${input}`, desktop);
+    render(null, tests);
+  }
+  render(h(AliasSettings, { aliases: { "/example": "/help" } }), tests);
+  const edit = tests.querySelector('[aria-label="Edit /example"]');
+  edit.click();
+  await checkEditor("#alias-name", desktop);
+  edit.focus();
+  edit.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      pointerType: "touch",
+      isPrimary: true,
+    }),
+  );
+  edit.click();
+  await checkEditor("#alias-name", false);
+  check(
+    tests.querySelector("#alias-name").value === "/example",
+    "Edit loads the saved alias",
+  );
+});
+
 await test("account save errors preserve drafts and remain visible until a successful retry", async () => {
   const { AccountEditor } =
     await import("../../src/components/settings/AccountEditor.tsx");
@@ -5497,6 +5806,15 @@ await test("user cards start a new private chat without sending a message", asyn
 
 await test("room selection preserves fragments and restores the default view with Back", async () => {
   const Socket = window.WebSocket;
+  const startTransition = document.startViewTransition;
+  const transitions = [];
+  if (startTransition) {
+    document.startViewTransition = function (options) {
+      const transition = startTransition.call(this, options);
+      transitions.push({ transition, types: options.types });
+      return transition;
+    };
+  }
   const url = location.href;
   const sidebar = localStorage.getItem("commonroom-sidebar-open");
   window.WebSocket = class {
@@ -5515,7 +5833,7 @@ await test("room selection preserves fragments and restores the default view wit
       id: name,
       name,
       owner: "alice",
-      permissions: [],
+      permissions: ["w:message.create"],
       commands: [],
       members: ["alice"],
       messages: [],
@@ -5527,7 +5845,7 @@ await test("room selection preserves fragments and restores the default view wit
       ]),
     ),
   };
-  try {
+  const mountChat = () =>
     render(
       h(Chat, {
         initial: state,
@@ -5541,6 +5859,8 @@ await test("room selection preserves fragments and restores the default view wit
       }),
       tests,
     );
+  try {
+    mountChat();
     await until(
       () => tests.querySelector(".room-title h1")?.textContent === "alpha",
     );
@@ -5549,6 +5869,59 @@ await test("room selection preserves fragments and restores the default view wit
       location.hash === "#tab=files",
       "mount does not rewrite the default URL",
     );
+    const narrow = matchMedia(mobileLayout).matches;
+    const animated =
+      narrow &&
+      Boolean(startTransition) &&
+      CSS.supports("selector(:active-view-transition-type(mobile-forward))") &&
+      matchMedia("(prefers-reduced-motion: no-preference)").matches;
+    async function checkMotion(direction) {
+      if (!animated) return;
+      const { transition, types } = transitions.at(-1);
+      check(
+        types.includes(`mobile-${direction}`),
+        `navigation animates ${direction}`,
+      );
+      await transition.ready;
+      check(
+        document.documentElement.matches(
+          `:active-view-transition-type(mobile-${direction})`,
+        ),
+        "the browser activates the requested transition",
+      );
+      check(
+        getComputedStyle(
+          document.documentElement,
+          "::view-transition-new(root)",
+        ).animationName ===
+          (direction === "forward" ? "mobile-slide-in" : "mobile-slide-out"),
+        "the incoming screen uses the directional animation",
+      );
+      await transition.finished;
+    }
+    const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+    const list = tests.querySelector(".sidebar");
+    const conversation = tests.querySelector(".conversation");
+    if (narrow) {
+      check(
+        list.getBoundingClientRect().width === innerWidth,
+        "the mobile home is a full-width conversation list",
+      );
+      check(
+        conversation.inert,
+        "the initial conversation is inactive behind the list",
+      );
+      list.querySelector(".room-link").click();
+      await until(() => !conversation.inert);
+      await checkMotion("forward");
+      check(
+        location.hash.includes("room=alpha"),
+        "opening the default room also creates a history entry",
+      );
+      tests.querySelector(".conversation-back").click();
+      await until(() => conversation.inert);
+      await checkMotion("back");
+    }
     const beta = [...tests.querySelectorAll(".room-link")].find((button) =>
       button.textContent.includes("beta"),
     );
@@ -5557,24 +5930,163 @@ await test("room selection preserves fragments and restores the default view wit
     await until(
       () => tests.querySelector(".room-title h1")?.textContent === "beta",
     );
+    const composer = tests.querySelector(".composer textarea");
+    check(!composer.disabled, "the room has an available composer");
+    if (narrow) {
+      await until(
+        () => document.activeElement === tests.querySelector(".room-title h1"),
+      );
+      check(
+        getComputedStyle(list).display === "none",
+        "the conversation replaces the list",
+      );
+    } else {
+      check(
+        (document.activeElement === composer) === !touch,
+        "only desktop selection focuses the composer",
+      );
+    }
     check(
       new URLSearchParams(location.hash.slice(1)).get("tab") === "files",
       "room changes preserve other fragment parameters",
     );
     history.back();
-    await until(
-      () => tests.querySelector(".room-title h1")?.textContent === "alpha",
+    await until(() =>
+      narrow
+        ? conversation.inert
+        : tests.querySelector(".room-title h1")?.textContent === "alpha",
     );
+    await checkMotion("back");
     check(
       location.hash === "#tab=files",
       "Back restores the default view and original fragment",
     );
     history.forward();
     await until(
-      () => tests.querySelector(".room-title h1")?.textContent === "beta",
+      () =>
+        !conversation.inert &&
+        tests.querySelector(".room-title h1")?.textContent === "beta",
     );
+    await checkMotion("forward");
+    if (narrow) {
+      tests.querySelector(".conversation-back").click();
+      await until(
+        () =>
+          conversation.inert &&
+          document.activeElement === list.querySelector("h1"),
+      );
+      tests.querySelector(".settings-toggle").click();
+      await until(() => tests.querySelector(".settings-dialog")?.open);
+      await checkMotion("forward");
+      const settings = tests.querySelector(".settings-dialog");
+      const layout = settings.getBoundingClientRect();
+      const sections = settings.querySelector(".settings-navigation");
+      check(
+        layout.width === innerWidth,
+        "mobile settings take the full viewport width",
+      );
+      check(
+        !settings.querySelector(".settings-content"),
+        "settings start at the section list",
+      );
+      sections.querySelector("button").click();
+      await until(() => document.activeElement?.id === "settings-title");
+      await checkMotion("forward");
+      check(
+        getComputedStyle(sections).display === "none",
+        "a section takes the full page",
+      );
+      check(
+        settings.querySelector(".settings-content")?.getBoundingClientRect()
+          .width > 0,
+        "the selected section is visible",
+      );
+      check(
+        location.hash.includes("settings=account"),
+        "Settings sections have a history entry",
+      );
+      history.back();
+      await until(() => !settings.querySelector(".settings-content"));
+      await checkMotion("back");
+      check(
+        location.hash.includes("settings=index"),
+        "browser Back returns to the Settings index",
+      );
+      history.forward();
+      await until(() => settings.querySelector(".settings-content"));
+      await checkMotion("forward");
+      settings.querySelector(".settings-back").click();
+      await until(
+        () => document.activeElement === sections.querySelector("button"),
+      );
+      await checkMotion("back");
+      history.back();
+      await until(() => !tests.querySelector(".settings-dialog"));
+      await checkMotion("back");
+      history.forward();
+      await until(() => tests.querySelector(".settings-dialog")?.open);
+      await checkMotion("forward");
+      tests.querySelector(".settings-navigation button").click();
+      await until(() => tests.querySelector(".settings-back"));
+      await checkMotion("forward");
+      tests.querySelector(".settings-close").click();
+      await until(() => !tests.querySelector(".settings-dialog"));
+      await checkMotion("back");
+      check(
+        conversation.inert && getComputedStyle(list).display !== "none",
+        "closing settings returns to the conversation list",
+      );
+      beta.click();
+      await until(
+        () =>
+          !conversation.inert &&
+          tests.querySelector(".room-title h1")?.textContent === "beta",
+      );
+      history.replaceState(null, "", location.href);
+      render(null, tests);
+      mountChat();
+      await sleep(100);
+      const linkedConversation = tests.querySelector(".conversation");
+      check(
+        !linkedConversation.inert &&
+          tests.querySelector(".room-title h1")?.textContent === "beta" &&
+          document.activeElement !== tests.querySelector(".composer textarea"),
+        "a direct room link opens the conversation without focusing the composer",
+      );
+      tests.querySelector(".conversation-back").click();
+      await until(() => linkedConversation.inert);
+      await checkMotion("back");
+      check(
+        location.hash === "#tab=files",
+        "an in-app Back from a direct room link stays in Commonroom",
+      );
+    } else if (!touch) {
+      composer.blur();
+      const alpha = list.querySelector(".room-link");
+      alpha.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerType: "touch",
+          bubbles: true,
+          isPrimary: true,
+        }),
+      );
+      alpha.click();
+      await until(
+        () => tests.querySelector(".room-title h1")?.textContent === "alpha",
+      );
+      check(
+        document.activeElement !== composer,
+        "a touch activation on a fine-pointer layout skips autofocus",
+      );
+    }
+    if (!animated)
+      check(
+        transitions.length === 0,
+        "navigation works without starting a transition",
+      );
   } finally {
     render(null, tests);
+    if (startTransition) delete document.startViewTransition;
     window.WebSocket = Socket;
     history.replaceState(null, "", url);
     if (sidebar === null) localStorage.removeItem("commonroom-sidebar-open");

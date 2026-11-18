@@ -232,9 +232,12 @@ test("private conversations contain only messages between the selected people", 
     privatePeers({ username: "alice", users: ["alice", "bob"], direct: [] }),
     [],
   );
-  assert.deepEqual(privatePeers({ private_peers: ["bob"], direct: [] }), [
+  const peers = ["carol", "bob"];
+  assert.deepEqual(privatePeers({ private_peers: peers, direct: [] }), [
     "bob",
+    "carol",
   ]);
+  assert.deepEqual(peers, ["carol", "bob"]);
   assert.deepEqual(privateMessages(direct, "alice", null), []);
 });
 
