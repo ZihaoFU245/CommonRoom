@@ -1619,6 +1619,7 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
                 if actor == Some("alice") {
                     expected.insert("w:account.color.any");
                     expected.insert("w:account.displayname.any");
+                    expected.insert("w:message.mention.all");
                 }
                 if actor == Some("alice") {
                     expected.extend(member.iter().copied());
@@ -1641,7 +1642,9 @@ fn every_action_has_explicit_defaults_for_each_group_and_resource_boundary() {
                                     | Action::ColorAny
                                     | Action::DisplayNameOwn
                                     | Action::DisplayNameAny
-                            ));
+                            ))
+                        && (matches!(scope, Scope::Room(_) | Scope::Server)
+                            || *action != Action::MentionAll);
                 assert_eq!(
                     e.allows(actor, &scope, *action),
                     allowed,

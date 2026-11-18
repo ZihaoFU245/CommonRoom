@@ -19,6 +19,7 @@ export interface Message {
   reactions: Record<string, string[]>;
   reply: Reply | null;
   mentions: string[];
+  mention_all?: boolean;
 }
 export interface MessageColors {
   version: string;
@@ -35,6 +36,8 @@ export interface Room {
   commands: Command[];
   name: string;
   members: string[];
+  is_member?: boolean;
+  can_mention_all?: boolean;
   messages: Message[];
   /** Room-scoped overrides of the snapshot's global `colors`. */
   colors?: Record<string, string>;
@@ -297,6 +300,7 @@ export const isMessage = (v: unknown): v is Message =>
   record(v) &&
   (v.markdown === undefined || typeof v.markdown === "boolean") &&
   (v.edited === undefined || typeof v.edited === "boolean") &&
+  (v.mention_all === undefined || typeof v.mention_all === "boolean") &&
   (v.private_id === undefined || typeof v.private_id === "string") &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&
@@ -433,6 +437,9 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
       strings(r.permissions) &&
       commands(r.commands) &&
       strings(r.members) &&
+      (r.is_member === undefined || typeof r.is_member === "boolean") &&
+      (r.can_mention_all === undefined ||
+        typeof r.can_mention_all === "boolean") &&
       messages(r.messages) &&
       (r.display_names === undefined || displayNameMap(r.display_names)) &&
       (r.colors === undefined || colorMap(r.colors)) &&

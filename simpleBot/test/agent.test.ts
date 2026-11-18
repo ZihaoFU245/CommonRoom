@@ -494,10 +494,11 @@ test("working and idle activity is emitted around a model call", async () => {
   }
 });
 
-test("a mention-free room message is not answered", async () => {
+test("a room message without an individual bot mention does not trigger a response", async () => {
   const h = await harness();
   try {
     h.server.addMessage("just chatting", { mentions: [] });
+    h.server.addMessage("@all hello", { mentions: [], mentionAll: true });
     await h.agent.handleSnapshot(h.server.snapshot());
     assert.equal(h.server.state.sends.length, 0);
     assert.equal(

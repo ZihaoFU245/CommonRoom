@@ -30,6 +30,8 @@ pub struct Message {
     pub reactions: BTreeMap<String, BTreeSet<String>>,
     pub reply: Option<Reply>,
     pub mentions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mention_all: bool,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Reply {
@@ -79,6 +81,8 @@ pub struct RoomView {
     pub name: String,
     pub members: BTreeSet<String>,
     pub messages: super::history::MessagePage,
+    pub is_member: bool,
+    pub can_mention_all: bool,
     /// Room-scoped color overrides; the snapshot's global `colors` apply otherwise.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,

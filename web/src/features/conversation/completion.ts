@@ -11,6 +11,7 @@ export const permissionNames = [
   "r:server.config",
   "r:policy.read",
   "w:message.create",
+  "w:message.mention.all",
   "w:media.upload",
   "w:message.react",
   "w:message.edit.own",

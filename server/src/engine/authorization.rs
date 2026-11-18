@@ -26,6 +26,7 @@ actions! {
     Config => "r:server.config",
     PolicyRead => "r:policy.read",
     Send => "w:message.create",
+    MentionAll => "w:message.mention.all",
     MediaUpload => "w:media.upload",
     React => "w:message.react",
     EditOwn => "w:message.edit.own",
@@ -469,6 +470,9 @@ impl CompiledPolicy {
                 | Action::DisplayNameOwn.bit()
                 | Action::DisplayNameAny.bit());
         }
+        if !matches!(scope, Scope::Room(_) | Scope::Server) {
+            r.actions &= !Action::MentionAll.bit();
+        }
         r
     }
     pub(super) fn changed_profiles(&self, other: &Self) -> BTreeSet<String> {
@@ -513,6 +517,15 @@ impl CompiledPolicy {
                     .insert(a.group);
             }
         }
+        for room in data.rooms.values() {
+            result
+                .scopes
+                .entry(room.owner_id.clone())
+                .or_default()
+                .entry(Scope::Room(room.id.clone()))
+                .or_default()
+                .add(rights(&[Action::MentionAll], &[]));
+        }
         for grant in &data.policy.grants {
             let mut mask = Rights::default();
             for p in &grant.permissions {
@@ -520,6 +533,11 @@ impl CompiledPolicy {
                     && !matches!(grant.scope, Scope::Room(_))
                 {
                     return Err("Color grants require a room scope.".into());
+                }
+                if p == Action::MentionAll.name()
+                    && !matches!(grant.scope, Scope::Room(_) | Scope::Server)
+                {
+                    return Err("@all grants require a room or global scope.".into());
                 }
                 mask.insert(p)?;
             }

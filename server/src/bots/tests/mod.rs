@@ -1291,6 +1291,9 @@ async fn browser_native_text_preserves_send_only_permissions_and_committed_notif
             .execute(None, None, "/grant writer #support w:message.create")
             .unwrap();
         engine
+            .execute(None, None, "/grant writer #support w:message.mention.all")
+            .unwrap();
+        engine
             .login("writer".into(), "writer", "hash", None)
             .unwrap();
     }
@@ -1302,7 +1305,7 @@ async fn browser_native_text_preserves_send_only_permissions_and_committed_notif
     let input = commands::Input {
         id: 1,
         room: Some("support".into()),
-        text: "  **native** @admin @outsider  ".into(),
+        text: "  **native** @all @admin @outsider  ".into(),
         markdown: true,
     };
     let (reply, change) = commands::execute_input(&app, &headers, "writer", &input)
@@ -1322,8 +1325,9 @@ async fn browser_native_text_preserves_send_only_permissions_and_committed_notif
         assert!(engine.history("writer", "support").is_err());
         let page = engine.history("admin", "support").unwrap();
         let sent = page.messages.last().unwrap();
-        assert_eq!(sent.text, "**native** @admin @outsider");
+        assert_eq!(sent.text, "**native** @all @admin @outsider");
         assert!(sent.markdown);
+        assert!(sent.mention_all);
         assert_eq!(sent.sequence, before + 1);
         assert!(sent.mentions.contains("admin"));
         assert!(!sent.mentions.contains("outsider"));

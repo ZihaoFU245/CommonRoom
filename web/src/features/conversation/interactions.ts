@@ -6,7 +6,11 @@ function nameCharacter(value: string): boolean {
       !/[\p{White_Space}\p{Cc}]/u.test(value))
   );
 }
-export function mentionSuggestions(draft: string, users: string[]): Hint[] {
+export function mentionSuggestions(
+  draft: string,
+  users: string[],
+  canMentionAll = false,
+): Hint[] {
   if (draft.startsWith("/")) return [];
   const index = draft.lastIndexOf("@");
   if (index < 0) return [];
@@ -14,12 +18,16 @@ export function mentionSuggestions(draft: string, users: string[]): Hint[] {
   if (preceding && (nameCharacter(preceding) || preceding === "@")) return [];
   const prefix = draft.slice(index + 1);
   if (!Array.from(prefix).every(nameCharacter)) return [];
-  return users
+  const candidates = canMentionAll ? ["all", ...users] : users;
+  return candidates
     .filter((name) => name.startsWith(prefix))
     .map((name) => ({
       label: `@${name}`,
-      description: "Mention",
-      value: draft.slice(0, draft.lastIndexOf("@")) + `@${name} `,
+      description:
+        canMentionAll && name === "all"
+          ? "Mention everyone in this room"
+          : "Mention",
+      value: draft.slice(0, index) + `@${name} `,
     }));
 }
 export function messageNotificationEvents(previous: Snapshot, next: Snapshot) {
@@ -29,19 +37,31 @@ export function messageNotificationEvents(previous: Snapshot, next: Snapshot) {
     ),
   );
   const previousRooms = new Map(previous.rooms.map((r) => [r.name, r]));
-  const events: { message: Message; view: string }[] = [];
+  const events: { message: Message; view: string; roomWide?: true }[] = [];
   for (const room of next.rooms) {
     const previousRoom = previousRooms.get(room.name);
     if (!previousRoom) continue;
     const newest = Math.max(0, ...previousRoom.messages.map((m) => m.time));
+    const through = previous.unread[room.name]?.through;
     for (const message of room.messages) {
+      const roomMention =
+        message.mention_all &&
+        !message.edited &&
+        room.is_member &&
+        previousRoom.id === room.id &&
+        through !== undefined &&
+        message.sequence > through;
       if (
         !seen.has(message.id) &&
-        message.time >= newest &&
         message.from !== next.username &&
-        message.mentions?.includes(next.username)
+        (roomMention ||
+          (message.time >= newest && message.mentions?.includes(next.username)))
       )
-        events.push({ message, view: room.name });
+        events.push({
+          message,
+          view: room.name,
+          ...(roomMention ? { roomWide: true } : {}),
+        });
     }
   }
   for (const message of next.direct) {
@@ -57,8 +77,13 @@ export function messageNotificationEvents(previous: Snapshot, next: Snapshot) {
   }
   return events;
 }
-export function mentionedText(text: string, mentions: string[] = []) {
+export function mentionedText(
+  text: string,
+  mentions: string[] = [],
+  mentionAll = false,
+) {
   const names = new Set(mentions);
+  if (mentionAll) names.add("all");
   return text
     .split(
       /(@(?:(?![\p{White_Space}\p{Cc}])[A-Za-z0-9_\-\u0080-\u{10ffff}])+)/u,

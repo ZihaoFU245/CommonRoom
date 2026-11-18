@@ -111,6 +111,9 @@ impl Engine {
         if name == new_name {
             return Ok(false);
         }
+        if new_name == helpers::ROOM_MENTION_ALL {
+            return Err("The username all is reserved for room mentions.".into());
+        }
         if self.data.users.contains_key(new_name) {
             return Err(EngineError::Conflict("Username already exists.".into()));
         }
@@ -535,6 +538,9 @@ impl Engine {
     ) -> Result<(String, MetadataChange), EngineError> {
         if !valid_name(name) {
             return Err("Invalid username.".into());
+        }
+        if !reset && name == helpers::ROOM_MENTION_ALL {
+            return Err("The username all is reserved for room mentions.".into());
         }
         let mut before = MetadataChange::accounts(&self.data, [name.to_owned()], true);
         if reset {

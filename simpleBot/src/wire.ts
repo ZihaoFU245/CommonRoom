@@ -80,6 +80,7 @@ export interface Message {
   sequence: number;
   reply: Reply | null;
   mentions: string[];
+  mention_all?: boolean;
   reactions: Record<string, string[]>;
 }
 
@@ -210,6 +211,7 @@ export function isMessage(value: unknown): value is Message {
     natural(value.time) &&
     natural(value.sequence) &&
     strings(value.mentions) &&
+    (value.mention_all === undefined || typeof value.mention_all === "boolean") &&
     record(value.reactions) &&
     Object.values(value.reactions).every(strings) &&
     (value.reply === null ||

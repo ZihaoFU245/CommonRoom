@@ -409,6 +409,10 @@ impl Engine {
                 owner: self.room_owner_name(&room.owner_id).into(),
                 permissions: rights.names(),
                 commands: self.commands_for_rights(Some(name), Some(view), rights),
+                is_member: room.members.contains(name),
+                can_mention_all: rights.has(Action::MentionAll)
+                    && rights.has(Action::Send)
+                    && !room.members.contains(helpers::ROOM_MENTION_ALL),
                 members: if rights.has(Action::Members) {
                     room.members.clone()
                 } else {
@@ -455,6 +459,8 @@ impl Engine {
                     owner: "participants".into(),
                     permissions: rights.names(),
                     commands,
+                    is_member: false,
+                    can_mention_all: false,
                     members: if rights.has(Action::Members) {
                         key.split(':').map(str::to_owned).collect()
                     } else {

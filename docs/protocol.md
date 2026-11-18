@@ -162,10 +162,15 @@ The acknowledgement contains the wrapped command's result or error. `/sudo /room
 saves the caller's membership and room user grants and broadcasts updated snapshots.
 
 Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text,sequence}`, and mention usernames. Quotes stored before `sequence` was added report zero for it and cannot be paged to. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
+The optional `mention_all` boolean marks an authorized room-wide mention.
+Older messages omit it. Individual targets stay in `mentions`.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
 `commands`, filtered `members`, and up to 50 latest messages (1,000 tail messages globally per snapshot; some tails may be empty). Read grants govern
 which views/messages/unread metadata appear; member lists have a separate grant.
+Room views also report `is_member` for the current viewer independently of the
+member list and `can_mention_all` for composer completion. Private views set
+both flags to false.
 `private_access` maps ordinary private views to stable IDs and exact effective
 permissions/command lists. `private_permissions` and `private_commands` provide
 the defaults for starting a new pair.
@@ -190,6 +195,8 @@ Use the first/last returned sequence with `has_before`/`has_after` to continue. 
 ## Synchronization rules
 
 The initial WebSocket snapshot and HTTP resync are baselines and do not trigger desktop alerts. Subsequent conversation updates and live snapshots can notify about room mentions and incoming private messages. HTTP refreshes run on reconnect/focus/pageshow/online and becoming visible. A generation guard prevents a delayed HTTP response from overwriting a newer socket snapshot or a signed-out session.
+Room-wide alerts require a new message sequence in the same room and viewer
+membership. Edits and replayed messages do not trigger a room-wide alert.
 
 History requests carry an abort signal and are accepted only for the current view and stable resource ID. Each page represents a coherent content revision; live updates may already be newer. Range-preserving retries stop after three attempts and report a refresh status rather than looping indefinitely. Live tails merge into the current window by ID; cleanup/reactions/gaps refresh the visible page around its anchor, never the complete retained history. Pure appends while browsing older pages advance metadata without moving the window. Read-only updates preserve message-array references to avoid re-rendering the transcript.
 

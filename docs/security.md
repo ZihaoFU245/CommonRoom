@@ -100,7 +100,7 @@ The permission catalog has individual actions in three families:
 
 - `r`: `room.discover`, `message.read`, `message.metadata`, `member.list`,
   `account.list`, `server.config`, `policy.read`.
-- `w`: `media.upload`, `message.create`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
+- `w`: `media.upload`, `message.create`, `message.mention.all`, `message.react`, `message.edit.own`, `message.edit.any`, `message.retract.own`,
   `message.retract.any`, `room.create`, `private.create`, `account.password.own`, `account.rename.own`,
   `account.color.own`, `account.color.any` (room-only).
 - `x`: `member.add`, `member.remove`, `room.join`, `room.delete`,
@@ -151,6 +151,12 @@ room, provided they hold those permissions. This lets room participants invite
 others without granting policy management or other room-management powers.
 Ownership is checked by the account and room's stable IDs. Assigning a scoped
 `admin` management bundle requires `su`.
+
+Room owners automatically hold `w:message.mention.all` for their room and can
+delegate it with `/grant bob #support w:message.mention.all`. The automatic grant
+follows ownership transfers. Explicit grants remain in place. Only `su` can
+grant it at `@global`. A global grant allows use in every room where the account
+can send, and each alert reaches only the room where the message was sent.
 
 ## Commands and examples
 

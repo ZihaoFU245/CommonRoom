@@ -48,6 +48,7 @@ test("notification delivery respects permission, foreground view and reconnect b
     username: "alice",
     rooms: [{ name: "room", messages: [] }],
     direct: [],
+    unread: {},
   };
   const next = {
     ...previous,
@@ -137,12 +138,13 @@ test("notification delivery respects permission, foreground view and reconnect b
   );
 });
 
-test("a DM without a mention alerts once and the bell mutes DMs and room mentions", async () => {
+test("the bell and foreground rules apply to both DMs and room-wide mentions", async () => {
+  const room = { id: "room-id", name: "room", is_member: true, messages: [] };
   const previous = {
     username: "alice",
-    rooms: [{ name: "room", messages: [] }],
+    rooms: [room],
     direct: [],
-    unread: {},
+    unread: { room: { through: 0 } },
   };
   const dm = {
     id: "dm",
@@ -158,13 +160,13 @@ test("a DM without a mention alerts once and the bell mutes DMs and room mention
     to: null,
     time: 2,
     sequence: 2,
-    text: "@alice",
-    mentions: ["alice"],
+    text: "@all",
+    mention_all: true,
   };
   const next = {
     ...previous,
     direct: [dm],
-    rooms: [{ name: "room", messages: [mention] }],
+    rooms: [{ ...room, messages: [mention] }],
   };
   const shown = [];
   class Notifications {
@@ -187,7 +189,7 @@ test("a DM without a mention alerts once and the bell mutes DMs and room mention
   };
   assert.equal(notifyMessages(previous, next, options), 1);
   assert.equal(shown[0].title, "#room");
-  assert.equal(shown[0].body, "bob mentioned you\n@alice");
+  assert.equal(shown[0].body, "bob mentioned everyone\n@all");
   assert.equal(
     notifyMessages(previous, next, { ...options, selected: "room" }),
     1,

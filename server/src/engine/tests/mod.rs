@@ -30,6 +30,179 @@ pub(super) fn private_messages(e: &Engine, key: &str) -> VecDeque<Message> {
     persisted_messages(e, &e.data.private[key].id)
 }
 
+#[test]
+fn room_mention_all_grants_follow_room_ownership_and_scope() {
+    let mut e = engine();
+    e.execute(Some("alice"), None, "/room new other").unwrap();
+    e.execute(Some("alice"), None, "/room add bob #other")
+        .unwrap();
+    e.execute(None, None, "/grant eve admin #lobby").unwrap();
+
+    let send = |e: &mut Engine, sender, room| {
+        e.execute(Some(sender), Some(room), "@all hello @alice")
+            .unwrap();
+        let message = room_messages(e, room).pop_back().unwrap();
+        assert_eq!(message.mentions, ["alice".into()].into());
+        message.mention_all
+    };
+    assert!(send(&mut e, "alice", "lobby"));
+    assert!(!send(&mut e, "bob", "lobby"));
+    assert!(!send(&mut e, "eve", "lobby"));
+
+    assert!(
+        e.execute(
+            Some("eve"),
+            Some("lobby"),
+            "/grant bob #lobby w:message.mention.all"
+        )
+        .is_err()
+    );
+    assert!(
+        e.execute(
+            Some("alice"),
+            Some("lobby"),
+            "/grant bob @global w:message.mention.all"
+        )
+        .is_err()
+    );
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        "/grant bob #lobby w:message.mention.all",
+    )
+    .unwrap();
+    assert!(send(&mut e, "bob", "lobby"));
+    assert!(!send(&mut e, "bob", "other"));
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        "/revoke bob #lobby w:message.mention.all",
+    )
+    .unwrap();
+    assert!(!send(&mut e, "bob", "lobby"));
+
+    e.execute(None, None, "/grant bob @global w:message.mention.all")
+        .unwrap();
+    assert!(send(&mut e, "bob", "lobby"));
+    assert!(send(&mut e, "bob", "other"));
+    e.execute(Some("bob"), None, "/tell alice @all").unwrap();
+    assert!(!private_messages(&e, "alice:bob")[0].mention_all);
+    assert!(
+        e.execute(
+            None,
+            None,
+            "/grant bob @private:alice:bob w:message.mention.all"
+        )
+        .is_err()
+    );
+    e.execute(None, None, "/revoke bob @global w:message.mention.all")
+        .unwrap();
+
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        "/grant eve #lobby w:message.mention.all",
+    )
+    .unwrap();
+    e.execute(Some("alice"), Some("lobby"), "/room owner bob")
+        .unwrap();
+    assert!(!send(&mut e, "alice", "lobby"));
+    assert!(send(&mut e, "alice", "other"));
+    assert!(send(&mut e, "bob", "lobby"));
+    assert!(send(&mut e, "eve", "lobby"));
+
+    e.execute(None, None, "/revoke eve admin #lobby").unwrap();
+    e.execute(None, None, "/revoke eve user #lobby").unwrap();
+    e.execute(None, None, "/grant eve #lobby r:message.read")
+        .unwrap();
+    let room = &e.snapshot("eve").unwrap().rooms[0];
+    assert!(room.is_member);
+    assert!(room.members.is_empty());
+    assert!(!room.can_mention_all);
+    assert!(e.snapshot("bob").unwrap().rooms[0].can_mention_all);
+}
+
+#[test]
+fn room_mention_all_persists_and_uses_markdown_prose() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat.sqlite");
+    let mut e = Engine::open(&path).unwrap();
+    e.provision("alice", "hash".into(), true, false).unwrap();
+    assert!(e.provision("all", "hash".into(), false, false).is_err());
+    assert!(e.execute(None, None, "/user rename alice all").is_err());
+    e.execute(Some("alice"), None, "/room new lobby").unwrap();
+    for text in [
+        "`@all` inline",
+        "```text\n@all\n```",
+        "Literal\n\n    @all",
+        "Use <code>@all</code> for a room alert.",
+        "Use <CODE class='example'><code>@all</code> or @all</CODE>.",
+        "Example <pre><code>@all</code></pre>.",
+        "[link](https://example.test/@all)",
+        "[link][ref]\n\n[ref]: https://example.test/@all",
+        "<https://example.test/@all>",
+        "![alt @all](https://example.test/image.png)",
+        "mail@all.test @@all @allies @ALL",
+    ] {
+        e.execute_formatted(Some("alice"), Some("lobby"), text, true)
+            .unwrap();
+        assert!(
+            !room_messages(&e, "lobby").back().unwrap().mention_all,
+            "{text}"
+        );
+    }
+    e.execute_formatted(
+        Some("alice"),
+        Some("lobby"),
+        "Example <code>@all</code>. Now hi **@all**!",
+        true,
+    )
+    .unwrap();
+    let first = room_messages(&e, "lobby").pop_back().unwrap();
+    assert!(first.mention_all);
+    assert!(first.mentions.is_empty());
+    assert_eq!(
+        crate::bots::models::message_json(&first)["mention_all"],
+        true
+    );
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/reply {} @all", first.id),
+    )
+    .unwrap();
+    let reply = room_messages(&e, "lobby").pop_back().unwrap();
+    assert!(reply.mention_all);
+    e.execute(
+        Some("alice"),
+        Some("lobby"),
+        &format!("/edit {} `@all`", first.id),
+    )
+    .unwrap();
+    drop(e);
+
+    let mut e = Engine::open(&path).unwrap();
+    let messages = room_messages(&e, "lobby");
+    assert!(messages.back().unwrap().mention_all);
+    let edited = &messages[messages.len() - 2];
+    assert!(!edited.mention_all);
+    assert!(edited.edited);
+    assert!(edited.markdown);
+
+    // Simulate the room roster of a database created before the name was reserved.
+    e.data
+        .rooms
+        .get_mut("lobby")
+        .unwrap()
+        .members
+        .insert("all".into());
+    let pending = e
+        .prepare_browser_message("alice", Some("lobby"), "@all", false)
+        .unwrap();
+    assert!(!pending.message.mention_all);
+    assert_eq!(pending.message.mentions, ["all".into()].into());
+}
+
 fn age_first(e: &Engine, id: &str) {
     e.store.db.lock().unwrap().execute("UPDATE messages SET json=json_set(json,'$.time',?2) WHERE conversation=?1 AND sequence=(SELECT min(sequence) FROM messages WHERE conversation=?1)",params![id,now()-8*86400]).unwrap();
 }

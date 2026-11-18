@@ -285,6 +285,11 @@ impl Engine {
                 }
                 let mut requested = Rights::default();
                 requested.insert(parts[3])?;
+                if parts[3] == Action::MentionAll.name()
+                    && !matches!(scope, Scope::Room(_) | Scope::Server)
+                {
+                    return Err("@all grants require a room or global scope.".into());
+                }
                 if matches!(parts[3], "w:account.color.own" | "w:account.color.any")
                     && !matches!(scope, Scope::Room(_))
                 {
@@ -322,7 +327,7 @@ impl Engine {
                         _ => false,
                     };
                     if owner {
-                        ceiling.add(rights(&[Action::Invite], &["/add"]));
+                        ceiling.add(rights(&[Action::Invite, Action::MentionAll], &["/add"]));
                     }
                     let delegable = requested.actions & !ceiling.actions == 0
                         && requested.commands & !ceiling.commands == 0;
@@ -331,7 +336,7 @@ impl Engine {
                         || requested.commands & !own.commands != 0
                     {
                         return Err(EngineError::Invalid(format!(
-                            "Room managers may delegate only participant permissions they hold in {label}; the room owner may also delegate x:member.add and /add. {} is outside that authority or is not held here. Global permissions such as w:room.create must be granted by su at @global. Use /man grant.",
+                            "Room managers may delegate only participant permissions they hold in {label}; the room owner may also delegate x:member.add, /add and w:message.mention.all. {} is outside that authority or is not held here. Global permissions must be granted by su at @global. Use /man grant.",
                             parts[3]
                         )));
                     }

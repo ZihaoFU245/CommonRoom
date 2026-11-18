@@ -168,7 +168,8 @@ export const ConsoleMessage = memo(function ConsoleMessage({
   const reply = message.reply;
   const authorColor = useNameColor(message.from);
   const replyColor = useNameColor(reply?.from ?? "");
-  const text = mentionedText(message.text, message.mentions);
+  const mentionAll = message.mention_all === true;
+  const text = mentionedText(message.text, message.mentions, mentionAll);
   const invocation = mentionedCommand(message.text, message.mentions);
   const emoji = singleEmoji(message.text);
   const actions: MessageAction[] = [];
@@ -355,6 +356,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                   messageKey={message.id}
                   text={message.text}
                   mentions={message.mentions}
+                  mentionAll={mentionAll}
                   allowHtml={allowHtml}
                   latex={latex}
                 />
@@ -362,7 +364,11 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 <p dir="auto">
                   {text.map((part, index) =>
                     part.mention ? (
-                      <Mention key={index} text={part.text} />
+                      <Mention
+                        key={index}
+                        text={part.text}
+                        roomWide={mentionAll && part.text === "@all"}
+                      />
                     ) : (
                       part.text
                     ),

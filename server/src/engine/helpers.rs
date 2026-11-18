@@ -15,6 +15,8 @@ pub fn now() -> u64 {
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.chars().count() <= 32 && name.chars().all(name_character)
 }
+pub(super) const ROOM_MENTION_ALL: &str = "all";
+
 pub(super) fn name_character(c: char) -> bool {
     c.is_ascii_alphanumeric()
         || matches!(c, '-' | '_')
@@ -100,28 +102,86 @@ pub(super) fn new_message(from: &str, to: Option<&str>, text: &str) -> Message {
         reactions: BTreeMap::new(),
         reply: None,
         mentions: mentioned_names(text),
+        mention_all: false,
     }
 }
 pub(super) fn mentioned_names(text: &str) -> BTreeSet<String> {
-    let mut result = BTreeSet::new();
-    for (index, ch) in text.char_indices() {
-        if ch != '@'
-            || text[..index]
-                .chars()
-                .next_back()
-                .is_some_and(|c| name_character(c) || c == '@')
-        {
-            continue;
-        }
-        let name: String = text[index + 1..]
+    mention_tokens(text)
+        .map(|(_, name)| name.to_owned())
+        .collect()
+}
+
+fn mention_tokens(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.match_indices('@').filter_map(|(index, _)| {
+        if text[..index]
             .chars()
-            .take_while(|c| name_character(*c))
-            .collect();
-        if valid_name(&name) {
-            result.insert(name);
+            .next_back()
+            .is_some_and(|c| name_character(c) || c == '@')
+        {
+            return None;
         }
-    }
-    result
+        let tail = &text[index + 1..];
+        let name = &tail[..tail.find(|c| !name_character(c)).unwrap_or(tail.len())];
+        valid_name(name).then_some((index, name))
+    })
+}
+
+/// Confirm that at least one raw @all token appears in Markdown prose.
+pub(super) fn markdown_mentions_all(source: &str) -> bool {
+    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
+
+    let mut tokens = mention_tokens(source)
+        .filter_map(|(index, name)| (name == ROOM_MENTION_ALL).then_some(index))
+        .peekable();
+    let mut hidden_until = 0;
+    let mut inline_code = Vec::new();
+    Parser::new_ext(
+        source,
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,
+    )
+    .into_offset_iter()
+    .any(|(event, range)| match event {
+        Event::Start(
+            Tag::CodeBlock(_)
+            | Tag::Image { .. }
+            | Tag::Link {
+                link_type: LinkType::Autolink | LinkType::Email,
+                ..
+            },
+        ) => {
+            hidden_until = hidden_until.max(range.end);
+            false
+        }
+        // CommonMark emits the contents of inline HTML elements as text.
+        Event::InlineHtml(html) if range.start >= hidden_until => {
+            let closing = html.starts_with("</");
+            let name = html
+                .trim_start_matches(['<', '/'])
+                .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '>'))
+                .next()
+                .unwrap_or_default();
+            if let Some(tag) = ["code", "pre"]
+                .into_iter()
+                .find(|tag| name.eq_ignore_ascii_case(tag))
+            {
+                if closing {
+                    if inline_code.last() == Some(&tag) {
+                        inline_code.pop();
+                    }
+                } else if !html.ends_with("/>") {
+                    inline_code.push(tag);
+                }
+            }
+            false
+        }
+        Event::Text(_) if range.start >= hidden_until && inline_code.is_empty() => {
+            while tokens.next_if(|&index| index < range.start).is_some() {}
+            tokens
+                .peek()
+                .is_some_and(|&index| index + 1 + ROOM_MENTION_ALL.len() <= range.end)
+        }
+        _ => false,
+    })
 }
 pub(super) fn private_key(a: &str, b: &str) -> String {
     if a <= b {

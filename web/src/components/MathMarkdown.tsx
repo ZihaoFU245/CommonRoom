@@ -10,12 +10,14 @@ import {
 export function MathMarkdown({
   text,
   mentions,
+  mentionAll,
   fragments = [],
   renderHtml,
   attachmentContext,
 }: {
   text: string;
   mentions: string[];
+  mentionAll: boolean;
   fragments?: HtmlFragment[];
   renderHtml?: (source: string, index: number) => ComponentChildren;
   attachmentContext?: AttachmentContext;
@@ -28,6 +30,7 @@ export function MathMarkdown({
     <MarkdownContent
       nodes={nodes}
       mentions={mentions}
+      mentionAll={mentionAll}
       {...(renderHtml ? { renderHtml } : {})}
       {...(attachmentContext ? { attachmentContext } : {})}
     />

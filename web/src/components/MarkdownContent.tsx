@@ -23,11 +23,13 @@ const Math = lazy(() =>
 export const MarkdownContent = memo(function MarkdownContent({
   nodes,
   mentions,
+  mentionAll,
   renderHtml,
   attachmentContext,
 }: {
   nodes: MarkdownNode[];
   mentions: string[];
+  mentionAll: boolean;
   renderHtml?: (source: string, index: number) => ComponentChildren;
   attachmentContext?: AttachmentContext;
 }) {
@@ -36,8 +38,16 @@ export const MarkdownContent = memo(function MarkdownContent({
       if (typeof node === "string")
         return code
           ? node
-          : mentionedText(node, mentions).map((part, i) =>
-              part.mention ? <Mention key={i} text={part.text} /> : part.text,
+          : mentionedText(node, mentions, mentionAll).map((part, i) =>
+              part.mention ? (
+                <Mention
+                  key={i}
+                  text={part.text}
+                  roomWide={mentionAll && part.text === "@all"}
+                />
+              ) : (
+                part.text
+              ),
             );
       if (node.html)
         return (

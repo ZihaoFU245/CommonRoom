@@ -65,6 +65,8 @@ struct MessageRecord<'a> {
     sequence: u64,
     reply: &'a Option<Reply>,
     mentions: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    mention_all: bool,
 }
 pub(super) fn serialize(message: &Message) -> Result<String> {
     serde_json::to_string(&MessageRecord {
@@ -80,6 +82,7 @@ pub(super) fn serialize(message: &Message) -> Result<String> {
         sequence: message.sequence,
         reply: &message.reply,
         mentions: &message.mentions,
+        mention_all: message.mention_all,
     })
     .map_err(|_| Error::Conversion("Cannot serialize stored message"))
 }

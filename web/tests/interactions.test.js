@@ -118,6 +118,85 @@ test("Unicode usernames complete and highlight Chinese, combining marks and emoj
   assert.deepEqual(mentionSuggestions("🙂@测试", ["测试"]), []);
 });
 
+test("room-wide mentions complete and highlight separately from individual mentions", () => {
+  assert.deepEqual(mentionSuggestions("hi @al", ["alice"], true), [
+    {
+      label: "@all",
+      description: "Mention everyone in this room",
+      value: "hi @all ",
+    },
+    { label: "@alice", description: "Mention", value: "hi @alice " },
+  ]);
+  assert.deepEqual(mentionSuggestions("hi @all", ["alice"]), []);
+  assert.equal(
+    mentionSuggestions("hi @all", ["all"])[0].description,
+    "Mention",
+  );
+  assert.deepEqual(
+    mentionedText("@all! @alice @@all mail@all.test @allies", ["alice"], true)
+      .filter((part) => part.mention)
+      .map((part) => part.text),
+    ["@all", "@alice"],
+  );
+  assert.equal(mentionedCommand("@all /whoami", []), null);
+});
+
+test("room-wide alerts require a new sequence and viewer membership in that room", () => {
+  const message = {
+    id: "broadcast",
+    from: "bob",
+    sequence: 8,
+    time: 1,
+    text: "@all",
+    mention_all: true,
+    mentions: [],
+  };
+  const room = {
+    id: "room-id",
+    name: "room",
+    is_member: true,
+    members: [],
+    messages: [],
+  };
+  const before = {
+    ...snapshot(),
+    rooms: [{ ...room, messages: [{ id: "previous", time: 2 }] }],
+    unread: { room: { through: 7 } },
+  };
+  const after = (messages, changes = {}) => ({
+    ...snapshot(),
+    rooms: [{ ...room, ...changes, messages }],
+    unread: { room: { through: 8 } },
+  });
+  assert.deepEqual(messageNotificationEvents(before, after([message])), [
+    { message, view: "room", roomWide: true },
+  ]);
+  assert.equal(
+    messageNotificationEvents(
+      before,
+      after([{ ...message, mentions: ["alice"] }]),
+    ).length,
+    1,
+  );
+  for (const candidate of [
+    { ...message, sequence: 7 },
+    { ...message, edited: true },
+    { ...message, from: "alice" },
+  ]) {
+    assert.deepEqual(messageNotificationEvents(before, after([candidate])), []);
+  }
+  for (const changes of [{ is_member: false }, { id: "replacement-id" }]) {
+    assert.deepEqual(
+      messageNotificationEvents(before, after([message], changes)),
+      [],
+    );
+  }
+  assert.deepEqual(
+    messageNotificationEvents(after([message]), after([message])),
+    [],
+  );
+});
+
 test("private notifications include only incoming messages newer than the conversation watermark", () => {
   const incoming = {
     id: "new",

@@ -71,7 +71,7 @@ fn postgres_backend_contract() {
     e.execute(
         Some("alice"),
         Some("lobby"),
-        &format!("/edit {} edited", first.id),
+        &format!("/edit {} edited @all", first.id),
     )
     .unwrap();
     e.execute(Some("alice"), None, "/tell bob private").unwrap();
@@ -99,6 +99,7 @@ fn postgres_backend_contract() {
     assert_eq!(e.data.rooms["lobby"].revision, revision);
     assert_eq!(e.session("session").as_deref(), Some("robert"));
     assert_eq!(e.history("robert", "lobby").unwrap().messages.len(), 2);
+    assert!(e.history("robert", "lobby").unwrap().messages[0].mention_all);
     e.execute(
         Some("alice"),
         Some("lobby"),

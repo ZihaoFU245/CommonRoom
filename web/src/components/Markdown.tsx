@@ -33,6 +33,7 @@ const MathMarkdown = lazy(() =>
 export interface MarkdownProps {
   text: string;
   mentions: string[];
+  mentionAll?: boolean;
   messageKey: string;
   allowHtml: boolean;
   latex: boolean;
@@ -67,6 +68,7 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
     <MarkdownContent
       nodes={nodes}
       mentions={props.mentions}
+      mentionAll={props.mentionAll ?? false}
       renderHtml={renderHtml}
       attachmentContext={attachmentContext}
     />
@@ -76,6 +78,7 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
       <MathMarkdown
         text={parts.markdown}
         mentions={props.mentions}
+        mentionAll={props.mentionAll ?? false}
         fragments={parts.fragments}
         renderHtml={renderHtml}
         attachmentContext={attachmentContext}

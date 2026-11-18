@@ -279,8 +279,16 @@ message preserves them. Reactions accept 1–128 Unicode characters without
 controls, with up to 32 reactions per message. `/debug on` shows expandable
 metadata only where permitted; it resets on refresh or permission revocation.
 
-`@USERNAME` mentions complete room members or the private peer; email addresses
-are excluded. The profile bell enables browser notifications for room mentions
+`@USERNAME` mentions complete room members or the private peer. Email addresses
+are excluded. In rooms, authorized senders can use lowercase `@all` in a new
+message or reply to notify every other member with read access. The composer
+suggests it when available. Markdown code, inline HTML code, and link
+destinations generate no room-wide alert. The same applies to private messages,
+edits, and sends without the grant.
+New accounts cannot take the username `all`. In rooms with a legacy member
+named `all`, `@all` addresses that account individually.
+
+The profile bell enables browser notifications for room mentions
 and incoming private messages. Notifications require browser permission and a
 running chat tab. Alerts omit refresh and history events, your own messages,
 and messages in the conversation you're viewing in a focused tab. Private alerts

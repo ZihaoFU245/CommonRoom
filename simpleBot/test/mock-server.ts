@@ -104,7 +104,12 @@ export class MockServer {
   /** Add a message as another account would, bumping the revision. */
   addMessage(
     text: string,
-    options: { from?: string; authorId?: string; mentions?: string[] } = {},
+    options: {
+      from?: string;
+      authorId?: string;
+      mentions?: string[];
+      mentionAll?: boolean;
+    } = {},
   ): Message {
     this.sequence += 1;
     const message: Message = {
@@ -118,6 +123,7 @@ export class MockServer {
       sequence: this.sequence,
       reply: null,
       mentions: options.mentions ?? [this.account.username],
+      ...(options.mentionAll ? { mention_all: true } : {}),
       reactions: {},
     };
     this.state.messages.push(message);

@@ -25,6 +25,7 @@ axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 # Disabled MySQL/RSA lockfile entries are excluded by auto/audit.sh; keep defaults off.
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "sqlite", "postgres", "json"] }
 futures-util = "0.3"

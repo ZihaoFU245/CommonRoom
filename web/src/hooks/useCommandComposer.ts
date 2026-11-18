@@ -144,6 +144,7 @@ export function useCommandComposer({
                 direct
                   ? [state.username, ...(peer ? [peer] : [])]
                   : [...(room?.members || [])],
+                !direct && room?.can_mention_all === true,
               ),
             ],
       ),

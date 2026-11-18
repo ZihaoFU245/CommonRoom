@@ -302,6 +302,11 @@ Each part gets a stable numbered output slot. A failed batch may leave a visible
 partial response; replay resumes its saved parts. There is no batch transaction.
 
 There is no automatic invocation: an agent chooses how to act on `mentions`.
+An authorized room-wide mention appears as the optional boolean `mention_all`
+on a message. The `mentions` list still contains individual targets. SimpleBot
+uses only individual mentions to trigger mention-only room responses. Sending
+a room-wide mention requires the bot account's effective
+`w:message.mention.all` permission in that room as well as ordinary send access.
 Each mention starts one worker turn; the agent may use tools, reply once, or
 finish silently. The message’s `from` field supplies the sender’s username alongside
 `author_id`; workers must include both when constructing the current model input.

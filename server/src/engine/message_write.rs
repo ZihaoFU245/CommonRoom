@@ -210,7 +210,7 @@ impl Engine {
                 .rooms
                 .get(&key)
                 .ok_or_else(|| EngineError::NotFound("Conversation not found.".into()))?;
-            message.mentions.retain(|name| room.members.contains(name));
+            self.resolve_room_mentions(Some(user), &scope, room, &mut message);
         }
         self.pending_message_at(
             user,
@@ -221,6 +221,20 @@ impl Engine {
             PendingMutation::Append,
         )
     }
+    pub(super) fn resolve_room_mentions(
+        &self,
+        actor: Option<&str>,
+        scope: &authorization::Scope,
+        room: &Room,
+        message: &mut Message,
+    ) {
+        message.mention_all = !room.members.contains(helpers::ROOM_MENTION_ALL)
+            && message.mentions.contains(helpers::ROOM_MENTION_ALL)
+            && self.allows(actor, scope, authorization::Action::MentionAll)
+            && (!message.markdown || helpers::markdown_mentions_all(&message.text));
+        message.mentions.retain(|name| room.members.contains(name));
+    }
+
     pub(super) fn pending_message_at(
         &self,
         actor: &str,

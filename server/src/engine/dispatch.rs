@@ -248,9 +248,7 @@ impl Engine {
                 .mentions
                 .retain(|name| key.split(':').any(|part| part == name));
         } else {
-            message
-                .mentions
-                .retain(|name| self.data.rooms[view].members.contains(name));
+            self.resolve_room_mentions(None, &scope, &self.data.rooms[view], &mut message);
         }
         self.pending_message_at(
             "console",

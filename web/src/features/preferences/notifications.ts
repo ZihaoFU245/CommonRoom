@@ -47,7 +47,10 @@ export function notifyMessages(
   if (baseline || !enabled || NotificationClass?.permission !== "granted")
     return 0;
   let delivered = 0;
-  for (const { message, view } of messageNotificationEvents(previous, next)) {
+  for (const { message, view, roomWide } of messageNotificationEvents(
+    previous,
+    next,
+  )) {
     if (!background && selected === view) continue;
     try {
       const direct = message.to === next.username;
@@ -55,7 +58,9 @@ export function notifyMessages(
       const notification = new NotificationClass(
         direct ? message.from : `#${view}`,
         {
-          body: direct ? preview : `${message.from} mentioned you\n${preview}`,
+          body: direct
+            ? preview
+            : `${message.from} ${roomWide ? "mentioned everyone" : "mentioned you"}\n${preview}`,
           tag: message.id,
         },
       );

@@ -352,16 +352,15 @@ impl Engine {
                 if actor.is_none() && !media::media_references(value).is_subset(&previous) {
                     return Err("Media uploads require an account.".into());
                 }
-                let mut mentions = mentioned_names(value);
+                original.text = value.into();
+                original.mentions = mentioned_names(value);
                 if let Some(room) = self.data.rooms.get(&target) {
-                    mentions.retain(|name| room.members.contains(name));
+                    self.resolve_room_mentions(actor, &scope, room, &mut original);
                 } else {
-                    mentions.retain(|name| {
+                    original.mentions.retain(|name| {
                         name == &original.from || original.to.as_ref() == Some(name)
                     });
                 }
-                original.text = value.into();
-                original.mentions = mentions;
                 original.edited = true;
                 (
                     original,

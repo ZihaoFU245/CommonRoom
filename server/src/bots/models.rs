@@ -59,9 +59,13 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 // An explicit projection insulates bot fields from browser/model additions.
 pub(crate) fn message_json(m: &crate::engine::Message) -> serde_json::Value {
-    serde_json::json!({"id":m.id,"from":m.from,"author_id":m.author_id,"text":m.text,
+    let mut message = serde_json::json!({"id":m.id,"from":m.from,"author_id":m.author_id,"text":m.text,
         "markdown":m.markdown,"edited":m.edited,"time":m.time,"sequence":m.sequence,
-        "reply":m.reply.as_ref().map(|r| serde_json::json!({"id":r.id,"from":r.from,"text":r.text})),"mentions":m.mentions,"reactions":m.reactions})
+        "reply":m.reply.as_ref().map(|r| serde_json::json!({"id":r.id,"from":r.from,"text":r.text})),"mentions":m.mentions,"reactions":m.reactions});
+    if m.mention_all {
+        message["mention_all"] = true.into();
+    }
+    message
 }
 
 pub(crate) struct Receipt {
