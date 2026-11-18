@@ -203,14 +203,16 @@ async fn preferences_commits_reach_every_connected_device_without_relogin() {
     let updated = write(
         &app,
         "bob",
-        json!({"theme":"dark","allow_html":"true"}),
+        json!({"theme":"dark","allow_html":"true","bot_status":"false"}),
         true,
     )
     .await;
     assert_eq!(updated.0, StatusCode::OK, "{}", updated.1);
     for socket in [&mut first, &mut second] {
         let frame = baseline(socket, Some("dark")).await;
+        assert_eq!(frame["bot_status_preference"], true);
         assert_eq!(frame["preferences"]["allow_html"], "true");
+        assert_eq!(frame["preferences"]["bot_status"], "false");
     }
     assert_eq!(
         write(&app, "bob", json!({"theme":"light"}), false).await.0,

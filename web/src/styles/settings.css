@@ -359,6 +359,11 @@
 .security-choice input {
   accent-color: var(--accent);
 }
+@media (pointer: coarse) {
+  .bot-status-choice {
+    min-block-size: 44px;
+  }
+}
 .account-form {
   display: flex;
   flex-direction: column;

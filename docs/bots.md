@@ -368,13 +368,17 @@ Snapshots are baselines, not instructions to replay every old mention.
 Incoming text frames accept command discovery controls described below and
 `{kind:"activity",conversation_id,state:"working"|"idle"}`. Activity requires send
 access and the `activity` operation; readers of that conversation receive the
-state, stable `account_id`, and an `expires` timestamp 30 seconds ahead. It is
-transient, not persisted or replayed; refresh working state before expiry and
-send idle on completion. Browsers with current conversation read access also
-receive these signals. An optional `draft` string (at most 4,000 Unicode characters
-and 16,000 UTF-8 bytes) carries provisional plain text. Browsers label it as a
-generating draft, expire it after 30 seconds and remove it on idle/disconnection.
-It never enters history, unread counts, Markdown rendering or retry receipts.
+state, stable `account_id`, the bot's current `username`, and an `expires`
+timestamp 30 seconds ahead. Older servers omit `username`; clients fall back to
+a generic label. The signal is transient, not persisted or replayed; refresh
+working state before expiry and send idle on completion. Browsers with current
+conversation read access also receive these signals. An optional `draft` string
+(at most 4,000 Unicode characters and 16,000 UTF-8 bytes) carries provisional
+plain text. Browsers show the bot's display name, status, and draft in a
+height-limited scrolling panel above the composer. Readers can
+hide the panel under Settings → Preferences. Activity expires after 30 seconds
+and clears on idle or disconnection. Drafts never enter history, unread counts,
+Markdown rendering or retry receipts.
 Workers must discover `ActivityRequest.properties.draft` in the schema before
 sending it to older servers. SimpleBot throttles updates to at most two per second
 and streams ordinary content only; tool arguments and reasoning are never shown. Accepted activity frames receive `config_ack` with

@@ -17,6 +17,8 @@ export function FormattingSettings({
   onMessageBarsChange,
   nameBorders,
   onNameBordersChange,
+  showBotStatus,
+  onShowBotStatusChange,
 }: Pick<
   SettingsProps,
   | "nameColors"
@@ -29,6 +31,8 @@ export function FormattingSettings({
   | "onMessageBarsChange"
   | "nameBorders"
   | "onNameBordersChange"
+  | "showBotStatus"
+  | "onShowBotStatusChange"
 >) {
   const [previewHeight, setPreviewHeight] = useMessagePreviewHeight();
   const previewLabel =
@@ -98,6 +102,20 @@ export function FormattingSettings({
       </label>
       <p id="name-borders-preference-description" class="account-summary">
         Frame author names in a rounded badge. Synced across your devices.
+      </p>
+      <label class="security-choice bot-status-choice">
+        <input
+          type="checkbox"
+          checked={showBotStatus}
+          aria-describedby="bot-status-preference-description"
+          onChange={(event) =>
+            onShowBotStatusChange(event.currentTarget.checked)
+          }
+        />
+        <span>Show bot status</span>
+      </label>
+      <p id="bot-status-preference-description" class="account-summary">
+        Show when bots are working and preview their drafts above the composer.
       </p>
       <div class="font-setting">
         <label for="message-preview-height">Message preview height</label>

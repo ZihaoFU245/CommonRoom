@@ -293,6 +293,7 @@ impl Engine {
             display_name_version: display_names.version.clone(),
             display_names: BTreeMap::new(),
             preferences: self.preferences(name),
+            bot_status_preference: true,
             color_version: String::new(),
             sync: SyncVersion {
                 instance: self.instance.clone(),

@@ -18,7 +18,7 @@ pub(crate) fn validate(key: &str, value: &str) -> Result<(), EngineError> {
             .is_ok_and(|n| (256..=1024).contains(&n)),
         "message_bar_opacity" => value.parse::<u8>().is_ok_and(|n| n <= 100),
         "markdown" | "latex" | "name_colors" | "message_bars" | "name_borders" | "allow_html"
-        | "external_avatars" | "notifications" => matches!(value, "true" | "false"),
+        | "external_avatars" | "notifications" | "bot_status" => matches!(value, "true" | "false"),
         _ => false,
     };
     if valid {

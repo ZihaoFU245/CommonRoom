@@ -142,7 +142,7 @@ in the browser. Browser aliases expand locally before sending; `/alias` is never
 - `{kind:"media",ids?:string[]}`: invalidate the listed media read
   leases/presentation records; omitted IDs invalidate all.
 - `{kind:"bot_commands",conversation_id}`: invalidate the cached command directory; the ID is one currently readable conversation from the changed batch. Fetch all directory pages in the background.
-- `{kind:"activity",conversation_id,account_id,state,expires,draft?}`: transient bot progress for current readers. `state` is working/idle; optional plain-text draft is provisional, bounded to 4,000 characters, expires after 30 seconds, and is never inserted into history.
+- `{kind:"activity",conversation_id,account_id,username?,state,expires,draft?}`: transient bot progress for current readers. `username` names the sending bot; older servers omit it, so clients fall back to a generic label. `state` is working/idle; optional plain-text draft is provisional, bounded to 4,000 characters, expires after 30 seconds, and is never inserted into history.
 - `{kind:"presence",online}`: authorized online account names; preserves existing message data.
 - `{kind:"read",unread}`: updated unread metadata for the same username's connected devices.
 
@@ -703,6 +703,9 @@ remain pending for retry with visible feedback; optimistic values do not overwri
 unrelated settings received from another device. Logout clears the active settings
 session and ignores its late responses. Browser notification permission is never
 requested by a remote settings update and never written back as an account choice.
+Snapshots with `bot_status_preference: true` support syncing the bot status
+toggle. With older servers, the browser stores the toggle locally for the
+selected server and account.
 
 ## Display name profiles
 

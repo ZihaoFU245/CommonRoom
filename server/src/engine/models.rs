@@ -119,6 +119,7 @@ pub struct Snapshot {
     pub display_name_version: String,
     pub display_names: BTreeMap<String, String>,
     pub preferences: BTreeMap<String, String>,
+    pub bot_status_preference: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub color_version: String,
     pub sync: SyncVersion,

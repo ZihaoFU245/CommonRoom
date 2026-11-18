@@ -51,7 +51,10 @@ import { useConnection } from "../hooks/useConnection.ts";
 import { useBotCommands } from "../hooks/useBotCommands.ts";
 import { useHistory } from "../hooks/useHistory.ts";
 import { useComposerResize } from "../hooks/useComposerResize.ts";
-import { useChatPreferences } from "../hooks/useChatPreferences.ts";
+import {
+  useBotStatus,
+  useChatPreferences,
+} from "../hooks/useChatPreferences.ts";
 import { useChatNotifications } from "../hooks/useChatNotifications.ts";
 import type { useTheme } from "../hooks/useTheme.ts";
 import type { VirtualTimelineHandle } from "../hooks/useVirtualTimeline.ts";
@@ -173,6 +176,7 @@ export function Chat({
   const desiredRoom = useRef<string | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const historyElement = useRef<HTMLElement>(null);
+  const activityArea = useRef<HTMLDivElement>(null);
   const virtualTimeline = useRef<VirtualTimelineHandle>(null);
   const atBottom = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -243,6 +247,10 @@ export function Chat({
     showNameColors,
   );
   const preferenceSyncError = usePreferenceSync(state);
+  const [showBotStatus, setShowBotStatus] = useBotStatus(
+    state.account_access.id,
+    state.bot_status_preference === true,
+  );
   const room = state.rooms.find((r) => r.name === selected);
   const peers = useMemo(
     () =>
@@ -502,6 +510,23 @@ export function Chat({
         loadNewer();
     }
   });
+  // Activity sits outside the scroller; keep a bottom-following view pinned
+  // when the row appears, grows while drafting, or clears.
+  useLayoutEffect(() => {
+    const area = activityArea.current;
+    if (!area) return;
+    let height = area.getBoundingClientRect().height;
+    const observer = new ResizeObserver(() => {
+      const next = area.getBoundingClientRect().height;
+      if (Math.abs(next - height) < 0.5) return;
+      height = next;
+      const viewport = historyElement.current;
+      if (viewport && atBottom.current)
+        viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+    });
+    observer.observe(area);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     if (
       (peer && !peers.includes(peer)) ||
@@ -746,6 +771,8 @@ export function Chat({
           onMessageBarsChange={setMessageBars}
           nameBorders={nameBorders}
           onNameBordersChange={setNameBorders}
+          showBotStatus={showBotStatus}
+          onShowBotStatusChange={setShowBotStatus}
           allowHtml={allowHtml}
           onAllowHtmlChange={setAllowHtml}
           onChange={setFonts}
@@ -845,13 +872,17 @@ export function Chat({
                 onScroll={handleScroll}
               />
             </LibrarySourceContext.Provider>
-            <BotProgress
-              activities={botActivities.filter(
-                (item) =>
-                  item.conversation_id ===
-                  (room?.id ?? state.private_access[selected]?.id),
+            <div class="bot-progress-area" ref={activityArea}>
+              {showBotStatus && (
+                <BotProgress
+                  activities={botActivities.filter(
+                    (item) =>
+                      item.conversation_id ===
+                      (room?.id ?? state.private_access[selected]?.id),
+                  )}
+                />
               )}
-            />
+            </div>
             <OutgoingPane
               items={commands.outgoing}
               selected={selected}

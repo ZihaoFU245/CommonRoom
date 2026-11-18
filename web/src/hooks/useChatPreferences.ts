@@ -50,3 +50,21 @@ export function useChatPreferences() {
     setAllowHtml,
   };
 }
+import { useState } from "preact/hooks";
+import { readStorage, writeStorage } from "../api/browserStorage.ts";
+import { serverBaseUrl } from "../api/server.ts";
+
+export function useBotStatus(account: string, supportsSync: boolean) {
+  const storageKey = `commonroom-bot-status:${serverBaseUrl()}${account}`;
+  const [local, setLocal] = useState(() => readStorage(storageKey) !== "false");
+  const [synced, setSynced] = useAccountPreference("bot_status", "true");
+  const set = (enabled: boolean) => {
+    // Older backends reject the entire preference batch if this key is present.
+    if (supportsSync) setSynced(String(enabled));
+    else {
+      setLocal(enabled);
+      writeStorage(storageKey, String(enabled));
+    }
+  };
+  return [supportsSync ? synced === "true" : local, set] as const;
+}

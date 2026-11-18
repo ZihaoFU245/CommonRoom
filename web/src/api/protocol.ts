@@ -93,6 +93,7 @@ export interface Snapshot {
   message_display_names?: MessageDisplayNames | undefined;
   display_names?: Record<string, string>;
   preferences?: Record<string, string>;
+  bot_status_preference?: boolean;
   color_version?: string;
   /** Client-only supplemental history colors; snapshots do not send this field. */
   name_colors?: MessageColors | undefined;
@@ -176,6 +177,8 @@ export interface BotActivity {
   kind: "activity";
   conversation_id: string;
   account_id: string;
+  /** Older servers omit this; the UI then falls back to a generic label. */
+  username?: string;
   state: "working" | "idle";
   expires: number;
   draft?: string;
@@ -366,6 +369,8 @@ export const isSnapshot = (v: unknown): v is Snapshot =>
   v.kind === "snapshot" &&
   (v.resume === undefined || resumeToken(v.resume)) &&
   (v.preferences === undefined || colorMap(v.preferences)) &&
+  (v.bot_status_preference === undefined ||
+    typeof v.bot_status_preference === "boolean") &&
   snapshotBudget(v) &&
   (v.color_version === undefined || typeof v.color_version === "string") &&
   (v.name_colors === undefined || messageColors(v.name_colors)) &&
@@ -491,6 +496,7 @@ export function parseFrame(raw: string): ServerFrame | null {
     value.kind === "activity" &&
     typeof value.conversation_id === "string" &&
     typeof value.account_id === "string" &&
+    (value.username === undefined || typeof value.username === "string") &&
     (value.state === "working" || value.state === "idle") &&
     integer(value.expires) &&
     (value.draft === undefined ||
@@ -503,6 +509,7 @@ export function parseFrame(raw: string): ServerFrame | null {
       account_id: value.account_id,
       state: value.state,
       expires: value.expires,
+      ...(value.username === undefined ? {} : { username: value.username }),
       ...(value.draft === undefined ? {} : { draft: value.draft }),
     };
   }

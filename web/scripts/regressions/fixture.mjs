@@ -13,7 +13,10 @@ import {
   preferenceValue,
   flushPreferences,
 } from "../../src/features/preferences/account.ts";
-import { useChatPreferences } from "../../src/hooks/useChatPreferences.ts";
+import {
+  useBotStatus,
+  useChatPreferences,
+} from "../../src/hooks/useChatPreferences.ts";
 import { useTheme } from "../../src/hooks/useTheme.ts";
 import { useExternalAvatars } from "../../src/hooks/useExternalAvatars.ts";
 import { h, render } from "preact";
@@ -381,7 +384,6 @@ await test("user cards show profiles and open private messages", async () => {
         state: {
           online: [],
           username: "alice",
-          avatars: {},
           user_groups: { bob: ["admin"] },
         },
         onMessage: (name) => {
@@ -2680,12 +2682,14 @@ await test("account preferences update rendered controls and appearance across d
   });
   const view = probe(() => ({
     chat: useChatPreferences(),
+    botStatus: useBotStatus("browser-preferences-test", true),
     appearance: useTheme(),
     external: useExternalAvatars(),
   }));
   try {
     view.update();
     await sleep(80);
+    check(view.current.botStatus[0], "bot status defaults to visible");
     state = {
       values: {
         ...state.values,
@@ -2695,6 +2699,7 @@ await test("account preferences update rendered controls and appearance across d
         message_bars: "true",
         allow_html: "true",
         external_avatars: "true",
+        bot_status: "false",
       },
       sync: { instance: "preferences", revision: state.sync.revision + 1 },
     };
@@ -2705,6 +2710,7 @@ await test("account preferences update rendered controls and appearance across d
         view.current.chat.showNameColors &&
         view.current.chat.messageBars &&
         view.current.chat.allowHtml &&
+        !view.current.botStatus[0] &&
         view.current.external[0] &&
         view.current.appearance.theme === "dark",
     );
@@ -2715,9 +2721,11 @@ await test("account preferences update rendered controls and appearance across d
           "23px",
     );
     view.current.chat.setMessageBars(false);
+    view.current.botStatus[1](true);
     await flushPreferences();
     check(
-      state.values.message_bars === "false",
+      state.values.message_bars === "false" &&
+        state.values.bot_status === "true",
       "local control patches cloud settings",
     );
     check(
@@ -2730,6 +2738,40 @@ await test("account preferences update rendered controls and appearance across d
     applyAppearance("light", false, defaultSeeds);
     document.documentElement.style.removeProperty("--chat-font-size");
     document.documentElement.style.removeProperty("--ui-font-size");
+  }
+});
+
+await test("bot status stays local on older servers without blocking other preferences", async () => {
+  const account = crypto.randomUUID();
+  const sync = { instance: "older-server", revision: 0 };
+  let values = {};
+  await connectPreferences(account, async (patch) => {
+    if (Object.hasOwn(patch, "bot_status"))
+      throw new Error("Invalid user preference.");
+    values = { ...values, ...patch };
+    return { values, sync: { ...sync, revision: ++sync.revision } };
+  });
+  const view = probe(() => ({
+    botStatus: useBotStatus(account, false),
+    chat: useChatPreferences(),
+  }));
+  const reloaded = probe(() => useBotStatus(account, false));
+  try {
+    view.update();
+    check(view.current.botStatus[0], "bot status starts enabled");
+    view.current.botStatus[1](false);
+    view.current.chat.setMessageBars(false);
+    await flushPreferences();
+    check(
+      values.message_bars === "false",
+      "the older server still saves other settings",
+    );
+    reloaded.update();
+    check(!reloaded.current[0], "the local choice survives remounting");
+  } finally {
+    reloaded.close();
+    view.close();
+    disconnectPreferences();
   }
 });
 
@@ -6092,6 +6134,116 @@ await test("room selection preserves fragments and restores the default view wit
     if (sidebar === null) localStorage.removeItem("commonroom-sidebar-open");
     else localStorage.setItem("commonroom-sidebar-open", sidebar);
   }
+});
+
+await test("bot activity names the bot and keeps its draft out of the live region", async () => {
+  const { BotProgress } = await import("../../src/components/BotProgress.tsx");
+  const { NameColorContext } =
+    await import("../../src/components/NameColorContext.ts");
+  const { DisplayNamesContext } =
+    await import("../../src/components/DisplayNamesContext.ts");
+  const expires = Date.now() / 1000 + 30;
+  render(
+    h(
+      NameColorContext.Provider,
+      { value: { helper: "blue" } },
+      h(
+        DisplayNamesContext.Provider,
+        { value: { helper: "Helper" } },
+        h(BotProgress, {
+          avatars: {},
+          activities: [
+            {
+              kind: "activity",
+              conversation_id: "lobby",
+              account_id: "bot-1",
+              username: "helper",
+              state: "working",
+              expires,
+              draft: Array.from({ length: 20 }, (_, i) => `Line ${i + 1}`).join(
+                "\n",
+              ),
+            },
+            {
+              kind: "activity",
+              conversation_id: "lobby",
+              account_id: "bot-2",
+              username: "scribe",
+              state: "working",
+              expires,
+            },
+          ],
+        }),
+      ),
+    ),
+    tests,
+  );
+  check(
+    tests.querySelectorAll(".bot-activity").length === 2,
+    "one row per bot",
+  );
+  check(
+    tests.querySelector(".bot-activity-name")?.textContent === "Helper",
+    "the display name identifies the bot",
+  );
+  check(
+    tests
+      .querySelector(".bot-activity-name")
+      ?.getAttribute("data-name-color") === "blue",
+    "the bot name keeps its color",
+  );
+  const draft = tests.querySelector(".bot-activity-draft");
+  check(
+    draft?.getAttribute("aria-hidden") === "true",
+    "streaming text stays out of the live region",
+  );
+  const panel = tests.querySelector(".bot-progress");
+  check(
+    panel.scrollHeight > panel.clientHeight,
+    "long drafts overflow the capped panel",
+  );
+  await until(() => panel.tabIndex === 0);
+  panel.scrollTop = panel.scrollHeight;
+  check(panel.scrollTop > 0, "the overflowed panel can scroll");
+  const name = tests.querySelector(".bot-activity-name");
+  const status = tests.querySelector(".bot-activity-state");
+  panel.style.setProperty("--chat-font-size", "20px");
+  check(
+    getComputedStyle(name).fontSize === "17.5px" &&
+      getComputedStyle(name).fontSize === getComputedStyle(status).fontSize &&
+      getComputedStyle(status).fontSize === getComputedStyle(draft).fontSize,
+    "bot status text scales below the configured message size",
+  );
+  check(
+    getComputedStyle(draft).backgroundColor === "rgba(0, 0, 0, 0)" &&
+      getComputedStyle(draft).borderBlockStartWidth === "0px",
+    "the draft has no background or border",
+  );
+  check(
+    !tests.querySelector(".bot-activity img"),
+    "bot status renders no avatar",
+  );
+  check(
+    Math.abs(
+      name.getBoundingClientRect().left - draft.getBoundingClientRect().left,
+    ) < 1 && getComputedStyle(draft).textAlign === "left",
+    "the bot name and draft text share a left edge",
+  );
+  check(
+    tests.querySelectorAll(".bot-activity-draft").length === 1,
+    "only a drafting bot previews text",
+  );
+  check(
+    tests
+      .querySelectorAll(".bot-activity")[1]
+      ?.querySelector(".bot-activity-state")?.textContent === "is working",
+    "a bot without a draft keeps the working label",
+  );
+  check(
+    tests.querySelector(".bot-progress")?.getAttribute("role") === "status",
+    "progress remains a status region",
+  );
+  render(null, tests);
 });
 
 await libraryRegressions({ test, tests, until, check, sleep, empty });

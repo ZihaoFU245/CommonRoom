@@ -25,6 +25,8 @@ export interface SettingsProps {
   onMessageBarOpacityChange: (opacity: number) => void;
   nameBorders: boolean;
   onNameBordersChange: (enabled: boolean) => void;
+  showBotStatus: boolean;
+  onShowBotStatusChange: (enabled: boolean) => void;
   allowHtml: boolean;
   onAllowHtmlChange: (enabled: boolean) => void;
   onChange: (value: Fonts) => void;

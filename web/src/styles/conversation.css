@@ -530,6 +530,86 @@ button:focus-visible {
 .message-day time {
   white-space: nowrap;
 }
+
+.bot-progress-area {
+  flex-shrink: 0;
+}
+.bot-progress {
+  max-block-size: min(180px, calc(var(--app-height, 100dvh) * 0.3));
+  padding-inline: var(--message-gutter, 38px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+  font-family: var(--ui-fonts);
+  font-size: calc(var(--chat-font-size, 16px) * 0.875);
+  line-height: 1.4;
+}
+.bot-progress.live {
+  padding-block: 6px 10px;
+}
+.bot-progress:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.bot-activity {
+  padding-inline: 12px;
+  text-align: left;
+}
+.bot-activity + .bot-activity {
+  margin-block-start: 10px;
+}
+.bot-activity-line {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.bot-activity-name {
+  margin-inline-end: 6px;
+  color: var(--name, var(--ink));
+}
+.bot-activity-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  margin-inline-start: 4px;
+  vertical-align: middle;
+}
+.bot-activity-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+}
+.bot-activity-draft {
+  margin-block-start: 4px;
+  color: var(--muted);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bot-activity-dots i {
+    animation: bot-activity-dot 1.4s ease-in-out infinite;
+  }
+  .bot-activity-dots i:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+  .bot-activity-dots i:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+  @keyframes bot-activity-dot {
+    0%,
+    60%,
+    100% {
+      opacity: 0.3;
+    }
+    30% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
+}
+
 .notification-toggle {
   display: grid;
   place-items: center;
