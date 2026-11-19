@@ -4306,6 +4306,64 @@ await test("bot credential controls show local dates and insert IDs at wide and 
   }
 });
 
+await test("reply composer keeps Unicode display names on one line", () => {
+  const shortName = "生物戏牛蛙";
+  const longName = "生物戏牛蛙🐂".repeat(20);
+  for (const [width, name, truncated] of [
+    [600, longName, true],
+    [280, shortName, false],
+    [220, longName, true],
+    [220, "Alice", false],
+  ]) {
+    render(
+      h(
+        "div",
+        { style: { width: `${width}px` } },
+        h(Composer, {
+          minimumComposerHeight: 40,
+          actualComposerHeight: 40,
+          hints: [],
+          activeHint: -1,
+          replyTarget: { id: "m-1", from: name, text: "这是啥bug" },
+          input: { current: null },
+          consoleView: false,
+          draft: "",
+          pending: false,
+          canWrite: true,
+        }),
+      ),
+      tests,
+    );
+    const preview = tests.querySelector(".reply-composer");
+    const profile = preview.querySelector(".user-card-trigger");
+    const heading = preview.querySelector("strong");
+    const snippet = preview.querySelector("p");
+    const cancel = preview.querySelector('[aria-label="Cancel reply"]');
+    check(
+      profile.textContent === name,
+      "the full display name remains available",
+    );
+    check(
+      heading.offsetHeight <=
+        Math.ceil(parseFloat(getComputedStyle(heading).lineHeight)),
+      `${name} stays on one line at ${width}px`,
+    );
+    const isTruncated = profile.scrollWidth > profile.clientWidth;
+    check(
+      isTruncated === truncated &&
+        getComputedStyle(profile).textOverflow === "ellipsis",
+      `only overflowing names are truncated at ${width}px (name width ${profile.scrollWidth}px, button width ${profile.clientWidth}px)`,
+    );
+    check(
+      profile.getBoundingClientRect().bottom <=
+        snippet.getBoundingClientRect().top &&
+        profile.getBoundingClientRect().right <
+          cancel.getBoundingClientRect().left,
+      "the profile button clears the snippet and cancel button",
+    );
+  }
+});
+
 await test("Safari IME confirmation never sends or selects composer hints", async () => {
   const input = { current: null };
   let sent = 0;

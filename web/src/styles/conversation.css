@@ -872,7 +872,6 @@ button:focus-visible {
 .reply-composer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   border-left: 4px solid var(--ink);
   padding: 6px 10px;
@@ -880,8 +879,20 @@ button:focus-visible {
   font-size: 0.92857rem;
   line-height: 1.5;
 }
-.reply-composer div {
+.reply-composer > div {
+  flex: 1;
   min-width: 0;
+}
+.reply-composer strong {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25em;
+  white-space: nowrap;
+}
+.reply-composer .user-card-trigger {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .reply-composer p {
   color: var(--subtle);
@@ -889,7 +900,7 @@ button:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.reply-composer button {
+.reply-composer > button {
   display: grid;
   place-items: center;
   width: 32px;
@@ -897,7 +908,7 @@ button:focus-visible {
   padding: 0;
   flex-shrink: 0;
 }
-.reply-composer svg {
+.reply-composer > button svg {
   width: 18px;
   height: 18px;
   fill: none;
