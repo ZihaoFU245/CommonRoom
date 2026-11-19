@@ -37,13 +37,14 @@ const page = (items) => ({
   uploads_paused: false,
 });
 
-function PickerComposer() {
+function PickerComposer({ height = 40, mediaUpload }) {
   const input = useRef(null);
   const [draft, edit] = useState("hello world");
   return h(Composer, {
     account: "picker-test",
     minimumComposerHeight: 40,
-    actualComposerHeight: 40,
+    actualComposerHeight: height,
+    mediaUpload,
     hints: [],
     activeHint: 0,
     replyTarget: null,
@@ -84,6 +85,49 @@ export async function libraryRegressions({
     click("Stickers");
     await until(() => tests.querySelector('[aria-label="Collections"]'));
   }
+  await test("composer upload and sticker controls stay at the bottom as the textarea resizes", async () => {
+    const draw = (height) =>
+      render(
+        h(
+          "div",
+          { style: { position: "fixed", inset: "auto 0 0" } },
+          h(PickerComposer, {
+            height,
+            mediaUpload: { enabled: true, maxSize: 1024 },
+          }),
+        ),
+        tests,
+      );
+    draw(40);
+    const textarea = tests.querySelector("textarea");
+    const buttons = [
+      ...tests.querySelectorAll(".composer-input > .attach-button"),
+    ];
+    check(buttons.length === 2, "both attachment controls are rendered");
+    const position = (button) => button.getBoundingClientRect();
+    const initial = buttons.map(position);
+    const composer = tests.querySelector(".composer-input");
+    const style = getComputedStyle(composer);
+    const inset =
+      parseFloat(style.borderBottomWidth) + parseFloat(style.paddingBottom);
+    for (const height of [40, 120, 40]) {
+      draw(height);
+      await until(
+        () => Math.abs(textarea.getBoundingClientRect().height - height) < 1,
+      );
+      for (const [index, button] of buttons.entries()) {
+        const rect = position(button);
+        check(
+          Math.abs(rect.left - initial[index].left) < 1 &&
+            Math.abs(rect.top - initial[index].top) < 1 &&
+            Math.abs(
+              composer.getBoundingClientRect().bottom - rect.bottom - inset,
+            ) < 1,
+          `attachment control ${index + 1} stays at the bottom at ${height}px`,
+        );
+      }
+    }
+  });
   await test("media library static uploads resize before allocation and preserve chat originals", async () => {
     const original = window.XMLHttpRequest;
     const source = document.createElement("canvas");

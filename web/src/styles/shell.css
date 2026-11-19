@@ -446,6 +446,10 @@
   padding-inline-start: 10px;
 }
 
+.composer-input > .attach-button {
+  align-self: flex-end;
+}
+
 .composer textarea {
   flex: 1;
   resize: none;
