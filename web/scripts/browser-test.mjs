@@ -13,8 +13,10 @@ import {
 
 // Use an installed browser and an isolated profile; no backend or account data.
 const root = fileURLToPath(new URL("../", import.meta.url));
-const remote = process.argv[2] === "--remote-server";
-const plainHttp = remote && process.argv[3] === "http";
+const mobile = process.argv.includes("--mobile");
+const args = process.argv.slice(2).filter((arg) => arg !== "--mobile");
+const remote = args[0] === "--remote-server";
+const plainHttp = remote && args[1] === "http";
 const candidates = process.env.CHROME_BIN
   ? [process.env.CHROME_BIN]
   : [
@@ -90,8 +92,8 @@ try {
     fixture = await startRemoteServer(
       root,
       address.port,
-      process.argv[3] === "*",
-      plainHttp || process.argv[3] === "same-origin",
+      args[1] === "*",
+      plainHttp || args[1] === "same-origin",
       plainHttp,
     );
   browser = spawn(
@@ -170,10 +172,11 @@ try {
       );
     });
   }
+  const url =
+    fixture?.url ??
+    `http://127.0.0.1:${address.port}/scripts/regressions/index.html${args[0] ? `?${new URLSearchParams({ test: args[0] })}` : ""}`;
   const { targetId } = await command("Target.createTarget", {
-    url:
-      fixture?.url ??
-      `http://127.0.0.1:${address.port}/scripts/regressions/index.html${process.argv[2] ? `?${new URLSearchParams({ test: process.argv[2] })}` : ""}`,
+    url: mobile ? "about:blank" : url,
   });
   const { sessionId } = await command("Target.attachToTarget", {
     targetId,
@@ -182,13 +185,21 @@ try {
   await command(
     "Emulation.setDeviceMetricsOverride",
     {
-      width: 1280,
-      height: 900,
+      width: mobile ? 390 : 1280,
+      height: mobile ? 844 : 900,
       deviceScaleFactor: 1,
-      mobile: false,
+      mobile,
     },
     sessionId,
   );
+  if (mobile) {
+    await command(
+      "Emulation.setTouchEmulationEnabled",
+      { enabled: true },
+      sessionId,
+    );
+    await command("Page.navigate", { url }, sessionId);
+  }
   await command("Page.bringToFront", {}, sessionId);
   if (fixture) {
     try {

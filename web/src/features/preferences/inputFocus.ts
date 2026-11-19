@@ -22,15 +22,25 @@ export function prefersManualTextInput() {
 
 /** Remember the input used on hybrids where the primary pointer may be a mouse. */
 export function trackFocusInput() {
+  const root = document.documentElement;
   const update = (event: PointerEvent) => {
-    if (event.isPrimary) lastPointerWasTouch = event.pointerType === "touch";
+    if (!event.isPrimary) return;
+    lastPointerWasTouch = event.pointerType === "touch";
+    root.toggleAttribute("data-touch-input", lastPointerWasTouch);
+  };
+  const restoreHover = (event: PointerEvent) => {
+    if (event.pointerType === "mouse" && root.hasAttribute("data-touch-input"))
+      root.removeAttribute("data-touch-input");
   };
   document.addEventListener("pointerdown", update, {
     capture: true,
     passive: true,
   });
+  document.addEventListener("pointermove", restoreHover, { passive: true });
   return () => {
     document.removeEventListener("pointerdown", update, true);
+    document.removeEventListener("pointermove", restoreHover);
+    root.removeAttribute("data-touch-input");
     lastPointerWasTouch = false;
   };
 }

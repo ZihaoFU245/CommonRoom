@@ -12,14 +12,17 @@ const interactive =
 
 type MenuPosition = { x: number; y: number; keyboard: boolean };
 
-export function useMessageActionMenu(enabled: boolean) {
+export function useMessageActionMenu(
+  enabled: boolean,
+  kind: "message" | "sticker" = "message",
+) {
   const trigger = useRef<HTMLButtonElement>(null);
   const press = useRef<{
     id: number;
     x: number;
     y: number;
     timer: number;
-    row: HTMLElement;
+    target: Element;
   }>();
   const [position, setPosition] = useState<MenuPosition>();
 
@@ -27,7 +30,8 @@ export function useMessageActionMenu(enabled: boolean) {
     const active = press.current;
     if (!active) return;
     clearTimeout(active.timer);
-    delete active.row.dataset.touchPressed;
+    active.target.removeAttribute("data-touch-held");
+    window.removeEventListener("scroll", cancelPress, true);
     press.current = undefined;
   });
 
@@ -54,17 +58,25 @@ export function useMessageActionMenu(enabled: boolean) {
           position ||
           !event.isPrimary ||
           event.pointerType !== "touch" ||
-          !(event.target instanceof Element) ||
-          event.target.closest(interactive)
+          !(event.target instanceof Element)
         )
           return;
+        const control = event.target.closest(interactive);
+        if (kind === "sticker") {
+          if (control) return;
+          event.stopPropagation();
+        }
         const { clientX: x, clientY: y, pointerId: id } = event;
-        const row = event.currentTarget;
-        row.dataset.touchPressed = "";
+        const target = control ?? event.currentTarget;
         const timer = window.setTimeout(() => {
-          setPosition({ x, y, keyboard: false });
+          target.setAttribute("data-touch-held", "");
+          if (!control) setPosition({ x, y, keyboard: false });
         }, 500);
-        press.current = { id, x, y, timer, row };
+        press.current = { id, x, y, timer, target };
+        window.addEventListener("scroll", cancelPress, {
+          capture: true,
+          passive: true,
+        });
       },
       onPointerMove(event: JSX.TargetedPointerEvent<HTMLElement>) {
         const start = press.current;
@@ -97,6 +109,7 @@ export function useMessageActionMenu(enabled: boolean) {
 export type MessageAction = {
   label: string;
   accessibleLabel: string;
+  description?: string | undefined;
   disabled: boolean;
   run: () => void;
 };
@@ -105,6 +118,7 @@ export function MessageActionMenu({
   position,
   trigger,
   actions,
+  label = "Message actions",
   reaction,
   copyText,
   onClose,
@@ -112,9 +126,10 @@ export function MessageActionMenu({
   position: MenuPosition;
   trigger: RefObject<HTMLButtonElement>;
   actions: MessageAction[];
-  reaction:
+  label?: string;
+  reaction?:
     { label: string; render: (onDone: () => void) => VNode } | undefined;
-  copyText: string;
+  copyText?: string;
   onClose: () => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
@@ -223,6 +238,7 @@ export function MessageActionMenu({
   }
 
   async function copyMessage() {
+    if (!copyText) return;
     try {
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(copyText);
@@ -301,7 +317,7 @@ export function MessageActionMenu({
             ? { focusgroup: "menu nomemory" }
             : { role: "menu" })}
           class="message-action-items"
-          aria-label="Message actions"
+          aria-label={label}
           onKeyDown={navigate}
         >
           {reaction && (
@@ -337,13 +353,18 @@ export function MessageActionMenu({
               tabIndex={nativeFocus ? undefined : -1}
               disabled={action.disabled}
               data-destructive={action.label === "Delete" ? "" : undefined}
-              aria-label={action.accessibleLabel}
+              aria-label={
+                action.description
+                  ? `${action.accessibleLabel}. ${action.description}`
+                  : action.accessibleLabel
+              }
               onClick={() => {
                 complete();
                 action.run();
               }}
             >
               {action.label}
+              {action.description && <small>{action.description}</small>}
             </button>
           ))}
         </div>

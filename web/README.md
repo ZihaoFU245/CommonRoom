@@ -49,6 +49,8 @@ cannot find the executable. It requires permission to bind localhost and launch
 Chrome. It never starts the backend or reads account data. The suite covers real
 Preact conversation switching/cancellation, delayed read acknowledgements,
 command confirmation/draft recovery, and settings-panel credential cleanup.
+Add `--mobile` to run the browser scenarios with a 390px viewport and touch
+emulation. A test-name substring can narrow the run in either mode.
 The browser fixture is also available at `/scripts/regressions/index.html` when
 running the Vite development server.
 

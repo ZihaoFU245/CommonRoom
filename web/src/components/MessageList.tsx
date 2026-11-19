@@ -114,6 +114,7 @@ export const MessageList = memo(function MessageList({
       () => ({ gateRevision, allowHtml, latex }),
       [gateRevision, allowHtml, latex],
     ),
+    motionScope,
   );
   useTimelineMotion(
     entries,
@@ -219,13 +220,13 @@ export const MessageList = memo(function MessageList({
           <div class="timeline-rows">
             <div
               aria-hidden="true"
-              style={{ height: virtualWindow.top, flexShrink: 0 }}
+              style={{
+                height: Math.max(0, virtualWindow.top),
+                marginBlockStart: Math.min(0, virtualWindow.top),
+              }}
             />
             {renderedEntries}
-            <div
-              aria-hidden="true"
-              style={{ height: virtualWindow.bottom, flexShrink: 0 }}
-            />
+            <div aria-hidden="true" style={{ height: virtualWindow.bottom }} />
             <div ref={end} />
           </div>
         </section>

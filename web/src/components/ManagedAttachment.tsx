@@ -5,6 +5,10 @@ import { api } from "../api/client.ts";
 import type { MediaInfo } from "../api/media.ts";
 import { LibrarySourceContext } from "./LibrarySourceContext.ts";
 import { errorMessage } from "../api/protocol.ts";
+import {
+  MessageActionMenu,
+  useMessageActionMenu,
+} from "./MessageActionMenu.tsx";
 
 /** Metadata remains readable after expiry; file bytes never do. */
 export function ManagedAttachment({
@@ -22,7 +26,22 @@ export function ManagedAttachment({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(info?.saved === true);
   const dangling = !!info?.library && info.expires !== null;
+  const ownershipCost = dangling
+    ? `Acquires ownership and uses ${info.size.toLocaleString()} bytes of storage`
+    : undefined;
   const [error, setError] = useState("");
+  const canSave = Boolean(
+    info?.library && source && !info.expired && !info.unavailable,
+  );
+  const actionLabel = saved
+    ? dangling
+      ? "Keep in collection"
+      : "Saved"
+    : "Add to collection";
+  const stickerMenu = useMessageActionMenu(
+    canSave && (!saved || dangling),
+    "sticker",
+  );
   useEffect(() => {
     const controller = new AbortController();
     let revision = 0;
@@ -99,6 +118,11 @@ export function ManagedAttachment({
       new CustomEvent("commonroom-library-change", { detail: [id] }),
     );
   }
+  function saveSticker() {
+    save().catch((failure: unknown) => {
+      console.error("Library save update failed", failure);
+    });
+  }
   return (
     <span
       class="managed-attachment"
@@ -117,33 +141,69 @@ export function ManagedAttachment({
         />
       ) : (
         <>
-          {children}
+          {canSave ? (
+            <span class="sticker-hold-surface" {...stickerMenu.gesture}>
+              {children}
+              {(!saved || dangling) && (
+                <button
+                  type="button"
+                  class="sticker-menu-trigger visually-hidden"
+                  ref={stickerMenu.trigger}
+                  aria-label="Sticker actions"
+                  aria-haspopup="menu"
+                  aria-expanded={Boolean(stickerMenu.position)}
+                  onClick={(event) =>
+                    stickerMenu.position
+                      ? stickerMenu.close()
+                      : stickerMenu.openFromTrigger(event.detail === 0)
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowDown") return;
+                    event.preventDefault();
+                    stickerMenu.openFromTrigger(true);
+                  }}
+                >
+                  Sticker actions
+                </button>
+              )}
+            </span>
+          ) : (
+            children
+          )}
           {info?.library && source && (
             <span class="library-save">
               <button
                 type="button"
                 disabled={saving || (saved && !dangling)}
                 title={
-                  dangling
-                    ? `Acquire ownership to keep this sticker (${info.size.toLocaleString()} bytes of storage)`
-                    : "Save to your collection without acquiring ownership"
+                  ownershipCost ??
+                  "Save to your collection without acquiring ownership"
                 }
-                onClick={() => {
-                  save().catch((failure: unknown) => {
-                    console.error("Library save update failed", failure);
-                  });
-                }}
+                onClick={saveSticker}
               >
-                {saved
-                  ? dangling
-                    ? "Keep in collection"
-                    : "Saved"
-                  : "Add to collection"}
+                {actionLabel}
               </button>
               {error && <span role="status">{error}</span>}
             </span>
           )}
         </>
+      )}
+      {stickerMenu.position && (
+        <MessageActionMenu
+          position={stickerMenu.position}
+          trigger={stickerMenu.trigger}
+          label="Sticker actions"
+          actions={[
+            {
+              label: actionLabel,
+              accessibleLabel: actionLabel,
+              description: ownershipCost,
+              disabled: saving,
+              run: saveSticker,
+            },
+          ]}
+          onClose={stickerMenu.close}
+        />
       )}
     </span>
   );

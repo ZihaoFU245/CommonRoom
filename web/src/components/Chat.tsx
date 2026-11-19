@@ -601,7 +601,11 @@ export function Chat({
             ? "back"
             : "forward"
           : undefined;
-    animateNavigation(direction, restore);
+    animateNavigation(
+      direction,
+      restore,
+      event instanceof PopStateEvent && event.hasUAVisualTransition,
+    );
   });
   useEffect(() => {
     window.addEventListener("popstate", restoreSelection);

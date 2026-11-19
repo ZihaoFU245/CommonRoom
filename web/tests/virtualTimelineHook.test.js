@@ -48,6 +48,8 @@ function fixture(t) {
   globalThis.cancelAnimationFrame = (id) => frames.delete(id);
   let reducedMotion = false;
   globalThis.window = {
+    setTimeout,
+    clearTimeout,
     matchMedia: () => ({
       get matches() {
         return reducedMotion;
@@ -75,6 +77,7 @@ function fixture(t) {
     message: { sequence: i + 1 },
   }));
   const viewport = {
+    ownerDocument: new EventTarget(),
     scrollTop: 0,
     clientHeight: 600,
     get scrollHeight() {
@@ -139,8 +142,18 @@ function fixture(t) {
     reduceMotion() {
       reducedMotion = true;
     },
-    interrupt(event) {
-      listeners.get(event)();
+    interrupt(event, detail) {
+      listeners.get(event)(detail);
+      settle();
+    },
+    startTouch(target, identifier = 1) {
+      listeners.get("touchstart")({ target, changedTouches: [{ identifier }] });
+    },
+    endTouch(target, identifier = 1, type = "touchend") {
+      target.dispatchEvent(
+        Object.assign(new Event(type), { changedTouches: [{ identifier }] }),
+      );
+      settle();
     },
     nodes,
     get result() {
@@ -241,6 +254,55 @@ test("observer dimensions anchor resized rows without extra rect reads and retai
     f.viewport.scrollTop,
     f.viewport.scrollHeight - f.viewport.clientHeight,
   );
+});
+
+test("touch momentum holds backfill and resize corrections until scrolling ends", (t) => {
+  const f = fixture(t);
+  f.scroll(150);
+  const target = new EventTarget();
+  f.startTouch(target);
+  f.prepend();
+  f.resize("1", 150);
+  assert.equal(f.viewport.scrollTop, 150);
+  assert.equal(f.result.top, -150);
+  assert.deepEqual(f.handle.current.position(), { sequence: 2, offset: -50 });
+
+  f.interrupt("scrollend");
+  assert.equal(f.viewport.scrollTop, 150, "the finger is still down");
+  // The detached target still receives release even without the scroller in its event path.
+  f.endTouch(target);
+  f.scroll(175);
+  assert.equal(f.viewport.scrollTop, 175);
+  assert.deepEqual(f.handle.current.position(), { sequence: 2, offset: -75 });
+
+  f.interrupt("scrollend");
+  assert.equal(f.viewport.scrollTop, 325);
+  assert.equal(f.result.top, 0);
+  assert.deepEqual(f.handle.current.position(), { sequence: 2, offset: -75 });
+});
+
+test("touch backfill at the top settles after the last scroll without scrollend", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(t);
+  const target = new EventTarget();
+  f.startTouch(target);
+  f.prepend();
+  assert.equal(f.viewport.scrollTop, 0);
+  assert.deepEqual(f.handle.current.position(), { sequence: 1, offset: 0 });
+  f.endTouch(f.viewport.ownerDocument, 1, "touchcancel");
+  t.mock.timers.tick(100);
+  f.scroll(20);
+  t.mock.timers.tick(100);
+  f.settle();
+  assert.equal(
+    f.viewport.scrollTop,
+    20,
+    "momentum restarts the fallback timer",
+  );
+  t.mock.timers.tick(100);
+  f.settle();
+  assert.equal(f.viewport.scrollTop, 120);
+  assert.deepEqual(f.handle.current.position(), { sequence: 1, offset: -20 });
 });
 
 test("anchoring refreshes a temporarily changed window even when it returns to previous boundaries", (t) => {

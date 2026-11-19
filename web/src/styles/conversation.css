@@ -311,6 +311,11 @@ button:focus-visible {
 .composer-resize:focus-visible {
   outline: 1px solid var(--ink);
 }
+@media (max-width: 700px), (hover: none) and (pointer: coarse) {
+  .composer-resize {
+    display: none;
+  }
+}
 @media (max-width: 700px),
   (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .profile {
@@ -656,8 +661,8 @@ button:focus-visible {
 .message-actions summary::-webkit-details-marker {
   display: none;
 }
-.message-actions > button:hover,
-.message-actions summary:hover {
+:where(html:not([data-touch-input])) .message-actions > button:hover,
+:where(html:not([data-touch-input])) .message-actions summary:hover {
   background: var(--wash);
 }
 .message-actions details {
@@ -696,12 +701,17 @@ button:focus-visible {
 .message-action-items > button[data-destructive] {
   color: var(--danger);
 }
-.chat-message[data-touch-pressed] {
+.message-action-items > button > small {
+  display: block;
+  margin-block-start: 2px;
+  color: var(--muted);
+}
+.chat-message[data-touch-held],
+.chat-message :where(a, button, summary, [role="button"])[data-touch-held] {
   background: var(--wash);
 }
-.chat-message[data-touch-pressed] .message-body {
-  -webkit-touch-callout: none;
-  user-select: none;
+.chat-message[data-touch-held] .continuation-time {
+  opacity: 1;
 }
 @media (hover: none) and (pointer: coarse) {
   .message-actions {
@@ -796,7 +806,7 @@ button:focus-visible {
   border-radius: 4px;
   font-size: 1.28571rem;
 }
-.reaction-choices button:hover {
+:where(html:not([data-touch-input])) .reaction-choices button:hover {
   background: var(--wash);
 }
 :is(.reaction-picker, .message-reaction-menu) form {
@@ -916,17 +926,17 @@ button:focus-visible {
   stroke-width: 1.75;
   stroke-linecap: round;
 }
-@media (hover: hover) {
-  .chat-message:hover {
+@media (hover: hover) and (pointer: fine) {
+  :where(html:not([data-touch-input])) .chat-message:hover {
     background: var(--wash);
   }
-  .chat-message:hover .continuation-time {
+  :where(html:not([data-touch-input])) .chat-message:hover .continuation-time {
     opacity: 1;
   }
   .message-actions {
     opacity: 0;
   }
-  .chat-message:hover .message-actions,
+  :where(html:not([data-touch-input])) .chat-message:hover .message-actions,
   .chat-message:focus-within .message-actions,
   .message-actions.open {
     opacity: 1;

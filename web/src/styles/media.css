@@ -616,6 +616,60 @@
   color: var(--accent-ink);
   cursor: pointer;
 }
+.sticker-hold-surface {
+  display: contents;
+}
+.sticker-menu-trigger {
+  display: none;
+}
+@media (max-width: 700px), (hover: none) and (pointer: coarse) {
+  .library-save:not(:has([role="status"])),
+  .library-save > button {
+    display: none;
+  }
+  .sticker-hold-surface {
+    position: relative;
+    display: inline-block;
+    max-inline-size: 100%;
+    vertical-align: top;
+  }
+  .sticker-hold-surface:has(.sticker-menu-trigger) img {
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+  .sticker-menu-trigger {
+    display: block;
+  }
+  .sticker-hold-surface:has(a, button:not(.sticker-menu-trigger))
+    > .sticker-menu-trigger {
+    position: static;
+    width: auto;
+    height: auto;
+    min-height: 44px;
+    margin: 4px 0 0;
+    padding: 4px 8px;
+    clip-path: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper);
+  }
+  .sticker-menu-trigger:focus-visible {
+    z-index: 1;
+    inset: 4px auto auto 4px;
+    width: auto;
+    height: auto;
+    min-height: 44px;
+    margin: 0;
+    padding: 4px 8px;
+    clip-path: none;
+    border-radius: 6px;
+    background: var(--paper);
+  }
+  .sticker-hold-surface[data-touch-held] {
+    outline: 2px solid var(--accent);
+    border-radius: 6px;
+  }
+}
 
 .library-owned-actions {
   border-radius: 50%;

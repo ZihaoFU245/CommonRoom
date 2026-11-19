@@ -1236,10 +1236,27 @@ await test("settings panel switches clear credentials and ignore late account re
     input.value = value;
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
-  render(h(Settings, props), tests);
+  function SettingsCase() {
+    const [screen, setScreen] = useState("index");
+    return h(Settings, {
+      ...props,
+      screen,
+      onSection: setScreen,
+      onBack: () => setScreen("index"),
+    });
+  }
+  async function openSection(text) {
+    const back = tests.querySelector(".settings-back");
+    if (back) {
+      back.click();
+      await until(() => !tests.querySelector(".settings-back"));
+    }
+    click(text);
+  }
+  render(h(SettingsCase), tests);
   try {
     await until(() => tests.querySelector("dialog")?.open);
-    click("Security");
+    await openSection("Security");
     await until(() => tests.querySelector("#markdown-html-description"));
     click("Change");
     await until(() => tests.querySelector("#account-old-password"));
@@ -1251,7 +1268,7 @@ await test("settings panel switches clear credentials and ignore late account re
       .querySelector("#account-password-editor")
       .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await until(() => commands.length === 1);
-    click("Appearance");
+    await openSection("Appearance");
     await until(() => tests.querySelector("#chat-font-size"));
     pending.resolve({
       kind: "notice",
@@ -1259,7 +1276,7 @@ await test("settings panel switches clear credentials and ignore late account re
       text: "secret operation completed",
     });
     await sleep(50);
-    click("Security");
+    await openSection("Security");
     await until(() => tests.querySelector("#markdown-html-description"));
     check(
       !tests.textContent.includes("secret operation completed"),
@@ -1545,7 +1562,7 @@ await test("message actions support a touch hold and preserve desktop buttons", 
   const row = body.closest(".chat-message");
   const highlighted = () =>
     getComputedStyle(row).backgroundColor !== "rgba(0, 0, 0, 0)";
-  check(highlighted(), "a touch press highlights the row");
+  check(!highlighted(), "touch-down does not highlight a row while scrolling");
   const mouseMenu = new PointerEvent("contextmenu", {
     pointerType: "mouse",
     bubbles: true,
@@ -1564,9 +1581,45 @@ await test("message actions support a touch hold and preserve desktop buttons", 
   const hold = async () => {
     pointer("pointerdown");
     await until(menu);
+    check(highlighted(), "a deliberate hold highlights the row");
     pointer("pointerup");
     check(!highlighted(), "releasing a long press clears the highlight");
   };
+  const widget = document.createElement("button");
+  widget.textContent = "Test widget";
+  body.append(widget);
+  const widgetPointer = (type) =>
+    widget.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        pointerType: "touch",
+        isPrimary: true,
+        pointerId: 2,
+      }),
+    );
+  widgetPointer("pointerdown");
+  check(
+    !widget.hasAttribute("data-touch-held"),
+    "touch-down leaves the widget unhighlighted",
+  );
+  window.dispatchEvent(new Event("scroll"));
+  await sleep(520);
+  check(
+    !widget.hasAttribute("data-touch-held"),
+    "native scrolling cancels widget holds",
+  );
+  widgetPointer("pointerdown");
+  await until(() => widget.hasAttribute("data-touch-held"));
+  check(
+    !menu() && !highlighted(),
+    "holding a widget highlights only that widget",
+  );
+  widgetPointer("pointercancel");
+  check(
+    !widget.hasAttribute("data-touch-held"),
+    "pointer cancellation clears widget feedback",
+  );
+  widget.remove();
   await hold();
   const bounds = menu().getBoundingClientRect();
   check(
@@ -2150,7 +2203,7 @@ await test("unread navigation resolves a deleted target after paging and within 
   p.close();
 });
 
-for (const width of [1100, 360]) {
+for (const width of [1100, 360].filter((width) => width <= innerWidth)) {
   await test(`unread notice motion leaves scroll geometry stable at ${width}px`, async () => {
     function Notice({ visible, unread = false }) {
       const ref = useHistoryNoticeMotion();
@@ -4781,7 +4834,9 @@ await test("display name scopes default globally, save authorized room overrides
     tests.querySelector('[aria-controls="account-displayname-editor"]').click();
     await until(() => tests.querySelector("#account-displayname"));
     const input = tests.querySelector("#account-displayname");
-    await until(() => document.activeElement === input);
+    if (prefersManualTextInput())
+      check(document.activeElement !== input, "touch leaves text entry opt-in");
+    else await until(() => document.activeElement === input);
     const scope = tests.querySelector("#displayname-scope");
     check(
       scope.textContent.trim() === "Everywhere",
@@ -4827,11 +4882,12 @@ await test("display name scopes default globally, save authorized room overrides
       "Escape restores focus to the scope toggle",
     );
     async function chooseScope(label) {
-      await until(
-        () =>
-          document.activeElement ===
-          tests.querySelector("#account-displayname"),
-      );
+      if (!prefersManualTextInput())
+        await until(
+          () =>
+            document.activeElement ===
+            tests.querySelector("#account-displayname"),
+        );
       tests.querySelector("#displayname-scope").click();
       await until(() =>
         tests.querySelector("#displayname-scopes:not([inert])"),
@@ -5020,10 +5076,13 @@ for (const change of ["revoke", "remove"]) {
     };
     render(h(AccountEditor, props), tests);
     tests.querySelector('[aria-controls="account-displayname-editor"]').click();
-    await until(
-      () =>
-        tests.querySelector("#account-displayname") === document.activeElement,
-    );
+    await until(() => tests.querySelector("#account-displayname"));
+    if (!prefersManualTextInput())
+      await until(
+        () =>
+          tests.querySelector("#account-displayname") ===
+          document.activeElement,
+      );
     tests.querySelector("#displayname-scope").click();
     await until(() => tests.querySelector("#displayname-scopes:not([inert])"));
     [
@@ -5559,6 +5618,76 @@ await test("avatar upload failures retain the crop and expose a retryable error"
   );
 });
 
+await test("touch scrolling keeps the visible message in place during history backfill", async () => {
+  const history = { current: null };
+  const timeline = { current: null };
+  const bottom = { current: false };
+  const end = { current: null };
+  const entries = Array.from({ length: 60 }, (_, index) => {
+    const item = message(index + 1);
+    return {
+      kind: "message",
+      key: item.id,
+      order: item.sequence,
+      message: item,
+    };
+  });
+  function draw(loaded) {
+    render(
+      h(
+        "div",
+        {
+          style: { height: "350px", display: "flex", flexDirection: "column" },
+        },
+        h(MessageList, {
+          motionScope: "touch-history",
+          revision: 0,
+          historyReady: true,
+          entries: loaded,
+          username: "alice",
+          permissions: [],
+          commands: [],
+          atBottom: bottom,
+          historyElement: history,
+          virtualTimeline: timeline,
+          end,
+        }),
+      ),
+      tests,
+    );
+  }
+  draw(entries.slice(10));
+  const viewport = history.current;
+  viewport.scrollTop = 130;
+  await sleep(120);
+  const anchor = timeline.current.position();
+  const row = tests.querySelector(`[data-virtual-key="m-${anchor.sequence}"]`);
+  const before = row.getBoundingClientRect().top;
+  const top = viewport.scrollTop;
+  const touchTarget = document.createElement("span");
+  row.append(touchTarget);
+  const touch = (type) =>
+    Object.assign(new Event(type, { bubbles: true }), {
+      changedTouches: [{ identifier: 1 }],
+    });
+  touchTarget.dispatchEvent(touch("touchstart"));
+  draw(entries);
+  await sleep(120);
+  check(viewport.scrollTop === top, "backfill does not interrupt the gesture");
+  check(
+    Math.abs(row.getBoundingClientRect().top - before) <= 1,
+    "spacers keep the visible anchor in place during the gesture",
+  );
+  touchTarget.remove();
+  touchTarget.dispatchEvent(touch("touchend"));
+  viewport.dispatchEvent(new Event("scrollend"));
+  await until(() => viewport.scrollTop > top);
+  check(
+    Math.abs(row.getBoundingClientRect().top - before) <= 1,
+    "the final scroll correction is visually stationary",
+  );
+});
+
 await test("new-message announcements exclude initial history, backfill and virtual remounts", async () => {
   const bottom = { current: true },
     history = { current: null },
@@ -6024,6 +6153,37 @@ await test("room selection preserves fragments and restores the default view wit
       tests.querySelector(".conversation-back").click();
       await until(() => conversation.inert);
       await checkMotion("back");
+
+      list.querySelector(".room-link").click();
+      await until(() => !conversation.inert);
+      await checkMotion("forward");
+      const transitionCount = transitions.length;
+      // Drive a real history traversal and model Safari's native swipe flag.
+      const flag = Object.getOwnPropertyDescriptor(
+        PopStateEvent.prototype,
+        "hasUAVisualTransition",
+      );
+      Object.defineProperty(PopStateEvent.prototype, "hasUAVisualTransition", {
+        configurable: true,
+        get: () => true,
+      });
+      try {
+        history.back();
+        await until(() => conversation.inert && location.hash === "#tab=files");
+        await sleep(50);
+      } finally {
+        if (flag)
+          Object.defineProperty(
+            PopStateEvent.prototype,
+            "hasUAVisualTransition",
+            flag,
+          );
+        else delete PopStateEvent.prototype.hasUAVisualTransition;
+      }
+      check(
+        transitions.length === transitionCount,
+        "native swipe and its hashchange do not start another animation",
+      );
     }
     const beta = [...tests.querySelectorAll(".room-link")].find((button) =>
       button.textContent.includes("beta"),
@@ -6035,6 +6195,12 @@ await test("room selection preserves fragments and restores the default view wit
     );
     const composer = tests.querySelector(".composer textarea");
     check(!composer.disabled, "the room has an available composer");
+    check(
+      (getComputedStyle(tests.querySelector(".composer-resize")).display ===
+        "none") ===
+        (matchMedia("(max-width: 700px)").matches || touch),
+      "only the desktop composer exposes the manual resize handle",
+    );
     if (narrow) {
       await until(
         () => document.activeElement === tests.querySelector(".room-title h1"),

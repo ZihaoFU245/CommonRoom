@@ -50,7 +50,8 @@
   color: var(--muted);
   font-size: 0.8em;
 }
-.message-expand-toggle:hover {
+:where(html:not([data-touch-input])) .message-expand-toggle:hover,
+.message-expand-toggle[data-touch-held] {
   color: var(--ink);
   background: none;
 }
@@ -127,7 +128,9 @@
   padding: 4px 8px;
   border-radius: 4px;
 }
-.message-editor button[type="button"]:hover {
+:where(html:not([data-touch-input]))
+  .message-editor
+  button[type="button"]:hover {
   background: var(--wash);
 }
 
@@ -190,7 +193,7 @@
   border-color: var(--accent);
   color: var(--accent-label);
 }
-.html-gate-controls .primary:hover {
+:where(html:not([data-touch-input])) .html-gate-controls .primary:hover {
   background: var(--accent-hover);
 }
 .html-gate-actions {

@@ -455,6 +455,7 @@ export async function libraryRegressions({
     render(
       h(Settings, {
         state: empty,
+        screen: "account",
         pending: false,
         onAccountCommand: async () => ({ kind: "notice", id: 1, text: "ok" }),
         onClose() {},
@@ -2502,7 +2503,58 @@ export async function libraryRegressions({
         .title.includes("without acquiring ownership"),
       "an already-owned sticker is saved as a borrow without another charge",
     );
-    tests.querySelector(".library-save button").click();
+    const mobile = matchMedia(
+      "(max-width: 700px), (hover: none) and (pointer: coarse)",
+    ).matches;
+    const inlineSave = tests.querySelector(".library-save button");
+    check(
+      (getComputedStyle(inlineSave).display === "none") === mobile,
+      "touch keeps the inline save button out of the hit area",
+    );
+    const trigger = () => tests.querySelector(".sticker-menu-trigger");
+    const menu = () =>
+      document.querySelector(
+        '[aria-label="Sticker actions"].message-action-items',
+      );
+    if (mobile) {
+      const surface = trigger().parentElement;
+      const pointer = (type, clientY = 100) =>
+        surface.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            isPrimary: true,
+            pointerType: "touch",
+            pointerId: 1,
+            clientX: 40,
+            clientY,
+          }),
+        );
+      pointer("pointerdown");
+      pointer("pointermove", 140);
+      pointer("pointerup", 140);
+      await sleep(520);
+      check(
+        !menu() && !surface.hasAttribute("data-touch-held"),
+        "scrolling past a sticker leaves it alone",
+      );
+      pointer("pointerdown");
+      await until(menu);
+      check(
+        surface.hasAttribute("data-touch-held"),
+        "a deliberate hold highlights the sticker",
+      );
+      pointer("pointerup");
+      const add = menu().querySelector("button");
+      check(
+        add.textContent === "Add to collection",
+        "the sticker has its own menu action",
+      );
+      check(
+        add.getBoundingClientRect().height >= 44,
+        "the collection action has a fingertip-sized target",
+      );
+      add.click();
+    } else inlineSave.click();
     await until(() => tests.textContent.includes("Saved"));
     check(
       calls[0][0] === id &&
@@ -2518,7 +2570,7 @@ export async function libraryRegressions({
         h(
           ManagedAttachment,
           { id },
-          h("span", { "data-image": true }, "downloaded image"),
+          h("a", { "data-image": true, href: info.path }, "Download sticker"),
         ),
       ),
       tests,
@@ -2529,17 +2581,36 @@ export async function libraryRegressions({
         calls.length === 1,
       "remounting reads saved state from the server and does not offer duplicate collection addition",
     );
-    info = { ...info, saved: false };
+    const expires = Math.floor(Date.now() / 1000) + 7 * 86400;
+    info = { ...info, saved: false, expires };
     window.dispatchEvent(new Event("commonroom-library-change"));
     await until(
       () =>
         tests.querySelector(".library-save button")?.textContent ===
         "Add to collection",
     );
+    if (mobile) {
+      check(
+        trigger().getBoundingClientRect().height >= 44,
+        "linked stickers have a visible touch control",
+      );
+      trigger().click();
+      await until(menu);
+      const add = menu().querySelector("button");
+      check(
+        add.textContent.startsWith("Add to collection") &&
+          add.querySelector("small")?.textContent.includes("800 bytes"),
+        "adding an ownerless sticker discloses the storage charge",
+      );
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      await until(() => !menu());
+    }
     info = {
       ...info,
       saved: true,
-      expires: Math.floor(Date.now() / 1000) + 7 * 86400,
+      expires,
     };
     window.dispatchEvent(new Event("commonroom-library-change"));
     await until(
@@ -2558,7 +2629,21 @@ export async function libraryRegressions({
       info = { ...info, expires: null };
       return result;
     };
-    tests.querySelector(".library-save button").click();
+    if (mobile) {
+      trigger().focus();
+      trigger().dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      );
+      await until(() => menu()?.contains(document.activeElement));
+      check(
+        document.activeElement.textContent.startsWith("Keep in collection") &&
+          document.activeElement
+            .getAttribute("aria-label")
+            .includes("800 bytes"),
+        "the keyboard trigger reaches the same menu and announces the storage charge",
+      );
+      document.activeElement.click();
+    } else tests.querySelector(".library-save button").click();
     await until(
       () =>
         tests.querySelector(".library-save button")?.textContent === "Saved",

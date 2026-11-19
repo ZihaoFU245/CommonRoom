@@ -101,7 +101,8 @@
   text-align: inherit;
   cursor: pointer;
 }
-.user-card-trigger:hover {
+:where(html:not([data-touch-input])) .user-card-trigger:hover,
+.user-card-trigger[data-touch-held] {
   text-decoration: underline;
 }
 .avatar-trigger:not(:has(.user-avatar:not([hidden]))) {

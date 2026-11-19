@@ -7,9 +7,14 @@ let active: ViewTransition | undefined;
 export function animateNavigation(
   direction: "forward" | "back" | undefined,
   update: () => void,
+  browserAnimated = false,
 ) {
   const current = ++navigation;
   active?.skipTransition();
+  if (browserAnimated) {
+    flushSync(update);
+    return;
+  }
   if (
     !direction ||
     !document.startViewTransition ||
