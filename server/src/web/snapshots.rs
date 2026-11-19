@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use tokio::sync::OnceCell;
 
+// Keep recent resume tokens without letting one viewer monopolize the cache.
+const BROWSER_CHECKPOINTS_PER_VIEWER: usize = 4;
+
 type Key = (
     String,
     bool,
@@ -70,12 +73,29 @@ impl SnapshotCache {
                     old.4 != key.4
                 } else {
                     old.2.metadata == key.2.metadata
+                        && old.2.elevated == key.2.elevated
+                        && old.6 == key.6
                 };
             if !keep && let Some((_, size)) = self.entries.remove(old) {
                 self.bytes = self.bytes.saturating_sub(size);
             }
             keep
         });
+        if !key.1
+            && let Some(index) = self
+                .order
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, old)| old.0 == key.0 && !old.1)
+                .nth(BROWSER_CHECKPOINTS_PER_VIEWER - 1)
+                .map(|(index, _)| index)
+            && let Some(old) = self.order.remove(index)
+            && let Some((_, size)) = self.entries.remove(&old)
+        {
+            self.bytes -= size;
+            self.evictions += 1;
+        }
         let value = Arc::new(OnceCell::new());
         self.entries.insert(key.clone(), (value.clone(), 0));
         self.order.push_back(key.clone());
@@ -91,6 +111,7 @@ impl SnapshotCache {
             if previous.0 != key.0
                 || previous.1
                 || previous.2.metadata != key.2.metadata
+                || previous.2.elevated != key.2.elevated
                 || previous.4 != key.4
                 || previous.6 != key.6
             {
@@ -202,17 +223,27 @@ impl Viewer {
         } else {
             0
         };
+        let stamp = engine.snapshot_stamp(&user, bot)?;
+        let view = match self {
+            Self::Browser {
+                view: Some(view),
+                bot: false,
+                ..
+            } => engine
+                .conversation(&user, view)
+                .ok()
+                .map(|(_, id, _)| id)
+                .filter(|id| stamp.history.iter().any(|(visible, _)| visible == id)),
+            _ => None,
+        };
         Ok((
             (
                 profile,
                 bot,
-                engine.snapshot_stamp(&user, bot)?,
+                stamp,
                 presence,
                 name_colors,
-                match self {
-                    Self::Browser { view, .. } => view.clone(),
-                    Self::Bot(_) => None,
-                },
+                view,
                 engine
                     .active_account_id(&user)
                     .ok_or_else(|| EngineError::Forbidden("Account unavailable.".into()))?
@@ -392,6 +423,7 @@ pub(super) async fn resume_browser(
             Ok(user == resolved
                 && latest.0 == current.0
                 && latest.2 == current.2
+                && latest.4 == current.4
                 && latest.6 == current.6)
         })
         .await?;
@@ -556,6 +588,14 @@ mod tests {
         let baseline = browser_baseline(&app, &headers, false, Some("team".into()))
             .await
             .unwrap();
+        let default = browser_baseline(&app, &headers, false, None).await.unwrap();
+        for view in ["unknown", "@direct:unknown"] {
+            let ignored = browser_baseline(&app, &headers, false, Some(view.into()))
+                .await
+                .unwrap();
+            assert_eq!(ignored.etag, default.etag);
+        }
+        assert_ne!(baseline.etag, default.etag);
         let token = baseline.resume.unwrap();
         let snapshot: serde_json::Value = serde_json::from_str(&baseline.frame).unwrap();
         assert_eq!(snapshot["resume"], token);
@@ -600,6 +640,62 @@ mod tests {
             resume_browser(&app, &headers, token, &mut interests, None).await,
             Err(EngineError::Forbidden(_))
         ));
+    }
+
+    #[test]
+    fn browser_checkpoints_are_bounded_per_viewer_and_match_elevation() {
+        let app = crate::web::tests::login_test_app();
+        let stamp = app
+            .engine_read()
+            .unwrap()
+            .snapshot_stamp("alice", false)
+            .unwrap();
+        let mut cache = SnapshotCache::new(crate::config::SnapshotCacheConfig {
+            max_bytes: 4096,
+            max_entries: BROWSER_CHECKPOINTS_PER_VIEWER + 1,
+        });
+        let other = (
+            "bob".into(),
+            false,
+            stamp.clone(),
+            0,
+            false,
+            None,
+            "bob-id".into(),
+        );
+        cache.claim(&other);
+        let mut key = (
+            "alice".into(),
+            false,
+            stamp,
+            0,
+            false,
+            None,
+            "alice-id".into(),
+        );
+        for revision in 0..=u64::try_from(BROWSER_CHECKPOINTS_PER_VIEWER).unwrap() {
+            key.3 = revision;
+            let entry = cache.claim(&key);
+            assert!(
+                entry
+                    .set(Ok(Baseline {
+                        frame: "{}".into(),
+                        etag: None,
+                        complete: true,
+                        resume: Some(revision.to_string()),
+                    }))
+                    .is_ok()
+            );
+            cache.finish(&key, &entry, 2);
+        }
+        assert!(cache.entries.contains_key(&other));
+        assert_eq!(cache.entries.len(), BROWSER_CHECKPOINTS_PER_VIEWER + 1);
+        assert_eq!(cache.stats()["bytes"], BROWSER_CHECKPOINTS_PER_VIEWER * 2);
+        assert_eq!(cache.stats()["evictions"], 1);
+        assert!(cache.resume_stamp(&key, "0").is_none());
+        assert!(cache.resume_stamp(&key, "1").is_some());
+        key.2.elevated = !key.2.elevated;
+        assert!(cache.resume_stamp(&key, "1").is_none());
     }
 
     #[test]

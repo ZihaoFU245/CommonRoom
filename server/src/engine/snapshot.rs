@@ -21,8 +21,8 @@ pub(crate) struct SnapshotPlan {
     pub(super) colors: Option<Arc<super::colors::ColorDirectory>>,
 }
 impl SnapshotPlan {
-    pub(crate) fn prioritize(&mut self, view: &str) {
-        if let Some(index) = self.jobs.iter().position(|job| job.view == view) {
+    pub(crate) fn prioritize(&mut self, id: &str) {
+        if let Some(index) = self.jobs.iter().position(|job| job.id == id) {
             self.jobs[..=index].rotate_right(1);
         }
     }

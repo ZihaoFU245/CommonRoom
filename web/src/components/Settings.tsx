@@ -30,6 +30,9 @@ export function Settings(
   const [desktopTab, setDesktopTab] = useState<SettingsSection>(
     screen && screen !== "index" ? screen : "account",
   );
+  useLayoutEffect(() => {
+    setDesktopTab(screen && screen !== "index" ? screen : "account");
+  }, [screen]);
   const tab = section ?? desktopTab;
   const dialog = useRef<HTMLDialogElement>(null);
   const title = useRef<HTMLHeadingElement>(null);

@@ -1893,7 +1893,7 @@ export async function libraryRegressions({
               !tests.querySelector('.library-grid [aria-label="Use wave.gif"]'),
           );
           check(
-            actions.join(",") === "release,remove",
+            actions.join(",") === "release_and_remove",
             "completed off-page uploads can be removed normally",
           );
           await until(() =>
@@ -2050,10 +2050,10 @@ export async function libraryRegressions({
       );
     api.libraryChange = async (id, action, source, confirmed) => {
       actions.push({ id, action, source, confirmed });
-      if (action === "release" && race && !confirmed)
+      if (action === "release_and_remove" && race && !confirmed)
         throw new ApiError(409, "Final ownership changed");
-      if (action === "release") item = { ...item, owned: false };
-      if (action === "remove") {
+      if (action === "release_and_remove") item = { ...item, owned: false };
+      if (action === "remove" || action === "release_and_remove") {
         item = { ...item, saved: false };
         recent = false;
       }
@@ -2085,11 +2085,8 @@ export async function libraryRegressions({
     click("Remove wave.gif");
     await until(() => !tests.querySelector('[aria-label="Remove wave.gif"]'));
     check(
-      actions
-        .slice(-2)
-        .map((action) => action.action)
-        .join(",") === "release,remove",
-      "co-owners release their ownership and remove the entry",
+      actions.length === 2 && actions[1].action === "release_and_remove",
+      "co-owners release ownership and remove the entry in one action",
     );
     item = { ...sticker, owner_count: 1 };
     recent = true;
@@ -2187,7 +2184,7 @@ export async function libraryRegressions({
     click("Remove race.gif");
     await until(() => tests.querySelector(".library-confirmation"));
     check(
-      actions.at(-1).action === "release" &&
+      actions.at(-1).action === "release_and_remove" &&
         !actions.at(-1).confirmed &&
         item.saved,
       "last-owner race preserves the entry until confirmation",
@@ -2195,8 +2192,9 @@ export async function libraryRegressions({
     button("Remove sticker").click();
     await until(() => !tests.querySelector('[aria-label="Remove race.gif"]'));
     check(
-      actions.at(-2).confirmed === true && actions.at(-1).action === "remove",
-      "confirmed removal explicitly releases final ownership then clears the entry",
+      actions.at(-1).confirmed === true &&
+        actions.at(-1).action === "release_and_remove",
+      "confirmed removal releases final ownership and clears the entry in one action",
     );
     render(h(StickerSettings), tests);
     await until(() => tests.querySelector(".library-quota"));

@@ -285,6 +285,10 @@ message or reply to notify every other member with read access. The composer
 suggests it when available. Markdown code, inline HTML code, and link
 destinations generate no room-wide alert. The same applies to private messages,
 edits, and sends without the grant.
+Alert detection uses server-side Markdown and is independent of each
+reader's formatting preferences. A literal `@all` inside LaTeX math or
+inline HTML that hides its text can still notify the room. Use inline code
+for examples that should stay silent.
 New accounts cannot take the username `all`. In rooms with a legacy member
 named `all`, `@all` addresses that account individually.
 

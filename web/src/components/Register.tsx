@@ -36,6 +36,15 @@ export function Register({
       setError("Enter an invite code, username, and password.");
       return;
     }
+    if ([...username].length > 32) {
+      setError("Username must be at most 32 characters.");
+      focusControl(
+        event.currentTarget.querySelector<HTMLInputElement>(
+          "#register-username",
+        ),
+      );
+      return;
+    }
     if (password !== fields.get("confirmation")) {
       setError("Passwords do not match.");
       return;
@@ -80,9 +89,11 @@ export function Register({
           autoComplete="username"
           autoCapitalize="off"
           maxLength={64}
+          aria-describedby="register-username-limit"
           required
           readOnly={busy}
         />
+        <small id="register-username-limit">Up to 32 characters.</small>
         <label for="register-password">Password</label>
         <input
           id="register-password"

@@ -57,13 +57,13 @@ pub(crate) async fn list_as(
     access: media::Access,
     Query(input): Query<List>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if matches!(access, media::Access::Bot { .. }) && input.recent.is_some() {
+    let recent_only = input.recent.unwrap_or_default();
+    if matches!(access, media::Access::Bot { .. }) && recent_only {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "Use sections=true to list recent library assets.",
         ));
     }
-    let recent_only = input.recent.unwrap_or_default();
     if input.sections && (input.owned || recent_only || !input.after.is_empty()) {
         return Err(error(
             StatusCode::BAD_REQUEST,

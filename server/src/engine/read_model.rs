@@ -73,7 +73,7 @@ pub(crate) struct SnapshotStamp {
     pub(crate) metadata: u64,
     pub(crate) history: Vec<(String, u64)>,
     pub(crate) read: u64,
-    elevated: bool,
+    pub(crate) elevated: bool,
 }
 /// Read-only routing clock. Only the metadata owner can advance it.
 #[derive(Clone, Default)]

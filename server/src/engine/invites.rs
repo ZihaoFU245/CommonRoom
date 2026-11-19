@@ -31,9 +31,19 @@ fn digest(secret: &str) -> String {
 }
 
 pub(crate) fn parse(code: &str) -> Option<String> {
-    let normalized = code.trim().replace('-', "").to_ascii_uppercase();
-    (normalized.len() == CODE_LENGTH && normalized.bytes().all(|byte| ALPHABET.contains(&byte)))
-        .then(|| digest(&normalized))
+    let mut normalized = [0; CODE_LENGTH];
+    let mut bytes = code.trim().bytes().filter(|&byte| byte != b'-');
+    for slot in &mut normalized {
+        let byte = bytes.next()?.to_ascii_uppercase();
+        if !ALPHABET.contains(&byte) {
+            return None;
+        }
+        *slot = byte;
+    }
+    if bytes.next().is_some() {
+        return None;
+    }
+    std::str::from_utf8(&normalized).ok().map(digest)
 }
 
 impl Invite {

@@ -547,14 +547,23 @@ export function Chat({
     history.replaceState(history.state, "", `#${params.toString()}`);
   }, [selected, narrow]);
   const traversedHash = useRef<string>();
-  const traversingHistory = useRef(false);
-  function goBack(steps = 1) {
-    if (traversingHistory.current) return;
-    traversingHistory.current = true;
+  const historyTimer = useRef<number>();
+  function goBack(steps: number, fallback: () => void) {
+    if (historyTimer.current !== undefined) return;
+    if (history.length <= steps) {
+      fallback();
+      return;
+    }
+    const source = location.href;
+    historyTimer.current = window.setTimeout(() => {
+      historyTimer.current = undefined;
+      if (location.href === source) fallback();
+    }, 500);
     history.go(-steps);
   }
   const restoreSelection = useEvent((event: Event) => {
-    traversingHistory.current = false;
+    window.clearTimeout(historyTimer.current);
+    historyTimer.current = undefined;
     const hash = location.hash;
     const duplicate =
       event.type === "hashchange" && traversedHash.current === hash;
@@ -598,6 +607,8 @@ export function Chat({
     window.addEventListener("popstate", restoreSelection);
     window.addEventListener("hashchange", restoreSelection);
     return () => {
+      window.clearTimeout(historyTimer.current);
+      historyTimer.current = undefined;
       window.removeEventListener("popstate", restoreSelection);
       window.removeEventListener("hashchange", restoreSelection);
     };
@@ -647,15 +658,16 @@ export function Chat({
       "commonroomFromList" in entry &&
       entry.commonroomFromList === true
     ) {
-      goBack();
-      return;
-    }
+      goBack(1, showConversationList);
+    } else showConversationList();
+  }
+  function showConversationList() {
     const params = new URLSearchParams(location.hash.slice(1));
     params.delete("room");
     history.replaceState(
-      entry,
+      { ...history.state, commonroomFromList: false },
       "",
-      params.size ? `#${params}` : location.pathname + location.search,
+      params.toString() ? `#${params}` : location.pathname + location.search,
     );
     animateNavigation("back", () => setMobileHome(true));
   }
@@ -677,7 +689,7 @@ export function Chat({
     const params = new URLSearchParams(location.hash.slice(1));
     if (screen) params.set("settings", screen);
     else params.delete("settings");
-    const url = params.size
+    const url = params.toString()
       ? `#${params}`
       : location.pathname + location.search;
     const existing: unknown = history.state;
@@ -704,18 +716,21 @@ export function Chat({
     });
   }
   function backToSettingsIndex() {
-    if (ownedSettingsDepth() === 2) goBack();
-    else animateNavigation("back", () => writeSettingsRoute("index", true));
+    const fallback = () =>
+      animateNavigation("back", () => writeSettingsRoute("index", true));
+    if (ownedSettingsDepth() === 2) goBack(1, fallback);
+    else fallback();
   }
   function closeSettings() {
     setDesktopSettingsOpen(false);
     if (!settings) return;
     const depth = ownedSettingsDepth();
-    if (depth) goBack(depth);
-    else
+    const fallback = () =>
       animateNavigation(narrow ? "back" : undefined, () =>
         writeSettingsRoute(undefined, true),
       );
+    if (depth) goBack(depth, fallback);
+    else fallback();
   }
   async function changeNameColor(color: NameColor | null, room: string | null) {
     await api.color(color, room);

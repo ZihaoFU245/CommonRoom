@@ -151,6 +151,9 @@ fn room_mention_all_persists_and_uses_markdown_prose() {
             "{text}"
         );
     }
+    for text in ["$@all$", "$$@all$$", "Example <span hidden>@all</span>"] {
+        assert!(super::helpers::markdown_mentions_all(text), "{text}");
+    }
     e.execute_formatted(
         Some("alice"),
         Some("lobby"),

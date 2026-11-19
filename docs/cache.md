@@ -33,7 +33,9 @@ entries, 256 pages and 1,000 entries per conversation. Unread results default to
 4,096 entries. Serialized snapshots default to 32 MiB and 128 entries by
 account/profile and state, with authorization checks on reuse. Recent browser
 baselines also serve as WebSocket checkpoints and share those same entry and
-byte budgets.
+byte budgets. Each browser account retains up to four recent checkpoints.
+Snapshot room hints are keyed by the visible conversation ID. Unknown or
+unreadable hints reuse the default baseline.
 
 Configure these application caches under `server.cache` in `config.json` on
 either database backend; changes require restart. Omitted fields keep defaults:

@@ -5816,7 +5816,10 @@ await test("user cards start a new private chat without sending a message", asyn
     static CLOSED = 3;
     readyState = 1;
     constructor() {
-      queueMicrotask(() => this.onopen?.());
+      queueMicrotask(() => {
+        this.onopen?.();
+        this.onmessage?.({ data: JSON.stringify(state) });
+      });
     }
     send(frame) {
       frames.push(JSON.parse(frame));
@@ -6153,8 +6156,16 @@ await test("room selection preserves fragments and restores the default view wit
           document.activeElement !== tests.querySelector(".composer textarea"),
         "a direct room link opens the conversation without focusing the composer",
       );
-      tests.querySelector(".conversation-back").click();
-      await until(() => linkedConversation.inert);
+      // Simulate a restored entry whose claimed predecessor is unavailable.
+      history.replaceState({ commonroomFromList: true }, "", location.href);
+      const go = history.go;
+      try {
+        history.go = () => {};
+        tests.querySelector(".conversation-back").click();
+        await until(() => linkedConversation.inert);
+      } finally {
+        history.go = go;
+      }
       await checkMotion("back");
       check(
         location.hash === "#tab=files",

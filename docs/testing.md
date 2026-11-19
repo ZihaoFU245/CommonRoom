@@ -127,11 +127,14 @@ running source checks or tests in either mode. Release builds package `./chat`
 and `./ui.tar.xz` containing `dist/`. Run `auto/check.sh` separately.
 
 The amd64 build uploads `ui.tar.xz` as the standalone `release-ui` workflow
-artifact before the dependency audit. The publish job downloads it alongside
-the architecture archives after the audit passes.
+artifact. After both builds pass, the publish job downloads it alongside the
+architecture archives and includes the tagged revision's `RELEASE-NOTES.md` in
+the GitHub release body.
 
-The release workflow runs `./auto/audit.sh` with a POSIX shell, AWK, Git,
-Cargo and cargo-audit. The script fetches a fresh RustSec database and audits
+The release workflow runs `./auto/audit.sh` in an independent job. Audit
+failures appear in the workflow results while publishing proceeds from successful
+builds. The audit uses a POSIX shell, AWK, Git, Cargo and cargo-audit.
+The script fetches a fresh RustSec database and audits
 the locked workspace graph with all workspace features and target platforms.
 Use `--db PATH` for an already-fetched advisory database. It creates a temporary
 lockfile projection without modifying `Cargo.lock` or ignoring advisory IDs.
