@@ -333,6 +333,12 @@ key code 229, and confirming Enter immediately after compositionend. It also
 checks consecutive compositions, blur recovery, Shift+Enter and a deliberate
 later Enter; candidate confirmation must not submit or consume hint shortcuts.
 
+Open `/scripts/regressions/index.html?test=settings%20panels%20stay` in iOS
+Safari to check server settings and the Settings dialog with a reduced visual
+viewport. On an iPhone or iPad, also open the keyboard in Server settings in
+portrait and landscape and verify that Cancel and Save remain reachable. On a
+wide iPad, check the password form in Settings and dismiss the keyboard.
+
 Reply-quote browser regressions cover originals outside the virtual window and
 outside loaded history. A known original sequence requests one around-page;
 legacy quotes without a sequence can still reveal a loaded virtual row.

@@ -177,6 +177,35 @@
   border-radius: 8px;
   margin: 0;
 }
+@supports (-webkit-touch-callout: none) {
+  .login-server-settings:has(.login-server-card) {
+    --server-bottom-gap: max(20px, env(safe-area-inset-bottom));
+    /* Keep the open card and its gear above the software keyboard. */
+    top: calc(
+      var(--app-top, 0px) + var(--app-height, 100dvh) - var(--server-bottom-gap)
+    );
+    bottom: auto;
+    translate: 0 -100%;
+  }
+  .login-server-motion {
+    max-width: calc(
+      100vw - max(20px, env(safe-area-inset-left)) -
+        max(20px, env(safe-area-inset-right))
+    );
+  }
+  .login-server-card {
+    max-height: max(
+      0px,
+      calc(
+        var(--app-height, 100dvh) - var(--server-bottom-gap) - 46px -
+          max(12px, env(safe-area-inset-top))
+      )
+    );
+  }
+  .login-server-actions button {
+    min-height: 44px;
+  }
+}
 .primary {
   display: flex;
   justify-content: space-between;

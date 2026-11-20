@@ -38,6 +38,24 @@
   color: var(--ink);
   box-shadow: var(--shadow-dialog);
 }
+@supports (-webkit-touch-callout: none) {
+  .settings-dialog {
+    --settings-visible-height: var(--app-height, 100dvh);
+    /* Compact Settings already fills this viewport. Fit the tablet dialog too. */
+    position: fixed;
+    top: calc(
+      var(--app-top, 0px) + max(20px, var(--settings-visible-height) * 0.05)
+    );
+    bottom: auto;
+    margin-block: 0;
+    height: calc(var(--settings-visible-height) * 0.9);
+    max-height: max(0px, calc(var(--settings-visible-height) - 40px));
+  }
+  .settings-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 .settings-dialog[open] {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);

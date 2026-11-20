@@ -379,6 +379,77 @@ await test("login server settings animate from the gear and persist only on Save
   }
 });
 
+await test("settings panels stay within the iOS keyboard viewport", async () => {
+  const root = document.documentElement.style;
+  const iosWebKit = CSS.supports("-webkit-touch-callout", "none");
+  const compact = matchMedia(mobileLayout).matches;
+  const height = Math.min(380, innerHeight - 100);
+  const top = 55;
+  render(
+    h(
+      "div",
+      null,
+      h(LoginServerSettings, { disabled: false, onSave() {} }),
+      h("dialog", { class: "settings-dialog" }, "Settings"),
+      h("div", { class: "reply-composer" }, h("button", null, "Cancel reply")),
+    ),
+    tests,
+  );
+  const gear = tests.querySelector(".login-server-trigger");
+  const settings = tests.querySelector(".settings-dialog");
+  const bounds = (element) => element.getBoundingClientRect();
+  gear.click();
+  await until(serverSettingsFocus);
+  const card = tests.querySelector(".login-server-card");
+  await sleep(180);
+  const originalCard = bounds(card);
+  try {
+    root.setProperty("--app-height", `${height}px`);
+    root.setProperty("--app-top", `${top}px`);
+    const actions = tests.querySelector(".login-server-actions");
+    if (iosWebKit) {
+      check(
+        bounds(card).top >= top && bounds(gear).bottom <= top + height,
+        "the login server settings and gear fit above the keyboard",
+      );
+      check(
+        [...actions.querySelectorAll("button")].every(
+          (button) => bounds(button).height >= 44,
+        ) &&
+          bounds(tests.querySelector(".reply-composer > button")).width >= 44,
+        "the server settings actions and Cancel Reply have larger touch targets",
+      );
+    } else {
+      check(
+        bounds(card).top === originalCard.top &&
+          bounds(card).bottom === originalCard.bottom,
+        "other engines retain the existing login card position",
+      );
+    }
+
+    settings.showModal();
+    if (iosWebKit || compact) {
+      check(
+        bounds(settings).top >= top && bounds(settings).bottom <= top + height,
+        "the Settings dialog fits the visible viewport",
+      );
+    } else {
+      check(
+        bounds(settings).height > height,
+        "wide Settings in other engines retains layout viewport sizing",
+      );
+    }
+  } finally {
+    settings.close();
+    root.removeProperty("--app-height");
+    root.removeProperty("--app-top");
+  }
+  check(
+    Math.abs(bounds(card).bottom - originalCard.bottom) < 1,
+    "dismissing the keyboard restores the card position",
+  );
+});
+
 await test("login server settings shrink visibly back to the gear on every dismissal", async () => {
   const play = Animation.prototype.play;
   let exit;
