@@ -63,6 +63,7 @@ export function useMessageActionMenu(
     clearTimeout(active.timer);
     active.target.removeAttribute("data-touch-held");
     active.replyRow?.removeAttribute("data-reply-swiping");
+    active.replyRow?.removeAttribute("data-reply-ready");
     active.replyRow?.style.removeProperty("--reply-swipe-x");
     active.replyRow?.style.removeProperty("--reply-swipe-progress");
     window.removeEventListener("scroll", cancelPress, true);
@@ -164,6 +165,7 @@ export function useMessageActionMenu(
         if (!row) return;
         const offset = Math.max(-88, Math.min(88, dx));
         row.dataset.replySwiping = offset < 0 ? "left" : "right";
+        row.toggleAttribute("data-reply-ready", Math.abs(dx) >= replyDistance);
         row.style.setProperty("--reply-swipe-x", `${offset}px`);
         row.style.setProperty(
           "--reply-swipe-progress",

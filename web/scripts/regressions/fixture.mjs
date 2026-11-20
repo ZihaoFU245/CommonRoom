@@ -1979,6 +1979,20 @@ await test("swipe-to-reply follows the finger, commits on release, and preserves
   try {
     for (const direction of [1, -1]) {
       pointer("pointerdown", x);
+      pointer("pointermove", x + direction * 63);
+      const outline = getComputedStyle(row, "::before").maskImage;
+      pointer("pointermove", x + direction * 64);
+      check(
+        row.hasAttribute("data-reply-ready") &&
+          getComputedStyle(row, "::before").maskImage !== outline,
+        "the reply icon fills at the trigger distance",
+      );
+      pointer("pointermove", x + direction * 63);
+      check(
+        !row.hasAttribute("data-reply-ready") &&
+          getComputedStyle(row, "::before").maskImage === outline,
+        "the reply icon returns to its outline below the trigger distance",
+      );
       pointer("pointermove", x + direction * 70);
       const icon = getComputedStyle(row, "::before");
       check(
@@ -1993,6 +2007,7 @@ await test("swipe-to-reply follows the finger, commits on release, and preserves
         "dragging does not commit before release",
       );
       pointer("pointerup", x + direction * 70);
+      check(!row.hasAttribute("data-reply-ready"), "release clears the fill");
       await until(
         () => Math.abs(row.getBoundingClientRect().left - start) < 0.5,
       );
@@ -2025,6 +2040,7 @@ await test("swipe-to-reply follows the finger, commits on release, and preserves
       replies === 2 &&
         pulses.length === 2 &&
         !row.hasAttribute("data-reply-swiping") &&
+        !row.hasAttribute("data-reply-ready") &&
         !document.querySelector(".message-action-menu"),
       "short drags, scrolls, edge swipes, links, and cancellations do not reply",
     );

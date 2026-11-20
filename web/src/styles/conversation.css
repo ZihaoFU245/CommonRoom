@@ -484,6 +484,9 @@ button:focus-visible {
   left: auto;
   scale: 1;
 }
+.chat-message[data-reply-ready]::before {
+  mask-image: url("../assets/reply-filled.svg");
+}
 .chat-message > .user-avatar,
 .chat-message > .avatar-trigger {
   position: absolute;
