@@ -1,14 +1,18 @@
 import { AttachmentPlaceholder } from "./AttachmentPlaceholder.tsx";
 import type { ComponentChildren } from "preact";
-import { useContext, useEffect, useState } from "preact/hooks";
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "preact/hooks";
 import { api } from "../api/client.ts";
 import type { MediaInfo } from "../api/media.ts";
 import { LibrarySourceContext } from "./LibrarySourceContext.ts";
 import { errorMessage } from "../api/protocol.ts";
-import {
-  MessageActionMenu,
-  useMessageActionMenu,
-} from "./MessageActionMenu.tsx";
+import { StickerActionsContext } from "./MessageActionMenu.tsx";
+import { useEvent } from "../hooks/useEvent.ts";
 
 /** Metadata remains readable after expiry; file bytes never do. */
 export function ManagedAttachment({
@@ -38,10 +42,43 @@ export function ManagedAttachment({
       ? "Keep in collection"
       : "Saved"
     : "Add to collection";
-  const stickerMenu = useMessageActionMenu(
-    canSave && (!saved || dangling),
-    "sticker",
-  );
+  const registerSticker = useContext(StickerActionsContext);
+  const surface = useRef<HTMLSpanElement>(null);
+  const saveSticker = useEvent((disclosedCost: string | undefined) => {
+    if (
+      !canSave ||
+      saving ||
+      (saved && !dangling) ||
+      disclosedCost !== ownershipCost
+    )
+      return;
+    save().catch((failure: unknown) => {
+      console.error("Library save update failed", failure);
+    });
+  });
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!canSave || !registerSticker || !element) return;
+    return registerSticker(
+      element,
+      actionLabel === "Saved"
+        ? undefined
+        : {
+            label: actionLabel,
+            accessibleLabel: actionLabel,
+            description: ownershipCost,
+            disabled: saving,
+            run: () => saveSticker(ownershipCost),
+          },
+    );
+  }, [
+    canSave,
+    registerSticker,
+    actionLabel,
+    ownershipCost,
+    saving,
+    saveSticker,
+  ]);
   useEffect(() => {
     const controller = new AbortController();
     let revision = 0;
@@ -118,11 +155,6 @@ export function ManagedAttachment({
       new CustomEvent("commonroom-library-change", { detail: [id] }),
     );
   }
-  function saveSticker() {
-    save().catch((failure: unknown) => {
-      console.error("Library save update failed", failure);
-    });
-  }
   return (
     <span
       class="managed-attachment"
@@ -141,31 +173,9 @@ export function ManagedAttachment({
         />
       ) : (
         <>
-          {canSave ? (
-            <span class="sticker-hold-surface" {...stickerMenu.gesture}>
+          {canSave && registerSticker ? (
+            <span class="sticker-hold-surface" ref={surface}>
               {children}
-              {(!saved || dangling) && (
-                <button
-                  type="button"
-                  class="sticker-menu-trigger visually-hidden"
-                  ref={stickerMenu.trigger}
-                  aria-label="Sticker actions"
-                  aria-haspopup="menu"
-                  aria-expanded={Boolean(stickerMenu.position)}
-                  onClick={(event) =>
-                    stickerMenu.position
-                      ? stickerMenu.close()
-                      : stickerMenu.openFromTrigger(event.detail === 0)
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key !== "ArrowDown") return;
-                    event.preventDefault();
-                    stickerMenu.openFromTrigger(true);
-                  }}
-                >
-                  Sticker actions
-                </button>
-              )}
             </span>
           ) : (
             children
@@ -179,7 +189,7 @@ export function ManagedAttachment({
                   ownershipCost ??
                   "Save to your collection without acquiring ownership"
                 }
-                onClick={saveSticker}
+                onClick={() => saveSticker(ownershipCost)}
               >
                 {actionLabel}
               </button>
@@ -187,23 +197,6 @@ export function ManagedAttachment({
             </span>
           )}
         </>
-      )}
-      {stickerMenu.position && (
-        <MessageActionMenu
-          position={stickerMenu.position}
-          trigger={stickerMenu.trigger}
-          label="Sticker actions"
-          actions={[
-            {
-              label: actionLabel,
-              accessibleLabel: actionLabel,
-              description: ownershipCost,
-              disabled: saving,
-              run: saveSticker,
-            },
-          ]}
-          onClose={stickerMenu.close}
-        />
       )}
     </span>
   );

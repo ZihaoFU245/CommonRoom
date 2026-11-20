@@ -20,6 +20,7 @@ import {
 import { useTheme } from "../../src/hooks/useTheme.ts";
 import { useExternalAvatars } from "../../src/hooks/useExternalAvatars.ts";
 import { h, render } from "preact";
+import { useAppViewport } from "../../src/hooks/useAppViewport.ts";
 import { useHistory } from "../../src/hooks/useHistory.ts";
 import {
   mobileLayout,
@@ -138,6 +139,90 @@ const serverSettingsFocus = () =>
   tests.querySelector(
     prefersManualTextInput() ? ".login-server-card" : "#login-server-url",
   ) === document.activeElement;
+
+await test("keyboard viewport pan keeps the sidebar anchored and the composer visible", async () => {
+  const original = Object.getOwnPropertyDescriptor(window, "visualViewport");
+  const visual = Object.assign(new EventTarget(), {
+    height: innerHeight,
+    offsetTop: 0,
+    scale: 1,
+  });
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: visual,
+  });
+  const narrow = matchMedia(mobileLayout).matches;
+  const app = document.createElement("div");
+  app.id = "app";
+  document.body.append(app);
+  function ViewportLayout() {
+    useAppViewport();
+    return h(
+      "div",
+      { class: narrow ? "chat-shell" : "chat-shell navigation-open" },
+      h(
+        "div",
+        { class: "chat-layout" },
+        h("aside", { class: "sidebar visible" }, "Conversations"),
+        h(
+          "section",
+          { class: "conversation" },
+          h("header", { class: "chat-header" }, "Room"),
+          h("div", { class: "message-list" }, "Messages"),
+          h("div", { class: "composer-area" }, h("textarea")),
+        ),
+      ),
+    );
+  }
+  try {
+    render(h(ViewportLayout), app);
+    const bounds = (selector) =>
+      app.querySelector(selector).getBoundingClientRect();
+    const sidebarHeight = bounds(".sidebar").height;
+    const historyHeight = bounds(".message-list").height;
+    check(
+      getComputedStyle(document.documentElement).overflowY === "hidden",
+      "the chat document cannot scroll vertically",
+    );
+    visual.height -= 300;
+    visual.dispatchEvent(new Event("resize"));
+    await until(
+      () => bounds(".conversation").height === visual.height,
+      () =>
+        `measured ${bounds(".conversation").height}px, expected ${visual.height}px`,
+    );
+    visual.offsetTop = 230;
+    visual.dispatchEvent(new Event("scroll"));
+    await until(() => bounds(".chat-shell").top === visual.offsetTop);
+    if (!narrow) {
+      check(
+        bounds(".sidebar").top === visual.offsetTop &&
+          bounds(".sidebar").height === sidebarHeight,
+        "the keyboard leaves the sidebar layout in place",
+      );
+    }
+    check(
+      bounds(".message-list").height === historyHeight - 300,
+      "the timeline takes up the keyboard resize",
+    );
+    check(
+      bounds(".composer-area").bottom === visual.offsetTop + visual.height,
+      "the composer sits at the visible bottom",
+    );
+    Object.assign(visual, { height: innerHeight, offsetTop: 0 });
+    visual.dispatchEvent(new Event("resize"));
+    await until(
+      () =>
+        bounds(".conversation").top === 0 &&
+        bounds(".message-list").height === historyHeight,
+    );
+  } finally {
+    render(null, app);
+    app.remove();
+    if (original) Object.defineProperty(window, "visualViewport", original);
+    else delete window.visualViewport;
+  }
+});
 
 await test("invite registration checks confirmation and returns to sign in", async () => {
   const original = api.register;
@@ -1546,6 +1631,26 @@ await test("message actions support a touch hold and preserve desktop buttons", 
     );
   }
   const body = tests.querySelector(".message-body");
+  const row = body.closest(".chat-message");
+  if (touch) {
+    check(
+      getComputedStyle(row).userSelect === "none" &&
+        getComputedStyle(row.querySelector(".continuation-time"))
+          .webkitUserSelect === "none",
+      "the whole message hold surface blocks native selection before touch-down",
+    );
+    const link = document.createElement("a");
+    const code = document.createElement("code");
+    link.href = "#";
+    body.append(link, code);
+    check(
+      getComputedStyle(link).userSelect === "text" &&
+        getComputedStyle(code).userSelect === "text",
+      "links and code retain native text selection inside the hold surface",
+    );
+    link.remove();
+    code.remove();
+  }
   const menu = () => document.querySelector(".message-action-menu");
   const pointer = (type, clientY = innerHeight - 10) =>
     body.dispatchEvent(
@@ -1559,7 +1664,6 @@ await test("message actions support a touch hold and preserve desktop buttons", 
       }),
     );
   pointer("pointerdown");
-  const row = body.closest(".chat-message");
   const highlighted = () =>
     getComputedStyle(row).backgroundColor !== "rgba(0, 0, 0, 0)";
   check(!highlighted(), "touch-down does not highlight a row while scrolling");
@@ -1621,6 +1725,13 @@ await test("message actions support a touch hold and preserve desktop buttons", 
   );
   widget.remove();
   await hold();
+  const heldMenu = menu();
+  if (typeof heldMenu.showPopover === "function") {
+    check(
+      heldMenu.popover === "manual" && heldMenu.matches(":popover-open"),
+      "native light dismiss cannot close a menu on the touch release that opened it",
+    );
+  }
   const bounds = menu().getBoundingClientRect();
   check(
     bounds.right <= innerWidth && bounds.bottom <= innerHeight,
@@ -1666,6 +1777,15 @@ await test("message actions support a touch hold and preserve desktop buttons", 
   menu().querySelector('[aria-label*="Reply"]').click();
   await until(() => !menu());
   check(action === "reply", "Reply invokes the existing message action");
+
+  await hold();
+  pointer("pointerdown");
+  pointer("pointerup");
+  await until(() => !menu());
+  check(
+    action === "reply",
+    "the next outside tap dismisses without choosing an action",
+  );
 
   await hold();
   menu().querySelector('[aria-label^="Edit"]').click();
@@ -1748,6 +1868,99 @@ await test("message actions support a touch hold and preserve desktop buttons", 
   );
   trigger.click();
   await until(menu);
+});
+
+await test("swipe-to-reply follows the finger, commits on release, and preserves other gestures", async () => {
+  let replies = 0;
+  render(
+    h(ConsoleMessage, {
+      message: message(1),
+      self: "alice",
+      date: messageDate(1),
+      grouped: true,
+      canReply: true,
+      onReply: () => replies++,
+      onExpandedChange() {},
+    }),
+    tests,
+  );
+  const row = tests.querySelector(".chat-message");
+  const body = row.querySelector(".message-body");
+  const x = innerWidth / 2;
+  const start = row.getBoundingClientRect().left;
+  const original = Object.getOwnPropertyDescriptor(navigator, "vibrate");
+  const pulses = [];
+  Object.defineProperty(navigator, "vibrate", {
+    configurable: true,
+    value: (duration) => pulses.push(duration),
+  });
+  const pointer = (type, clientX, clientY = 100, target = body) =>
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: "touch",
+        clientX,
+        clientY,
+      }),
+    );
+  try {
+    for (const direction of [1, -1]) {
+      pointer("pointerdown", x);
+      pointer("pointermove", x + direction * 70);
+      const icon = getComputedStyle(row, "::before");
+      check(
+        Math.abs(row.getBoundingClientRect().left - start - direction * 70) <
+          1 &&
+          icon.opacity === "1" &&
+          Number.parseFloat(icon.scale) === -direction,
+        "the row follows the touch and the reply icon points toward the message",
+      );
+      check(
+        replies === pulses.length && replies === (direction === 1 ? 0 : 1),
+        "dragging does not commit before release",
+      );
+      pointer("pointerup", x + direction * 70);
+      await until(
+        () => Math.abs(row.getBoundingClientRect().left - start) < 0.5,
+      );
+    }
+    check(
+      replies === 2 && pulses.length === 2,
+      "each committed swipe replies and requests one haptic pulse",
+    );
+
+    pointer("pointerdown", x);
+    pointer("pointermove", x + 35);
+    pointer("pointerup", x + 35);
+    pointer("pointerdown", x);
+    pointer("pointermove", x + 75, 190);
+    pointer("pointerup", x + 75, 190);
+    pointer("pointerdown", 5);
+    pointer("pointermove", 85);
+    pointer("pointerup", 85);
+    const link = document.createElement("a");
+    link.href = "#swipe-test";
+    body.append(link);
+    pointer("pointerdown", x, 100, link);
+    pointer("pointermove", x + 75, 100, link);
+    pointer("pointerup", x + 75, 100, link);
+    pointer("pointerdown", x);
+    pointer("pointermove", x + 80);
+    pointer("pointercancel", x + 80);
+    pointer("pointerup", x + 80);
+    check(
+      replies === 2 &&
+        pulses.length === 2 &&
+        !row.hasAttribute("data-reply-swiping") &&
+        !document.querySelector(".message-action-menu"),
+      "short drags, scrolls, edge swipes, links, and cancellations do not reply",
+    );
+  } finally {
+    if (original) Object.defineProperty(navigator, "vibrate", original);
+    else delete navigator.vibrate;
+  }
 });
 
 await test("same-minute message bars join without gaps and break on minute, author and unread changes", async () => {
@@ -6112,7 +6325,7 @@ await test("room selection preserves fragments and restores the default view wit
       const { transition, types } = transitions.at(-1);
       check(
         types.includes(`mobile-${direction}`),
-        `navigation animates ${direction}`,
+        `navigation to ${location.hash} animates ${direction} (started ${types.join(", ")})`,
       );
       await transition.ready;
       check(
@@ -6130,6 +6343,15 @@ await test("room selection preserves fragments and restores the default view wit
         "the incoming screen uses the directional animation",
       );
       await transition.finished;
+    }
+    async function traverseHistory(direction, restored) {
+      const count = transitions.length;
+      history[direction]();
+      await until(restored);
+      check(
+        transitions.length === count,
+        `browser ${direction} restores the route without a second animation`,
+      );
     }
     const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
     const list = tests.querySelector(".sidebar");
@@ -6219,24 +6441,21 @@ await test("room selection preserves fragments and restores the default view wit
       new URLSearchParams(location.hash.slice(1)).get("tab") === "files",
       "room changes preserve other fragment parameters",
     );
-    history.back();
-    await until(() =>
+    await traverseHistory("back", () =>
       narrow
         ? conversation.inert
         : tests.querySelector(".room-title h1")?.textContent === "alpha",
     );
-    await checkMotion("back");
     check(
       location.hash === "#tab=files",
       "Back restores the default view and original fragment",
     );
-    history.forward();
-    await until(
+    await traverseHistory(
+      "forward",
       () =>
         !conversation.inert &&
         tests.querySelector(".room-title h1")?.textContent === "beta",
     );
-    await checkMotion("forward");
     if (narrow) {
       tests.querySelector(".conversation-back").click();
       await until(
@@ -6244,10 +6463,24 @@ await test("room selection preserves fragments and restores the default view wit
           conversation.inert &&
           document.activeElement === list.querySelector("h1"),
       );
+      await checkMotion("back");
+      check(
+        [...list.querySelectorAll(".room-link")].every(
+          (button) =>
+            getComputedStyle(button).backgroundColor === "rgba(0, 0, 0, 0)",
+        ),
+        "returning to the conversation list leaves every room unhighlighted",
+      );
       tests.querySelector(".settings-toggle").click();
       await until(() => tests.querySelector(".settings-dialog")?.open);
       await checkMotion("forward");
       const settings = tests.querySelector(".settings-dialog");
+      const title = settings.querySelector("#settings-title");
+      check(
+        document.activeElement === title &&
+          getComputedStyle(title).outlineStyle === "none",
+        "Settings opens with focus on its static title and no focus ring",
+      );
       const layout = settings.getBoundingClientRect();
       const sections = settings.querySelector(".settings-navigation");
       check(
@@ -6274,27 +6507,30 @@ await test("room selection preserves fragments and restores the default view wit
         location.hash.includes("settings=account"),
         "Settings sections have a history entry",
       );
-      history.back();
-      await until(() => !settings.querySelector(".settings-content"));
-      await checkMotion("back");
+      await traverseHistory(
+        "back",
+        () => !settings.querySelector(".settings-content"),
+      );
       check(
         location.hash.includes("settings=index"),
         "browser Back returns to the Settings index",
       );
-      history.forward();
-      await until(() => settings.querySelector(".settings-content"));
-      await checkMotion("forward");
+      await traverseHistory("forward", () =>
+        settings.querySelector(".settings-content"),
+      );
       settings.querySelector(".settings-back").click();
       await until(
         () => document.activeElement === sections.querySelector("button"),
       );
       await checkMotion("back");
-      history.back();
-      await until(() => !tests.querySelector(".settings-dialog"));
-      await checkMotion("back");
-      history.forward();
-      await until(() => tests.querySelector(".settings-dialog")?.open);
-      await checkMotion("forward");
+      await traverseHistory(
+        "back",
+        () => !tests.querySelector(".settings-dialog"),
+      );
+      await traverseHistory(
+        "forward",
+        () => tests.querySelector(".settings-dialog")?.open,
+      );
       tests.querySelector(".settings-navigation button").click();
       await until(() => tests.querySelector(".settings-back"));
       await checkMotion("forward");
@@ -6337,6 +6573,61 @@ await test("room selection preserves fragments and restores the default view wit
         location.hash === "#tab=files",
         "an in-app Back from a direct room link stays in Commonroom",
       );
+      if (animated) {
+        const nativeTransition = document.startViewTransition;
+        const captures = [];
+        document.startViewTransition = ({ update }) => {
+          const finished = deferred();
+          const capture = {
+            skipped: false,
+            finish() {
+              update();
+              finished.resolve();
+            },
+          };
+          captures.push(capture);
+          return {
+            ready: Promise.resolve(),
+            finished: finished.promise,
+            skipTransition() {
+              capture.skipped = true;
+            },
+          };
+        };
+        try {
+          const [alpha, nextRoom] = tests.querySelectorAll(".room-link");
+          const roomOpened = (name) =>
+            !linkedConversation.inert &&
+            tests.querySelector(".room-title h1").textContent === name &&
+            new URLSearchParams(location.hash.slice(1)).get("room") === name;
+          alpha.click();
+          await until(() => roomOpened("alpha"));
+          check(
+            captures[0].skipped,
+            "a stalled snapshot does not hold the room closed",
+          );
+          captures[0].finish();
+          await traverseHistory("back", () => linkedConversation.inert);
+          await traverseHistory("forward", () => roomOpened("alpha"));
+          await traverseHistory("back", () => linkedConversation.inert);
+
+          alpha.click();
+          nextRoom.click();
+          check(
+            roomOpened("beta") && captures.length === 2 && captures[1].skipped,
+            "the latest room opens immediately during an unfinished snapshot",
+          );
+          captures[1].finish();
+          check(
+            roomOpened("beta"),
+            "a late snapshot cannot restore the earlier room",
+          );
+          await traverseHistory("back", () => linkedConversation.inert);
+          await traverseHistory("forward", () => roomOpened("beta"));
+        } finally {
+          document.startViewTransition = nativeTransition;
+        }
+      }
     } else if (!touch) {
       composer.blur();
       const alpha = list.querySelector(".room-link");

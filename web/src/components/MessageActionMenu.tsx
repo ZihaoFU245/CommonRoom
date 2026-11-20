@@ -1,4 +1,5 @@
 import { createPortal } from "preact/compat";
+import { createContext } from "preact";
 import type { JSX, RefObject, VNode } from "preact";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
@@ -9,28 +10,61 @@ import { useEvent } from "../hooks/useEvent.ts";
 
 const interactive =
   "a, button, summary, input, textarea, select, video, audio, iframe, pre, code, [contenteditable], [role='button']";
+const replyDistance = 64;
 
-type MenuPosition = { x: number; y: number; keyboard: boolean };
+type MenuPosition = {
+  x: number;
+  y: number;
+  keyboard: boolean;
+  touchHold?: true;
+  sticker?: HTMLElement | undefined;
+};
+
+export const StickerActionsContext = createContext<
+  | ((element: HTMLElement, action: MessageAction | undefined) => () => void)
+  | undefined
+>(undefined);
 
 export function useMessageActionMenu(
   enabled: boolean,
-  kind: "message" | "sticker" = "message",
+  onSwipeReply?: () => void,
 ) {
   const trigger = useRef<HTMLButtonElement>(null);
+  const [stickers] = useState(
+    () => new WeakMap<HTMLElement, MessageAction | undefined>(),
+  );
+  const heldSticker = useRef<HTMLElement>();
   const press = useRef<{
     id: number;
     x: number;
     y: number;
     timer: number;
     target: Element;
+    replyRow: HTMLElement | undefined;
+    held: boolean;
+    swiping: boolean;
   }>();
   const [position, setPosition] = useState<MenuPosition>();
+  const registerSticker = useEvent(
+    (element: HTMLElement, action: MessageAction | undefined) => {
+      stickers.set(element, action);
+      return () => {
+        stickers.delete(element);
+        setPosition((current) =>
+          current?.sticker === element ? undefined : current,
+        );
+      };
+    },
+  );
 
   const cancelPress = useEvent(() => {
     const active = press.current;
     if (!active) return;
     clearTimeout(active.timer);
     active.target.removeAttribute("data-touch-held");
+    active.replyRow?.removeAttribute("data-reply-swiping");
+    active.replyRow?.style.removeProperty("--reply-swipe-x");
+    active.replyRow?.style.removeProperty("--reply-swipe-progress");
     window.removeEventListener("scroll", cancelPress, true);
     press.current = undefined;
   });
@@ -45,14 +79,24 @@ export function useMessageActionMenu(
     if (bounds) setPosition({ x: bounds.left, y: bounds.bottom, keyboard });
   }
 
+  function stickerAt(target: Element) {
+    const sticker = target.closest<HTMLElement>(".sticker-hold-surface");
+    return sticker && stickers.has(sticker) ? sticker : undefined;
+  }
+
   return {
     trigger,
+    registerSticker,
     position: enabled ? position : undefined,
+    stickerAction: position?.sticker
+      ? stickers.get(position.sticker)
+      : undefined,
     close: () => setPosition(undefined),
     openFromTrigger,
     gesture: {
       onPointerDown(event: JSX.TargetedPointerEvent<HTMLElement>) {
         cancelPress();
+        heldSticker.current = undefined;
         if (
           !enabled ||
           position ||
@@ -61,18 +105,41 @@ export function useMessageActionMenu(
           !(event.target instanceof Element)
         )
           return;
-        const control = event.target.closest(interactive);
-        if (kind === "sticker") {
-          if (control) return;
-          event.stopPropagation();
-        }
+        const sticker = stickerAt(event.target);
+        const interactiveTarget = event.target.closest(interactive);
+        const control = sticker ? null : interactiveTarget;
         const { clientX: x, clientY: y, pointerId: id } = event;
-        const target = control ?? event.currentTarget;
+        const target = sticker ?? control ?? event.currentTarget;
+        // Leave edge gestures to browser Back and Forward.
+        const viewport = window.visualViewport;
+        const left = viewport?.offsetLeft ?? 0;
+        const right = left + (viewport?.width ?? window.innerWidth);
+        const replyRow =
+          onSwipeReply &&
+          !interactiveTarget &&
+          (!viewport || viewport.scale === 1) &&
+          x > left + 24 &&
+          x < right - 24
+            ? event.currentTarget
+            : undefined;
+        if (sticker) target.setAttribute("data-touch-held", "");
         const timer = window.setTimeout(() => {
-          target.setAttribute("data-touch-held", "");
-          if (!control) setPosition({ x, y, keyboard: false });
+          if (press.current) press.current.held = true;
+          if (sticker) heldSticker.current = sticker;
+          else target.setAttribute("data-touch-held", "");
+          if (!control)
+            setPosition({ x, y, keyboard: false, touchHold: true, sticker });
         }, 500);
-        press.current = { id, x, y, timer, target };
+        press.current = {
+          id,
+          x,
+          y,
+          timer,
+          target,
+          replyRow,
+          held: false,
+          swiping: false,
+        };
         window.addEventListener("scroll", cancelPress, {
           capture: true,
           passive: true,
@@ -80,15 +147,62 @@ export function useMessageActionMenu(
       },
       onPointerMove(event: JSX.TargetedPointerEvent<HTMLElement>) {
         const start = press.current;
-        if (
-          start?.id === event.pointerId &&
-          Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10
-        )
-          cancelPress();
+        if (start?.id !== event.pointerId) return;
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        const row = start.replyRow;
+        if (!start.swiping) {
+          if (Math.hypot(dx, dy) <= 10) return;
+          if (!row || start.held || Math.abs(dx) <= Math.abs(dy) * 1.4) {
+            cancelPress();
+            return;
+          }
+          start.swiping = true;
+          clearTimeout(start.timer);
+          start.target.removeAttribute("data-touch-held");
+        }
+        if (!row) return;
+        const offset = Math.max(-88, Math.min(88, dx));
+        row.dataset.replySwiping = offset < 0 ? "left" : "right";
+        row.style.setProperty("--reply-swipe-x", `${offset}px`);
+        row.style.setProperty(
+          "--reply-swipe-progress",
+          String(
+            Math.max(
+              0,
+              Math.min(1, (Math.abs(offset) - 26) / (replyDistance - 26)),
+            ),
+          ),
+        );
       },
-      onPointerUp: cancelPress,
+      onPointerUp(event: JSX.TargetedPointerEvent<HTMLElement>) {
+        const start = press.current;
+        const reply =
+          start?.id === event.pointerId &&
+          start.swiping &&
+          Math.abs(event.clientX - start.x) >= replyDistance;
+        cancelPress();
+        if (reply && onSwipeReply) {
+          onSwipeReply();
+          navigator.vibrate?.(12);
+        }
+      },
       onPointerCancel: cancelPress,
       onLostPointerCapture: cancelPress,
+      onClickCapture(event: JSX.TargetedMouseEvent<HTMLElement>) {
+        const sticker = heldSticker.current;
+        if (!event.detail || !sticker || !(event.target instanceof Element))
+          return;
+        if (
+          !sticker.contains(event.target) &&
+          event.target !== sticker.closest(interactive)
+        )
+          return;
+        heldSticker.current = undefined;
+        // A hold opens the menu even when the sticker is inside a link.
+        event.preventDefault();
+        event.stopPropagation();
+      },
       onContextMenu(event: JSX.TargetedMouseEvent<HTMLElement>) {
         const pointer = "pointerType" in event ? event.pointerType : undefined;
         const touch = pointer
@@ -98,7 +212,7 @@ export function useMessageActionMenu(
           enabled &&
           touch &&
           event.target instanceof Element &&
-          !event.target.closest(interactive)
+          (stickerAt(event.target) || !event.target.closest(interactive))
         )
           event.preventDefault();
       },
@@ -118,7 +232,6 @@ export function MessageActionMenu({
   position,
   trigger,
   actions,
-  label = "Message actions",
   reaction,
   copyText,
   onClose,
@@ -126,7 +239,6 @@ export function MessageActionMenu({
   position: MenuPosition;
   trigger: RefObject<HTMLButtonElement>;
   actions: MessageAction[];
-  label?: string;
   reaction?:
     { label: string; render: (onDone: () => void) => VNode } | undefined;
   copyText?: string;
@@ -146,7 +258,9 @@ export function MessageActionMenu({
       typeof element.showPopover === "function" &&
       !element.matches(":popover-open")
     ) {
-      element.setAttribute("popover", "auto");
+      // The release that completes a hold lands outside the newly opened menu.
+      // Let the existing outside pointer-down handler dismiss it on the next tap.
+      element.setAttribute("popover", position.touchHold ? "manual" : "auto");
       element.showPopover();
     }
     const viewport = window.visualViewport;
@@ -158,13 +272,24 @@ export function MessageActionMenu({
       element.style.maxHeight = `${Math.max(0, height - 16)}px`;
       element.style.maxWidth = `${Math.max(0, width - 16)}px`;
       const bounds = element.getBoundingClientRect();
-      const below = position.y + 8;
+      const sticker = position.sticker?.getBoundingClientRect();
+      const image = position.sticker
+        ?.querySelector("img")
+        ?.getBoundingClientRect();
+      const stickerBottom = sticker?.bottom ?? position.y;
+      const stickerTop = sticker?.top ?? position.y;
+      const below = Math.max(stickerBottom, image?.bottom ?? stickerBottom) + 8;
+      const above =
+        Math.min(stickerTop, image?.top ?? stickerTop) - 8 - bounds.height;
       const nextTop =
         below + bounds.height <= top + height - 8
           ? below
-          : position.y - 8 - bounds.height;
+          : above >= top + 8
+            ? above
+            : position.y - 8 - bounds.height;
       element.style.left = `${Math.max(left + 8, Math.min(position.x, left + width - bounds.width - 8))}px`;
       element.style.top = `${Math.max(top + 8, Math.min(nextTop, top + height - bounds.height - 8))}px`;
+      element.style.visibility = "visible";
     };
     place();
     if (mode === "copy") {
@@ -179,10 +304,17 @@ export function MessageActionMenu({
 
     const dismiss = () => close.current();
     const outside = (event: PointerEvent | FocusEvent) => {
+      const sticker = position.sticker;
       if (
         event.target instanceof Node &&
         !element.contains(event.target) &&
-        !trigger.current?.contains(event.target)
+        !trigger.current?.contains(event.target) &&
+        !(
+          event.type === "focusin" &&
+          sticker &&
+          (sticker.contains(event.target) ||
+            event.target === sticker.closest(interactive))
+        )
       )
         dismiss();
     };
@@ -317,7 +449,7 @@ export function MessageActionMenu({
             ? { focusgroup: "menu nomemory" }
             : { role: "menu" })}
           class="message-action-items"
-          aria-label={label}
+          aria-label="Message actions"
           onKeyDown={navigate}
         >
           {reaction && (

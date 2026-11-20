@@ -56,6 +56,9 @@
   font-size: 1.28571rem;
   font-weight: 600;
 }
+#settings-title:focus {
+  outline: none;
+}
 .settings-back,
 .settings-section-title {
   display: none;
@@ -580,7 +583,7 @@
   (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .settings-dialog {
     position: fixed;
-    inset: 0;
+    inset: var(--app-top, 0px) 0 auto;
     width: 100%;
     max-width: none;
     height: var(--app-height, 100dvh);

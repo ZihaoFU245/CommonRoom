@@ -1,16 +1,18 @@
 import { useLayoutEffect } from "preact/hooks";
 
-/** Follow the keyboard-sized viewport; pinch zoom must not resize the app. */
+/** Track keyboard resize and pan without changing the layout during pinch zoom. */
 export function useAppViewport() {
   useLayoutEffect(() => {
     const visual = window.visualViewport;
+    const style = document.documentElement.style;
     let frame = 0;
     const update = () => {
       if (visual && visual.scale !== 1) return;
-      document.documentElement.style.setProperty(
+      style.setProperty(
         "--app-height",
         `${visual?.height ?? window.innerHeight}px`,
       );
+      style.setProperty("--app-top", `${visual?.offsetTop ?? 0}px`);
     };
     const schedule = () => {
       cancelAnimationFrame(frame);
@@ -18,12 +20,15 @@ export function useAppViewport() {
     };
     update();
     visual?.addEventListener("resize", schedule);
+    visual?.addEventListener("scroll", schedule);
     window.addEventListener("resize", schedule);
     return () => {
       cancelAnimationFrame(frame);
       visual?.removeEventListener("resize", schedule);
+      visual?.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
-      document.documentElement.style.removeProperty("--app-height");
+      style.removeProperty("--app-height");
+      style.removeProperty("--app-top");
     };
   }, []);
 }

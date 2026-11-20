@@ -562,6 +562,7 @@ export function Chat({
     history.go(-steps);
   }
   const restoreSelection = useEvent((event: Event) => {
+    const appTraversal = historyTimer.current !== undefined;
     window.clearTimeout(historyTimer.current);
     historyTimer.current = undefined;
     const hash = location.hash;
@@ -604,7 +605,9 @@ export function Chat({
     animateNavigation(
       direction,
       restore,
-      event instanceof PopStateEvent && event.hasUAVisualTransition,
+      // System navigation may already be animated even on browsers without the flag.
+      !appTraversal ||
+        (event instanceof PopStateEvent && event.hasUAVisualTransition),
     );
   });
   useEffect(() => {

@@ -455,6 +455,35 @@ button:focus-visible {
   --message-top-gap: 2px;
   padding-top: 2px;
 }
+.chat-message[data-swipe-reply] {
+  touch-action: pan-y pinch-zoom;
+  translate: var(--reply-swipe-x, none);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chat-message[data-swipe-reply]:not([data-reply-swiping]) {
+    transition: translate var(--control-motion-duration)
+      var(--control-motion-easing);
+  }
+}
+.chat-message[data-reply-swiping]::before {
+  position: absolute;
+  top: 50%;
+  left: calc(8px - var(--reply-swipe-x));
+  width: 20px;
+  height: 20px;
+  translate: 0 -50%;
+  scale: -1 1;
+  background: var(--accent);
+  mask: url("../assets/reply.svg") center / contain no-repeat;
+  opacity: var(--reply-swipe-progress);
+  pointer-events: none;
+  content: "";
+}
+.chat-message[data-reply-swiping="left"]::before {
+  right: calc(8px + var(--reply-swipe-x));
+  left: auto;
+  scale: 1;
+}
 .chat-message > .user-avatar,
 .chat-message > .avatar-trigger {
   position: absolute;
@@ -673,6 +702,7 @@ button:focus-visible {
 }
 .message-action-menu {
   position: fixed;
+  visibility: hidden;
   z-index: 30;
   inset: auto;
   min-width: min(152px, calc(100vw - 16px));
@@ -717,12 +747,16 @@ button:focus-visible {
   .message-actions {
     display: none;
   }
-  .chat-message:has(.message-action-trigger:enabled) .message-body {
+  /* WebKit can start native selection before the long-press timer fires. */
+  .chat-message:has(> .message-action-trigger:enabled) {
     -webkit-touch-callout: none;
+    -webkit-user-select: none;
     user-select: none;
   }
-  .chat-message .message-body :is(a, video, audio, pre, code) {
+  .chat-message
+    :is(a, video, audio, pre, code, input, textarea, [contenteditable]) {
     -webkit-touch-callout: default;
+    -webkit-user-select: text;
     user-select: text;
   }
 }

@@ -206,9 +206,14 @@
   height: var(--app-height, 100dvh);
   color: var(--muted);
 }
+:root:has(> body > #app > .chat-shell) {
+  overflow-y: hidden;
+  overscroll-behavior-y: none;
+}
 .chat-shell {
-  position: relative;
-  height: var(--app-height, 100dvh);
+  position: fixed;
+  inset: var(--app-top, 0px) 0 auto;
+  height: 100dvh;
 }
 .navigation-toggle {
   position: absolute;
@@ -227,9 +232,9 @@
   padding-left: 68px;
 }
 .chat-layout {
-  height: var(--app-height, 100dvh);
+  height: 100%;
   display: flex;
-  overflow: hidden;
+  overflow: clip;
 }
 .sidebar {
   width: 280px;
@@ -260,10 +265,10 @@
   font-size: 0.92857rem;
   overflow-wrap: anywhere;
 }
-.room-link:hover {
+.room-link:active {
   background: var(--wash);
 }
-.room-link.selected {
+.chat-shell:not(.mobile-conversation-list) .room-link.selected {
   background: var(--wash);
   color: var(--accent-ink);
   font-weight: 600;
@@ -290,13 +295,28 @@
 .private-chat-icon:has(.user-avatar:not([hidden])) .hash {
   visibility: hidden;
 }
-.room-link:hover .private-chat-icon .hash,
 .room-link:focus-visible .private-chat-icon .hash {
   visibility: visible;
 }
-.room-link:hover .private-chat-icon .user-avatar,
 .room-link:focus-visible .private-chat-icon .user-avatar {
   visibility: hidden;
+}
+@media (hover: hover) and (pointer: fine) {
+  :where(html:not([data-touch-input])) .room-link:hover {
+    background: var(--wash);
+  }
+  :where(html:not([data-touch-input]))
+    .room-link:hover
+    .private-chat-icon
+    .hash {
+    visibility: visible;
+  }
+  :where(html:not([data-touch-input]))
+    .room-link:hover
+    .private-chat-icon
+    .user-avatar {
+    visibility: hidden;
+  }
 }
 .direct-link {
   margin-top: 17px;
@@ -350,7 +370,8 @@
 .conversation {
   --message-gutter: 38px;
   position: absolute;
-  inset: 0 0 0 auto;
+  inset: 0 0 auto auto;
+  height: var(--app-height, 100%);
   background: var(--paper);
   flex: none;
   width: 100%;
@@ -409,6 +430,7 @@
 .message-list {
   flex: 1;
   overflow: auto;
+  overflow-x: hidden;
   padding: 16px var(--message-gutter, 38px) 20px;
   scrollbar-width: thin;
   overflow-anchor: none;
@@ -457,7 +479,7 @@
   border: 0;
   background: transparent;
   min-height: 24px;
-  max-height: min(240px, 40dvh);
+  max-height: min(240px, calc(var(--app-height, 100dvh) * 0.4));
   padding: 3px 0;
 
   line-height: 1.5;

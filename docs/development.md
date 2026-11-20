@@ -237,8 +237,10 @@ login text does not request an emoji font. The picker and
 its catalogue load on demand. A blocking same-origin appearance
 bootstrap applies the saved theme, custom palette and font sizes before styles
 paint; keep it ahead of the stylesheet in the emitted HTML. Editable fields on
-coarse pointers stay at least 16px. The shell follows VisualViewport height at
-normal zoom so the composer stays above the keyboard, and preserves pinch zoom.
+coarse pointers stay at least 16px. At normal zoom the chat shell follows the
+VisualViewport's top offset and the conversation uses its visible height. The
+sidebar keeps its layout height while the composer stays above the keyboard.
+Pinch zoom leaves these dimensions unchanged.
 The conversation list is the home screen on narrow viewports and short touch
 viewports in landscape. A room link opens its conversation directly, and the
 header back button returns to the list.

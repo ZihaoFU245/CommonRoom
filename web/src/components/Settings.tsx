@@ -36,11 +36,12 @@ export function Settings(
   const tab = section ?? desktopTab;
   const dialog = useRef<HTMLDialogElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
-  const previousSection = useRef<SettingsSection>();
+  const previousSection = useRef(section);
   useLayoutEffect(() => {
     const element = dialog.current;
     if (!element) return;
     element.showModal();
+    focusControl(title.current, { preventScroll: true });
     return () => element.close();
   }, []);
   useLayoutEffect(() => {

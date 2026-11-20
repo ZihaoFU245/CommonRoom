@@ -3,15 +3,16 @@ import { flushSync } from "preact/compat";
 let navigation = 0;
 let active: ViewTransition | undefined;
 
-/** Commit mobile navigation inside the browser's snapshot update. */
+/** Animate app navigation and commit system navigation before the next paint. */
 export function animateNavigation(
   direction: "forward" | "back" | undefined,
   update: () => void,
-  browserAnimated = false,
+  immediate = false,
 ) {
   const current = ++navigation;
-  active?.skipTransition();
-  if (browserAnimated) {
+  if (immediate || active) {
+    // Do not start another snapshot while the previous one is still settling.
+    active?.skipTransition();
     flushSync(update);
     return;
   }
@@ -24,21 +25,33 @@ export function animateNavigation(
     update();
     return;
   }
+  let committed = false;
+  const commit = () => {
+    if (committed || current !== navigation) return;
+    committed = true;
+    flushSync(update);
+  };
   const transition = (active = document.startViewTransition({
     types: [`mobile-${direction}`],
     update: () => {
-      // Skipped transitions still run their update callbacks.
-      if (current === navigation) flushSync(update);
+      window.clearTimeout(captureTimeout);
+      commit();
     },
   }));
+  const captureTimeout = window.setTimeout(() => {
+    if (current !== navigation || committed) return;
+    // A slow snapshot should not hold the route change behind a frozen frame.
+    transition.skipTransition();
+    commit();
+  }, 100);
   void transition.ready.catch(() => {
     // A newer navigation or a hidden document can skip capture.
   });
-  void transition.finished
-    .catch((error: unknown) => {
-      console.error("Navigation transition failed", error);
-    })
-    .finally(() => {
-      if (active === transition) active = undefined;
-    });
+  const clear = () => {
+    if (active === transition) active = undefined;
+  };
+  void transition.finished.then(clear, (error: unknown) => {
+    clear();
+    console.error("Navigation transition failed", error);
+  });
 }

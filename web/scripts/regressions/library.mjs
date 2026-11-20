@@ -7,6 +7,8 @@ import { LibraryPicker } from "../../src/components/LibraryPicker.tsx";
 import { ManagedAttachment } from "../../src/components/ManagedAttachment.tsx";
 import { LibrarySourceContext } from "../../src/components/LibrarySourceContext.ts";
 import { Composer } from "../../src/components/Composer.tsx";
+import { ConsoleMessage } from "../../src/components/ConsoleMessage.tsx";
+import { messageDate } from "../../src/features/conversation/messages.ts";
 import { CollapsibleMessage } from "../../src/components/CollapsibleMessage.tsx";
 import { ContentMotionContext } from "../../src/hooks/useContentResizeMotion.ts";
 import { useVirtualTimeline } from "../../src/hooks/useVirtualTimeline.ts";
@@ -2514,7 +2516,7 @@ export async function libraryRegressions({
   await test("media library message save uses source access and retirement replaces downloaded media", async () => {
     let info = {
       ...sticker,
-      path: `/api/media/${id}/file`,
+      path: new URL(`api/media/${id}/file`, serverBaseUrl()).pathname,
       library: true,
       saved: false,
       unavailable: false,
@@ -2525,190 +2527,288 @@ export async function libraryRegressions({
     api.mediaStatus = async () => info;
     api.libraryChange = async (...args) => {
       calls.push(args);
-      info = { ...info, saved: true };
+      info = { ...info, saved: true, expires: null };
       return { ok: true };
     };
-    render(
-      h(
-        LibrarySourceContext.Provider,
-        { value: "source-room" },
+    function draw(stickerMarkdown) {
+      render(
         h(
-          ManagedAttachment,
-          { id },
-          h("span", { "data-image": true }, "downloaded image"),
+          LibrarySourceContext.Provider,
+          { value: "source-room" },
+          h(ConsoleMessage, {
+            message: {
+              id: "sticker-message",
+              sequence: 1,
+              time: 1,
+              from: "alice",
+              markdown: true,
+              text: `Caption\n\n${stickerMarkdown}`,
+              mentions: [],
+              reactions: {},
+            },
+            self: "alice",
+            date: messageDate(1),
+            grouped: true,
+            canReply: true,
+            onReply() {},
+            onExpandedChange() {},
+          }),
         ),
-      ),
-      tests,
-    );
-    await until(() => tests.querySelector(".library-save button"));
-    check(
-      tests
-        .querySelector(".library-save button")
-        .title.includes("without acquiring ownership"),
-      "an already-owned sticker is saved as a borrow without another charge",
-    );
+        tests,
+      );
+    }
     const mobile = matchMedia(
       "(max-width: 700px), (hover: none) and (pointer: coarse)",
     ).matches;
-    const inlineSave = tests.querySelector(".library-save button");
-    check(
-      (getComputedStyle(inlineSave).display === "none") === mobile,
-      "touch keeps the inline save button out of the hit area",
-    );
-    const trigger = () => tests.querySelector(".sticker-menu-trigger");
     const menu = () =>
       document.querySelector(
-        '[aria-label="Sticker actions"].message-action-items',
+        '.message-action-items[aria-label="Message actions"]',
       );
-    if (mobile) {
-      const surface = trigger().parentElement;
-      const pointer = (type, clientY = 100) =>
-        surface.dispatchEvent(
-          new PointerEvent(type, {
-            bubbles: true,
-            isPrimary: true,
-            pointerType: "touch",
-            pointerId: 1,
-            clientX: 40,
-            clientY,
-          }),
-        );
-      pointer("pointerdown");
-      pointer("pointermove", 140);
-      pointer("pointerup", 140);
-      await sleep(520);
-      check(
-        !menu() && !surface.hasAttribute("data-touch-held"),
-        "scrolling past a sticker leaves it alone",
+    const saveButton = () => tests.querySelector(".library-save button");
+    const pointer = (target, type, clientY = 100) =>
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          isPrimary: true,
+          pointerType: "touch",
+          pointerId: 1,
+          clientX: 40,
+          clientY,
+        }),
       );
-      pointer("pointerdown");
+    async function hold(target) {
+      pointer(target, "pointerdown");
       await until(menu);
-      check(
-        surface.hasAttribute("data-touch-held"),
-        "a deliberate hold highlights the sticker",
-      );
-      pointer("pointerup");
-      const add = menu().querySelector("button");
-      check(
-        add.textContent === "Add to collection",
-        "the sticker has its own menu action",
-      );
-      check(
-        add.getBoundingClientRect().height >= 44,
-        "the collection action has a fingertip-sized target",
-      );
-      add.click();
-    } else inlineSave.click();
-    await until(() => tests.textContent.includes("Saved"));
-    check(
-      calls[0][0] === id &&
-        calls[0][1] === "save" &&
-        calls[0][2] === "source-room",
-      "saving identifies the authorized source",
-    );
-    render(null, tests);
-    render(
-      h(
-        LibrarySourceContext.Provider,
-        { value: "source-room" },
-        h(
-          ManagedAttachment,
-          { id },
-          h("a", { "data-image": true, href: info.path }, "Download sticker"),
-        ),
-      ),
-      tests,
-    );
-    await until(() => tests.textContent.includes("Saved"));
-    check(
-      tests.querySelector(".library-save button")?.disabled &&
-        calls.length === 1,
-      "remounting reads saved state from the server and does not offer duplicate collection addition",
-    );
-    const expires = Math.floor(Date.now() / 1000) + 7 * 86400;
-    info = { ...info, saved: false, expires };
-    window.dispatchEvent(new Event("commonroom-library-change"));
-    await until(
-      () =>
-        tests.querySelector(".library-save button")?.textContent ===
-        "Add to collection",
-    );
-    if (mobile) {
-      check(
-        trigger().getBoundingClientRect().height >= 44,
-        "linked stickers have a visible touch control",
-      );
-      trigger().click();
-      await until(menu);
-      const add = menu().querySelector("button");
-      check(
-        add.textContent.startsWith("Add to collection") &&
-          add.querySelector("small")?.textContent.includes("800 bytes"),
-        "adding an ownerless sticker discloses the storage charge",
-      );
+      pointer(target, "pointerup");
+    }
+    async function dismiss() {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       );
       await until(() => !menu());
     }
-    info = {
-      ...info,
-      saved: true,
-      expires,
-    };
-    window.dispatchEvent(new Event("commonroom-library-change"));
-    await until(
-      () =>
-        tests.querySelector(".library-save button")?.textContent ===
-        "Keep in collection",
+    const originalFetch = window.fetch;
+    const serviceWorker = Object.getOwnPropertyDescriptor(
+      navigator,
+      "serviceWorker",
     );
-    check(
-      !tests.querySelector(".library-save button").disabled &&
-        tests.querySelector(".library-save button").title.includes("800"),
-      "a saved dangling sticker offers ownership acquisition with its storage charge",
+    const bytes = Uint8Array.from(
+      atob("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"),
+      (char) => char.charCodeAt(0),
     );
-    const previousChange = api.libraryChange;
-    api.libraryChange = async (...args) => {
-      const result = await previousChange(...args);
-      info = { ...info, expires: null };
-      return result;
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: undefined,
+    });
+    window.fetch = (address, options) => {
+      if (String(address).endsWith("/api/media/resolve"))
+        return Promise.resolve(
+          mediaResolution(address, options, {
+            content_type: "image/gif",
+            size: bytes.length,
+          }),
+        );
+      if (String(address).includes(info.path))
+        return Promise.resolve(
+          new Response(bytes, {
+            headers: { "Content-Type": "image/gif" },
+          }),
+        );
+      return originalFetch(address, options);
     };
-    if (mobile) {
-      trigger().focus();
-      trigger().dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    httpImageCache.invalidate();
+    try {
+      draw(`![Wave](${info.path})`);
+      await until(
+        () =>
+          saveButton() &&
+          tests.querySelector(".sticker-hold-surface img")?.naturalWidth,
       );
-      await until(() => menu()?.contains(document.activeElement));
       check(
-        document.activeElement.textContent.startsWith("Keep in collection") &&
-          document.activeElement
-            .getAttribute("aria-label")
-            .includes("800 bytes"),
-        "the keyboard trigger reaches the same menu and announces the storage charge",
+        saveButton().title.includes("without acquiring ownership"),
+        "an already-owned sticker is saved as a borrow without another charge",
       );
-      document.activeElement.click();
-    } else tests.querySelector(".library-save button").click();
-    await until(
-      () =>
-        tests.querySelector(".library-save button")?.textContent === "Saved",
-    );
-    check(
-      calls.length === 2 &&
-        tests.querySelector(".library-save button").disabled,
-      "keeping a dangling sticker uses the atomic save action and restores Saved state",
-    );
-    info = { ...info, unavailable: true };
-    window.dispatchEvent(new Event("commonroom-library-change"));
-    await until(() => tests.textContent.includes("Media unavailable"));
-    check(
-      !tests.querySelector("[data-image],.library-save"),
-      "retirement removes already mounted media and save actions",
-    );
-    check(
-      tests.textContent.includes(sticker.filename),
-      "unavailability preserves the filename",
-    );
-    await sleep(10);
+      if (mobile) {
+        const caption = tests.querySelector(".message-markdown p");
+        await hold(caption);
+        check(
+          !menu().querySelector('[aria-label^="Add to collection"]'),
+          "holding the caption only offers message actions",
+        );
+        await dismiss();
+        const surface = tests.querySelector(".sticker-hold-surface");
+        const image = surface.querySelector("img");
+        pointer(image, "pointerdown");
+        await until(() => Number(getComputedStyle(image).scale) > 1);
+        check(
+          surface.hasAttribute("data-touch-held") &&
+            getComputedStyle(surface).outlineStyle === "none" &&
+            Number(getComputedStyle(image).scale) > 1,
+          "pressing slightly enlarges the sticker without a focus border",
+        );
+        pointer(surface, "pointermove", 140);
+        pointer(surface, "pointerup", 140);
+        await sleep(520);
+        check(
+          !menu() && !surface.hasAttribute("data-touch-held"),
+          "scrolling past a sticker clears its press state and does not open a menu",
+        );
+        await hold(image);
+        check(
+          !surface.hasAttribute("data-touch-held") &&
+            document.querySelectorAll(".message-action-menu").length === 1 &&
+            menu().querySelector('[aria-label^="Reply to"]'),
+          "the sticker shares the message menu and release clears its press feedback",
+        );
+        const panel = menu().closest(".message-action-menu");
+        const bounds = panel.getBoundingClientRect();
+        const stickerBounds = surface.getBoundingClientRect();
+        check(
+          getComputedStyle(panel).visibility === "visible" &&
+            (bounds.top >= stickerBounds.bottom ||
+              bounds.bottom <= stickerBounds.top),
+          "the shown popover sits beside the sticker when the viewport has room",
+        );
+        const add = menu().querySelector('[aria-label^="Add to collection"]');
+        check(
+          add?.getBoundingClientRect().height >= 44,
+          "the sticker hold includes a fingertip-sized collection action",
+        );
+        check(
+          !add.querySelector("small"),
+          "borrowing shows no ownership charge",
+        );
+        info = { ...info, expires: Math.floor(Date.now() / 1000) + 7 * 86400 };
+        window.dispatchEvent(
+          new CustomEvent("commonroom-library-change", { detail: [id] }),
+        );
+        await until(() => saveButton().title.includes("800 bytes") && !menu());
+        add.click();
+        check(
+          calls.length === 0,
+          "the stale collection action cannot acquire ownership",
+        );
+        await hold(image);
+        const refreshed = menu().querySelector(
+          '[aria-label^="Add to collection"]',
+        );
+        check(
+          refreshed?.querySelector("small")?.textContent.includes("800 bytes"),
+          "reopening the sticker menu discloses the new storage charge",
+        );
+        refreshed.click();
+      } else saveButton().click();
+      await until(() => tests.textContent.includes("Saved"));
+      check(
+        calls[0][0] === id &&
+          calls[0][1] === "save" &&
+          calls[0][2] === "source-room",
+        "saving identifies the authorized source",
+      );
+      render(null, tests);
+      draw(`[Download sticker](${info.path})`);
+      await until(() => tests.textContent.includes("Saved"));
+      check(
+        tests.querySelector(".library-save button")?.disabled &&
+          calls.length === 1,
+        "remounting reads saved state from the server and does not offer duplicate collection addition",
+      );
+      const expires = Math.floor(Date.now() / 1000) + 7 * 86400;
+      info = { ...info, saved: false, expires };
+      window.dispatchEvent(new Event("commonroom-library-change"));
+      await until(
+        () =>
+          tests.querySelector(".library-save button")?.textContent ===
+          "Add to collection",
+      );
+      if (mobile) {
+        const link = tests.querySelector(".sticker-hold-surface a");
+        await hold(link);
+        const add = menu().querySelector('[aria-label^="Add to collection"]');
+        check(
+          add?.querySelector("small")?.textContent.includes("800 bytes"),
+          "holding a linked sticker discloses the ownership charge in the message menu",
+        );
+        const releaseClick = new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          detail: 1,
+        });
+        link.dispatchEvent(releaseClick);
+        check(
+          releaseClick.defaultPrevented && menu(),
+          "releasing a linked sticker hold keeps the menu open",
+        );
+        await dismiss();
+        let tapped = false;
+        link.addEventListener(
+          "click",
+          (event) => {
+            tapped = true;
+            event.preventDefault();
+          },
+          { once: true },
+        );
+        pointer(link, "pointerdown");
+        pointer(link, "pointerup");
+        link.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            detail: 1,
+          }),
+        );
+        check(
+          tapped && !menu(),
+          "an ordinary tap still activates the linked sticker",
+        );
+      }
+      info = {
+        ...info,
+        saved: true,
+        expires,
+      };
+      window.dispatchEvent(new Event("commonroom-library-change"));
+      await until(
+        () =>
+          tests.querySelector(".library-save button")?.textContent ===
+          "Keep in collection",
+      );
+      check(
+        !tests.querySelector(".library-save button").disabled &&
+          tests.querySelector(".library-save button").title.includes("800"),
+        "a saved dangling sticker offers ownership acquisition with its storage charge",
+      );
+      saveButton().click();
+      await until(
+        () =>
+          tests.querySelector(".library-save button")?.textContent === "Saved",
+      );
+      check(
+        calls.length === 2 &&
+          tests.querySelector(".library-save button").disabled,
+        "keeping a dangling sticker uses the atomic save action and restores Saved state",
+      );
+      info = { ...info, unavailable: true };
+      window.dispatchEvent(new Event("commonroom-library-change"));
+      await until(() => tests.textContent.includes("Media unavailable"));
+      check(
+        !tests.querySelector(".sticker-hold-surface,.library-save"),
+        "retirement removes already mounted media and save actions",
+      );
+      check(
+        tests.textContent.includes(sticker.filename),
+        "unavailability preserves the filename",
+      );
+      await sleep(10);
+    } finally {
+      render(null, tests);
+      window.fetch = originalFetch;
+      if (serviceWorker)
+        Object.defineProperty(navigator, "serviceWorker", serviceWorker);
+      else delete navigator.serviceWorker;
+      httpImageCache.invalidate();
+    }
   });
   await test("media library composer preview matches uploaded image preview", async () => {
     const originalFetch = window.fetch;

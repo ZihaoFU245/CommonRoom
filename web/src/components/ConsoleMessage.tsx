@@ -22,6 +22,7 @@ import { Mention } from "./Mention.tsx";
 import { useNameColor } from "./NameColorContext.ts";
 import {
   MessageActionMenu,
+  StickerActionsContext,
   useMessageActionMenu,
   type MessageAction,
 } from "./MessageActionMenu.tsx";
@@ -203,13 +204,19 @@ export const ConsoleMessage = memo(function ConsoleMessage({
     });
   const hasMobileActions =
     actions.length > 0 || canReact || debug || Boolean(message.text);
+  const swipeReply = canReply && !editing && !pending;
   const mobileActions = useMessageActionMenu(
     !editing && !pending && hasMobileActions,
+    swipeReply ? () => onReply(message) : undefined,
   );
+  const menuActions = mobileActions.stickerAction
+    ? [mobileActions.stickerAction, ...actions]
+    : actions;
   return (
     <article
       id={`message-${message.id}`}
       data-sequence={message.sequence}
+      data-swipe-reply={swipeReply ? "" : undefined}
       class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""} ${connectsPrevious ? "message-bar-continued" : ""} ${connectsNext ? "message-bar-continues" : ""}`}
       {...mobileActions.gesture}
     >
@@ -352,14 +359,18 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                   <code>{invocation.command}</code>
                 </p>
               ) : message.markdown ? (
-                <Markdown
-                  messageKey={message.id}
-                  text={message.text}
-                  mentions={message.mentions}
-                  mentionAll={mentionAll}
-                  allowHtml={allowHtml}
-                  latex={latex}
-                />
+                <StickerActionsContext.Provider
+                  value={mobileActions.registerSticker}
+                >
+                  <Markdown
+                    messageKey={message.id}
+                    text={message.text}
+                    mentions={message.mentions}
+                    mentionAll={mentionAll}
+                    allowHtml={allowHtml}
+                    latex={latex}
+                  />
+                </StickerActionsContext.Provider>
               ) : (
                 <p dir="auto">
                   {text.map((part, index) =>
@@ -471,7 +482,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
           actions={
             debug
               ? [
-                  ...actions,
+                  ...menuActions,
                   {
                     label: detailsOpen ? "Hide details" : "Show details",
                     accessibleLabel: detailsOpen
@@ -481,7 +492,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                     run: () => setDetailsOpen(!detailsOpen),
                   },
                 ]
-              : actions
+              : menuActions
           }
           reaction={
             canReact
