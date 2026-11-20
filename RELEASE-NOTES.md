@@ -1,17 +1,16 @@
-# Commonroom 0.3.0
+# Commonroom 0.3.1
 
-- Invite codes support self-service registration. Authorized room senders can
-  notify readers with `@all`.
-- Browser snapshots support ETag revalidation. WebSockets can resume from a
-  recent checkpoint and send smaller message deltas.
-- Browser media and avatar link/info routes have moved to the batch resolve
-  endpoints. Bot v1 retains its individual link/info routes.
-- The library supports `release_and_remove` for releasing ownership and removing
-  an asset from the library in one operation.
-- `GET /api/health` now returns plain text `ok`. Update probes that parse JSON.
-- WebSocket clients can opt into `conversation_delta` frames and resume with
-  the snapshot's `resume` token. Room messages can carry `mention_all`.
+- Keep the chat header and sidebar anchored as the mobile keyboard opens.
+  The composer stays above the keyboard, and its upload and sticker buttons
+  stay in place as the input grows.
+- Preserve scroll position when loading older messages during a touch scroll.
+  Browser Back and Forward restore screens directly, and rapid room switches
+  skip stalled or overlapping animations.
+- Keep the message actions menu open after a long press. Holding a sticker
+  adds its collection action to that menu and shows any ownership charge.
+  Stickers enlarge slightly while pressed.
+- Swipe a message in either direction to reply. The arrow points toward the
+  message, and supported devices receive a short vibration on release.
 
-SQLite requires schema v21. Existing v21 databases open directly. To upgrade a
-v20 database, back it up and open it with `release-0.2.1` before starting 0.3.0.
-See [Data](docs/data.md) for compatibility and migration details.
+Upgrades from 0.3.0 can use existing data directly. See [Data](docs/data.md)
+for compatibility and migration details.
