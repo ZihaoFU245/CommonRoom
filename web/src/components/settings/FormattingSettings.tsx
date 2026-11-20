@@ -7,6 +7,8 @@ import {
 import type { SettingsProps } from "./types.ts";
 
 export function FormattingSettings({
+  alwaysSendWithEnter,
+  onAlwaysSendWithEnterChange,
   nameColors,
   onNameColorsChange,
   markdown,
@@ -21,6 +23,8 @@ export function FormattingSettings({
   onShowBotStatusChange,
 }: Pick<
   SettingsProps,
+  | "alwaysSendWithEnter"
+  | "onAlwaysSendWithEnterChange"
   | "nameColors"
   | "onNameColorsChange"
   | "markdown"
@@ -42,6 +46,21 @@ export function FormattingSettings({
   return (
     <>
       <h3>Preferences</h3>
+      <label class="security-choice enter-send-choice" for="enter-send">
+        <input
+          id="enter-send"
+          type="checkbox"
+          checked={alwaysSendWithEnter}
+          aria-describedby="enter-send-description"
+          onChange={(event) =>
+            onAlwaysSendWithEnterChange(event.currentTarget.checked)
+          }
+        />
+        <span>Always send with Enter</span>
+      </label>
+      <p id="enter-send-description" class="account-summary">
+        Applies only in this browser. Press Shift+Enter for a new line.
+      </p>
       <label class="security-choice">
         <input
           type="checkbox"

@@ -37,6 +37,7 @@ interface Context {
   room: Room | undefined;
   input: RefObject<HTMLTextAreaElement>;
   pending: boolean;
+  alwaysSendWithEnter: boolean;
   aliases: Aliases;
   serverCommands: Command[];
   availableCommands: Command[];
@@ -52,6 +53,7 @@ export function useCommandComposer({
   room,
   input,
   pending,
+  alwaysSendWithEnter,
   aliases,
   serverCommands,
   availableCommands,
@@ -241,7 +243,11 @@ export function useCommandComposer({
       }
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey && !prefersManualTextInput()) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      (alwaysSendWithEnter || !prefersManualTextInput())
+    ) {
       event.preventDefault();
       send(event);
     }

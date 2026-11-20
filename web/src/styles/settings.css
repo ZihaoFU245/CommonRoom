@@ -363,7 +363,8 @@
   accent-color: var(--accent);
 }
 @media (pointer: coarse) {
-  .bot-status-choice {
+  .bot-status-choice,
+  .enter-send-choice {
     min-block-size: 44px;
   }
 }

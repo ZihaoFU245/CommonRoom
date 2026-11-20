@@ -3044,11 +3044,13 @@ await test("bot status stays local on older servers without blocking other prefe
 await test("chat colors update for newly disclosed live and paged authors and reset in place", async () => {
   const OriginalSocket = window.WebSocket;
   let socket;
+  const enterSendKey = "commonroom-always-send-with-enter";
   const preferenceKeys = [
     "commonroom-name-colors",
     "commonroom-name-borders",
     "commonroom-message-bars",
     "commonroom-message-bar-opacity",
+    enterSendKey,
   ];
   const savedPreferences = preferenceKeys.map((key) =>
     localStorage.getItem(key),
@@ -3230,6 +3232,50 @@ await test("chat colors update for newly disclosed live and paged authors and re
       await selectSettingsTab("Preferences");
     }
     await preferences();
+    const enterToggle = tests.querySelector("#enter-send");
+    const textarea = tests.querySelector('textarea[name="message"]');
+    const pressEnter = (options = {}) => {
+      const event = new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+        ...options,
+      });
+      return !textarea.dispatchEvent(event);
+    };
+    textarea.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        isPrimary: true,
+        pointerType: "touch",
+      }),
+    );
+    check(
+      !enterToggle.checked && !pressEnter(),
+      "Enter defaults to a newline after touch input",
+    );
+    enterToggle.click();
+    await until(() => textarea.enterKeyHint === "send");
+    check(
+      localStorage.getItem(enterSendKey) === "true" &&
+        pressEnter() &&
+        !pressEnter({ shiftKey: true }) &&
+        !pressEnter({ isComposing: true }),
+      "the saved browser override sends with Enter after touch without consuming Shift+Enter or IME",
+    );
+    enterToggle.click();
+    await until(() => textarea.enterKeyHint === "enter");
+    check(
+      !pressEnter() && localStorage.getItem(enterSendKey) === "false",
+      "disabling the override restores touch Return for newlines",
+    );
+    textarea.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        isPrimary: true,
+        pointerType: "mouse",
+      }),
+    );
     const colorToggle = tests.querySelector(
       '[aria-describedby="name-colors-preference-description"]',
     );

@@ -45,6 +45,7 @@ interface Props {
   replyTarget: ReplyTarget | null;
   input: RefObject<HTMLTextAreaElement>;
   consoleView: boolean;
+  alwaysSendWithEnter: boolean;
   draft: string;
   pending: boolean;
   canWrite: boolean;
@@ -69,6 +70,7 @@ export function Composer({
   replyTarget,
   input,
   consoleView,
+  alwaysSendWithEnter,
   draft,
   pending,
   canWrite,
@@ -288,7 +290,7 @@ export function Composer({
           <textarea
             name="message"
             ref={input}
-            enterkeyhint="enter"
+            enterkeyhint={alwaysSendWithEnter ? "send" : "enter"}
             dir="auto"
             rows={1}
             style={{ height: `${actualComposerHeight}px` }}

@@ -80,6 +80,8 @@ export function Chat({
   const {
     fonts,
     setFonts,
+    alwaysSendWithEnter,
+    setAlwaysSendWithEnter,
     latex,
     setLatex,
     showNameColors,
@@ -318,6 +320,7 @@ export function Chat({
     socket,
     currentState,
     input,
+    alwaysSendWithEnter,
     desiredRoom,
     setSelected,
     append,
@@ -783,6 +786,8 @@ export function Chat({
           seeds={seeds}
           markdown={commands.markdown}
           onMarkdownChange={commands.changeMarkdown}
+          alwaysSendWithEnter={alwaysSendWithEnter}
+          onAlwaysSendWithEnterChange={setAlwaysSendWithEnter}
           latex={latex}
           onLatexChange={setLatex}
           nameColors={showNameColors}
@@ -922,6 +927,7 @@ export function Chat({
               replyTarget={replyTarget}
               input={input}
               consoleView={consoleView}
+              alwaysSendWithEnter={alwaysSendWithEnter}
               draft={draft}
               pending={pending}
               startResize={startResize}

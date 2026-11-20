@@ -45,6 +45,7 @@ interface Context {
   socket: RefObject<WebSocket | null>;
   currentState: ValueRef<Snapshot>;
   input: RefObject<HTMLTextAreaElement>;
+  alwaysSendWithEnter: boolean;
   desiredRoom: RefObject<string | null>;
   setSelected: (view: string) => void;
   append: (
@@ -68,6 +69,7 @@ export function useCommands({
   socket,
   currentState,
   input,
+  alwaysSendWithEnter,
   desiredRoom,
   setSelected,
   append,
@@ -131,6 +133,7 @@ export function useCommands({
     room,
     input,
     pending,
+    alwaysSendWithEnter,
     aliases,
     serverCommands,
     availableCommands,

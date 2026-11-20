@@ -15,6 +15,8 @@ export interface SettingsProps {
   seeds: Seeds;
   markdown: boolean;
   onMarkdownChange: (enabled: boolean) => void;
+  alwaysSendWithEnter: boolean;
+  onAlwaysSendWithEnterChange: (enabled: boolean) => void;
   latex: boolean;
   onLatexChange: (enabled: boolean) => void;
   nameColors: boolean;

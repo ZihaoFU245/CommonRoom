@@ -14,7 +14,10 @@ their own builds, so separately deployed artifacts may show different commits.
 Type commands in the composer. `/help` lists commands permitted here; `/man user`,
 `/man room`, and `/man grant` explain syntax and authorization. Commands check both
 the selected context and the target. Output stays in this view and tab until reload.
-Passwords are masked. Enter sends, Shift+Enter adds a line, and Tab completes.
+Passwords are masked. Shift+Enter adds a line, and Tab completes. Enter sends
+by default on desktop and adds a line in compact or touch input mode.
+Enable **Always send with Enter** in Settings → Preferences to send with Enter
+regardless of viewport size or pointer input. This setting is saved in the current browser.
 
 ## Registration invites
 
