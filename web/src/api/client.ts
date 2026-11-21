@@ -1,3 +1,8 @@
+import {
+  recordClientMetric,
+  applyClientMetricsPolicy,
+} from "./clientMetrics.ts";
+import { metric } from "./clientMetricSchema.ts";
 import { mediaConfigCache } from "./mediaConfigCache.ts";
 import { serverBaseUrl } from "./server.ts";
 import type { PreferenceState } from "../features/preferences/account.ts";
@@ -67,8 +72,10 @@ async function request<T>(
   nameColors = false,
 ): Promise<T> {
   const cancellation = requestAbort(timeoutMs, signal);
+  let phase: "request" | "response" | "status" = "request";
   try {
-    const response = await fetch(new URL(`api/${path}`, serverBaseUrl()), {
+    const base = serverBaseUrl();
+    const response = await fetch(new URL(`api/${path}`, base), {
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
       // Let the browser revalidate cached reads and reuse preflight approvals.
@@ -86,7 +93,20 @@ async function request<T>(
           }
         : {}),
     });
+    if (
+      response.ok &&
+      (path === "login" || path === "me" || path.startsWith("me?")) &&
+      !cancellation.signal.aborted &&
+      serverBaseUrl() === base
+    ) {
+      applyClientMetricsPolicy(
+        base,
+        response.headers.get("X-Chat-Client-Metrics"),
+      );
+    }
+    phase = "response";
     const value = await responseJson(response);
+    phase = "status";
     cancellation.signal.throwIfAborted();
     if (response.status === 401) {
       mediaConfigCache.clear();
@@ -94,7 +114,10 @@ async function request<T>(
         console.error("Session media invalidation failed", error);
       });
     }
-    if (!response.ok)
+    if (!response.ok) {
+      if (response.status >= 500) recordClientMetric(metric.apiServerError);
+      else if (response.status >= 400 && response.status !== 401)
+        recordClientMetric(metric.apiRejected);
       throw new ApiError(
         response.status,
         value === null
@@ -102,11 +125,28 @@ async function request<T>(
           : responseError(value),
         value,
       );
-    if (!validate(value))
+    }
+    if (!validate(value)) {
+      recordClientMetric(metric.apiInvalidResponse);
       throw new Error(
         "Invalid server response. Please reload or check the server version.",
       );
+    }
     return value;
+  } catch (error) {
+    if (cancellation.signal.aborted) {
+      const reason: unknown = cancellation.signal.reason;
+      if (reason instanceof DOMException && reason.name === "TimeoutError")
+        recordClientMetric(metric.apiTimeout);
+    } else if (
+      phase === "request" ||
+      (phase === "response" && error instanceof TypeError)
+    ) {
+      recordClientMetric(metric.apiNetworkError);
+    } else if (phase === "response") {
+      recordClientMetric(metric.apiInvalidResponse);
+    }
+    throw error;
   } finally {
     cancellation.dispose();
   }

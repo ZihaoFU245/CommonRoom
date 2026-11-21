@@ -891,6 +891,14 @@ The optional `server` section in `config.json` controls capacity and deadlines:
 }
 ```
 
+Set `server.client_metrics_sample_percent` to a whole percentage from 0 to
+100. For example, add `"client_metrics_sample_percent": 25` to the existing
+`server` object to sample a quarter of browser page loads. The default is 5%
+in production and 100% in debug mode. Zero disables browser collection and
+batch intake. Restart the server after editing this setting. The browser
+receives the policy on sign-in or when loading its account, and `/system configs`
+shows the effective percentage.
+
 Omitted fields retain these defaults. Changes require restart. Invalid or unknown
 settings fail before database ownership/bootstrap and configuration normalization.
 Capacity ranges are 1–16,384 HTTP connections, 1–256 concurrent API requests per

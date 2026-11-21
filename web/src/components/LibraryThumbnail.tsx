@@ -1,4 +1,9 @@
-import { useState } from "preact/hooks";
+import {
+  observeFirstClientImage,
+  recordClientMetric,
+} from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
+import { useEffect, useState } from "preact/hooks";
 import type { LibraryItem } from "../api/library.ts";
 import { serverBaseUrl } from "../api/server.ts";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
@@ -19,6 +24,10 @@ export function LibraryThumbnail({
     new URL(`api/media/${item.media_id}/file`, serverBaseUrl()).href,
     { image: true },
   );
+  const unavailable = Boolean(file.error) || failed;
+  useEffect(() => {
+    if (unavailable) recordClientMetric(metric.stickerFailed);
+  }, [unavailable]);
   return (
     <>
       {preview && !loaded && (
@@ -44,6 +53,8 @@ export function LibraryThumbnail({
           onLoad={({ currentTarget }) => {
             onSize(currentTarget.naturalWidth, currentTarget.naturalHeight);
             setLoaded(true);
+            if (currentTarget.naturalWidth)
+              observeFirstClientImage(currentTarget, true);
             onReady?.();
           }}
         />

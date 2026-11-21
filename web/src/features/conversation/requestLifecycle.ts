@@ -1,3 +1,10 @@
+import {
+  clientMetricClock,
+  recordClientDuration,
+  recordClientMetric,
+  recordFirstClientDuration,
+} from "../../api/clientMetrics.ts";
+import { metric } from "../../api/clientMetricSchema.ts";
 import type {
   Acknowledgement,
   ClientFrame,
@@ -20,16 +27,29 @@ export function createRequestLifecycle(
   let serial = 0;
   const active = new Map<
     number,
-    { request: PendingCommand; complete: Completion; parallel: boolean }
+    {
+      request: PendingCommand;
+      complete: Completion;
+      parallel: boolean;
+      started?: number;
+    }
   >();
   const idle = new Set<() => void>();
   const exclusive = () => [...active.values()].some((item) => !item.parallel);
   const available = (parallel: boolean) =>
     parallel ? !exclusive() && active.size < 16 : active.size === 0;
-  function finish(data: Acknowledgement) {
+  function finish(data: Acknowledgement, interrupted = false) {
     const current = active.get(data.id);
     if (!current) return;
     active.delete(data.id);
+    if (current.started !== undefined) {
+      if (interrupted) recordClientMetric(metric.messageInterrupted);
+      else if (data.kind === "error") recordClientMetric(metric.messageFailed);
+      else {
+        recordClientDuration(metric.messageAck, current.started);
+        recordFirstClientDuration(metric.firstSend, current.started);
+      }
+    }
     pendingChanged(exclusive());
     current.complete(data, current.request);
     if (!active.size) {
@@ -62,7 +82,16 @@ export function createRequestLifecycle(
     }: Submission): boolean {
       if (!available(parallel)) return false;
       const id = ++serial;
-      active.set(id, { request: { ...command, id }, complete, parallel });
+      const started =
+        command.action || command.text.startsWith("/")
+          ? undefined
+          : clientMetricClock();
+      active.set(id, {
+        request: { ...command, id },
+        complete,
+        parallel,
+        ...(started === undefined ? {} : { started }),
+      });
       pendingChanged(exclusive());
       try {
         transmit({ ...frame, id });
@@ -81,11 +110,14 @@ export function createRequestLifecycle(
     receive: finish,
     disconnect: () => {
       for (const id of [...active.keys()])
-        finish({
-          kind: "error",
-          id,
-          text: "Connection lost before confirmation. Check history before sending again.",
-        });
+        finish(
+          {
+            kind: "error",
+            id,
+            text: "Connection lost before confirmation. Check history before sending again.",
+          },
+          true,
+        );
     },
   };
 }

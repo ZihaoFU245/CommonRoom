@@ -2744,7 +2744,10 @@ async fn browser_json_revalidates_only_after_current_access_checks() {
     };
     use tower::ServiceExt;
 
-    let app = login_test_app();
+    let mut app = login_test_app();
+    std::sync::Arc::make_mut(&mut app.config)
+        .server
+        .client_metrics_sample_percent = Some(25);
     {
         let mut engine = app.engine_api().unwrap();
         let hash = engine.password_hash("alice").unwrap().to_owned();
@@ -2782,11 +2785,23 @@ async fn browser_json_revalidates_only_after_current_access_checks() {
     ] {
         let initial = get(path, None, false).await.unwrap();
         assert_eq!(initial.status(), StatusCode::OK, "{path}");
+        if path == "/api/me" {
+            assert_eq!(initial.headers()["x-chat-client-metrics"], "25, 2");
+            assert_eq!(
+                initial.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
+                "X-Chat-Client-Metrics"
+            );
+        } else {
+            assert!(!initial.headers().contains_key("x-chat-client-metrics"));
+        }
         let tag = initial.headers()[header::ETAG].to_str().unwrap();
         let strong = tag.strip_prefix("W/").unwrap();
         let condition = format!(r#""other,tag", {strong}"#);
         let validated = get(path, Some(&condition), false).await.unwrap();
         assert_eq!(validated.status(), StatusCode::NOT_MODIFIED, "{path}");
+        if path == "/api/me" {
+            assert_eq!(validated.headers()["x-chat-client-metrics"], "25, 2");
+        }
         for name in [
             header::ETAG,
             header::CACHE_CONTROL,
@@ -2849,6 +2864,21 @@ async fn browser_json_revalidates_only_after_current_access_checks() {
     let metrics = app.admission.metrics.stats();
     assert_eq!(metrics["routes"]["/api/history"]["not_modified"], 1);
     assert_eq!(metrics["routes"]["/api/history"]["completed"], 5);
+    let etag = &metrics["routes"]["/api/history"]["etag"];
+    assert_eq!(etag["not_modified"], 1);
+    assert_eq!(etag["conditional_200"], 2);
+    for (key, count) in [("not_modified_buckets", 1), ("conditional_200_buckets", 2)] {
+        let samples: u64 = etag[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_u64().unwrap())
+            .sum();
+        assert_eq!(samples, count);
+    }
+    let rendered = crate::system::Command::Metrics.execute(&app).await.unwrap();
+    assert!(rendered.contains("## ETag revalidation"));
+    assert!(rendered.contains("| `/api/history.reuse_rate` | 33.33% |"));
 }
 
 #[path = "registration.rs"]

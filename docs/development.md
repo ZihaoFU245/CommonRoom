@@ -38,6 +38,9 @@ rtk proxy ./auto/debug.sh
 at http://127.0.0.1:5173, proxying the API/WebSocket to `127.0.0.1:3000`.
 It defaults to SQLite with no S3 operations. Debug data and its generated
 `config.json` live in the repository's `data/` directory.
+The debug server samples every authenticated browser page for client metrics.
+An active debug page sends its first batch after about two seconds of buffered
+activity, then at most once per minute.
 
 ```sh
 rtk proxy ./auto/debug.sh

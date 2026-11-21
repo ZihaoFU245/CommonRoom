@@ -71,10 +71,11 @@ impl Command {
                     "max_http_connections":app.config.server.max_http_connections,
                     "collected_at_unix_seconds":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                     "admission":app.admission.stats()?, "ordering":app.mutations.stats()});
+                let client = app.admission.client.stats();
                 Ok(if self == Self::MetricsText {
-                    render_metrics_text(&cache, &pools, &snapshots, &runtime)
+                    render_metrics_text(&cache, &pools, &snapshots, &runtime, &client)
                 } else {
-                    render_metrics(&cache, &pools, &snapshots, &runtime)
+                    render_metrics(&cache, &pools, &snapshots, &runtime, &client)
                 })
             }
         }
@@ -83,6 +84,18 @@ impl Command {
 
 fn number(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+fn format_uptime(total_seconds: u64) -> String {
+    let days = total_seconds / 86_400;
+    let hours = total_seconds / 3_600 % 24;
+    let minutes = total_seconds / 60 % 60;
+    let seconds = total_seconds % 60;
+    match (days, hours, minutes) {
+        (0, 0, 0) => format!("{seconds}s"),
+        (0, 0, _) => format!("{minutes}m {seconds}s"),
+        (0, _, _) => format!("{hours}h {minutes}m {seconds}s"),
+        _ => format!("{days}d {hours}h {minutes}m {seconds}s"),
+    }
 }
 fn ratio(hits: u64, misses: u64) -> String {
     let total = u128::from(hits) + u128::from(misses);
@@ -215,7 +228,10 @@ fn aggregate_routes(routes: &Value) -> Value {
     result
 }
 fn p95_bound(route: &Value) -> String {
-    let buckets = bucket_counts(route);
+    p95_buckets(&bucket_counts(route))
+}
+
+fn p95_buckets(buckets: &[u64]) -> String {
     let total: u128 = buckets.iter().map(|n| u128::from(*n)).sum();
     if total == 0 {
         return "n/a".into();
@@ -264,21 +280,28 @@ fn render_routes(text: &mut String, routes: &Value, plain: bool) {
     }
 }
 
-fn render_metrics(cache: &Value, pools: &Value, snapshots: &Value, runtime: &Value) -> String {
-    render_report(cache, pools, snapshots, runtime, false)
+fn render_metrics(
+    cache: &Value,
+    pools: &Value,
+    snapshots: &Value,
+    runtime: &Value,
+    client: &Value,
+) -> String {
+    render_report(cache, pools, snapshots, runtime, client, false)
 }
 fn render_report(
     cache: &Value,
     pools: &Value,
     snapshots: &Value,
     runtime: &Value,
+    client: &Value,
     plain: bool,
 ) -> String {
     let heading = if plain { "" } else { "# " };
     let emphasis = if plain { "" } else { "**" };
     let mut text = format!(
-        "{heading}System metrics\n\nCumulative totals since server startup (uptime: {} seconds). Counters are approximate concurrent observations. Cache bytes are accounting budgets, not total process memory.\n\n- History page hit rate: {emphasis}{}{emphasis}. Coalesced waiters count as hits.\n- Unread cache hit rate: {emphasis}{}{emphasis}. Full/incremental counts describe database calculations after misses.\n- Snapshot reuse rate: {emphasis}{}{emphasis}. Reuse includes callers sharing an in-progress build.",
-        number(cache, "uptime_seconds"),
+        "{heading}System metrics\n\nCumulative totals since server startup. Counters are approximate concurrent observations. Cache bytes are accounting budgets, not total process memory.\n\n- Uptime: {emphasis}{}{emphasis}\n- History page hit rate: {emphasis}{}{emphasis}. Coalesced waiters count as hits.\n- Unread cache hit rate: {emphasis}{}{emphasis}. Full/incremental counts describe database calculations after misses.\n- Snapshot reuse rate: {emphasis}{}{emphasis}. Reuse includes callers sharing an in-progress build.",
+        format_uptime(number(cache, "uptime_seconds")),
         ratio(number(cache, "hits"), number(cache, "misses")),
         ratio(number(cache, "unread_hits"), number(cache, "unread_misses")),
         ratio(number(snapshots, "hits"), number(snapshots, "misses"))
@@ -434,20 +457,306 @@ fn render_report(
     }
     section(&mut text, "Ordering waits", &Value::Object(waits), plain);
     render_routes(&mut text, routes, plain);
+    let mut revalidations = serde_json::Map::new();
+    if let Some(routes) = routes.as_object() {
+        for (name, route) in routes {
+            if let Some(etag) = route.get("etag") {
+                let unchanged = number(etag, "not_modified");
+                let changed = number(etag, "conditional_200");
+                let p95 = |key: &str| {
+                    let buckets: Vec<_> = etag[key]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_u64)
+                        .collect();
+                    p95_buckets(&buckets)
+                };
+                revalidations.insert(
+                    name.clone(),
+                    json!({
+                        "304": unchanged,
+                        "conditional_200": changed,
+                        "reuse_rate": percentage(unchanged, unchanged.saturating_add(changed)),
+                        "304_p95_bound": p95("not_modified_buckets"),
+                        "conditional_200_p95_bound": p95("conditional_200_buckets")
+                    }),
+                );
+            }
+        }
+    }
+    if !revalidations.is_empty() {
+        section(
+            &mut text,
+            "ETag revalidation",
+            &Value::Object(revalidations),
+            plain,
+        );
+    }
+    render_client_metrics(&mut text, client, plain);
     text.push_str("\n\nLatency measures backend response creation/upgrade, including body receipt, admission, security and awaited work. It excludes header receipt, proxy buffering before Rust, response transfer and subsequent S3 downloads. Histogram p95 is a bucket upper bound, not an exact percentile; n/a means no samples. Percentages use lifetime totals, not a recent window. Concurrent counter reads may briefly disagree.");
     section(&mut text, "History and unread caches", cache, plain);
     section(&mut text, "Snapshot cache", snapshots, plain);
     section(&mut text, "Database pool counters", pools, plain);
     section(&mut text, "Server admission", runtime, plain);
     text.push_str("\n\nHTTP duration buckets [0..8] are non-cumulative: <=0.5 ms, <=1 ms, <=5 ms, <=10 ms, <=50 ms, <=250 ms, <=1 s, <=5 s, >5 s. Cancelled requests have no completed duration sample. Ordering timings include timed-out completed attempts and exclude cancelled waits.");
-    text.push_str("\n\nCollection is on demand; no periodic metrics logging runs. The report itself occupies request/job capacity. Host CPU, process RSS and end-to-end browser latency are not measured here.");
+    text.push_str("\n\nCollection is on demand; no periodic metrics logging runs. The report itself occupies request/job capacity. Host CPU and process RSS are outside this report.");
     text
 }
 
-fn render_metrics_text(cache: &Value, pools: &Value, snapshots: &Value, runtime: &Value) -> String {
+fn client_table(
+    text: &mut String,
+    title: &str,
+    headers: &[&str],
+    data: Vec<Vec<String>>,
+    plain: bool,
+) {
+    if data.is_empty() {
+        return;
+    }
+    let heading = if plain { "" } else { "### " };
+    text.push_str(&format!("\n\n{heading}{title}\n"));
+    if plain {
+        text.push_str(&format!("\n{}", headers.join("  ·  ")));
+    } else {
+        let divider = vec!["---"; headers.len()].join(" | ");
+        text.push_str(&format!("\n| {} |\n| {divider} |", headers.join(" | ")));
+    }
+    for row in data {
+        if plain {
+            text.push('\n');
+            text.push_str(&row.join("  ·  "));
+        } else {
+            text.push_str(&format!("\n| {} |", row.join(" | ")));
+        }
+    }
+}
+
+fn client_rows(value: &Value) -> Vec<Vec<String>> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+        .map(|row| {
+            row.iter()
+                .map(|cell| {
+                    cell.as_str()
+                        .map_or_else(|| cell.to_string(), str::to_owned)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn render_client_metrics(text: &mut String, client: &Value, plain: bool) {
+    let heading = if plain { "" } else { "## " };
+    text.push_str(&format!("\n\n{heading}Client metrics\n\nSampled browser observations since startup. Timing percentiles are bucket upper bounds."));
+    let accepted = number(client, "batches.accepted");
+    if accepted == 0 {
+        text.push_str(" No client batches received yet.");
+    }
+    let batch_counts = [
+        ("Accepted batches", accepted),
+        (
+            "Duplicate batches ignored",
+            number(client, "batches.duplicate"),
+        ),
+        (
+            "Batches limited by account or capacity",
+            number(client, "batches.account_or_dedup_capacity_limited"),
+        ),
+        (
+            "Batches limited at ingress",
+            number(client, "batches.ingress_limited"),
+        ),
+    ];
+    client_table(
+        text,
+        "Batch delivery",
+        &["Outcome", "Count"],
+        batch_counts
+            .into_iter()
+            .map(|(label, count)| vec![label.into(), count.to_string()])
+            .collect(),
+        plain,
+    );
+    let summary = &client["summary"];
+    let timing_headers = &["Milestone", "Samples", "Median bound", "p95 bound"];
+    client_table(
+        text,
+        "First events",
+        timing_headers,
+        client_rows(&summary["milestones"]),
+        plain,
+    );
+    text.push_str("\n\nSend and upload timings start with the action. Image and sticker display require a loaded image in view.");
+    client_table(
+        text,
+        "Other workflow timings",
+        &["Workflow", "Samples", "Median bound", "p95 bound"],
+        client_rows(&summary["timings"]),
+        plain,
+    );
+    client_table(
+        text,
+        "Reported failures",
+        &["Outcome", "Count"],
+        client_rows(&summary["errors"]),
+        plain,
+    );
+
+    let mut coverage = Vec::new();
+    let mut grouped_errors = Vec::new();
+    let mut grouped_timings = Vec::new();
+    for group in summary["clients"].as_array().into_iter().flatten() {
+        let Some(name) = group["name"].as_str() else {
+            continue;
+        };
+        coverage.push(vec![name.into(), number(group, "batches").to_string()]);
+        for mut error in client_rows(&group["errors"]) {
+            error.insert(0, name.into());
+            grouped_errors.push(error);
+        }
+        for mut timing in client_rows(&group["milestones"]) {
+            timing.insert(0, name.into());
+            grouped_timings.push(timing);
+        }
+    }
+    client_table(
+        text,
+        "Client coverage",
+        &["Device · engine · app mode", "Batches"],
+        coverage,
+        plain,
+    );
+    client_table(
+        text,
+        "Failures by client",
+        &["Device · engine · app mode", "Outcome", "Count"],
+        grouped_errors,
+        plain,
+    );
+    client_table(
+        text,
+        "First events by client",
+        &[
+            "Device · engine · app mode",
+            "Milestone",
+            "Samples",
+            "Median bound",
+            "p95 bound",
+        ],
+        grouped_timings,
+        plain,
+    );
+
+    let cache = [
+        (
+            "Conversation history",
+            "history",
+            "history.reused",
+            &["history.fetched"][..],
+        ),
+        (
+            "Media bytes",
+            "media.bytes",
+            "media.bytes_reused",
+            &["media.bytes_fetched"][..],
+        ),
+        (
+            "Media authorization leases",
+            "media.lease",
+            "media.lease_reused",
+            &["media.lease_resolved", "media.lease_joined"][..],
+        ),
+        (
+            "Media configuration",
+            "media_config",
+            "media_config.reused",
+            &["media_config.fetched", "media_config.joined"][..],
+        ),
+        (
+            "Media status",
+            "media_status",
+            "media_status.reused",
+            &["media_status.fetched", "media_status.joined"][..],
+        ),
+        (
+            "Shared sticker library requests",
+            "library",
+            "library.joined",
+            &["library.fetched"][..],
+        ),
+    ];
+    client_table(
+        text,
+        "Browser cache reuse",
+        &["Cache", "Reused", "Observations", "Reuse rate"],
+        cache
+            .into_iter()
+            .map(|(label, key, reused, other)| {
+                let count = |metric| number(client, &format!("{metric}.count"));
+                let hits = count(reused);
+                let total = other
+                    .iter()
+                    .fold(hits, |total, &metric| total.saturating_add(count(metric)));
+                vec![
+                    label.into(),
+                    hits.to_string(),
+                    total.to_string(),
+                    client[format!("{key}.reuse_rate")]
+                        .as_str()
+                        .unwrap_or("n/a")
+                        .into(),
+                ]
+            })
+            .collect(),
+        plain,
+    );
+    client_table(
+        text,
+        "Connection and upload outcomes",
+        &["Outcome", "Count"],
+        [
+            ("Foreground disconnects", "socket.disconnected"),
+            ("Connections resumed", "socket.resumed"),
+            ("Connections fully resynced", "socket.resynced"),
+            ("Uploads cancelled", "upload.cancelled"),
+            ("Files up to 1 MiB", "upload.size_small"),
+            ("Files over 1 MiB and up to 10 MiB", "upload.size_medium"),
+            ("Files over 10 MiB", "upload.size_large"),
+        ]
+        .into_iter()
+        .map(|(label, metric)| {
+            vec![
+                label.into(),
+                number(client, &format!("{metric}.count")).to_string(),
+            ]
+        })
+        .collect(),
+        plain,
+    );
+    if plain {
+        let mut raw = client.clone();
+        if let Some(raw) = raw.as_object_mut() {
+            raw.remove("summary");
+        }
+        section(text, "Client counters and buckets", &raw, true);
+        text.push_str("\n\nClient bucket bounds in order: ≤10 ms, ≤50 ms, ≤100 ms, ≤250 ms, ≤1 s, ≤5 s, ≤30 s, over 30 s.");
+    }
+}
+
+fn render_metrics_text(
+    cache: &Value,
+    pools: &Value,
+    snapshots: &Value,
+    runtime: &Value,
+    client: &Value,
+) -> String {
     format!(
         "```text\n{}\n```",
-        render_report(cache, pools, snapshots, runtime, true)
+        render_report(cache, pools, snapshots, runtime, client, true)
     )
 }
 

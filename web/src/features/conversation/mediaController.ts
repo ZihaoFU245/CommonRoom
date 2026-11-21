@@ -1,3 +1,9 @@
+import {
+  clientMetricClock,
+  recordClientDuration,
+  recordClientMetric,
+} from "../../api/clientMetrics.ts";
+import { metric } from "../../api/clientMetricSchema.ts";
 import { mediaFileUrl } from "../../api/mediaFile.ts";
 import { httpImageCache } from "./httpImageCache.ts";
 import { isResolution, MediaAccess, MediaAccessError } from "./mediaAccess.ts";
@@ -35,9 +41,20 @@ export function mediaCacheReady(): boolean {
 
 export function ensureMediaCache(): Promise<void> {
   if (mediaCacheReady()) return Promise.resolve();
-  pending ??= connect().finally(() => {
-    pending = undefined;
-  });
+  if (!pending) {
+    const started = clientMetricClock();
+    pending = connect()
+      .then(
+        () => recordClientDuration(metric.mediaWorkerReady, started),
+        (error: unknown) => {
+          recordClientMetric(metric.mediaWorkerFailed);
+          throw error;
+        },
+      )
+      .finally(() => {
+        pending = undefined;
+      });
+  }
   return pending;
 }
 

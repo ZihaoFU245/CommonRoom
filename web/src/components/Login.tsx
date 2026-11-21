@@ -1,3 +1,6 @@
+import { markClientSignIn, recordClientMetric } from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
+import { serverBaseUrl } from "../api/server.ts";
 import { loadInitialAccount } from "../api/bootstrap.ts";
 import type { JSX } from "preact";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -34,8 +37,14 @@ export function Login({
     setRegistered(false);
     setError("");
     try {
+      markClientSignIn(serverBaseUrl());
       await api.login(username, password);
-      onLogin(await loadInitialAccount());
+      try {
+        onLogin(await loadInitialAccount());
+      } catch (error) {
+        recordClientMetric(metric.bootstrapError);
+        throw error;
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {

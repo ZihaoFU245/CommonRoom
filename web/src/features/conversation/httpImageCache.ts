@@ -1,3 +1,8 @@
+import {
+  clientMetricClock,
+  recordClientDuration,
+  recordClientMetric,
+} from "../../api/clientMetrics.ts";
 import { MediaCache } from "./mediaCache.ts";
 import type { MediaCacheStorage, MediaCacheStore } from "./mediaCache.ts";
 
@@ -85,6 +90,13 @@ export class HttpImageCache {
           console.error("HTTP image cache maintenance failed", error);
         });
       },
+      true,
+      clientMetricClock() === undefined
+        ? undefined
+        : (metric, started) => {
+            if (started === undefined) recordClientMetric(metric);
+            else recordClientDuration(metric, started);
+          },
     );
     if (!response.ok) {
       await response.body?.cancel();

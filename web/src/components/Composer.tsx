@@ -1,3 +1,4 @@
+import { clientMetricClock } from "../api/clientMetrics.ts";
 import { focusControl } from "../features/preferences/inputFocus.ts";
 import { ComposerAttachmentPreview } from "./ComposerAttachmentPreview.tsx";
 import { DisplayName } from "./DisplayName.tsx";
@@ -87,6 +88,7 @@ export function Composer({
 }: Props) {
   const hintList = useRef<HTMLUListElement>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const libraryOpenedAt = useRef<number>();
   const [libraryClosing, setLibraryClosing] = useState(false);
   const libraryButton = useRef<HTMLButtonElement>(null);
   const composition = useCompositionGuard(keydown);
@@ -276,7 +278,10 @@ export function Composer({
               aria-expanded={libraryOpen && !libraryClosing}
               onClick={() => {
                 if (libraryOpen) setLibraryClosing((value) => !value);
-                else setLibraryOpen(true);
+                else {
+                  libraryOpenedAt.current = clientMetricClock();
+                  setLibraryOpen(true);
+                }
               }}
             >
               <PickerIcon name="sticker" />
@@ -342,6 +347,7 @@ export function Composer({
           <LibraryPicker
             account={account ?? ""}
             anchor={libraryButton}
+            openedAt={libraryOpenedAt.current}
             closing={libraryClosing}
             canSelect={attachAllowed}
             canEmoji={canWrite && !pending}

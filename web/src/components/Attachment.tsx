@@ -1,3 +1,9 @@
+import {
+  clientMetricClock,
+  recordClientDuration,
+  recordClientMetric,
+} from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
 import { HtmlCover } from "./HtmlCover.tsx";
 import { MediaDownload } from "./MediaDownload.tsx";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
@@ -50,6 +56,7 @@ export function Attachment({
   const failures = useRef(0);
   const position = useRef(0);
   const playing = useRef(false);
+  const playStarted = useRef<number>();
   useEffect(
     () => () => {
       request.current?.abort();
@@ -111,10 +118,13 @@ export function Attachment({
         position: position.current,
         resume: playing.current,
       });
-    } else
+    } else {
+      recordClientMetric(metric.playbackFailed);
+      playStarted.current = undefined;
       setError(
         "Playback failed or this codec is unsupported. Retry or download the file.",
       );
+    }
   }
   function loaded() {
     const element = player.current;
@@ -135,6 +145,7 @@ export function Attachment({
     onLoadedMetadata: loaded,
     onError: playbackError,
     onPlay: () => {
+      playStarted.current ??= clientMetricClock();
       playing.current = true;
     },
     onTimeUpdate: () => {
@@ -144,11 +155,16 @@ export function Attachment({
       if (player.current) position.current = player.current.currentTime;
     },
     onPlaying: () => {
+      recordClientDuration(metric.mediaPlaybackReady, playStarted.current);
+      playStarted.current = undefined;
       failures.current = 0;
       playing.current = true;
     },
     onPause: () => {
-      if (!player.current?.error) playing.current = false;
+      if (!player.current?.error) {
+        playStarted.current = undefined;
+        playing.current = false;
+      }
     },
   };
   const isDocument = kind === "html" || kind === "svg";

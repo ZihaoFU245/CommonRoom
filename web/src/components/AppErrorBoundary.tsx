@@ -1,3 +1,5 @@
+import { recordClientMetric } from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
 import { Component, type ComponentChildren } from "preact";
 
 export class AppErrorBoundary extends Component<
@@ -9,6 +11,7 @@ export class AppErrorBoundary extends Component<
     return { failed: true };
   }
   override componentDidCatch(error: unknown) {
+    recordClientMetric(metric.renderError);
     console.error("Application rendering failed", error);
   }
   render() {

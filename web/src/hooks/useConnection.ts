@@ -1,3 +1,9 @@
+import {
+  recordClientMetric,
+  clientMetricClock,
+  recordClientDuration,
+} from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
 import { sameMediaAuthority } from "../features/conversation/mediaAuthority.ts";
 import { mediaConfigCache } from "../api/mediaConfigCache.ts";
 import { invalidateMedia } from "../features/conversation/mediaInvalidation.ts";
@@ -45,6 +51,8 @@ export function useConnection(
   const projection = useRef(nameColors);
   const changeProjection = useRef<(enabled: boolean) => void>(() => {});
   useEffect(() => {
+    const startup = clientMetricClock();
+    let disconnectedAt: number | undefined;
     let stopped = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let resumeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -100,6 +108,7 @@ export function useConnection(
       connect();
     };
     const resume = () => {
+      if (document.hidden) disconnectedAt = undefined;
       clearTimeout(resumeTimer);
       if (stopped || document.hidden) return;
       if (socket.current?.readyState === WebSocket.CLOSED) {
@@ -140,20 +149,41 @@ export function useConnection(
       url.searchParams.set("delta", "1");
       if (offered) url.searchParams.set("resume", offered);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      const opening = clientMetricClock();
       const ws = new WebSocket(url);
+      let opened: number | undefined;
+      if (opening !== undefined) {
+        ws.onopen = () => {
+          if (stopped || socket.current !== ws) return;
+          recordClientDuration(metric.chatHandshake, opening);
+          opened = clientMetricClock();
+        };
+      }
+      const markReady = () => {
+        recordClientDuration(metric.chatSync, opened);
+        if (!everReady) recordClientDuration(metric.chatStartup, startup);
+        else if (!document.hidden)
+          recordClientDuration(metric.chatReconnect, disconnectedAt);
+        disconnectedAt = undefined;
+      };
       socket.current = ws;
       const reconnecting = everReady;
       let baseline = true;
       ws.onmessage = (event) => {
         if (stopped || socket.current !== ws) return;
         const data = parseFrame(String(event.data));
-        if (!data) return;
+        if (!data) {
+          recordClientMetric(metric.socketInvalid);
+          return;
+        }
         if (data.kind === "resumed") {
           if (!awaitingBaseline || !offered) return;
           awaitingBaseline = false;
           baseline = false;
           readySocket.current = ws;
           setStatus("online");
+          if (reconnecting) recordClientMetric(metric.socketResumed);
+          markReady();
           everReady = true;
           attempts = 0;
           if (reconnecting) refreshMedia();
@@ -206,9 +236,9 @@ export function useConnection(
             !sameMediaAuthority(currentState.current, data)
           )
             refreshMedia();
+          const firstSnapshot = awaitingBaseline;
           awaitingBaseline = false;
           attempts = 0;
-          everReady = true;
           readySocket.current = ws;
           setStatus("online");
           clearTimeout(resumeTimer);
@@ -223,6 +253,11 @@ export function useConnection(
             items.filter((item) => ids.has(item.conversation_id)),
           );
           sync.receive(boundSnapshot(data), baseline);
+          if (firstSnapshot) {
+            if (reconnecting) recordClientMetric(metric.socketResynced);
+            markReady();
+          }
+          everReady = true;
           baseline = false;
         } else if (
           data.kind === "conversation" ||
@@ -265,7 +300,12 @@ export function useConnection(
       ws.onclose = () => {
         if (stopped || socket.current !== ws) return;
         clearTimeout(resumeTimer);
+        if (awaitingBaseline) recordClientMetric(metric.socketFailed);
+        else if (!document.hidden)
+          recordClientMetric(metric.socketDisconnected);
         readySocket.current = null;
+        if (everReady && !document.hidden)
+          disconnectedAt ??= clientMetricClock();
         setStatus("offline");
 
         setBotActivities([]);

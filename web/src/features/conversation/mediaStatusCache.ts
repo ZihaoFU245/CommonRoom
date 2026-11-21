@@ -1,3 +1,5 @@
+import { recordClientMetric } from "../../api/clientMetrics.ts";
+import { metric } from "../../api/clientMetricSchema.ts";
 import type { MediaInfo } from "../../api/media.ts";
 
 interface Entry {
@@ -33,9 +35,13 @@ class MediaStatusCache {
     refresh = false,
   ): Promise<MediaInfo> {
     const previous = this.entries.get(key);
-    if (!refresh && previous?.pending) return previous.pending;
+    if (!refresh && previous?.pending) {
+      recordClientMetric(metric.mediaStatusJoined);
+      return previous.pending;
+    }
     const info = this.peek(key);
     if (!refresh && info) {
+      recordClientMetric(metric.mediaStatusReused);
       this.entries.delete(key);
       this.entries.set(key, { info });
       return Promise.resolve(info);
@@ -45,6 +51,7 @@ class MediaStatusCache {
       if (oldest !== undefined) this.entries.delete(oldest);
     }
     const entry: Entry = previous?.info ? { info: previous.info } : {};
+    recordClientMetric(metric.mediaStatusFetched);
     const pending = fetchInfo().then(
       (value) => {
         if (this.entries.get(key) === entry) {

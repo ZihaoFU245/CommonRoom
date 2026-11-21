@@ -1,7 +1,14 @@
+import {
+  clientMetricClock,
+  observeFirstClientImage,
+  recordClientDuration,
+  recordClientMetric,
+} from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
 import { AttachmentPlaceholder } from "./AttachmentPlaceholder.tsx";
 import { serverBaseUrl } from "../api/server.ts";
 import { useFileUrl } from "../hooks/useFileUrl.ts";
-import { useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 
 // Layout hints only: retain real intrinsic sizes across virtual remounts without
 // prefetching images or keeping decoded bodies. Bound both entries and URL keys.
@@ -20,6 +27,17 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
   }>();
   const size = loaded?.href === url.href ? loaded : dimensions.get(url.href);
   const [failed, setFailed] = useState<string>();
+  const timing = useRef<number | undefined>();
+  useLayoutEffect(() => {
+    timing.current =
+      file.managed && file.url && !dimensions.has(url.href)
+        ? clientMetricClock()
+        : undefined;
+  }, [file.managed, file.url, url.href]);
+  useLayoutEffect(() => {
+    if (file.managed && file.error)
+      recordClientMetric(metric.mediaPreviewFailed);
+  }, [file.managed, file.error]);
   if (
     url.origin === base.origin ||
     url.protocol === "data:" ||
@@ -50,6 +68,9 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
         onLoad={({ currentTarget: image }) => {
           const { naturalWidth: width, naturalHeight: height } = image;
           if (!width || !height) return;
+          if (file.managed) observeFirstClientImage(image);
+          recordClientDuration(metric.mediaPreview, timing.current);
+          timing.current = undefined;
           if (url.href.length <= 4096) {
             dimensions.delete(url.href);
             dimensions.set(url.href, { width, height });
@@ -61,6 +82,8 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
           setLoaded({ href: url.href, width, height });
         }}
         onError={() => {
+          if (file.managed) recordClientMetric(metric.mediaPreviewFailed);
+          timing.current = undefined;
           setFailed(file.url);
         }}
         alt={alt}

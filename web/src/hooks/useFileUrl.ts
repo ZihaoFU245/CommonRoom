@@ -94,6 +94,7 @@ export function useFileUrl(
   if (url && !direct && (version || attempt))
     url.searchParams.set("retry", `${version}:${attempt}`);
   return {
+    managed,
     url: managed
       ? url && download && !direct
         ? mediaDownloadUrl(url.href, document.baseURI)

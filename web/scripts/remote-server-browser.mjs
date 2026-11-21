@@ -285,6 +285,7 @@ export async function startRemoteServer(
         origins: wildcard ? ["*"] : [uiOrigin],
         bind: "127.0.0.1:0",
         base_url: "/server/",
+        ...(plainHttp ? {} : { server: { client_metrics_sample_percent: 25 } }),
         s3: {
           endpoint: internalStorageOrigin,
           public_endpoint: storageOrigin,
@@ -366,14 +367,19 @@ export async function startRemoteServer(
       "base64",
     );
     const noteBytes = Buffer.from("Downloaded from the remote server.\n");
-    async function upload(bytes, filename, avatar = false) {
+    async function upload(
+      bytes,
+      filename,
+      avatar = false,
+      conversation = room.id,
+    ) {
       const prefix = avatar ? "avatars/uploads" : "media/uploads";
       const ticket = await (
         await api(
           prefix,
           avatar
             ? { size: bytes.length, upload_id: crypto.randomUUID() }
-            : { conversation_id: room.id, filename, size: bytes.length },
+            : { conversation_id: conversation, filename, size: bytes.length },
         )
       ).json();
       const target = new URL(ticket.upload.url);
@@ -462,6 +468,7 @@ export async function startRemoteServer(
         )
         .digest("base64"),
       png,
+      seedSticker: () => upload(png, "remote-sticker.png", false, "@library"),
       mediaPaths: [
         image.path,
         new URL(`api/avatars/${avatar.media_id}/file`, base).pathname,
@@ -539,6 +546,48 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
     'document.querySelector(".connection")?.textContent.includes("Connected") || document.querySelector(".connection")?.classList.contains("online")',
     "cross-site WSS",
   );
+  if (fixture.plainHttp) {
+    await wait(
+      "window.clientMetricBatches.length > 0",
+      "automatic debug metrics batch",
+    );
+    await until(
+      () =>
+        fixture.apiRequests.some(
+          ({ method, path, status }) =>
+            method === "POST" && path === "/server/api/drop" && status === 204,
+        ),
+      "debug metrics accepted",
+    );
+  } else {
+    const dropPath = "/server/api/drop";
+    const dropUrl = new URL("api/drop", fixture.base).href;
+    const beforeDrop = fixture.apiRequests.length;
+    const dropBatch = (id) =>
+      evaluate(`fetch(${JSON.stringify(dropUrl)}, {
+      method: "POST", credentials: "include", keepalive: true, priority: "low",
+      body: JSON.stringify({v: 1, id: ${id}, rows: [[26, [1]]]})
+    }).then(response => response.status)`);
+    assert.equal(await dropBatch(1), 204);
+    assert.equal(
+      await dropBatch(1),
+      204,
+      "a retry is acknowledged without merging",
+    );
+    assert.equal(
+      await dropBatch(2),
+      429,
+      "an account cannot submit another batch immediately",
+    );
+    assert.deepEqual(
+      fixture.apiRequests
+        .slice(beforeDrop)
+        .filter((req) => req.path === dropPath)
+        .map((req) => req.method),
+      ["POST", "POST", "POST"],
+      "small credentialed telemetry submissions require no CORS preflight",
+    );
+  }
   // Warm reload must paint the first message even if the socket handshake
   // cannot complete. The socket should then resume from the HTTP checkpoint.
   const eventStart = events.length;
@@ -849,6 +898,62 @@ export async function runRemoteServer({ command, sessionId, fixture, events }) {
   await wait(
     'document.querySelector(".message-list")?.textContent.includes("Browser remote message verified")',
     "message acknowledgement",
+  );
+  await fixture.seedSticker();
+  await evaluate(
+    "document.querySelector('[aria-label=\"Open media library\"]').click()",
+  );
+  await wait(
+    "!!document.querySelector('.library-sticker-tile img[src]')",
+    "sticker image mounted",
+  );
+  await wait(
+    '[...document.querySelectorAll(".library-sticker-tile img")].some(img => img.complete && img.naturalWidth > 0)',
+    "sticker bytes loaded",
+  );
+  await evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
+  await evaluate(`
+    window.dispatchEvent(new ErrorEvent("error", { message: "fixture secret error text" }));
+    window.dispatchEvent(new ErrorEvent("error", { message: "ResizeObserver loop completed with undelivered notifications." }));
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Reflect.deleteProperty(document, "hidden");
+    true;
+  `);
+  await wait(
+    "window.clientMetricBatches.some(batch => batch.rows.some(([id]) => id === 42))",
+    "real browser client metrics flush",
+  );
+  const telemetry = await evaluate("window.clientMetricBatches");
+  assert.ok(
+    telemetry.every(
+      (batch) => Object.keys(batch).sort().join(",") === "c,id,rows,v",
+    ),
+  );
+  assert.ok(
+    telemetry.every(
+      (batch) => Number.isInteger(batch.c) && batch.c >= 12 && batch.c < 24,
+    ),
+  );
+  for (const id of [38, 39, 40, 41, 42, 44, 64]) {
+    const count = telemetry
+      .flatMap((batch) => batch.rows)
+      .filter(([metric]) => metric === id)
+      .reduce(
+        (sum, [, bins]) =>
+          sum + bins.reduce((total, count) => total + count, 0),
+        0,
+      );
+    assert.equal(count, 1, `expected one observation for metric ${id}`);
+  }
+  await evaluate(
+    "document.querySelector('[aria-label=\"Open media library\"]').click()",
+  );
+  await wait(
+    '!document.querySelector(".library-picker")',
+    "library dismissed after telemetry",
   );
   const deltas = events
     .filter(

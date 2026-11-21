@@ -1,3 +1,10 @@
+import {
+  clientMetricClock,
+  recordClientDuration,
+  recordClientMetric,
+  recordFirstClientDuration,
+} from "../api/clientMetrics.ts";
+import { metric, type ClientMetric } from "../api/clientMetricSchema.ts";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api/client.ts";
 import { filenameHint, uploadFile } from "../api/media.ts";
@@ -92,6 +99,7 @@ export function useMediaUploads(
       return;
     }
     if (!file.size || file.size > maxSize) {
+      recordClientMetric(metric.uploadRejected);
       setError(`Choose a file between 1 byte and ${maxSize} bytes.`);
       return;
     }
@@ -100,6 +108,22 @@ export function useMediaUploads(
     const valid = () =>
       !active.signal.aborted && currentConversation.current === conversationId;
     let uploadId: string | null = null;
+    const uploadStarted = clientMetricClock();
+    let stageStarted = uploadStarted;
+    let failureMetric: ClientMetric = metric.uploadFailedPrepare;
+    let completed = false;
+    recordClientMetric(
+      file.size <= 1024 * 1024
+        ? metric.uploadSmall
+        : file.size <= 10 * 1024 * 1024
+          ? metric.uploadMedium
+          : metric.uploadLarge,
+    );
+    function advance(done: ClientMetric, nextFailure: ClientMetric) {
+      recordClientDuration(done, stageStarted);
+      stageStarted = clientMetricClock();
+      failureMetric = nextFailure;
+    }
     setBusy(true);
     setError("");
     setRetryFile(null);
@@ -115,6 +139,7 @@ export function useMediaUploads(
       if (!valid()) return;
       if (!prepared.size || prepared.size > maxSize)
         throw new Error(`Choose a file between 1 byte and ${maxSize} bytes.`);
+      advance(metric.uploadPrepare, metric.uploadFailedAllocate);
       const ticket = await api.allocateMedia(
         conversationId,
         prepared.name,
@@ -130,6 +155,7 @@ export function useMediaUploads(
         abandon(ticket.media_id);
         return;
       }
+      advance(metric.uploadAllocate, metric.uploadFailedPut);
       uploadId = ticket.media_id;
       allocated.current = ticket.media_id;
       setStatus("Uploading 0%…");
@@ -137,9 +163,11 @@ export function useMediaUploads(
         if (valid()) setStatus(`Uploading ${percent}%…`);
       });
       if (!valid()) return;
+      advance(metric.uploadPut, metric.uploadFailedVerify);
       setStatus("Verifying upload…");
       const media = await api.completeMedia(ticket.media_id, active.signal);
       if (!valid()) return;
+      recordClientDuration(metric.uploadVerify, stageStarted);
       const value = {
         media,
         preview:
@@ -152,8 +180,12 @@ export function useMediaUploads(
       currentAttachment.current = value;
       setAttachment(value);
       setStatus("Attachment ready.");
+      completed = true;
+      recordClientDuration(metric.uploadReady, uploadStarted);
+      recordFirstClientDuration(metric.firstUpload, uploadStarted);
     } catch (failure) {
       if (valid()) {
+        recordClientMetric(failureMetric);
         setError(errorMessage(failure));
         setRetryFile(file);
         setStatus("");
@@ -163,6 +195,7 @@ export function useMediaUploads(
         allocated.current = null;
       }
     } finally {
+      if (!completed && !valid()) recordClientMetric(metric.uploadCancelled);
       if (controller.current === active) controller.current = null;
       if (valid()) setBusy(false);
     }

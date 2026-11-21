@@ -1,3 +1,9 @@
+import {
+  clientMetricClock,
+  recordClientDuration,
+  recordClientMetric,
+} from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
 import type { RefObject } from "preact";
 import type { VirtualTimelineHandle } from "./useVirtualTimeline.ts";
 import {
@@ -52,6 +58,11 @@ export function useHistory(
     active.current = selected;
   }, [selected]);
   const current = useRef(loaded);
+  const timing = useRef<{
+    page: CachedHistory;
+    outcome: typeof metric.historyFetched | typeof metric.historyReused;
+    started: number;
+  }>();
   const request = useRef<AbortController | null>(null);
   const paused = useRef(false);
   const lastRange = useRef<{
@@ -111,13 +122,26 @@ export function useHistory(
   );
   useLayoutEffect(() => {
     ledger.current = renderLedger;
-  }, [renderLedger, ledger]);
-  function commit(page: CachedHistory) {
+    const observed = timing.current;
+    if (observed && observed.page === loaded && loaded.view === selected) {
+      timing.current = undefined;
+      recordClientDuration(observed.outcome, observed.started);
+    }
+  }, [renderLedger, ledger, loaded, selected]);
+  function commit(
+    page: CachedHistory,
+    started?: number,
+    outcome:
+      | typeof metric.historyFetched
+      | typeof metric.historyReused = metric.historyFetched,
+  ) {
     const metadata = currentState.current.unread[page.view];
     if (metadata)
       page = { ...page, through: metadata.through, oldest: metadata.oldest };
     cache.current.store(page);
     current.current = page;
+    timing.current =
+      started === undefined ? undefined : { page, outcome, started };
     setLoaded(page);
     ingest(currentState.current, ledger.current, page.messages);
   }
@@ -136,6 +160,7 @@ export function useHistory(
       snapshot.private_access[view]?.id ??
       snapshot.rooms.find((room) => room.name === view)?.id;
     if (!conversationId || !snapshot.unread[view]) return;
+    const historyStarted = clientMetricClock();
     cancelRequest();
     const controller = new AbortController();
     request.current = controller;
@@ -211,6 +236,7 @@ export function useHistory(
               through: latest.unread[view]?.through ?? 0,
               oldest: latest.unread[view]?.oldest ?? 0,
             },
+        historyStarted,
       );
       // A jump applies to this fetch only. Later refreshes use the visible
       // window's anchor, and live appends can resume their merge path.
@@ -222,6 +248,7 @@ export function useHistory(
         );
     } catch (error) {
       if (!controller.signal.aborted) {
+        recordClientMetric(metric.historyFailed);
         if (error instanceof ApiError && error.status === 409)
           paused.current = true;
         if (
@@ -278,6 +305,7 @@ export function useHistory(
   }, [roomIds, state.private_access]);
   const synchronize = useEvent(() => {
     if (request.current || paused.current) return;
+    const historyStarted = clientMetricClock();
     setHistoryError("");
     if (!unread || !id) {
       setLoaded(null);
@@ -290,7 +318,16 @@ export function useHistory(
       visible.revision === unread.revision &&
       projectionsReady(visible)
     ) {
-      if (current.current !== visible) commit(visible);
+      if (current.current !== visible) {
+        const changedWindow =
+          current.current?.view !== selected ||
+          current.current.id !== visible.id;
+        commit(
+          visible,
+          changedWindow ? historyStarted : undefined,
+          metric.historyReused,
+        );
+      }
       return;
     }
     const previous =

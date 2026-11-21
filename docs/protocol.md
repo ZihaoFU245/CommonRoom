@@ -388,6 +388,34 @@ Current 401 responses cancel retry; stale checks cannot log out a replacement
 socket. Returning online or focusing a closed connection retries immediately,
 without overlapping a socket that is already connecting.
 
+## Browser metrics batches
+
+Successful browser sign-in and account reads, including conditional account
+reads returning `304`, advertise `X-Chat-Client-Metrics`. The value is two
+comma-separated integers, the sampling percentage and first-batch delay in
+seconds. The API exposes this header to allowed UI origins.
+
+`POST /api/drop` uses the selected server's base path, an allowed Origin and a
+live browser session. It accepts the application client's versioned JSON
+in a UTF-8 text body or as `application/json`. Version 1 uses `{v,id,rows}`
+with the original 38 metrics and reports an unknown client. Version 2 uses
+`{v,id,c,rows}`, with one integer client category `c` from 0 to 47.
+Rows contain
+strictly increasing metric indices and fixed-width count vectors.
+`web/src/api/clientMetricSchema.ts` defines the indices and duration
+buckets. A row may contain up to 256 observations and the batch may contain up
+to 1,024 observations. The entire body is limited to 2 KiB and two seconds.
+
+The independent receiver admits up to four concurrent requests, with limits of
+32 per one-second window globally and eight per source address. It accepts at
+most one new batch per account every 30 seconds and suppresses duplicate batch
+IDs for that account for ten minutes. Successful submission and duplicate
+delivery return `204`. Saturation returns `429`. Clients drop failed batches
+and use fresh IDs for subsequent observations. This endpoint stores only
+aggregate metrics and bounded, transient admission/deduplication state in
+memory. A sampling percentage of zero disables intake. See
+[Client metrics](cache.md#client-metrics) for coverage.
+
 ## Media uploads
 
 All paths use `base_url`; requests use existing cookies and browser origin checks.

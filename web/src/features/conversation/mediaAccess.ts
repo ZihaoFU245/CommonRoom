@@ -1,3 +1,4 @@
+import { metric, type MediaMetric } from "../../api/clientMetricSchema.ts";
 /** In-memory read leases. Uploads never use this authorization cache. */
 import {
   mediaFileUrl,
@@ -125,6 +126,7 @@ export class MediaAccess {
     link = false,
     refresh = false,
     download = false,
+    observe?: (metric: MediaMetric) => void,
   ): Promise<Resolution> {
     const file = mediaFileUrl(href);
     if (!file) throw new TypeError("Invalid managed media URL.");
@@ -142,6 +144,7 @@ export class MediaAccess {
         cached.info.unavailable ||
         (signed && signed.expiresAt > Date.now()))
     ) {
+      observe?.(metric.mediaLeaseReused);
       this.entries.delete(canonical);
       this.entries.set(canonical, cached);
       return link && signed && !cached.info.expired && !cached.info.unavailable
@@ -158,9 +161,10 @@ export class MediaAccess {
         if (existing.state !== "started") existing.link = true;
         else {
           await existing.promise;
-          return this.load(href, link, false, download);
+          return this.load(href, link, false, download, observe);
         }
       }
+      observe?.(metric.mediaLeaseJoined);
       return existing.promise;
     }
     if (this.pending.size >= 256)
@@ -179,6 +183,7 @@ export class MediaAccess {
       resolve,
       reject,
     };
+    observe?.(metric.mediaLeaseResolved);
     this.pending.set(key, existing);
     this.timer ??= setTimeout(() => {
       this.timer = undefined;

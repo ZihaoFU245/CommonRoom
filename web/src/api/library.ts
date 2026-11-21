@@ -1,3 +1,5 @@
+import { recordClientMetric } from "./clientMetrics.ts";
+import { metric } from "./clientMetricSchema.ts";
 export interface LibraryItem {
   media_id: string;
   filename: string;
@@ -103,6 +105,9 @@ export function sharedLibrarySections(
     };
     pendingSections.set(key, entry);
     pending = entry;
+    recordClientMetric(metric.libraryFetched);
+  } else {
+    recordClientMetric(metric.libraryJoined);
   }
   const entry = pending;
   entry.readers++;

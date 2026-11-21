@@ -176,7 +176,7 @@ try {
     fixture?.url ??
     `http://127.0.0.1:${address.port}/scripts/regressions/index.html${args[0] ? `?${new URLSearchParams({ test: args[0] })}` : ""}`;
   const { targetId } = await command("Target.createTarget", {
-    url: mobile ? "about:blank" : url,
+    url: mobile || remote ? "about:blank" : url,
   });
   const { sessionId } = await command("Target.attachToTarget", {
     targetId,
@@ -198,8 +198,29 @@ try {
       { enabled: true },
       sessionId,
     );
-    await command("Page.navigate", { url }, sessionId);
   }
+  if (remote) {
+    await command("Page.enable", {}, sessionId);
+    await command(
+      "Page.addScriptToEvaluateOnNewDocument",
+      {
+        source: `
+        Math.random = () => ${fixture.plainHttp ? 0.999 : 0.2};
+        window.clientMetricBatches = [];
+        const fetchForTest = window.fetch;
+        window.fetch = function(request, options) {
+          if (typeof options?.body === "string" && String(request).endsWith("/api/drop")) {
+            const batch = JSON.parse(options.body);
+            if (batch.v === 2) window.clientMetricBatches.push(batch);
+          }
+          return fetchForTest.call(this, request, options);
+        };
+      `,
+      },
+      sessionId,
+    );
+  }
+  if (mobile || remote) await command("Page.navigate", { url }, sessionId);
   await command("Page.bringToFront", {}, sessionId);
   if (fixture) {
     try {

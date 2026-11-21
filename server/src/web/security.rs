@@ -81,6 +81,17 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
             .uri()
             .path()
             .starts_with(&format!("{}api/bot/", app.config.base_url));
+    const CLIENT_METRICS: axum::http::HeaderName =
+        axum::http::HeaderName::from_static("x-chat-client-metrics");
+    let client_metrics = request
+        .uri()
+        .path()
+        .strip_prefix(&app.config.base_url)
+        .is_some_and(|path| match path {
+            "api/me" => request.method() == axum::http::Method::GET,
+            "api/login" => request.method() == axum::http::Method::POST,
+            _ => false,
+        });
     let preflight = browser_api && request.method() == axum::http::Method::OPTIONS;
     let response = match rejection {
         Some(response) => response,
@@ -119,6 +130,15 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
         None => next.run(request).await,
     };
     let mut response = with_security_headers(&app, response);
+    let advertise_metrics = client_metrics
+        && (response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED);
+    if advertise_metrics {
+        let percent = app.config.client_metrics_sample_percent();
+        let first_batch_seconds = if app.config.production { 60 } else { 2 };
+        if let Ok(policy) = HeaderValue::try_from(format!("{percent}, {first_batch_seconds}")) {
+            response.headers_mut().insert(CLIENT_METRICS, policy);
+        }
+    }
     if browser_api {
         response
             .headers_mut()
@@ -130,6 +150,12 @@ pub(crate) async fn security(State(app): State<App>, request: Request, next: Nex
                 header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
                 HeaderValue::from_static("true"),
             );
+            if advertise_metrics {
+                headers.insert(
+                    header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                    HeaderValue::from_static("X-Chat-Client-Metrics"),
+                );
+            }
             if preflight && response.status() == StatusCode::NO_CONTENT {
                 let headers = response.headers_mut();
                 // Browser-managed permission cache only; every actual request

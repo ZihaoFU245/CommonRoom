@@ -1,3 +1,9 @@
+import {
+  clientMetricClock,
+  setClientDisplayScope,
+  recordClientMetric,
+} from "../api/clientMetrics.ts";
+import { metric } from "../api/clientMetricSchema.ts";
 import { focusControl } from "../features/preferences/inputFocus.ts";
 import type { RefObject } from "preact";
 import { memo } from "preact/compat";
@@ -81,6 +87,7 @@ export function LibraryPicker({
   close,
   anchor,
   closing = false,
+  openedAt,
   account = "",
 }: {
   canSelect: boolean;
@@ -90,6 +97,7 @@ export function LibraryPicker({
   close: () => void;
   anchor?: RefObject<HTMLButtonElement>;
   closing?: boolean;
+  openedAt?: number | undefined;
   account?: string;
 }) {
   const { dialog, exiting, dismiss } = useLibraryPopover(
@@ -218,6 +226,16 @@ export function LibraryPicker({
     }
   }, [confirmation, busy, content]);
   const enabled = mode === "stickers";
+  const stickerSelectedAt = useRef(openedAt);
+  useLayoutEffect(() => {
+    if (!enabled || closing) return;
+    setClientDisplayScope(
+      "stickers",
+      stickerSelectedAt.current ?? clientMetricClock(),
+    );
+    stickerSelectedAt.current = undefined;
+    return () => setClientDisplayScope("stickers");
+  }, [enabled, closing]);
   const recentStickers = useLibraryPage("recent", {
     enabled,
     cacheScope: account,
@@ -234,6 +252,10 @@ export function LibraryPicker({
     { view: "recent", title: "Recent", result: recentStickers },
     { view: "library", title: "Collections", result: collection },
   ] as const;
+  const stickerLoadFailed = Boolean(recentStickers.error || collection.error);
+  useEffect(() => {
+    if (enabled && stickerLoadFailed) recordClientMetric(metric.stickerFailed);
+  }, [enabled, stickerLoadFailed]);
   const loadingPage = sections.some(
     ({ result }) => !result.page && !result.error,
   );
@@ -664,6 +686,7 @@ export function LibraryPicker({
           title="Stickers"
           aria-pressed={mode === "stickers"}
           onClick={() => {
+            if (!enabled) stickerSelectedAt.current = clientMetricClock();
             setMode("stickers");
           }}
         >

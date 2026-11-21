@@ -26,6 +26,7 @@ pub(crate) struct Admission {
     state: Mutex<State>,
     limits: crate::config::ServerConfig,
     pub(crate) metrics: Arc<super::metrics::Metrics>,
+    pub(crate) client: super::client_metrics::ClientMetrics,
     browser: Arc<Semaphore>,
     bot: Arc<Semaphore>,
 }
@@ -46,6 +47,7 @@ impl Admission {
             )),
             limits,
             metrics: Arc::default(),
+            client: Default::default(),
         }
     }
     pub fn stats(&self) -> Result<serde_json::Value, crate::engine::EngineError> {
@@ -322,7 +324,8 @@ pub(crate) async fn http(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let path = request.uri().path();
-    if !path.contains("/api/")
+    if super::client_metrics::is_drop(&app, request.method(), path)
+        || !path.contains("/api/")
         || path.ends_with("/api/login")
         || path.ends_with("/api/register")
         || path.ends_with("/api/health")

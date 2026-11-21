@@ -1,3 +1,8 @@
+import {
+  clientMetricClock,
+  recordFirstChat,
+  setClientDisplayScope,
+} from "../api/clientMetrics.ts";
 import { readStorage, writeStorage } from "../api/browserStorage.ts";
 import { UserCards } from "./UserCard.tsx";
 import { resolveDisplayNames } from "../features/preferences/displayNames.ts";
@@ -379,6 +384,26 @@ export function Chat({
     atBottom,
     showNameColors,
   );
+  const displaySelection = useRef<{ name: string; started: number }>();
+  const displayStart = useRef<number>();
+  const conversationDisplayed =
+    !conversationListOpen && !consoleView && (Boolean(room) || direct);
+  useLayoutEffect(() => {
+    if (!conversationDisplayed) return;
+    const pending = displaySelection.current;
+    displayStart.current =
+      pending?.name === selected ? pending.started : undefined;
+    displaySelection.current = undefined;
+    setClientDisplayScope(
+      "conversation",
+      displayStart.current ?? clientMetricClock(),
+    );
+    return () => setClientDisplayScope("conversation");
+  }, [selected, conversationDisplayed, room?.id]);
+  useLayoutEffect(() => {
+    if (!conversationDisplayed || !historyReady) return;
+    return recordFirstChat(displayStart.current);
+  }, [selected, conversationDisplayed, room?.id, historyReady]);
   const viewDisplayNames = useMemo(
     () =>
       resolveDisplayNames(
@@ -638,6 +663,10 @@ export function Chat({
     name: string,
     { focusComposer = true }: { focusComposer?: boolean } = {},
   ) {
+    if (name !== selected || conversationListOpen) {
+      const started = clientMetricClock();
+      if (started !== undefined) displaySelection.current = { name, started };
+    }
     const select = () => {
       if (name !== selected || conversationListOpen) {
         const params = new URLSearchParams(location.hash.slice(1));

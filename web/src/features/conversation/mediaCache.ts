@@ -1,3 +1,4 @@
+import { metric, type MediaMetric } from "../../api/clientMetricSchema.ts";
 /** Immutable bytes served under bounded, read-only authorization leases. */
 import { rangeStream } from "./rangeStream.ts";
 import { requestAbort } from "../../api/requestAbort.ts";
@@ -440,7 +441,9 @@ export class MediaCache {
     url: URL,
     keepAlive: (work: Promise<void>) => void,
     retry = true,
+    observe?: (metric: MediaMetric, started?: number) => void,
   ): Promise<Response> {
+    const started = observe ? performance.now() : undefined;
     const key = new URL(url.pathname, url);
     let cache: MediaCacheStore | undefined;
     let cached: Response | undefined;
@@ -482,11 +485,12 @@ export class MediaCache {
     let resolution: Resolution;
     try {
       resolution = await waitForFill(
-        this.resolve(
+        this.access.load(
           url.href,
+          !cached || cachedFile(cached) === undefined,
           false,
           url.searchParams.get("download") === "true",
-          !cached || cachedFile(cached) === undefined,
+          observe,
         ),
         request.signal,
       );
@@ -498,7 +502,7 @@ export class MediaCache {
         error instanceof DOMException &&
         error.name === "AbortError"
       )
-        return this.respond(request, url, keepAlive, false);
+        return this.respond(request, url, keepAlive, false, observe);
       if (error instanceof MediaAccessError)
         return new Response(null, { status: error.status });
       throw error;
@@ -530,6 +534,7 @@ export class MediaCache {
         if (saved) {
           const hit = cachedResponse(saved, output, range, request.signal);
           if (hit) {
+            observe?.(metric.mediaBytesReused, started);
             this.touch(key.href, keepAlive);
             return hit;
           }
@@ -552,6 +557,7 @@ export class MediaCache {
       const response = await this.download(url, range, signal, resolution);
       if (!response.ok || (response.status !== 200 && response.status !== 206))
         return response;
+      observe?.(metric.mediaBytesFetched, started);
       let contentRange = response.headers.get("Content-Range");
       // Content-Length is CORS-safelisted; older bucket CORS policies may hide
       // Content-Range. Reconstruct only an unambiguous single-byte-range response.

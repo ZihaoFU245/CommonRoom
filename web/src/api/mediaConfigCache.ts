@@ -1,3 +1,5 @@
+import { recordClientMetric } from "./clientMetrics.ts";
+import { metric } from "./clientMetricSchema.ts";
 /** Presentation config only. Uploads always authorize on the server. */
 interface Configuration {
   enabled: boolean;
@@ -41,8 +43,14 @@ class MediaConfigCache {
     if (this.entry && this.entry.base !== base) this.clear();
     const entry = this.entry ?? { base };
     this.entry = entry;
-    if (entry.value) return { ...entry.value };
-    if (!entry.pending) {
+    if (entry.value) {
+      recordClientMetric(metric.mediaConfigReused);
+      return { ...entry.value };
+    }
+    if (entry.pending) {
+      recordClientMetric(metric.mediaConfigJoined);
+    } else {
+      recordClientMetric(metric.mediaConfigFetched);
       const controller = new AbortController();
       const pending: Pending = {
         controller,

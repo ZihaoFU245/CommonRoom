@@ -1,6 +1,7 @@
 pub(crate) mod admission;
 pub(crate) mod auth;
 pub(crate) mod avatars;
+mod client_metrics;
 pub(crate) mod colors;
 mod display_names;
 mod error;
@@ -284,6 +285,7 @@ pub fn router(app: App) -> Router {
             post(display_names::set_display_name),
         )
         .route(path("/api/bot-commands"), get(bot_commands::get))
+        .route(client_metrics::PATH, post(client_metrics::drop_batch))
         .route(path("/api/health"), get(|| async { "ok" }))
         .route(path("/ws"), get(socket::upgrade));
     let routes = if app.config.base_url == "/" {

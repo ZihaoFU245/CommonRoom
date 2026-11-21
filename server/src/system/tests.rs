@@ -6,29 +6,36 @@ fn metrics_render_markdown_and_handle_empty_and_large_counters() {
         &json!({}),
         &json!({}),
         &json!({}),
+        &json!({}),
     );
     assert!(literal.contains("label`|: a | b`**c"));
     assert_eq!(ratio(4752, 848), "84.86%");
     assert_eq!(ratio(0, 0), "n/a (no lookups)");
     assert_eq!(ratio(u64::MAX, u64::MAX), "50.00%");
     let text = render_metrics(
-        &json!({"hits":4752,"misses":848,"uptime_seconds":12}),
+        &json!({"hits":4752,"misses":848,"uptime_seconds":65872}),
         &json!({"readers":{"open":2}}),
         &json!({"hits":0,"misses":0}),
         &json!({}),
+        &json!({}),
     );
     assert!(text.starts_with("# System metrics"));
+    assert!(text.contains("\n- Uptime: **18h 17m 52s**\n"));
+    assert!(text.contains("| `uptime_seconds` | 65872 |"));
     assert!(text.contains("**84.86%**"));
     assert!(text.contains("## Database pools"));
     assert!(text.contains("n/a (0 / 0)"));
     let plain = render_metrics_text(
-        &json!({"hits":4752,"misses":848,"uptime_seconds":12}),
+        &json!({"hits":4752,"misses":848,"uptime_seconds":152272}),
         &json!({"readers":{"open":2}}),
         &json!({"hits":0,"misses":0}),
         &json!({"io_jobs_available":64}),
+        &json!({}),
     );
     assert!(plain.starts_with("```text\nSystem metrics"));
     assert!(plain.ends_with("\n```"));
+    assert!(plain.contains("\n- Uptime: 1d 18h 17m 52s\n"));
+    assert!(plain.contains("\nuptime_seconds: 152272\n"));
     assert!(plain.contains("readers.open: 2"));
     assert!(plain.contains("io_jobs_available: 64"));
     assert!(plain.contains("84.86%"));
@@ -48,7 +55,7 @@ fn report_summarizes_outcomes_capacity_and_latency_without_losing_raw_counters()
     let runtime = json!({"admission":{"http":{"routes":{
         "/api/example/{id}":{"completed":100,"not_modified":12,"client_errors":3,"server_errors":2,"cancelled":4,"total_us":200000,"max_us":20000,"duration_buckets":[10,20,40,20,10,0,0,0,0]}
     }}}});
-    let report = render_metrics(&cache, &json!({}), &json!({}), &runtime);
+    let report = render_metrics(&cache, &json!({}), &json!({}), &runtime, &json!({}));
     assert!(report.contains("**95.00%** successful"));
     assert!(report.contains("3.00% client errors, 2.00% server errors"));
     assert!(report.contains("3.85% cancelled"));
@@ -58,7 +65,7 @@ fn report_summarizes_outcomes_capacity_and_latency_without_losing_raw_counters()
     assert!(
         report.contains("| `admission.http.routes./api/example/{id}.duration_buckets[0]` | 10 |")
     );
-    let plain = render_metrics_text(&cache, &json!({}), &json!({}), &runtime);
+    let plain = render_metrics_text(&cache, &json!({}), &json!({}), &runtime, &json!({}));
     assert!(plain.contains("duration_buckets[0]: 10"));
     assert!(plain.contains("95.00% successful"));
     assert!(plain.contains("All routes: completed=100, 304=12"));
@@ -82,7 +89,7 @@ fn empty_latency_samples_are_unavailable_and_reports_include_every_counter() {
         "shard_stats":[{"bytes":800,"byte_limit":1000},{"bytes":200,"byte_limit":1000}]});
     let pools = json!({"readers":{"acquisitions":0,"acquire_max_us":0}});
     for plain in [false, true] {
-        let report = render_report(&cache, &pools, &json!({}), &runtime, plain);
+        let report = render_report(&cache, &pools, &json!({}), &runtime, &json!({}), plain);
         for label in [
             "History and unread caches",
             "Snapshot cache",

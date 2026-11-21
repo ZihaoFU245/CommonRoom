@@ -978,13 +978,13 @@ await test("system metrics sections expand independently while keeping rates vis
         entry: {
           command,
           result:
-            "# System metrics\n\n- History page hit rate: **84.86%**\n\n## History and unread caches\n\n| Metric | Value |\n| --- | ---: |\n| hits | 4752 |\n\n## Snapshot cache\n\n| Metric | Value |\n| --- | ---: |\n| hits | 10 |",
+            "# System metrics\n\n- History page hit rate: **84.86%**\n\n## History and unread caches\n\n| Metric | Value |\n| --- | ---: |\n| hits | 4752 |\n\n## Snapshot cache\n\n| Metric | Value |\n| --- | ---: |\n| hits | 10 |\n\n## Client metrics\n\n### First events\n\n| Milestone | Samples | Median bound | p95 bound |\n| --- | --- | --- | --- |\n| First chat display | 15 | ≤ 250 ms | ≤ 1 s |",
           error: false,
         },
       }),
       tests,
     );
-    await until(() => tests.querySelectorAll("details").length === 2);
+    await until(() => tests.querySelectorAll("details").length === 3);
     const sections = [...tests.querySelectorAll("details")];
     check(
       sections.every((section) => !section.open),
@@ -1010,6 +1010,16 @@ await test("system metrics sections expand independently while keeping rates vis
     check(
       document.activeElement === summary,
       "Native summary is keyboard focusable",
+    );
+    const client = sections[2];
+    client.querySelector("summary").click();
+    check(
+      client.open &&
+        client.querySelector("h3").textContent === "First events" &&
+        client
+          .querySelector("table")
+          .textContent.includes("First chat display"),
+      "Client metrics display readable headings and timings inside their section",
     );
     render(null, tests);
   }

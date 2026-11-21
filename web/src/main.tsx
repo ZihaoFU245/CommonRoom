@@ -1,3 +1,5 @@
+import { stopClientMetrics, recordClientMetric } from "./api/clientMetrics.ts";
+import { metric } from "./api/clientMetricSchema.ts";
 import { disconnectPreferences } from "./features/preferences/account.ts";
 import { loadInitialAccount } from "./api/bootstrap.ts";
 import mediaWorkerUrl from "virtual:media-worker-url";
@@ -38,7 +40,10 @@ function App() {
     loadInitialAccount()
       .then(setAccount)
       .catch((error) => {
-        if (!isUnauthorized(error)) setInitialError(errorMessage(error));
+        if (!isUnauthorized(error)) {
+          recordClientMetric(metric.bootstrapError);
+          setInitialError(errorMessage(error));
+        }
         setAccount(null);
       });
   }, []);
@@ -48,6 +53,7 @@ function App() {
     <Chat
       initial={account}
       onLogout={() => {
+        stopClientMetrics();
         disconnectPreferences();
         setAccount(null);
       }}

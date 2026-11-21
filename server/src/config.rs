@@ -38,6 +38,8 @@ pub struct ServerConfig {
     pub request_timeout_seconds: u64,
     pub ordering_timeout_seconds: u64,
     pub cache: CacheConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_metrics_sample_percent: Option<u8>,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -55,12 +57,19 @@ impl Default for ServerConfig {
             request_timeout_seconds: 120,
             ordering_timeout_seconds: 5,
             cache: CacheConfig::default(),
+            client_metrics_sample_percent: None,
         }
     }
 }
 impl ServerConfig {
     fn validate(&self) -> Result<(), String> {
         self.cache.validate()?;
+        if self
+            .client_metrics_sample_percent
+            .is_some_and(|percent| percent > 100)
+        {
+            return Err("server.client_metrics_sample_percent must be between 0 and 100.".into());
+        }
         for (name, value, maximum) in [
             ("max_http_connections", self.max_http_connections, 16384),
             ("http_per_account", self.http_per_account, 256),
@@ -439,8 +448,17 @@ impl Config {
         Self::load_inner(data, Some(selected))
     }
 
+    pub(crate) fn client_metrics_sample_percent(&self) -> u8 {
+        self.server
+            .client_metrics_sample_percent
+            .unwrap_or(if self.production { 5 } else { 100 })
+    }
+
     pub fn display(&self) -> Result<String, String> {
-        serde_json::to_string_pretty(self).map_err(|_| "Could not display configuration.".into())
+        let mut display = self.clone();
+        display.server.client_metrics_sample_percent = Some(self.client_metrics_sample_percent());
+        serde_json::to_string_pretty(&display)
+            .map_err(|_| "Could not display configuration.".into())
     }
     #[cfg(test)]
     pub fn load(data: &std::path::Path) -> Result<Self, String> {
@@ -729,6 +747,34 @@ mod tests {
         assert_eq!(Config::load(dir.path()).unwrap().server, limits);
         assert_eq!(Config::load(dir.path()).unwrap().server, limits);
     }
+    #[test]
+    fn client_metrics_sampling_validates_and_uses_mode_defaults() {
+        let mut config = Config::default();
+        assert_eq!(config.client_metrics_sample_percent(), 100);
+        config.production = true;
+        assert_eq!(config.client_metrics_sample_percent(), 5);
+        let displayed: serde_json::Value =
+            serde_json::from_str(&config.display().unwrap()).unwrap();
+        assert_eq!(displayed["server"]["client_metrics_sample_percent"], 5);
+
+        for percent in [0, 25, 100] {
+            let config = Config::parse(
+                format!(r#"{{"server":{{"client_metrics_sample_percent":{percent}}}}}"#).as_bytes(),
+            )
+            .unwrap();
+            config.server.validate().unwrap();
+            assert_eq!(config.client_metrics_sample_percent(), percent);
+        }
+        let config = Config::parse(br#"{"server":{"client_metrics_sample_percent":101}}"#).unwrap();
+        assert!(
+            config
+                .server
+                .validate()
+                .unwrap_err()
+                .contains("between 0 and 100")
+        );
+    }
+
     #[test]
     fn postgres_pool_limits_are_bounded_and_rejected_before_config_is_saved() {
         for pool in [

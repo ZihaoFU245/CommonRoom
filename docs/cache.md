@@ -88,8 +88,9 @@ Use `/grant alice @global /system` to delegate read access. Stdin and authorized
 `/sudo /system ...` are supported. Action grants alone do not enable commands. `/configs` is not executable. Its persisted
 permission name remains readable for existing HEAD data, without authorizing any
 new system command. Outputs are Markdown; configuration is fenced JSON and
-metrics use headings, overall outcome/cache percentages, capacity utilization,
-cache behavior, ordering waits and per-route latency tables. Both formats include
+metrics show uptime in days, hours, minutes and seconds. The report also includes
+overall outcome/cache percentages, capacity utilization, cache behavior, ordering
+waits and per-route latency tables. Both formats include
 the complete raw counters and a Unix collection timestamp after the summaries,
 including shard occupancy and per-route histogram buckets. The default report
 formats these details as Markdown tables; `--txt` places the same information in
@@ -190,10 +191,14 @@ Route counters and latency buckets use relaxed atomics. The route table is built
 alongside browser/bot route registration and frozen before serving requests. Request
 start performs an immutable lookup; completion/cancellation updates the retained
 route counters directly. Neither path takes a metrics mutex or allocates a route
-label. Report collection reads atomics without blocking these updates. Every request
+label. Report collection reads atomics without blocking these updates. Every product HTTP request
 is counted; there is no sampling. Finer buckets add no extra atomic updates per
 request: completion still increments exactly one bucket. Percentages, averages,
 aggregate route statistics and p95 bounds are calculated only on report demand.
+The ETag revalidation section splits successful conditional JSON GETs into
+unchanged (304) and changed (200) responses, with separate latency buckets and
+p95 bounds. Reuse rate divides 304s by those two outcomes. Authorization failures,
+responses without ETags, and unconditional GETs do not enter this denominator.
 The displayed p95 is the upper bound of the bucket containing the 95th percentile
 (or `>5 s`), not an exact percentile. Empty denominators and maximum timings
 without completed samples display `n/a`. A measured zero-duration sample still
@@ -224,6 +229,74 @@ pages. Aggregate spare capacity can coexist with a full shard because shards do
 not borrow budgets. Cache behavior reports eviction counts and miss-reason shares;
 ordering summaries show average/maximum wait and timeout percentages. These values
 are derived from existing counters only when the command runs. The report itself
-occupies request/job capacity. Host CPU, process RSS, detailed S3 phase timings and
-end-to-end browser latency are outside this report; backend route timing includes
-awaited S3 work but excludes subsequent browser downloads.
+occupies request/job capacity. Host CPU, process RSS and detailed S3 phase timings
+are outside this report. Backend route timing includes awaited S3 work. The client
+section reports selected browser workflows.
+
+## Client metrics
+
+The server sets the browser sampling percentage with
+`server.client_metrics_sample_percent`. The default is 5% in production and
+100% in debug. The browser chooses once per page load and applies the policy
+when a successful account or sign-in response supplies it. **First events** show sample counts
+and median/p95 bucket bounds for these milestones:
+
+| Milestone | Timing |
+| --- | --- |
+| First chat display | Document open or first foreground activation to the first rendered conversation with messages or ready empty history. When the app opens on the conversation picker, timing starts at selection. |
+| First chat after sign-in | Successful sign-in attempt started to first conversation display. When the picker opens first, timing starts at selection. |
+| First chat image displayed | Opening the eligible conversation to a loaded managed image intersecting the viewport. |
+| First sticker displayed | Opening the sticker picker or activating its Stickers tab to a loaded sticker thumbnail intersecting the viewport. |
+| First message acknowledged | Submitting the first successful message to receiving its server acknowledgement. |
+| First attachment ready | Selecting the first successfully uploaded file to the app marking it ready. |
+
+Timing of user-triggered sends and uploads starts at the action, excluding
+the time the user takes to initiate it. The display milestones use committed
+chat UI and visible loaded images as browser-side markers. Empty histories
+count toward chat display. Conversations without displayed media contribute
+no image sample.
+
+The browser also records upload
+preparation, allocation, transfer, verification, and readiness, plus failure
+stage, cancellation and coarse file-size bands (up to 1 MiB, up to 10 MiB,
+larger). Chat timings cover first socket readiness and visible reconnects, with
+handshake and initial synchronization timings. Ordinary message submissions
+report acknowledgement, failure and interruption by disconnect.
+
+**Failures by client** reports fixed categories for app rendering, uncaught
+script and promise failures, bootstrap, API transport/status/schema errors,
+socket failures, and failed workflow outcomes. Each accepted batch carries
+one coarse combination of desktop/phone/tablet, Chromium/WebKit/Gecko, and
+browser tab/installed app, with an unknown value per dimension. Engine and
+device inference is best effort. Reports show coverage in batches and first
+events with sample counts for each observed combination. An incident can
+appear in more than one category, such as an API timeout during an upload.
+Browser notifications about deferred resize callbacks count once per sampled
+session and appear separately from uncaught script errors. Use the counts as
+sampled observations rather than a count of affected users.
+
+History reports locally available conversation windows and fetched windows
+committed to the view. Managed media reports cache-served and fetched responses,
+their response-ready latency, and authorization lease hits, coalesced requests
+and fresh resolutions. Managed eager image previews also report image load time
+from source attachment and image load failures. Worker initialization and
+audio/video playback report readiness and failures separately. Media configuration and status
+track stored value hits, joined loads and fresh loads. Library reuse measures
+requests sharing an in-flight load. Reuse percentages divide hits by observed
+outcomes for each path. These counters describe app-managed reuse. Browser HTTP
+revalidation is measured independently by the server's ETag counters.
+
+Sampled tabs aggregate into bounded counters, combining worker outcomes with the
+page batch. A dirty tab sends at most once per minute, with a first-batch delay
+of about 60 seconds in production or two seconds in debug and a best-effort flush
+when hidden. Browser shutdown, worker restart, missing credentials, concurrent
+tabs, or an overloaded receiver can lose observations. There are no retry
+queues, polling, dependencies, or account identifiers in telemetry payloads.
+The batch carries counters and coarse categories without URLs, user agents,
+error messages, or stack traces. Failures before the app can execute or submit
+with a live session may go unreported.
+The server keeps cumulative totals in memory without SQL, and displays them in
+the **Client metrics** section of both report formats. The text format also
+includes raw browser counters and buckets for comparisons. Receiver admission
+statistics appear in that section. Requests to `/api/drop` are excluded from
+the product HTTP route rollup.

@@ -39,6 +39,8 @@ struct Route {
     max_us: AtomicU64,
     // Non-cumulative; one relaxed atomic increment per completed request.
     duration_buckets: [AtomicU64; 9],
+    conditional_ok_buckets: [AtomicU64; 9],
+    not_modified_buckets: [AtomicU64; 9],
 }
 impl Route {
     fn snapshot(&self) -> Option<Value> {
@@ -48,15 +50,32 @@ impl Route {
         if active == 0 && completed == 0 && cancelled == 0 {
             return None;
         }
-        Some(
-            json!({"active":active,"completed":completed,"cancelled":cancelled,
+        let mut stats = json!({"active":active,"completed":completed,"cancelled":cancelled,
             "not_modified":self.not_modified.load(Ordering::Relaxed),
             "client_errors":self.client_errors.load(Ordering::Relaxed),
             "server_errors":self.server_errors.load(Ordering::Relaxed),
             "total_us":self.total_us.load(Ordering::Relaxed),
             "max_us":self.max_us.load(Ordering::Relaxed),
-            "duration_buckets":self.duration_buckets.each_ref().map(|bucket| bucket.load(Ordering::Relaxed))}),
-        )
+            "duration_buckets":self.duration_buckets.each_ref().map(|bucket| bucket.load(Ordering::Relaxed))});
+        let conditional_ok = self
+            .conditional_ok_buckets
+            .each_ref()
+            .map(|bucket| bucket.load(Ordering::Relaxed));
+        let unchanged = self
+            .not_modified_buckets
+            .each_ref()
+            .map(|bucket| bucket.load(Ordering::Relaxed));
+        let changed_count: u64 = conditional_ok.iter().sum();
+        let unchanged_count: u64 = unchanged.iter().sum();
+        if changed_count != 0 || unchanged_count != 0 {
+            stats["etag"] = json!({
+                "conditional_200":changed_count,
+                "not_modified":unchanged_count,
+                "conditional_200_buckets":conditional_ok,
+                "not_modified_buckets":unchanged
+            });
+        }
+        Some(stats)
     }
 }
 
@@ -131,6 +150,7 @@ impl Metrics {
             route,
             start: std::time::Instant::now(),
             status: None,
+            conditional: false,
         }
     }
     pub fn stats(&self) -> Value {
@@ -174,6 +194,7 @@ pub(crate) struct Request {
     route: Arc<Route>,
     start: std::time::Instant,
     pub status: Option<axum::http::StatusCode>,
+    conditional: bool,
 }
 impl Drop for Request {
     fn drop(&mut self) {
@@ -193,6 +214,13 @@ impl Drop for Request {
             route.max_us.fetch_max(us, Ordering::Relaxed);
             let bucket = duration_bucket(us);
             increment(&route.duration_buckets[bucket]);
+            if self.conditional {
+                if status == axum::http::StatusCode::NOT_MODIFIED {
+                    increment(&route.not_modified_buckets[bucket]);
+                } else if status == axum::http::StatusCode::OK {
+                    increment(&route.conditional_ok_buckets[bucket]);
+                }
+            }
             increment(&route.completed);
         } else {
             increment(&route.cancelled);
@@ -212,9 +240,18 @@ pub(crate) async fn observe(
         .extensions()
         .get::<axum::extract::MatchedPath>()
         .map_or("unmatched", |path| path.as_str());
+    if super::client_metrics::is_route(&app, route) {
+        return next.run(request).await;
+    }
+    let conditional = request.method() == axum::http::Method::GET
+        && request
+            .headers()
+            .contains_key(axum::http::header::IF_NONE_MATCH);
     let mut measurement = metrics.request(route);
     let response = next.run(request).await;
     measurement.status = Some(response.status());
+    measurement.conditional =
+        conditional && response.headers().contains_key(axum::http::header::ETAG);
     response
 }
 
@@ -228,10 +265,41 @@ pub(crate) async fn http(
     use axum::{http::StatusCode, response::IntoResponse};
     use std::time::Duration;
     let metrics = &app.admission.metrics;
+    let drop = super::client_metrics::is_drop(&app, request.method(), request.uri().path());
+    let _client_permit = if drop {
+        let admission = super::client_metrics::eligible(&app, request.headers()).and_then(|()| {
+            let source = request
+                .extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|peer| super::security::client_ip(&app.config, peer.0.ip(), request.headers()))
+                .transpose()
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            app.admission
+                .client
+                .admit(source)
+                .ok_or(StatusCode::TOO_MANY_REQUESTS)
+        });
+        let permit = match admission {
+            Ok(permit) => permit,
+            Err(status) => {
+                let mut response = status.into_response();
+                response.headers_mut().insert(
+                    axum::http::header::CONNECTION,
+                    axum::http::HeaderValue::from_static("close"),
+                );
+                return response;
+            }
+        };
+        Some(permit)
+    } else {
+        None
+    };
     let bot_base = format!("{}api/bot/v1", app.config.base_url);
     let bot =
         request.uri().path() == bot_base || request.uri().path().starts_with(&(bot_base + "/"));
-    let body_limit = if bot {
+    let body_limit = if drop {
+        super::client_metrics::BODY_BYTES
+    } else if bot {
         crate::limits::BOT_BODY_BYTES
     } else {
         crate::limits::BROWSER_BODY_BYTES
@@ -241,7 +309,11 @@ pub(crate) async fn http(
         async {
             let (parts, body) = request.into_parts();
             let body = match tokio::time::timeout(
-                Duration::from_secs(app.config.server.body_timeout_seconds),
+                if drop {
+                    super::client_metrics::BODY_TIME
+                } else {
+                    Duration::from_secs(app.config.server.body_timeout_seconds)
+                },
                 axum::body::to_bytes(body, body_limit),
             )
             .await
