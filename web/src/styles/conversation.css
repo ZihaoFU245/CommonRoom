@@ -859,17 +859,31 @@ button:focus-visible {
   max-width: 100%;
   padding: 4px 10px;
   margin-bottom: 7px;
-  border-left: 4px solid var(--ink);
+  border-radius: 6px;
+  background: var(--wash);
   font-size: 0.92857rem;
   line-height: 1.5;
   color: var(--subtle);
   text-align: left;
 }
+@media (hover: hover) and (pointer: fine) {
+  :where(html:not([data-touch-input])) .reply-quote:hover {
+    background: var(--sidebar-module);
+  }
+}
+.reply-quote .reply-arrow {
+  flex-shrink: 0;
+  align-self: center;
+  overflow: visible;
+  font-family: var(--emoji-fonts);
+  font-size: 1.15385em;
+  line-height: 1;
+}
 .reply-quote strong {
   flex-shrink: 0;
   color: var(--name);
 }
-.reply-quote span {
+.reply-quote span:not(.reply-arrow) {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

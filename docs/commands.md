@@ -341,11 +341,11 @@ default to disabled. These preferences sync independently across devices. Enabli
 name colors requests profile colors for snapshots, live updates and history.
 Choose a global color or a room override in Appearance. Apply waits for confirmation.
 Failures show an inline error and retain the selected color for retry. Failed avatar uploads similarly
-retain the selected image and crop. The original reply quote bar remains visible
-regardless of the optional message side bars. When message bars are enabled,
+retain the selected image and crop. Reply quotes sit on a tinted background with
+a bundled Noto ↪️ emoji, regardless of the optional message side bars. When message bars are enabled,
 the Bar opacity slider in Appearance adjusts only the bar from 0–100% and
 defaults to 50%. The slider syncs across devices. Author text and the reply quote
-bar retain their normal colors.
+background retain their normal colors.
 When enabled, the message bar spans
 the full message content, with the reply quote inset inside it. Consecutive
 messages from the same author and conversation in the same minute share a

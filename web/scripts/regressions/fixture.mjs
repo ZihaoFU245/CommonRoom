@@ -3392,8 +3392,10 @@ await test("chat colors update for newly disclosed live and paged authors and re
     );
     check(
       getComputedStyle(tests.querySelector(".reply-quote")).borderLeftWidth ===
-        "4px",
-      "original reply quote bar survives with add-ons off",
+        "0px" &&
+        getComputedStyle(tests.querySelector(".reply-quote"))
+          .backgroundColor !== "rgba(0, 0, 0, 0)",
+      "reply quote keeps its background without a bar when add-ons are off",
     );
     check(
       !performance
@@ -3587,7 +3589,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
     const nameColor = getComputedStyle(author("alice")).color;
     const quoteColor = getComputedStyle(
       tests.querySelector(".reply-quote"),
-    ).borderLeftColor;
+    ).backgroundColor;
     const opacityCanvas = document.createElement("canvas");
     opacityCanvas.width = opacityCanvas.height = 1;
     const opacityContext = opacityCanvas.getContext("2d");
@@ -3616,8 +3618,8 @@ await test("chat colors update for newly disclosed live and paged authors and re
       );
       check(
         getComputedStyle(tests.querySelector(".reply-quote"))
-          .borderLeftColor === quoteColor,
-        "opacity does not fade the reply quote bar",
+          .backgroundColor === quoteColor,
+        "opacity does not fade the reply quote background",
       );
       check(
         preferenceValue("message_bar_opacity", "") === String(value),
@@ -3639,7 +3641,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
       .getBoundingClientRect();
     check(
       quoteBar.left >= outerBar.left + 14,
-      "reply bar is inset from the full message bar",
+      "reply quote is inset from the full message bar",
     );
     check(
       quoteBar.top >= outerBar.top && messageBody.bottom <= outerBar.bottom + 1,
@@ -3712,9 +3714,9 @@ await test("chat colors update for newly disclosed live and paged authors and re
       () => getComputedStyle(author("alice")).borderLeftWidth === "0px",
     );
     check(
-      getComputedStyle(tests.querySelector(".reply-quote")).borderLeftWidth ===
-        "4px",
-      "turning message bars off retains reply quote bar",
+      getComputedStyle(tests.querySelector(".reply-quote")).backgroundColor !==
+        "rgba(0, 0, 0, 0)",
+      "turning message bars off retains reply quote background",
     );
     await selectSettingsTab("Appearance");
     check(

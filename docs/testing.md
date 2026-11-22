@@ -1060,7 +1060,7 @@ revision changes, and stale in-flight history responses after a color reset.
 
 Name colors and message side bars default to enabled. Author borders default to
 disabled. The settings sync independently across devices. Browser regressions verify
-that the original reply quote bar remains when add-ons are off and that disabling
+that the reply quote background remains when add-ons are off and that disabling
 name colors stops color requests. The picker loads when Appearance is open and
 name colors are enabled. The opacity slider appears in Appearance when message
 bars are enabled. HTTP and WebSocket tests cover omission of unrequested
@@ -1071,7 +1071,7 @@ macOS Safari-style pointer activation without native button focus,
 arrow-key navigation, focus restoration, Escape without closing the parent dialog,
 option/picker AutoAnimate transitions and live reduced-motion changes. Geometry
 assertions require the message bar to span header, reply and body, with an inset
-reply bar and no duplicate body bar. Palette tests check every name shade against
+reply quote and no duplicate body bar. Palette tests check every name shade against
 paper, wash and field surfaces, including mid-tone and saturated custom seeds.
 
 Message bar opacity regressions cover the 50% default, saved 0–100% values, invalid
