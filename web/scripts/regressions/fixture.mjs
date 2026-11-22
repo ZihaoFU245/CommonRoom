@@ -2060,6 +2060,96 @@ await test("swipe-to-reply follows the finger, commits on release, and preserves
   }
 });
 
+await test("swipe-to-reply survives scrolling caused by collapsing a long message", async () => {
+  let replies = 0;
+  let scrolls = 0;
+  const longMessage = { ...message(1), text: "Long line\n".repeat(350) };
+  function Conversation() {
+    const [expanded, setExpanded] = useState(true);
+    return h(
+      "section",
+      {
+        class: "message-list",
+        style: { height: "220px" },
+        onScroll: () => scrolls++,
+      },
+      h(ConsoleMessage, {
+        message: longMessage,
+        self: "alice",
+        date: messageDate(1),
+        grouped: true,
+        canReply: true,
+        onReply: () => replies++,
+        expanded,
+        onExpandedChange: (_, next) => setExpanded(next),
+      }),
+    );
+  }
+  render(h(Conversation), tests);
+  const list = tests.querySelector(".message-list");
+  const preview = list.querySelector(".message-preview");
+  const row = list.querySelector(".chat-message");
+  await until(() => list.querySelector(".message-expand-toggle"));
+  list.scrollTop = list.scrollHeight;
+  await until(() => scrolls > 0);
+  list.querySelector(".message-expand-toggle").click();
+  const [collapse] = preview.getAnimations();
+  collapse.pause();
+  collapse.currentTime = 0;
+  await until(() => preview.matches(".folded[data-message-resizing]"));
+
+  const x = innerWidth / 2;
+  const text = preview.querySelector("p");
+  const viewport = list.getBoundingClientRect();
+  const y = (viewport.top + viewport.bottom) / 2;
+  function pointer(type, dx = 0) {
+    text.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: "touch",
+        clientX: x + dx,
+        clientY: y,
+      }),
+    );
+  }
+  try {
+    for (const [index, direction] of [1, -1].entries()) {
+      check(
+        preview.offsetHeight > list.clientHeight &&
+          document.elementFromPoint(x, y) === text,
+        "the touch starts on the visible part of a clipped preview",
+      );
+      pointer("pointerdown");
+      if (index === 0) {
+        pointer("pointermove", 20);
+        check(row.hasAttribute("data-reply-swiping"), "the swipe begins");
+      }
+      const previousScrolls = scrolls;
+      const previousTop = list.scrollTop;
+      collapse.currentTime = 75 * (index + 1);
+      await until(
+        () => scrolls > previousScrolls && list.scrollTop < previousTop,
+      );
+      if (index === 0)
+        check(
+          row.style.getPropertyValue("--reply-swipe-x") === "20px",
+          "the row does not snap back when the timeline scrolls",
+        );
+      pointer("pointermove", 85 * direction);
+      check(
+        row.hasAttribute("data-reply-ready") && replies === index,
+        "collapse scrolls do not cancel a horizontal swipe before release",
+      );
+      pointer("pointerup", 85 * direction);
+      check(replies === index + 1, "release opens one reply");
+    }
+  } finally {
+    collapse.finish();
+  }
+});
+
 await test("same-minute message bars join without gaps and break on minute, author and unread changes", async () => {
   const start = Math.floor(Date.now() / 60000) * 60;
   let entries = [

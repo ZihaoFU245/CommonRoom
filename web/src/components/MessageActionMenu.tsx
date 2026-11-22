@@ -66,8 +66,20 @@ export function useMessageActionMenu(
     active.replyRow?.removeAttribute("data-reply-ready");
     active.replyRow?.style.removeProperty("--reply-swipe-x");
     active.replyRow?.style.removeProperty("--reply-swipe-progress");
-    window.removeEventListener("scroll", cancelPress, true);
+    window.removeEventListener("scroll", onPressScroll, true);
     press.current = undefined;
+  });
+
+  const onPressScroll = useEvent(() => {
+    const active = press.current;
+    if (!active?.replyRow || active.held) {
+      cancelPress();
+      return;
+    }
+    // Layout changes can scroll the timeline while a touch is still active.
+    // Dismiss the hold; pointer cancellation handles native touch scrolling.
+    clearTimeout(active.timer);
+    active.target.removeAttribute("data-touch-held");
   });
 
   useLayoutEffect(() => {
@@ -141,7 +153,7 @@ export function useMessageActionMenu(
           held: false,
           swiping: false,
         };
-        window.addEventListener("scroll", cancelPress, {
+        window.addEventListener("scroll", onPressScroll, {
           capture: true,
           passive: true,
         });
