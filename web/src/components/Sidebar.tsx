@@ -5,13 +5,17 @@ import type { Snapshot } from "../api/protocol.ts";
 import type { RefObject } from "preact";
 import { Brand } from "./Brand.tsx";
 import { UnreadBadge } from "./UnreadBadge.tsx";
+import { conversationList } from "../features/conversation/conversationList.ts";
+import { reorderMotion } from "../features/preferences/motion.ts";
+import autoAnimate from "@formkit/auto-animate";
+import { useEffect, useMemo, useRef } from "preact/hooks";
 interface Props {
   mobile: boolean;
   heading: RefObject<HTMLHeadingElement>;
   state: Snapshot;
   selected: string;
   peers: string[];
-  peer: string | null;
+  drafts: string[];
   choose: (name: string) => void;
   openSettings: () => void;
   toggleNotifications: () => void;
@@ -24,13 +28,23 @@ export function Sidebar({
   state,
   selected,
   peers,
-  peer,
+  drafts,
   choose,
   openSettings,
   toggleNotifications,
   notifications,
   logout,
 }: Props) {
+  const conversations = useMemo(
+    () => conversationList(state.rooms, peers, drafts, state.unread),
+    [state.rooms, peers, drafts, state.unread],
+  );
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!list.current) return;
+    const animation = autoAnimate(list.current, reorderMotion);
+    return () => animation.destroy?.();
+  }, []);
   return (
     <aside id="navigation" class="sidebar visible">
       <div class="sidebar-heading">
@@ -43,58 +57,40 @@ export function Sidebar({
         )}
       </div>
       <nav class="navigation" aria-label="Conversations">
-        <details class="nav-group" open>
-          <summary>
-            Rooms<span class="group-count">{state.rooms.length}</span>
-          </summary>
-          <div class="nav-items">
-            {state.rooms.map((r) => {
-              const unread = state.unread[r.name]?.count ?? 0;
-              return (
-                <button
-                  key={r.name}
-                  class={`room-link ${selected === r.name ? "selected" : ""} ${unread > 0 ? "unread" : ""}`}
-                  onClick={() => choose(r.name)}
-                >
-                  <span class="hash">
-                    {r.name.startsWith("@private:") ? "↗" : "#"}
-                  </span>
-                  {r.name.startsWith("@private:") ? r.name.slice(9) : r.name}
-                  <UnreadBadge count={unread} />
-                </button>
-              );
-            })}
-            {!state.rooms.length && <p class="no-rooms">No rooms</p>}
-          </div>
-        </details>
-        <details class="nav-group" open>
-          <summary>
-            Private messages<span class="group-count">{peers.length}</span>
-          </summary>
-          <div class="nav-items">
-            {peers.map((name) => {
-              const unread = state.unread[`@direct:${name}`]?.count ?? 0;
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  class={`room-link ${peer === name ? "selected" : ""} ${unread > 0 ? "unread" : ""}`}
-                  onClick={() => choose(`@direct:${name}`)}
-                >
-                  <span class="private-chat-icon">
-                    <span class="hash" aria-hidden="true">
-                      ↗
+        <div class="conversation-list" ref={list}>
+          {conversations.map(({ view, kind, name }) => {
+            const unread = state.unread[view]?.count ?? 0;
+            return (
+              <button
+                key={view}
+                type="button"
+                class={`room-link ${selected === view ? "selected" : ""} ${unread > 0 ? "unread" : ""}`}
+                onClick={() => choose(view)}
+              >
+                {kind === "direct" ? (
+                  <>
+                    <span class="private-chat-icon">
+                      <span class="hash" aria-hidden="true">
+                        ↗
+                      </span>
+                      <Avatar url={state.avatars?.[name]} name={name} />
                     </span>
-                    <Avatar url={state.avatars?.[name]} name={name} />
-                  </span>
-                  <DisplayName name={name} />
-                  <UnreadBadge count={unread} />
-                </button>
-              );
-            })}
-            {!peers.length && <p class="no-rooms">No conversations</p>}
-          </div>
-        </details>
+                    <DisplayName name={name} />
+                  </>
+                ) : (
+                  <>
+                    <span class="hash">
+                      {view.startsWith("@private:") ? "↗" : "#"}
+                    </span>
+                    {name}
+                  </>
+                )}
+                <UnreadBadge count={unread} />
+              </button>
+            );
+          })}
+        </div>
+        {!conversations.length && <p class="no-rooms">No conversations</p>}
       </nav>
       <div class="sidebar-bottom">
         <div class="profile">

@@ -41,6 +41,7 @@
 .chat-header,
 .sidebar-heading {
   padding-top: env(safe-area-inset-top);
+  padding-bottom: 0;
   min-height: calc(var(--chat-header-height) + env(safe-area-inset-top));
 }
 .sidebar {

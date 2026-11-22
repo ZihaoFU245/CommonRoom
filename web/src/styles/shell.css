@@ -298,14 +298,21 @@
   color: var(--muted);
   margin-bottom: 3px;
   font-size: 0.92857rem;
-  font-weight: 400;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
+.room-link > .hash {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
 .room-link:active {
-  background: var(--wash);
+  background: var(--sidebar-module);
 }
 .chat-shell:not(.mobile-conversation-list) .room-link.selected {
-  background: var(--wash);
+  background: var(--sidebar-module);
 }
 .room-link.unread {
   color: var(--ink);
@@ -338,7 +345,7 @@
 }
 @media (hover: hover) and (pointer: fine) {
   :where(html:not([data-touch-input])) .room-link:hover {
-    background: var(--wash);
+    background: var(--sidebar-module);
   }
   :where(html:not([data-touch-input]))
     .room-link:hover
@@ -453,6 +460,11 @@
   font-size: 1.92857rem;
   color: var(--ink);
   font-weight: 300;
+}
+.room-title > .private-chat-icon,
+.room-title .user-avatar {
+  width: 32px;
+  height: 32px;
 }
 .room-title h1 {
   font-size: 1.21429rem;
@@ -586,8 +598,7 @@
   .sidebar-heading h1 {
     font-size: 1.57143rem;
   }
-  .sidebar .room-link,
-  .sidebar .nav-group summary {
+  .sidebar .room-link {
     min-height: 44px;
     font-size: 1rem;
   }

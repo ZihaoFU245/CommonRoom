@@ -247,6 +247,11 @@ Pinch zoom leaves these dimensions unchanged.
 The conversation list is the home screen on narrow viewports and short touch
 viewports in landscape. A room link opens its conversation directly, and the
 header back button returns to the list.
+Rooms and private chats share one list without group headers. Unsent private
+drafts come first, then conversations by their latest message sequence
+(`unread.through`), then conversations without messages by name. Only new
+messages, including your own, move a conversation; edits and reactions do not.
+AutoAnimate reorders rows and respects reduced motion.
 Browser Back and Forward follow the same navigation. The desktop sidebar gives
 keyboard and mouse users immediate composer focus after conversation selection.
 Touch users can hold a message to open its commands, reactions, and Copy

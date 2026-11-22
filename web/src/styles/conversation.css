@@ -220,58 +220,8 @@
 .sidebar-bottom {
   flex-shrink: 0;
 }
-.nav-group {
-  margin-bottom: 18px;
-}
-.nav-group summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  color: var(--muted);
-  font-size: 0.85714rem;
-  font-weight: 600;
-  list-style: none;
-  border-radius: 6px;
-}
-.nav-group summary::-webkit-details-marker {
-  display: none;
-}
-.nav-group summary::before {
-  content: "›";
-  color: var(--muted);
-  font-size: 1.21429rem;
-  line-height: 1;
-  transition: transform var(--control-motion-duration)
-    var(--control-motion-easing);
-}
-.nav-group[open] summary::before {
-  transform: rotate(90deg);
-}
-.nav-group summary:hover {
-  background: var(--wash);
-}
-.nav-group summary:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
-}
-.group-count {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 0.78571rem;
-  font-weight: 400;
-}
-.nav-items {
-  padding: 4px 0 0 9px;
-}
-.nav-items .room-link {
+.conversation-list .room-link {
   font-size: 0.92857rem;
-}
-@media (prefers-reduced-motion: reduce) {
-  .nav-group summary::before {
-    transition: none;
-  }
 }
 
 button:focus-visible {
