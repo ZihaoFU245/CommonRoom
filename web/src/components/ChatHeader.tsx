@@ -1,5 +1,6 @@
 import { DisplayName } from "./DisplayName.tsx";
 import { OnlineUsers } from "./OnlineUsers.tsx";
+import { Avatar } from "./Avatar.tsx";
 import type { RefObject } from "preact";
 export function ChatHeader({
   heading,
@@ -7,6 +8,7 @@ export function ChatHeader({
   consoleView,
   direct,
   peer,
+  avatar,
   selected,
   online,
   username,
@@ -17,6 +19,7 @@ export function ChatHeader({
   consoleView: boolean;
   direct: boolean;
   peer: string | null;
+  avatar: string | undefined;
   selected: string;
   online: string[];
   username: string;
@@ -37,7 +40,16 @@ export function ChatHeader({
         </button>
       )}
       <div class="room-title">
-        <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
+        {!consoleView && direct && peer ? (
+          <span class="private-chat-icon">
+            <span class="hash" aria-hidden="true">
+              ↗
+            </span>
+            <Avatar url={avatar} name={peer} />
+          </span>
+        ) : (
+          <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
+        )}
         <h1 ref={heading} tabIndex={-1}>
           {consoleView ? (
             "Command"

@@ -849,7 +849,7 @@ export function Chat({
             state={state}
             selected={selected}
             peers={peers}
-            peer={peer}
+            drafts={draftPeers}
             choose={choose}
             openSettings={openSettings}
             toggleNotifications={() => {
@@ -869,6 +869,7 @@ export function Chat({
               consoleView={consoleView}
               direct={direct}
               peer={peer}
+              avatar={peer ? state.avatars?.[peer] : undefined}
               selected={selected}
               online={state.online}
               username={state.username}

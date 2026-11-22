@@ -279,8 +279,11 @@ export const ConsoleMessage = memo(function ConsoleMessage({
                 : "Jump to original message"
             }
           >
+            <span class="reply-arrow" aria-hidden="true">
+              ↪️
+            </span>
             <strong data-name-color={replyColor}>
-              ↳ <DisplayName name={reply.from} />
+              <DisplayName name={reply.from} />
             </strong>
             <span dir="auto">{reply.text}</span>
           </button>
