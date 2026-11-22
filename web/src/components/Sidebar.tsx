@@ -48,19 +48,22 @@ export function Sidebar({
             Rooms<span class="group-count">{state.rooms.length}</span>
           </summary>
           <div class="nav-items">
-            {state.rooms.map((r) => (
-              <button
-                key={r.name}
-                class={`room-link ${selected === r.name ? "selected" : ""}`}
-                onClick={() => choose(r.name)}
-              >
-                <span class="hash">
-                  {r.name.startsWith("@private:") ? "↗" : "#"}
-                </span>
-                {r.name.startsWith("@private:") ? r.name.slice(9) : r.name}
-                <UnreadBadge count={state.unread[r.name]?.count ?? 0} />
-              </button>
-            ))}
+            {state.rooms.map((r) => {
+              const unread = state.unread[r.name]?.count ?? 0;
+              return (
+                <button
+                  key={r.name}
+                  class={`room-link ${selected === r.name ? "selected" : ""} ${unread > 0 ? "unread" : ""}`}
+                  onClick={() => choose(r.name)}
+                >
+                  <span class="hash">
+                    {r.name.startsWith("@private:") ? "↗" : "#"}
+                  </span>
+                  {r.name.startsWith("@private:") ? r.name.slice(9) : r.name}
+                  <UnreadBadge count={unread} />
+                </button>
+              );
+            })}
             {!state.rooms.length && <p class="no-rooms">No rooms</p>}
           </div>
         </details>
@@ -69,25 +72,26 @@ export function Sidebar({
             Private messages<span class="group-count">{peers.length}</span>
           </summary>
           <div class="nav-items">
-            {peers.map((name) => (
-              <button
-                key={name}
-                type="button"
-                class={`room-link ${peer === name ? "selected" : ""}`}
-                onClick={() => choose(`@direct:${name}`)}
-              >
-                <span class="private-chat-icon">
-                  <span class="hash" aria-hidden="true">
-                    ↗
+            {peers.map((name) => {
+              const unread = state.unread[`@direct:${name}`]?.count ?? 0;
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  class={`room-link ${peer === name ? "selected" : ""} ${unread > 0 ? "unread" : ""}`}
+                  onClick={() => choose(`@direct:${name}`)}
+                >
+                  <span class="private-chat-icon">
+                    <span class="hash" aria-hidden="true">
+                      ↗
+                    </span>
+                    <Avatar url={state.avatars?.[name]} name={name} />
                   </span>
-                  <Avatar url={state.avatars?.[name]} name={name} />
-                </span>
-                <DisplayName name={name} />
-                <UnreadBadge
-                  count={state.unread[`@direct:${name}`]?.count ?? 0}
-                />
-              </button>
-            ))}
+                  <DisplayName name={name} />
+                  <UnreadBadge count={unread} />
+                </button>
+              );
+            })}
             {!peers.length && <p class="no-rooms">No conversations</p>}
           </div>
         </details>

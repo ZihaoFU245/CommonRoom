@@ -5,12 +5,13 @@
   font-size: 1.35714rem;
   font-weight: 650;
   letter-spacing: -0.7px;
+  color: var(--subtle);
 }
 .brand-mark {
   width: 36px;
   height: 36px;
   flex-shrink: 0;
-  stroke: var(--ink);
+  stroke: currentColor;
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -268,17 +269,22 @@
 .sidebar {
   width: 280px;
   flex-shrink: 0;
-  padding: 0 20px;
-  background: var(--paper);
-  border-right: 1px solid var(--line);
+  padding: 0;
+  background: var(--sidebar);
+  border-right: 0;
   display: none;
   flex-direction: column;
 }
 .sidebar.visible {
   display: flex;
 }
+.sidebar-heading,
+.navigation {
+  padding-inline: 16px;
+}
 .sidebar .brand {
   font-size: 1.28571rem;
+  color: var(--subtle);
 }
 
 .room-link {
@@ -289,9 +295,10 @@
   text-align: left;
   padding: 10px 12px;
   border-radius: 7px;
-  color: var(--ink);
+  color: var(--muted);
   margin-bottom: 3px;
   font-size: 0.92857rem;
+  font-weight: 400;
   overflow-wrap: anywhere;
 }
 .room-link:active {
@@ -299,17 +306,16 @@
 }
 .chat-shell:not(.mobile-conversation-list) .room-link.selected {
   background: var(--wash);
-  color: var(--accent-ink);
-  font-weight: 600;
+}
+.room-link.unread {
+  color: var(--ink);
+  font-weight: 700;
 }
 .hash {
   font-size: 1.42857rem;
-  font-weight: 400;
-  color: var(--ink);
+  font-weight: inherit;
+  color: inherit;
   line-height: 1;
-}
-.selected .hash {
-  color: var(--ink);
 }
 .private-chat-icon {
   display: grid;
@@ -349,27 +355,38 @@
 }
 .direct-link {
   margin-top: 17px;
-  border-top: 1px solid var(--line);
+  border-top: 0;
   border-radius: 0;
   padding-top: 20px;
 }
 .direct-link.selected {
   border-radius: 7px;
-  border-top-color: transparent;
 }
 
 .sidebar-bottom {
   margin-top: auto;
-  padding-top: 0;
+  box-sizing: border-box;
+  height: var(--chat-footer-height);
+  min-height: var(--chat-footer-height);
+  /* Match composer-area top padding so the dock lines up with the message bar. */
+  padding: 12px 0 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .profile {
-  border-top: 0;
-  min-height: var(--chat-footer-height);
-  padding: 12px 0;
+  border: 0;
+  border-radius: 0;
+  box-sizing: border-box;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px;
   display: flex;
   align-items: center;
   gap: 10px;
+  background: var(--sidebar-module);
 }
 .profile-name {
   min-width: 0;
@@ -381,10 +398,17 @@
 .profile strong {
   font-size: 0.85714rem;
   display: block;
+  color: var(--muted);
+  font-weight: 600;
 }
 .profile small {
   display: block;
   font-size: 0.71429rem;
+  color: var(--subtle);
+}
+.profile .settings-toggle,
+.profile .notification-toggle,
+.profile .signout {
   color: var(--muted);
 }
 .signout {
@@ -393,7 +417,6 @@
   height: 36px;
   border-radius: 7px;
   margin-left: auto;
-  color: var(--muted);
   font-size: 1.5rem;
 }
 .conversation {
@@ -468,12 +491,14 @@
 }
 
 .composer-area {
+  box-sizing: border-box;
   width: 100%;
   max-width: 1000px;
   margin-inline: auto;
   min-height: var(--chat-footer-height);
   padding: 12px 24px;
   border-top: 0;
+  flex-shrink: 0;
 }
 .composer {
   display: flex;

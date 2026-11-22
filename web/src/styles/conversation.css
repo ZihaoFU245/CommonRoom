@@ -229,7 +229,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  color: var(--ink);
+  color: var(--muted);
   font-size: 0.85714rem;
   font-weight: 600;
   list-style: none;
@@ -318,8 +318,16 @@ button:focus-visible {
 }
 @media (max-width: 700px),
   (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  .sidebar-heading,
+  .navigation {
+    padding-inline: 14px;
+  }
+  .sidebar .brand {
+    font-size: 1.14286rem;
+    gap: 8px;
+  }
   .profile {
-    padding: 12px 0 max(12px, env(safe-area-inset-bottom));
+    padding-inline: 14px;
   }
 }
 
