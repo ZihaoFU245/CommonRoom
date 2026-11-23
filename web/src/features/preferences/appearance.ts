@@ -12,7 +12,7 @@ import {
 } from "./settings.ts";
 
 /* Kept in step with --paper in styles/base.css so the browser chrome matches. */
-const surfaces = { light: "#FCFCFC", dark: "#070708" };
+const surfaces = { light: "#ffffff", dark: "#0a0a0a" };
 
 function setBrowserColor(color: string) {
   document

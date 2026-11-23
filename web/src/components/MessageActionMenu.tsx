@@ -139,7 +139,7 @@ export function useMessageActionMenu(
         const timer = window.setTimeout(() => {
           if (press.current) press.current.held = true;
           if (sticker) heldSticker.current = sticker;
-          else target.setAttribute("data-touch-held", "");
+          else if (control) target.setAttribute("data-touch-held", "");
           if (!control)
             setPosition({ x, y, keyboard: false, touchHold: true, sticker });
         }, 500);
@@ -238,6 +238,7 @@ export type MessageAction = {
   label: string;
   accessibleLabel: string;
   description?: string | undefined;
+  icon?: VNode;
   disabled: boolean;
   run: () => void;
 };
@@ -249,6 +250,9 @@ export function MessageActionMenu({
   reaction,
   copyText,
   onClose,
+  id,
+  label = "Message actions",
+  className = "",
 }: {
   position: MenuPosition;
   trigger: RefObject<HTMLButtonElement>;
@@ -257,6 +261,9 @@ export function MessageActionMenu({
     { label: string; render: (onDone: () => void) => VNode } | undefined;
   copyText?: string;
   onClose: () => void;
+  id?: string;
+  label?: string;
+  className?: string;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -424,7 +431,7 @@ export function MessageActionMenu({
 
   return createPortal(
     <div
-      class={`message-action-menu ${showingPanel ? "message-action-panel" : ""}`}
+      class={`message-action-menu ${showingPanel ? "message-action-panel" : ""} ${className}`}
       ref={panel}
     >
       {/* Reusing the menu node would remove focusgroup and warn in Chromium. */}
@@ -459,11 +466,12 @@ export function MessageActionMenu({
       ) : (
         <div
           key="message-actions"
+          id={id}
           {...(nativeFocus
             ? { focusgroup: "menu nomemory" }
             : { role: "menu" })}
           class="message-action-items"
-          aria-label="Message actions"
+          aria-label={label}
           onKeyDown={navigate}
         >
           {reaction && (
@@ -509,6 +517,7 @@ export function MessageActionMenu({
                 action.run();
               }}
             >
+              {action.icon}
               {action.label}
               {action.description && <small>{action.description}</small>}
             </button>

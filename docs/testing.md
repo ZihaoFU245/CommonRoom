@@ -1072,7 +1072,7 @@ arrow-key navigation, focus restoration, Escape without closing the parent dialo
 option/picker AutoAnimate transitions and live reduced-motion changes. Geometry
 assertions require the message bar to span header, reply and body, with an inset
 reply bar and no duplicate body bar. Palette tests check every name shade against
-paper, wash and field surfaces, including mid-tone and saturated custom seeds.
+paper, wash, field and sidebar surfaces, including mid-tone and saturated custom seeds.
 
 Message bar opacity regressions cover the 50% default, saved 0–100% values, invalid
 or unavailable storage and clamping. Browser checks exercise the live slider at

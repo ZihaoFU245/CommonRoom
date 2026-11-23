@@ -8,7 +8,6 @@
   border-radius: 6px;
   flex-shrink: 0;
 }
-.settings-toggle:hover,
 .settings-close:hover {
   background: var(--wash);
 }

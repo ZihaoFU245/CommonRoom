@@ -1768,7 +1768,7 @@ await test("message actions support a touch hold and preserve desktop buttons", 
     await until(menu);
     check(highlighted(), "a deliberate hold highlights the row");
     pointer("pointerup");
-    check(!highlighted(), "releasing a long press clears the highlight");
+    check(highlighted(), "the highlight persists after releasing the hold");
   };
   const widget = document.createElement("button");
   widget.textContent = "Test widget";
@@ -1864,8 +1864,8 @@ await test("message actions support a touch hold and preserve desktop buttons", 
   pointer("pointerup");
   await until(() => !menu());
   check(
-    action === "reply",
-    "the next outside tap dismisses without choosing an action",
+    action === "reply" && !highlighted(),
+    "the next outside tap dismisses and clears the highlight",
   );
 
   await hold();
@@ -2890,8 +2890,8 @@ for (const width of [1100, 360]) {
       const sequence = Number(visibleRow.dataset.sequence);
       const offset = rowOffset(sequence);
       const choose = (name) =>
-        [...tests.querySelectorAll(".sidebar button")].find((node) =>
-          node.textContent.trim().startsWith(`#${name}`),
+        [...tests.querySelectorAll(".sidebar .room-link")].find(
+          (node) => node.querySelector(".chat-row-name")?.textContent === name,
         );
       choose("b").click();
       await until(
@@ -3230,6 +3230,7 @@ await test("bot status stays local on older servers without blocking other prefe
 
 await test("chat colors update for newly disclosed live and paged authors and reset in place", async () => {
   const OriginalSocket = window.WebSocket;
+  const route = { url: location.href, state: history.state };
   let socket;
   const enterSendKey = "commonroom-always-send-with-enter";
   const preferenceKeys = [
@@ -3359,6 +3360,11 @@ await test("chat colors update for newly disclosed live and paged authors and re
       (element) => element.textContent === name,
     );
   try {
+    history.replaceState(
+      null,
+      "",
+      location.pathname + location.search + "#room=team",
+    );
     render(
       h(Chat, {
         initial: state,
@@ -3390,10 +3396,19 @@ await test("chat colors update for newly disclosed live and paged authors and re
         "0px",
       "saved opt-out hides message side bars",
     );
+    const quote = tests.querySelector(".reply-quote");
+    const quoteAuthor = quote.querySelector(":scope > strong");
+    const quotePreview = quote.querySelector(":scope > span");
     check(
-      getComputedStyle(tests.querySelector(".reply-quote")).borderLeftWidth ===
-        "4px",
+      getComputedStyle(quote).borderLeftWidth === "4px",
       "original reply quote bar survives with add-ons off",
+    );
+    check(
+      quoteAuthor.textContent.trim() === "bob" &&
+        quotePreview.textContent === "Quoted message" &&
+        quotePreview.getBoundingClientRect().top >=
+          quoteAuthor.getBoundingClientRect().bottom,
+      "the quote shows just the author on the first line and the excerpt below",
     );
     check(
       !performance
@@ -3789,6 +3804,7 @@ await test("chat colors update for newly disclosed live and paged authors and re
   } finally {
     render(null, tests);
     window.WebSocket = OriginalSocket;
+    history.replaceState(route.state, "", route.url);
     applyAppearance("light", false, defaultSeeds);
     disconnectPreferences();
     preferenceKeys.forEach((key, i) => {
@@ -6465,6 +6481,11 @@ await test("user cards start a new private chat without sending a message", asyn
       button.textContent.includes("Bobby"),
     );
     check(bob, "new private draft is a navigation button");
+    check(
+      bob.querySelector(".chat-row-icon .hash").textContent ===
+        (matchMedia(mobileLayout).matches ? "B" : "↗"),
+      "a private chat without an avatar uses its display-name initial on mobile",
+    );
     bob.querySelector(".private-chat-icon").click();
     await until(
       () => tests.querySelector(".room-title h1")?.textContent === "Bobby",
@@ -6479,6 +6500,657 @@ await test("user cards start a new private chat without sending a message", asyn
     history.replaceState(null, "", url);
     if (sidebar === null) localStorage.removeItem("commonroom-sidebar-open");
     else localStorage.setItem("commonroom-sidebar-open", sidebar);
+  }
+});
+
+await test("chat actions pin rows and mark them unread on desktop and mobile", async () => {
+  const { serverBaseUrl } = await import("../../src/api/server.ts");
+  const Socket = window.WebSocket;
+  const read = api.read;
+  const url = location.href;
+  const sidebar = localStorage.getItem("commonroom-sidebar-open");
+  const account = "chat-row-actions-fixture";
+  const storageKey = `commonroom-chat-list:${JSON.stringify([serverBaseUrl(), account])}`;
+  let socket;
+  window.WebSocket = class {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 1;
+    constructor() {
+      socket = this;
+    }
+    close() {
+      this.readyState = 3;
+    }
+  };
+  localStorage.setItem("commonroom-sidebar-open", "true");
+  history.replaceState(null, "", location.pathname + location.search);
+  const mobile = matchMedia(mobileLayout).matches;
+  const startTransition = document.startViewTransition;
+  let chatTransition;
+  const state = {
+    ...empty,
+    account_access: { ...empty.account_access, id: account },
+    rooms: ["alpha", "beta", "gamma"].map((name) => ({
+      id: name,
+      name,
+      owner: "alice",
+      permissions: ["w:message.create"],
+      commands: [],
+      members: ["alice"],
+      messages: [],
+    })),
+    unread: {
+      gamma: { count: 2, first: 5, through: 6, oldest: 1, revision: 1 },
+    },
+  };
+  const reads = [];
+  api.read = async (view, through) => {
+    reads.push([view, through]);
+    socket.onmessage({
+      data: JSON.stringify({
+        kind: "read",
+        unread: {
+          ...state.unread,
+          [view]: { ...state.unread[view], count: 0, first: null },
+        },
+      }),
+    });
+    return { ok: true };
+  };
+  const mount = (snapshot = state) =>
+    render(
+      h(Chat, {
+        initial: snapshot,
+        onLogout() {},
+        appearance: {
+          theme: "light",
+          setTheme() {},
+          seeds: defaultSeeds,
+          setSeeds() {},
+        },
+      }),
+      tests,
+    );
+  const rows = () => [...tests.querySelectorAll(".chat-list-row")];
+  const findRow = (name) =>
+    rows().find(
+      (row) => row.querySelector(".chat-row-name").textContent === name,
+    );
+  const button = (name) => findRow(name).querySelector(".room-link");
+  const center = (element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.left + bounds.width / 2;
+  };
+  const menuAction = (label) =>
+    [...document.querySelectorAll(".message-action-items button")].find(
+      (item) => item.textContent.trim() === label,
+    );
+  const touch = (row, type, y = 70) =>
+    row.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        pointerType: "touch",
+        pointerId: 21,
+        isPrimary: true,
+        clientX: 45,
+        clientY: y,
+      }),
+    );
+  async function open(name, firstAction, context = false) {
+    const row = button(name);
+    if (mobile) {
+      touch(row, "pointerdown");
+      check(
+        getComputedStyle(row).backgroundColor === "rgba(0, 0, 0, 0)",
+        "touch-down leaves the mobile chat row unhighlighted",
+      );
+    } else if (context) {
+      check(
+        !row.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            button: 2,
+            clientX: 40,
+            clientY: 60,
+          }),
+        ),
+        "right-click replaces the browser context menu",
+      );
+    } else {
+      findRow(name)
+        .querySelector(".chat-row-more")
+        .dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            detail: 1,
+          }),
+        );
+    }
+    await until(
+      () => menuAction(firstAction),
+      () => firstAction,
+    );
+    if (mobile) {
+      touch(row, "pointerup");
+      row.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }),
+      );
+      check(
+        !location.hash &&
+          menuAction(firstAction) &&
+          getComputedStyle(row).backgroundColor !== "rgba(0, 0, 0, 0)" &&
+          getComputedStyle(row.querySelector(".chat-row-icon"))
+            .backgroundColor !== getComputedStyle(row).backgroundColor,
+        "releasing a long press leaves the menu and its row highlight in place",
+      );
+    }
+    return menuAction(firstAction);
+  }
+  try {
+    mount();
+    await until(() => findRow("beta"));
+    await sleep(100);
+    if (matchMedia("(prefers-reduced-motion: no-preference)").matches) {
+      const viewport = tests.querySelector(".sidebar .navigation");
+      const content = viewport.querySelector(".conversation-list");
+      const start = content.getBoundingClientRect().top;
+      if (mobile) {
+        await until(() => viewport.hasAttribute("data-short-chat-list"));
+        const row = button("beta");
+        touch(row, "pointerdown");
+        touch(row, "pointermove", 95);
+        const shortPull = content.getBoundingClientRect().top - start;
+        touch(row, "pointermove", 145);
+        const longPull = content.getBoundingClientRect().top - start;
+        check(
+          shortPull >= 10 &&
+            longPull >= 28 &&
+            longPull > shortPull &&
+            longPull < 56,
+          "a short mobile list follows a downward swipe with increasing resistance",
+        );
+        touch(row, "pointerup");
+        row.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            detail: 1,
+          }),
+        );
+        check(!location.hash, "the swipe does not also open the chat");
+      } else {
+        check(
+          viewport.dispatchEvent(
+            new WheelEvent("wheel", {
+              bubbles: true,
+              cancelable: true,
+              deltaY: -100,
+            }),
+          ) &&
+            !viewport.hasAttribute("data-short-chat-list") &&
+            content.getBoundingClientRect().top === start,
+          "a desktop trackpad swipe keeps the short list still",
+        );
+      }
+      await until(
+        () => Math.abs(content.getBoundingClientRect().top - start) < 0.5,
+      );
+    }
+    if (!mobile) {
+      const unreadRow = findRow("gamma");
+      const badge = unreadRow.querySelector(".unread-badge");
+      const toggle = unreadRow.querySelector(".chat-row-more");
+      const before = center(badge);
+      toggle.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await until(() => document.activeElement === menuAction("Pin Chat"));
+      await until(
+        () =>
+          Math.abs(
+            before - center(badge) - toggle.getBoundingClientRect().width,
+          ) < 1,
+      );
+      const popup = document.querySelector(".chat-action-menu");
+      check(
+        toggle.getAttribute("aria-expanded") === "true" &&
+          Math.abs(center(toggle) - before) < 1 &&
+          getComputedStyle(toggle).backgroundColor === "rgba(0, 0, 0, 0)" &&
+          getComputedStyle(toggle.querySelector("svg")).stroke ===
+            getComputedStyle(button("gamma")).color,
+        "the chevron leaves room for the badge and uses theme ink on a transparent button",
+      );
+      check(
+        getComputedStyle(popup).animationName ===
+          (matchMedia("(prefers-reduced-motion: no-preference)").matches
+            ? "chat-action-menu-in"
+            : "none"),
+        "the desktop menu animates only when motion is enabled",
+      );
+      document.activeElement.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await until(() => !menuAction("Pin Chat"));
+      check(
+        document.activeElement === toggle,
+        "Escape restores focus to the chevron",
+      );
+      toggle.blur();
+    }
+    if (mobile) {
+      const row = button("beta");
+      touch(row, "pointerdown");
+      touch(row, "pointermove", 100);
+      await sleep(550);
+      check(
+        !menuAction("Pin Chat") &&
+          getComputedStyle(row).backgroundColor === "rgba(0, 0, 0, 0)",
+        "scroll-like movement cancels the long press",
+      );
+      await open("beta", "Pin Chat");
+      document.body.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      );
+      await until(() => !menuAction("Pin Chat"));
+      check(
+        getComputedStyle(row).backgroundColor === "rgba(0, 0, 0, 0)",
+        "an outside tap clears the mobile chat highlight",
+      );
+    }
+    (await open("beta", "Pin Chat", true)).click();
+    await until(() => tests.querySelector(".pinned-chats-heading"));
+    check(
+      rows()[0] === findRow("beta"),
+      "the pin moves the chat above real unread rows",
+    );
+    check(
+      getComputedStyle(findRow("gamma"), "::before").blockSize === "1px" &&
+        (!mobile ||
+          getComputedStyle(findRow("beta").querySelector(".chat-row-details"))
+            .borderBlockEndColor === "rgba(0, 0, 0, 0)"),
+      "one thin divider separates pinned and regular chats",
+    );
+    check(
+      findRow("gamma").querySelector(".unread-badge")?.textContent === "2",
+      "existing numeric unread badges retain their count",
+    );
+    render(null, tests);
+    mount();
+    await until(() => tests.querySelector(".pinned-chats-heading"));
+    await sleep(100);
+    (await open("beta", "Remove from pinned")).click();
+    await until(() => !tests.querySelector(".pinned-chats-heading"));
+    check(
+      rows()[0] === findRow("gamma") &&
+        getComputedStyle(findRow("gamma"), "::before").blockSize !== "1px",
+      "unpinning restores ordinary unread priority",
+    );
+    await open("beta", "Pin Chat");
+    menuAction("Mark as unread").click();
+    await until(() => findRow("beta").querySelector(".chat-unread-dot"));
+    const dot = findRow("beta").querySelector(".chat-unread-dot");
+    const numericBadge = findRow("gamma").querySelector(".unread-badge");
+    await until(() => Math.abs(center(dot) - center(numericBadge)) < 1);
+    check(
+      !findRow("beta").querySelector(".unread-badge") &&
+        getComputedStyle(dot).backgroundColor ===
+          getComputedStyle(numericBadge).backgroundColor,
+      "a manual unread mark uses the same accent as the numbered badge",
+    );
+    applyAppearance("custom", false, { base: "#fff", accent: "#f7f7f7" });
+    try {
+      check(
+        getComputedStyle(dot).backgroundColor !== "rgb(247, 247, 247)" &&
+          getComputedStyle(dot).backgroundColor ===
+            getComputedStyle(numericBadge).backgroundColor,
+        "a custom accent that blends into the sidebar is adjusted for both unread badges",
+      );
+    } finally {
+      applyAppearance("light", false, defaultSeeds);
+    }
+    if (mobile && startTransition) {
+      document.startViewTransition = function (options) {
+        chatTransition = startTransition.call(this, options);
+        return chatTransition;
+      };
+    }
+    button("beta").click();
+    await until(
+      () => tests.querySelector(".room-title h1")?.textContent === "beta",
+    );
+    await until(() => !findRow("beta")?.querySelector(".chat-unread-dot"));
+    await chatTransition?.finished;
+    render(null, tests);
+    history.replaceState(null, "", location.pathname + location.search);
+    mount({
+      ...state,
+      rooms: [
+        ...state.rooms,
+        ...Array.from({ length: 30 }, (_, index) => ({
+          ...state.rooms[0],
+          id: `overflow-${index}`,
+          name: `overflow-${index}`,
+        })),
+      ],
+    });
+    await until(() => findRow("overflow-29"));
+    const viewport = tests.querySelector(".sidebar .navigation");
+    viewport.scrollTop = 100;
+    check(
+      viewport.scrollTop > 0 && !viewport.hasAttribute("data-short-chat-list"),
+      "a longer chat list keeps its native scrolling",
+    );
+    if (!mobile) {
+      viewport.scrollTop = 0;
+      await sleep(50);
+      await until(() => socket?.onmessage);
+      (await open("gamma", "Mark as read", true)).click();
+      await until(() => !findRow("gamma").querySelector(".unread-badge"));
+      await until(() => !menuAction("Mark as read"));
+      await open("beta", "Mark as unread");
+      check(
+        menuAction("Mark as read").disabled,
+        "a read chat disables Mark as read",
+      );
+      menuAction("Mark as unread").click();
+      await until(() => findRow("beta").querySelector(".chat-unread-dot"));
+      await until(() => !menuAction("Mark as unread"));
+      (await open("beta", "Mark as read")).click();
+      await until(() => !findRow("beta").querySelector(".chat-unread-dot"));
+      check(
+        JSON.stringify(reads) === JSON.stringify([["gamma", 6]]) &&
+          !location.hash,
+        "desktop Mark as read acknowledges unread messages or clears a manual mark without opening either chat",
+      );
+    }
+  } finally {
+    if (mobile && startTransition) delete document.startViewTransition;
+    render(null, tests);
+    window.WebSocket = Socket;
+    api.read = read;
+    history.replaceState(null, "", url);
+    localStorage.removeItem(storageKey);
+    if (sidebar === null) localStorage.removeItem("commonroom-sidebar-open");
+    else localStorage.setItem("commonroom-sidebar-open", sidebar);
+  }
+});
+
+await test("mobile chat swipes and menus update unread state", async () => {
+  if (!matchMedia(mobileLayout).matches) return;
+  const { serverBaseUrl } = await import("../../src/api/server.ts");
+  const Socket = window.WebSocket;
+  const read = api.read;
+  const url = location.href;
+  const account = "chat-row-swipe-fixture";
+  const storageKey = `commonroom-chat-list:${JSON.stringify([serverBaseUrl(), account])}`;
+  let socket;
+  window.WebSocket = class {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 1;
+    constructor() {
+      socket = this;
+    }
+    close() {
+      this.readyState = 3;
+    }
+  };
+  history.replaceState(null, "", location.pathname + location.search);
+  let unread = Object.fromEntries(
+    ["beta", "gamma"].map((name) => [
+      name,
+      { count: 2, first: 5, through: 6, oldest: 1, revision: 1 },
+    ]),
+  );
+  const reads = [];
+  let readGate;
+  api.read = async (view, through) => {
+    reads.push([view, through]);
+    if (readGate) await readGate.promise;
+    unread = {
+      ...unread,
+      [view]: { ...unread[view], count: 0, first: null },
+    };
+    socket.onmessage({ data: JSON.stringify({ kind: "read", unread }) });
+    return { ok: true };
+  };
+  const row = (name) =>
+    [...tests.querySelectorAll(".chat-list-row")].find(
+      (element) =>
+        element.querySelector(".chat-row-name")?.textContent === name,
+    );
+  const badge = (name) => row(name)?.querySelector(".unread-badge");
+  const dot = (name) => row(name)?.querySelector(".chat-unread-dot");
+  const reorderOffsets = new Map();
+  const reorder = new MutationObserver(() => {
+    const rows = [...tests.querySelectorAll(".chat-list-row")];
+    const order = rows
+      .map((element) => element.querySelector(".chat-row-name").textContent)
+      .join(",");
+    reorderOffsets.set(
+      order,
+      rows.map(
+        (element) => element.querySelector(".chat-swipe-track").scrollLeft,
+      ),
+    );
+  });
+  const menuAction = (label) =>
+    [...document.querySelectorAll(".message-action-items button")].find(
+      (item) => item.textContent.trim() === label,
+    );
+  const touch = (element, type, x, otherTarget) => {
+    const event = new Event(type, { bubbles: true });
+    Object.defineProperty(event, "touches", {
+      value: [
+        ...(x === undefined
+          ? []
+          : [{ clientX: x, clientY: 100, target: element }]),
+        ...(otherTarget ? [{ target: otherTarget }] : []),
+      ],
+    });
+    element.dispatchEvent(event);
+  };
+  const swipe = async (
+    name,
+    delta,
+    offset,
+    ready,
+    end = "touchend",
+    interruptReturn = false,
+  ) => {
+    const track = row(name).querySelector(".chat-swipe-track");
+    const action = delta > 0 ? "read" : "unread";
+    const shape = track.querySelector(
+      `[data-action="${action}"] .chat-action-shape`,
+    );
+    check(
+      track.scrollLeft === 64 &&
+        !track.hasAttribute("data-chat-swipe-settling") &&
+        getComputedStyle(shape).fill === "none",
+      "the scroll track rests on the chat and its action starts outlined",
+    );
+    track.style.scrollSnapType = "none";
+    touch(track, "touchstart", 150);
+    touch(track, "touchmove", 150 + delta);
+    track.scrollLeft = offset;
+    track.dispatchEvent(new Event("scroll"));
+    check(
+      track.scrollLeft === offset &&
+        track.hasAttribute("data-chat-swipe-ready") === ready &&
+        (getComputedStyle(shape).fill === getComputedStyle(shape).color) ===
+          ready,
+      `the ${action} icon fills only when the action can commit on release (offset ${track.scrollLeft}, available ${track.dataset.chatSwipe}, ready ${track.dataset.chatSwipeReady}, fill ${getComputedStyle(shape).fill})`,
+    );
+    const beforeRelease = reads.length;
+    const previousBadge = badge(name);
+    const previousDot = dot(name);
+    touch(track, end);
+    check(
+      reads.length === beforeRelease &&
+        track.hasAttribute("data-chat-swipe-settling") &&
+        badge(name) === previousBadge &&
+        dot(name) === previousDot &&
+        track.scrollLeft === offset,
+      "releasing a swipe starts the return before mutating the chat",
+    );
+    track.style.removeProperty("scroll-snap-type");
+    track
+      .querySelector(".room-link")
+      .dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }),
+      );
+    check(!location.hash, "a swipe does not open the conversation");
+    if (interruptReturn) {
+      touch(track, "touchstart", 150);
+      touch(track, "touchmove", 215);
+      track.style.scrollSnapType = "none";
+      track.scrollLeft = 8;
+      await sleep(550);
+      check(
+        reads.length === beforeRelease && track.scrollLeft === 8,
+        "a second touch can interrupt the return without applying an action",
+      );
+      touch(track, "touchend", undefined, row("alpha"));
+      track.style.removeProperty("scroll-snap-type");
+    }
+    await until(
+      () =>
+        track.scrollLeft === 64 &&
+        !track.hasAttribute("data-chat-swipe-settling"),
+    );
+  };
+  const selectRead = async (name) => {
+    await sleep(150);
+    const button = row(name).querySelector(".room-link");
+    const press = (type) =>
+      button.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          pointerType: "touch",
+          pointerId: 21,
+          isPrimary: true,
+          clientX: 45,
+          clientY: 70,
+        }),
+      );
+    press("pointerdown");
+    await until(() => menuAction("Mark as read"));
+    press("pointerup");
+    check(
+      !menuAction("Mark as read").disabled &&
+        menuAction("Mark as unread").disabled,
+      "the long-press menu offers read and disables redundant unread",
+    );
+    menuAction("Mark as read").click();
+    await until(() => !menuAction("Mark as read"));
+  };
+  try {
+    render(
+      h(Chat, {
+        initial: {
+          ...empty,
+          account_access: { ...empty.account_access, id: account },
+          rooms: ["alpha", "beta", "gamma"].map((name) => ({
+            id: name,
+            name,
+            owner: "alice",
+            permissions: ["w:message.create"],
+            commands: [],
+            members: ["alice"],
+            messages: [],
+          })),
+          unread,
+        },
+        onLogout() {},
+        appearance: {
+          theme: "light",
+          setTheme() {},
+          seeds: defaultSeeds,
+          setSeeds() {},
+        },
+      }),
+      tests,
+    );
+    await until(() => socket?.onmessage && row("beta"));
+    reorder.observe(tests.querySelector(".conversation-list"), {
+      childList: true,
+    });
+    await swipe("alpha", 55, 10, false);
+    await swipe("beta", -65, 120, false);
+    check(
+      badge("beta")?.textContent === "2",
+      "swiping left on unread leaves its count intact",
+    );
+    await swipe("beta", 55, 10, true, "touchcancel");
+    check(
+      reads.length === 0,
+      "cancelling the gesture cannot acknowledge messages",
+    );
+    await swipe("beta", 55, 10, true, "touchend", true);
+    await until(() => !badge("beta"));
+    check(
+      JSON.stringify(reads) === JSON.stringify([["beta", 6]]),
+      "swiping right acknowledges the latest received message without opening the chat",
+    );
+    await swipe("beta", -55, 118, true);
+    await until(() => dot("beta"));
+    check(
+      reorderOffsets
+        .get("gamma,alpha,beta")
+        ?.every((offset) => offset === 64) &&
+        reorderOffsets
+          .get("beta,gamma,alpha")
+          ?.every((offset) => offset === 64),
+      "marking a chat read and then unread keeps each swipe track centered on reorder",
+    );
+    await selectRead("beta");
+    await until(() => !dot("beta"));
+    readGate = deferred();
+    await selectRead("gamma");
+    await selectRead("gamma");
+    check(
+      reads.filter(([view]) => view === "gamma").length === 1 &&
+        !tests.querySelector(".sidebar [role=status]").textContent,
+      "repeating a pending read shares the request and waits to report success",
+    );
+    readGate.resolve();
+    await until(() => !badge("gamma"));
+    const track = row("beta").querySelector(".chat-swipe-track");
+    track.style.scrollSnapType = "none";
+    track.scrollLeft = 0;
+    track.dispatchEvent(new Event("scroll"));
+    await until(
+      () =>
+        track.scrollLeft === 64 &&
+        !track.hasAttribute("data-chat-swipe-settling"),
+    );
+    track.style.removeProperty("scroll-snap-type");
+    check(
+      JSON.stringify(reads) ===
+        JSON.stringify([
+          ["beta", 6],
+          ["gamma", 6],
+        ]) && !location.hash,
+      "the long-press action clears a manual mark or acknowledges real unread messages",
+    );
+  } finally {
+    reorder.disconnect();
+    render(null, tests);
+    window.WebSocket = Socket;
+    api.read = read;
+    history.replaceState(null, "", url);
+    localStorage.removeItem(storageKey);
   }
 });
 
@@ -6589,7 +7261,47 @@ await test("room selection preserves fragments and restores the default view wit
     const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
     const list = tests.querySelector(".sidebar");
     const conversation = tests.querySelector(".conversation");
+    if (!narrow) {
+      const row = list.querySelector(".room-link");
+      check(
+        row.getBoundingClientRect().height === 48 &&
+          !row.querySelector(".chat-row-details") &&
+          row.querySelector(".chat-row-icon .hash").textContent === "#" &&
+          getComputedStyle(row.querySelector(".chat-row-name")).fontWeight ===
+            "400",
+        "desktop chat rows use the compact single-line layout",
+      );
+      const brand = list.querySelector(".brand");
+      check(
+        getComputedStyle(brand).color ===
+          getComputedStyle(tests.querySelector(".navigation-toggle")).color &&
+          getComputedStyle(brand.querySelector("svg")).stroke ===
+            getComputedStyle(brand).color,
+        "the sidebar wordmark, logo and navigation toggle share the ink color",
+      );
+    }
     if (narrow) {
+      const row = list.querySelector(".room-link");
+      const text = row
+        .querySelector(".chat-row-details")
+        .getBoundingClientRect();
+      const icon = row.querySelector(".chat-row-icon").getBoundingClientRect();
+      const footer = list.querySelector(".profile").getBoundingClientRect();
+      const sidebarBounds = list.getBoundingClientRect();
+      check(
+        list.querySelector("h1").textContent === "Chats" &&
+          row.getBoundingClientRect().height === 72 &&
+          icon.height === 44 &&
+          icon.right <= text.left &&
+          row.querySelector(".chat-row-icon .hash").textContent === "a",
+        "mobile chat rows use the Chats title and a compact leading icon",
+      );
+      check(
+        footer.left === sidebarBounds.left &&
+          footer.right === sidebarBounds.right &&
+          footer.bottom === sidebarBounds.bottom,
+        "the mobile profile footer fills the sidebar width and reaches its bottom",
+      );
       check(
         list.getBoundingClientRect().width === innerWidth,
         "the mobile home is a full-width conversation list",

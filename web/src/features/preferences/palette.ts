@@ -8,6 +8,8 @@
 
 export const paletteTokens = [
   "paper",
+  "sidebar",
+  "sidebar-module",
   "ink",
   "muted",
   "subtle",
@@ -18,6 +20,8 @@ export const paletteTokens = [
   "accent-ink",
   "accent-label",
   "accent-contrast",
+  "accent-indicator",
+  "accent-indicator-label",
   "field",
   "placeholder",
   "danger",
@@ -230,12 +234,14 @@ export function derivePalette(
   };
 
   const paper = base;
+  const sidebar = surface(-0.03);
+  const sidebarModule = surface(dark ? 0.038 : -0.07);
   const wash = surface(dark ? 0.055 : -0.035);
   const field = surface(dark ? 0.038 : 0.018);
 
   /* Choose the surface nearest the foreground, including input fields. A
      light field can be darker than a saturated paper despite its HSL step. */
-  const surfaces = [paper, wash, field];
+  const surfaces = [paper, wash, field, sidebar, sidebarModule];
   const against = surfaces.reduce((closest, candidate) =>
     contrast(foreground, candidate) < contrast(foreground, closest)
       ? candidate
@@ -268,6 +274,13 @@ export function derivePalette(
   const accentLabel = onFill(accent, 4.6);
   const accentContrast =
     contrast("#ffffff", accent) >= 4.5 ? "#ffffff" : accentLabel;
+  const accentIndicator = surfaces.every(
+    (surface) => contrast(accent, surface) >= 3,
+  )
+    ? accent
+    : solve(3, dark, accentHsl.h, accentHsl.s);
+  const accentIndicatorLabel =
+    accentIndicator === accent ? accentContrast : onFill(accentIndicator, 4.6);
   /* Hover must move away from the label, or the fill would lose contrast with
      its own text exactly when the pointer lands on it. */
   const labelIsDark =
@@ -285,6 +298,8 @@ export function derivePalette(
     polarity,
     tokens: {
       paper,
+      sidebar,
+      "sidebar-module": sidebarModule,
       ink,
       muted,
       subtle,
@@ -295,6 +310,8 @@ export function derivePalette(
       "accent-ink": ink,
       "accent-label": accentLabel,
       "accent-contrast": accentContrast,
+      "accent-indicator": accentIndicator,
+      "accent-indicator-label": accentIndicatorLabel,
       field,
       placeholder,
       danger,

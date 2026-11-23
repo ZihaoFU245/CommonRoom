@@ -220,56 +220,26 @@
 .sidebar-bottom {
   flex-shrink: 0;
 }
-.nav-group {
-  margin-bottom: 18px;
-}
-.nav-group summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  color: var(--ink);
-  font-size: 0.85714rem;
-  font-weight: 600;
+.conversation-list {
+  display: grid;
+  gap: 3px;
   list-style: none;
-  border-radius: 6px;
+  margin: 0;
+  padding: 0;
 }
-.nav-group summary::-webkit-details-marker {
-  display: none;
-}
-.nav-group summary::before {
-  content: "›";
-  color: var(--muted);
-  font-size: 1.21429rem;
-  line-height: 1;
-  transition: transform var(--control-motion-duration)
-    var(--control-motion-easing);
-}
-.nav-group[open] summary::before {
-  transform: rotate(90deg);
-}
-.nav-group summary:hover {
-  background: var(--wash);
-}
-.nav-group summary:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
-}
-.group-count {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 0.78571rem;
-  font-weight: 400;
-}
-.nav-items {
-  padding: 4px 0 0 9px;
-}
-.nav-items .room-link {
-  font-size: 0.92857rem;
-}
-@media (prefers-reduced-motion: reduce) {
-  .nav-group summary::before {
+@media (prefers-reduced-motion: no-preference) {
+  .mobile-conversation-list .navigation[data-short-chat-list] {
+    touch-action: pan-x pinch-zoom;
+  }
+  .mobile-conversation-list
+    .navigation[data-short-chat-list]
+    > .conversation-list {
+    translate: 0 var(--chat-list-pull, 0px);
+    transition: translate 240ms cubic-bezier(0.2, 0.75, 0.3, 1);
+  }
+  .mobile-conversation-list
+    .navigation[data-short-chat-list]
+    > .conversation-list[data-chat-pulling] {
     transition: none;
   }
 }
@@ -278,9 +248,7 @@ button:focus-visible {
   outline-color: var(--accent);
 }
 
-.signout:hover,
-.sidebar-close:hover,
-.navigation-toggle:hover {
+.sidebar-close:hover {
   background: var(--wash);
 }
 .composer-resize {
@@ -318,8 +286,9 @@ button:focus-visible {
 }
 @media (max-width: 700px),
   (hover: none) and (pointer: coarse) and (max-height: 500px) {
-  .profile {
-    padding: 12px 0 max(12px, env(safe-area-inset-bottom));
+  .sidebar .brand {
+    font-size: 1.14286rem;
+    gap: 8px;
   }
 }
 
@@ -665,7 +634,6 @@ button:focus-visible {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.notification-toggle:hover,
 .notification-toggle[aria-pressed="true"] {
   background: var(--wash);
 }
@@ -719,6 +687,18 @@ button:focus-visible {
   color: var(--ink);
   box-shadow: var(--shadow-pop);
 }
+@media (prefers-reduced-motion: no-preference) {
+  .chat-action-menu {
+    animation: chat-action-menu-in var(--control-motion-duration)
+      var(--control-motion-easing);
+  }
+  @keyframes chat-action-menu-in {
+    from {
+      opacity: 0;
+      translate: 0 -4px;
+    }
+  }
+}
 .message-action-items > button {
   display: block;
   width: 100%;
@@ -726,6 +706,19 @@ button:focus-visible {
   padding: 8px 12px;
   border-radius: 6px;
   text-align: start;
+}
+.message-action-items > button:has(.chat-action-icon) {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.message-action-items .chat-action-icon:has(.chat-action-shape) {
+  color: var(--accent-indicator, var(--accent));
+}
+@media (hover: hover) and (pointer: fine) {
+  .message-action-items > button:has(.chat-action-icon):hover:enabled {
+    background: var(--wash);
+  }
 }
 .message-action-items > button:active,
 .message-action-items > button:focus-visible {
@@ -739,11 +732,11 @@ button:focus-visible {
   margin-block-start: 2px;
   color: var(--muted);
 }
-.chat-message[data-touch-held],
+.chat-message[data-touch-menu-open],
 .chat-message :where(a, button, summary, [role="button"])[data-touch-held] {
   background: var(--wash);
 }
-.chat-message[data-touch-held] .continuation-time {
+.chat-message[data-touch-menu-open] .continuation-time {
   opacity: 1;
 }
 @media (hover: none) and (pointer: coarse) {
@@ -896,8 +889,7 @@ button:focus-visible {
 }
 .reply-quote {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
   max-width: 100%;
   padding: 4px 10px;
   margin-bottom: 7px;
@@ -907,11 +899,10 @@ button:focus-visible {
   color: var(--subtle);
   text-align: left;
 }
-.reply-quote strong {
-  flex-shrink: 0;
+.reply-quote > strong {
   color: var(--name);
 }
-.reply-quote span {
+.reply-quote > :is(strong, span) {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

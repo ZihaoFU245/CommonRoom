@@ -247,6 +247,30 @@ Pinch zoom leaves these dimensions unchanged.
 The conversation list is the home screen on narrow viewports and short touch
 viewports in landscape. A room link opens its conversation directly, and the
 header back button returns to the list.
+Rooms and private chats share one list. Chats with unread messages appear
+first below any pinned chats, ordered by their latest message sequence.
+The remaining rooms and private chats share one alphabetical order by displayed name.
+Chats without messages follow the same alphabetical order.
+On mobile, a short chat list follows a downward swipe and settles back on
+release. Longer lists scroll natively, and reduced motion disables the effect.
+On narrow screens the Chats list uses taller rows with avatars on the left.
+Rooms and private chats without an avatar use the first displayed character.
+It shows the latest activity time and a plain-text preview when the message
+is present in the snapshot tail. The newest available unread message takes
+priority for the preview. Desktop rows show the name, icon and unread badge
+on one line. Unread badges indicate the full count on both layouts.
+Right-click a desktop chat, open its row chevron, or hold a mobile row to
+open chat actions. A mobile long press highlights the row until the menu closes.
+On mobile, swipe right to mark a chat as read or left to mark it as unread.
+Both directions can be dragged. An unavailable action stays outlined, and
+the row returns to center before a completed action updates the chat list.
+Both actions are also available in the chat menu on desktop and mobile. Marking a chat as read
+acknowledges its latest known message without opening it.
+Pins and manual unread marks are saved per account and server in this browser.
+A manual unread mark shows a blue dot on a chat with no unread messages and
+clears when the chat opens. It leaves the server read cursor intact.
+Row movement uses the short control timing and follows the system's
+reduced-motion preference.
 Browser Back and Forward follow the same navigation. The desktop sidebar gives
 keyboard and mouse users immediate composer focus after conversation selection.
 Touch users can hold a message to open its commands, reactions, and Copy

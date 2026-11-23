@@ -141,7 +141,13 @@ test("text contrast holds across every three-digit seed colour", () => {
     const base = `#${value.toString(16).padStart(3, "0")}`;
     const accent = `#${(0xfff - value).toString(16).padStart(3, "0")}`;
     const { tokens } = derivePalette(base, accent);
-    for (const surface of ["paper", "wash", "field"]) {
+    for (const surface of [
+      "paper",
+      "wash",
+      "field",
+      "sidebar",
+      "sidebar-module",
+    ]) {
       for (const text of [
         "ink",
         "muted",
@@ -155,6 +161,10 @@ test("text contrast holds across every three-digit seed colour", () => {
           `${base}: ${text} on ${surface} must reach 4.5:1`,
         );
       }
+      assert.ok(
+        contrast(tokens["accent-indicator"], tokens[surface]) >= 3,
+        `${base}: the accent indicator on ${surface} must reach 3:1`,
+      );
     }
     for (const text of ["accent-label", "accent-contrast"]) {
       assert.ok(contrast(tokens[text], tokens.accent) >= 4.5, accent);
@@ -162,6 +172,11 @@ test("text contrast holds across every three-digit seed colour", () => {
     assert.ok(
       contrast(tokens["accent-label"], tokens["accent-hover"]) >= 4.5,
       `${accent}: hovered label must reach 4.5:1`,
+    );
+    assert.ok(
+      contrast(tokens["accent-indicator-label"], tokens["accent-indicator"]) >=
+        4.5,
+      `${accent}: the unread count must reach 4.5:1`,
     );
   }
 });

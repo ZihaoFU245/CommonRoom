@@ -217,6 +217,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
       id={`message-${message.id}`}
       data-sequence={message.sequence}
       data-swipe-reply={swipeReply ? "" : undefined}
+      data-touch-menu-open={mobileActions.position?.touchHold ? "" : undefined}
       class={`chat-message ${message.from === self ? "own" : ""} ${grouped ? "grouped" : ""} ${connectsPrevious ? "message-bar-continued" : ""} ${connectsNext ? "message-bar-continues" : ""}`}
       {...mobileActions.gesture}
     >
@@ -280,7 +281,7 @@ export const ConsoleMessage = memo(function ConsoleMessage({
             }
           >
             <strong data-name-color={replyColor}>
-              ↳ <DisplayName name={reply.from} />
+              <DisplayName name={reply.from} />
             </strong>
             <span dir="auto">{reply.text}</span>
           </button>

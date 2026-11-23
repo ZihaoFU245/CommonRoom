@@ -4,6 +4,7 @@ import {
   setClientDisplayScope,
 } from "../api/clientMetrics.ts";
 import { readStorage, writeStorage } from "../api/browserStorage.ts";
+import { useChatListPreferences } from "../hooks/useChatListPreferences.ts";
 import { UserCards } from "./UserCard.tsx";
 import { resolveDisplayNames } from "../features/preferences/displayNames.ts";
 import { DisplayNamesContext } from "./DisplayNamesContext.ts";
@@ -254,6 +255,28 @@ export function Chat({
     showNameColors,
   );
   const preferenceSyncError = usePreferenceSync(state);
+  const chatListPreferences = useChatListPreferences(state);
+  const clearChatUnread = chatListPreferences.clearUnread;
+  const pendingChatReads = useRef(new Map<string, Promise<void>>());
+  const markChatRead = useEvent(async (view: string) => {
+    const unread = currentState.current.unread[view];
+    if (!unread?.count) {
+      clearChatUnread(view);
+      return;
+    }
+    const key = JSON.stringify([view, unread.through]);
+    const pending = pendingChatReads.current.get(key);
+    if (pending) return pending;
+    const request = api
+      .read(view, unread.through)
+      .then(() => clearChatUnread(view))
+      .finally(() => pendingChatReads.current.delete(key));
+    pendingChatReads.current.set(key, request);
+    return request;
+  });
+  useEffect(() => {
+    if (!conversationListOpen) clearChatUnread(selected);
+  }, [selected, conversationListOpen, clearChatUnread]);
   const [showBotStatus, setShowBotStatus] = useBotStatus(
     state.account_access.id,
     state.bot_status_preference === true,
@@ -663,6 +686,7 @@ export function Chat({
     name: string,
     { focusComposer = true }: { focusComposer?: boolean } = {},
   ) {
+    clearChatUnread(name);
     if (name !== selected || conversationListOpen) {
       const started = clientMetricClock();
       if (started !== undefined) displaySelection.current = { name, started };
@@ -845,11 +869,13 @@ export function Chat({
         {(narrow || menu) && (
           <Sidebar
             mobile={narrow}
+            active={!settingsOpen && (!narrow || conversationListOpen)}
             heading={listHeading}
             state={state}
             selected={selected}
             peers={peers}
-            peer={peer}
+            preferences={chatListPreferences}
+            markRead={markChatRead}
             choose={choose}
             openSettings={openSettings}
             toggleNotifications={() => {
@@ -869,6 +895,7 @@ export function Chat({
               consoleView={consoleView}
               direct={direct}
               peer={peer}
+              avatar={peer ? state.avatars?.[peer] : undefined}
               selected={selected}
               online={state.online}
               username={state.username}
