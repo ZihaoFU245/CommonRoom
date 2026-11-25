@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   existsSync,
+  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -159,6 +160,7 @@ for (const { withS3, custom, offline, network } of [
         `#!${process.execPath}
 const fs=require('node:fs');
 if(process.argv.includes('--setup-local-s3')) {fs.writeFileSync('local-s3-setup.json',JSON.stringify({endpoint:process.env.CHAT_S3_ENDPOINT,bucket:process.env.CHAT_S3_BUCKET,origin:process.env.CHAT_DEBUG_ORIGIN}));process.exit(${offline ? 1 : 0});}
+fs.writeFileSync('debug-push-env.json',JSON.stringify({key:process.env.CHAT_VAPID_PRIVATE_KEY,subject:process.env.CHAT_VAPID_SUBJECT}));
 fs.writeFileSync('debug-env.json',JSON.stringify({s3:Object.fromEntries(Object.entries(process.env).filter(([name])=>name.startsWith('CHAT_S3_'))),stdin:fs.readFileSync(0,'utf8')}));
 `,
         { mode: 0o755 },
@@ -167,6 +169,10 @@ fs.writeFileSync('debug-env.json',JSON.stringify({s3:Object.fromEntries(Object.e
         join(root, "bin/node"),
         `#!${process.execPath}
 const fs=require('node:fs');
+if(process.argv[2] === '-p') {
+  const result=require('node:child_process').spawnSync(process.execPath,process.argv.slice(2),{stdio:'inherit'});
+  process.exit(result.status ?? 1);
+}
 fs.writeFileSync('preview-env.json',JSON.stringify({args:process.argv.slice(2),origin:process.env.CHAT_DEBUG_ORIGIN,host:process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS}));
 const timer=setInterval(()=>{if(fs.existsSync('debug-env.json')){clearInterval(timer);process.exit(0);}},10);
 setTimeout(()=>process.exit(1),3000).unref();
@@ -178,8 +184,22 @@ setTimeout(()=>process.exit(1),3000).unref();
         PATH: `${join(root, "bin")}:${process.env.PATH}`,
       };
       for (const name of Object.keys(env))
-        if (name.startsWith("CHAT_S3_") || name.startsWith("RUSTFS_"))
+        if (
+          name.startsWith("CHAT_S3_") ||
+          name.startsWith("RUSTFS_") ||
+          name.startsWith("CHAT_VAPID_")
+        )
           delete env[name];
+      const keyPath = join(root, "data/debug-vapid.key");
+      const testKey = Buffer.alloc(32, 1).toString("base64url");
+      if (network === "100.101.102.103") {
+        mkdirSync(join(root, "data"), { mode: 0o700 });
+        writeFileSync(keyPath, testKey + "\n", { mode: 0o600 });
+      }
+      if (custom) {
+        env.CHAT_VAPID_PRIVATE_KEY = testKey;
+        env.CHAT_VAPID_SUBJECT = "mailto:fixture@example.com";
+      }
       if (custom)
         Object.assign(env, {
           CHAT_S3_ENDPOINT: "http://127.0.0.1:29000",
@@ -235,6 +255,24 @@ setTimeout(()=>process.exit(1),3000).unref();
       const captured = JSON.parse(
         readFileSync(join(root, "debug-env.json"), "utf8"),
       );
+      const push = JSON.parse(
+        readFileSync(join(root, "debug-push-env.json"), "utf8"),
+      );
+      assert.equal(
+        push.subject,
+        custom
+          ? "mailto:fixture@example.com"
+          : "mailto:commonroom-debug@example.com",
+      );
+      assert.match(push.key, /^[A-Za-z0-9_-]{43}$/u);
+      if (custom) {
+        assert.equal(push.key, testKey);
+        assert.equal(existsSync(keyPath), false);
+      } else {
+        assert.equal(push.key, readFileSync(keyPath, "utf8").trim());
+        assert.equal(statSync(keyPath).mode & 0o777, 0o600);
+        if (network === "100.101.102.103") assert.equal(push.key, testKey);
+      }
       assert.deepEqual(captured, {
         stdin: "/whoami\n",
         s3: !withS3

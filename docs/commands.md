@@ -295,15 +295,49 @@ for examples that should stay silent.
 New accounts cannot take the username `all`. In rooms with a legacy member
 named `all`, `@all` addresses that account individually.
 
-The profile bell enables browser notifications for room mentions
-and incoming private messages. Notifications require browser permission and a
-running chat tab. Alerts omit refresh and history events, your own messages,
-and messages in the conversation you're viewing in a focused tab. Private alerts
-show the sender and message preview. Room alerts show the room, who mentioned you,
-and the message preview. Clicking an alert opens its conversation. The bell
-shows a slash while muted and silences both types of alerts. Blocked permission
-appears with instructions to change
-the browser's site settings.
+The profile bell and `/notifications mute|unmute` control alerts for your account.
+Mute suppresses alerts in open tabs and prevents Web Push to installed
+subscriptions. A focused tab suppresses alerts for the conversation it is showing.
+`/notifications install|uninstall` opens Settings → Notifications, where the
+background notification button installs or removes the current browser subscription.
+
+By default, incoming private messages, direct mentions, authorized room-wide
+mentions, and replies to your messages alert. Open-tab alerts show a preview.
+Push alerts show the sender and a short message preview. Tap an alert to open
+the conversation.
+By default, alerts skip unthreaded bot messages and messages that mention bots.
+The built-in filter sends bot replies only to the author of the message they
+reply to. Settings can include unthreaded bot messages and bot mentions in
+that built-in filter. An explicit filter replaces the built-in filter, including
+its bot rules. For example, `all` matches bot messages, bot mentions, and bot
+replies in its scope. Read access and mute still apply.
+
+In Settings → Notifications, choose Global, a room, or a DM under Default
+notifications. Each conversation inherits the global options until you change
+them for that conversation. Use **Use global defaults** to clear its overrides.
+Custom filters take precedence over these options.
+
+Use `/notifications status` to view the global filter, conversation overrides,
+and mute state. Each global default matcher has its own Delete button. Deleting
+a saved scope filter restores inheritance for that scope. Reset to default clears
+saved filters and restores all default matchers and bot settings.
+It preserves mute state and browser subscriptions. Use `/man notifications`
+for help, `/notifications filter <rules> <scope>` to replace a filter, and
+`/notifications filter default <scope>` to clear it. Scope can be `global`,
+`here`, `#room`, or `@direct:username`. A conversation filter takes precedence
+over the global filter. A global filter takes precedence over the defaults.
+
+Separate matchers with semicolons, then put one scope at the end after a space.
+Any matching entry alerts. Use `all` or `none`
+alone to allow or suppress all eligible messages in a scope. Predicates include
+`user_is:name`, `user_not:name`, `user_role:user|admin|su`,
+`mentions_me`, `mentions_all` (or `@all`), `is_reply_to_me`, `contains_keyword:phrase`,
+and `contains_media` (managed attachments). Roles resolve using global and
+conversation assignments. Keyword matching is case-sensitive.
+`/notifications filter user_is:alice contains_keyword:incident; mentions_me #ops`
+alerts on Alice's messages containing “incident” and on mentions of you.
+Tab completes notification operations, matchers, actor names and roles, and scopes.
+
 Composer suggestions show one level at a time: `/u` offers `/user`,
 `/user ` offers subcommands, and `/user ls ` offers scopes. Free-form arguments
 show no fallback wall of syntax; use `/man` for usage and permission details.

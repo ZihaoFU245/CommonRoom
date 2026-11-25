@@ -71,6 +71,7 @@ impl Engine {
             authorization,
             presence: Default::default(),
             bot_budgets: BTreeMap::new(),
+            push: None,
             data,
             revision: 0,
             recovery_failed: false,

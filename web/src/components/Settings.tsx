@@ -13,6 +13,7 @@ import { AliasSettings } from "./AliasSettings.tsx";
 import { AccountEditor } from "./settings/AccountEditor.tsx";
 import { AppearanceSettings } from "./settings/AppearanceSettings.tsx";
 import { FormattingSettings } from "./settings/FormattingSettings.tsx";
+import { NotificationSettings } from "./settings/NotificationSettings.tsx";
 import { SecuritySettings } from "./settings/SecuritySettings.tsx";
 import { StickerSettings } from "./settings/StickerSettings.tsx";
 import type { SettingsProps } from "./settings/types.ts";
@@ -140,6 +141,8 @@ export function Settings(
               <SecuritySettings {...props} />
             ) : tab === "preferences" ? (
               <FormattingSettings {...props} />
+            ) : tab === "notifications" ? (
+              <NotificationSettings context={state} />
             ) : tab === "alias" ? (
               <AliasSettings
                 aliases={props.aliases}

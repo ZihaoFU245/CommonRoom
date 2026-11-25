@@ -3,6 +3,7 @@ import { markdownCommand } from "../preferences/markdown.ts";
 import type { Command } from "../../api/protocol.ts";
 import { redactCommand } from "./console.ts";
 import { inlineCode } from "./manual.ts";
+import { notificationCommand } from "../preferences/notificationMode.ts";
 
 export type Aliases = Record<string, string>;
 const aliasCommand: Command = {
@@ -33,6 +34,7 @@ export function browserCommands(
     aliasCommand,
     markdownCommand,
     versionCommand,
+    notificationCommand,
     ...Object.entries(aliases).map(([name, target]) => ({
       ...aliasCommand,
       name,
@@ -47,6 +49,7 @@ export function aliasHelp(aliases: Aliases): string {
     `## Browser\n\n- \`${markdownCommand.usage}\` — ${markdownCommand.description}`,
     `- \`${aliasCommand.usage}\` — ${aliasCommand.description}`,
     `- \`${versionCommand.usage}\` — ${versionCommand.description}`,
+    `- \`${notificationCommand.usage}\` — ${notificationCommand.description}`,
     ...Object.entries(aliases).map(
       ([name, target]) =>
         `- ${inlineCode(name)} — Alias for ${inlineCode(redactCommand(target))}`,
@@ -82,7 +85,7 @@ export const aliasManual = `# /alias
 
 - The last two examples expand to /room delete #support and /sudo /room delete #support.
 - Expansion happens once and preserves following arguments.
-- Aliases can replace existing command names; /alias, /sudo and /markdown cannot be remapped.
+- Aliases can replace existing command names; /alias, /sudo, /markdown and /notifications cannot be remapped.
 
 ## Storage and permissions
 
@@ -98,7 +101,7 @@ const commandName = /^\/[^\s/]+$/u;
 function validAlias(a: string, b: unknown): b is string {
   return (
     commandName.test(a) &&
-    !["/alias", "/sudo", "/markdown"].includes(a) &&
+    !["/alias", "/sudo", "/markdown", "/notifications"].includes(a) &&
     typeof b === "string" &&
     commandName.test(b.split(/\s+/u)[0] ?? "")
   );
@@ -126,7 +129,7 @@ export function setAlias(
   const b = target.trim().startsWith("/") ? target.trim() : `/${target.trim()}`;
   if (!validAlias(a, b))
     throw new Error(
-      "Use a single command name and a command target; /alias, /sudo and /markdown cannot be remapped.",
+      "Use a single command name and a command target. /alias, /sudo, /markdown and /notifications cannot be remapped.",
     );
   const next = { ...aliases, [a]: b };
   if (!writeStorage(key, JSON.stringify(next)))

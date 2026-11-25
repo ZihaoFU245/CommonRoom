@@ -13,6 +13,7 @@ import type {
   Snapshot,
   Acknowledgement,
   BotActivity,
+  ChatNotification,
 } from "../api/protocol.ts";
 import { applyAvatar } from "../features/preferences/avatar.ts";
 import { parseFrame } from "../api/protocol.ts";
@@ -24,6 +25,7 @@ import {
 import { SocketTails } from "../features/conversation/socketTails.ts";
 import { snapshotSync, olderSnapshot } from "./sync.ts";
 interface Callbacks {
+  onNotification?: (notification: ChatNotification) => void;
   onSnapshot: (previous: Snapshot, data: Snapshot, baseline: boolean) => void;
   onResult: (data: Acknowledgement) => void;
   onDisconnect: () => void;
@@ -174,6 +176,10 @@ export function useConnection(
         const data = parseFrame(String(event.data));
         if (!data) {
           recordClientMetric(metric.socketInvalid);
+          return;
+        }
+        if (data.kind === "notification") {
+          if (!awaitingBaseline) callbacks.current.onNotification?.(data);
           return;
         }
         if (data.kind === "resumed") {

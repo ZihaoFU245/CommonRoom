@@ -2,17 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mentionSuggestions,
-  messageNotificationEvents,
   mentionedText,
   mentionedCommand,
 } from "../src/features/conversation/interactions.ts";
-const snapshot = (messages = [], direct = []) => ({
-  username: "alice",
-  rooms: [{ name: "room", messages }],
-  direct,
-  unread: {},
-});
-
 test("addressed bot commands retain the full literal command and arguments", () => {
   for (const text of [
     "@SimpleBot /whoami",
@@ -58,49 +50,6 @@ test("mentions complete room members and preserve Unicode drafts without matchin
     ["@alice"],
   );
 });
-test("notifications include only new mentions, not own messages, reactions, joined history or cleanup backfill", () => {
-  const old = {
-    id: "old",
-    from: "bob",
-    time: 10,
-    text: "@alice",
-    mentions: ["alice"],
-  };
-  const fresh = { ...old, id: "new", time: 11 };
-  assert.equal(
-    messageNotificationEvents(snapshot([old]), snapshot([old, fresh])).length,
-    1,
-  );
-  assert.equal(
-    messageNotificationEvents(
-      snapshot([old]),
-      snapshot([{ ...old, reactions: { "👍": ["bob"] } }]),
-    ).length,
-    0,
-  );
-  assert.equal(
-    messageNotificationEvents(
-      snapshot([old]),
-      snapshot([old, { ...fresh, from: "alice" }]),
-    ).length,
-    0,
-  );
-  assert.equal(
-    messageNotificationEvents(
-      snapshot([old]),
-      snapshot([{ ...fresh, time: 1 }]),
-    ).length,
-    0,
-  );
-  assert.equal(
-    messageNotificationEvents(
-      { username: "alice", rooms: [], direct: [] },
-      snapshot([fresh]),
-    ).length,
-    0,
-  );
-});
-
 test("Unicode usernames complete and highlight Chinese, combining marks and emoji", () => {
   for (const name of ["测试", "Zoë", "e\u0301", "用户🙂", "👩‍💻"]) {
     assert.equal(
@@ -139,87 +88,4 @@ test("room-wide mentions complete and highlight separately from individual menti
     ["@all", "@alice"],
   );
   assert.equal(mentionedCommand("@all /whoami", []), null);
-});
-
-test("room-wide alerts require a new sequence and viewer membership in that room", () => {
-  const message = {
-    id: "broadcast",
-    from: "bob",
-    sequence: 8,
-    time: 1,
-    text: "@all",
-    mention_all: true,
-    mentions: [],
-  };
-  const room = {
-    id: "room-id",
-    name: "room",
-    is_member: true,
-    members: [],
-    messages: [],
-  };
-  const before = {
-    ...snapshot(),
-    rooms: [{ ...room, messages: [{ id: "previous", time: 2 }] }],
-    unread: { room: { through: 7 } },
-  };
-  const after = (messages, changes = {}) => ({
-    ...snapshot(),
-    rooms: [{ ...room, ...changes, messages }],
-    unread: { room: { through: 8 } },
-  });
-  assert.deepEqual(messageNotificationEvents(before, after([message])), [
-    { message, view: "room", roomWide: true },
-  ]);
-  assert.equal(
-    messageNotificationEvents(
-      before,
-      after([{ ...message, mentions: ["alice"] }]),
-    ).length,
-    1,
-  );
-  for (const candidate of [
-    { ...message, sequence: 7 },
-    { ...message, edited: true },
-    { ...message, from: "alice" },
-  ]) {
-    assert.deepEqual(messageNotificationEvents(before, after([candidate])), []);
-  }
-  for (const changes of [{ is_member: false }, { id: "replacement-id" }]) {
-    assert.deepEqual(
-      messageNotificationEvents(before, after([message], changes)),
-      [],
-    );
-  }
-  assert.deepEqual(
-    messageNotificationEvents(after([message]), after([message])),
-    [],
-  );
-});
-
-test("private notifications include only incoming messages newer than the conversation watermark", () => {
-  const incoming = {
-    id: "new",
-    from: "bob",
-    to: "alice",
-    sequence: 8,
-    text: "hello",
-    mentions: [],
-  };
-  const previous = {
-    ...snapshot(),
-    unread: { "@direct:bob": { through: 6 }, "@direct:carol": { through: 10 } },
-  };
-  const next = snapshot(
-    [],
-    [
-      { ...incoming, id: "older", sequence: 6 },
-      { ...incoming, id: "own", from: "alice", to: "bob", sequence: 7 },
-      incoming,
-    ],
-  );
-  assert.deepEqual(messageNotificationEvents(previous, next), [
-    { message: incoming, view: "@direct:bob" },
-  ]);
-  assert.deepEqual(messageNotificationEvents(next, next), []);
 });

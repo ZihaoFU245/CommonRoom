@@ -56,18 +56,19 @@ export function cursorSuggestions(
 ): { hints: Hint[]; suffix: string } {
   const prefix = draft.slice(0, caret);
   const tail = draft.slice(caret);
+  const notificationFilter = /^\/notifications\s+filter\s/u.test(prefix);
   // A bare @ starts a new mention before existing text, rather than replacing
   // the word to its right as completing a partially typed token would.
   const suffix =
     !prefix.startsWith("/") && prefix.endsWith("@")
       ? tail
-      : tail.replace(/^\S*/u, "");
+      : tail.replace(notificationFilter ? /^[^\s;]*/u : /^\S*/u, "");
   return {
     suffix,
     hints: suggest(prefix).map((hint) => ({
       ...hint,
       value: hint.value
-        ? /^\s/u.test(suffix)
+        ? /^\s/u.test(suffix) || (notificationFilter && suffix.startsWith(";"))
           ? hint.value.trimEnd() + suffix
           : hint.value + suffix
         : null,

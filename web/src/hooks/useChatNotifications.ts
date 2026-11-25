@@ -1,47 +1,51 @@
-import { readStorage } from "../api/browserStorage.ts";
-import { useEffect, useRef, useState } from "preact/hooks";
-import { useAccountPreference } from "./useAccountPreference.ts";
+import { useRef } from "preact/hooks";
+import { api } from "../api/client.ts";
 import { errorMessage } from "../api/protocol.ts";
-import { toggleMessageNotifications } from "../features/preferences/notifications.ts";
+import { useAccountPreference } from "./useAccountPreference.ts";
+import { receivePreferences } from "../features/preferences/account.ts";
 
 export function useChatNotifications(
   append: (command: string, result: string, error: boolean) => string,
 ) {
-  const [desired, setDesired] = useAccountPreference("notifications", () =>
-    String(readStorage("commonroom-notifications") === "on"),
-  );
-  const [permission, setPermission] = useState(
-    () =>
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted",
-  );
-  const notifications = desired === "true" && permission;
+  const [muted] = useAccountPreference("notifications_muted", "");
+  const [legacy] = useAccountPreference("notifications", "true");
+  const notifications = muted ? muted !== "true" : legacy !== "false";
   const notificationsRef = useRef(notifications);
   notificationsRef.current = notifications;
-  const notificationRequest = useRef(false);
-  useEffect(() => {
-    const checkPermission = () =>
-      setPermission(window.Notification?.permission === "granted");
-    window.addEventListener("focus", checkPermission);
-    return () => window.removeEventListener("focus", checkPermission);
-  }, []);
-  async function toggleNotifications() {
-    if (notificationRequest.current) return;
-    notificationRequest.current = true;
+  const pending = useRef<Promise<void> | null>(null);
+
+  async function setMuted(value: boolean): Promise<void> {
+    if (pending.current)
+      throw new Error("A notification change is already in progress.");
+    const save = api
+      .preferences({ notifications_muted: String(value) }, false)
+      .then((result) => {
+        receivePreferences(result);
+        notificationsRef.current = result.values.notifications_muted !== "true";
+      });
+    pending.current = save;
     try {
-      const enabled = await toggleMessageNotifications(
-        notificationsRef.current,
-        window.Notification,
-        window.isSecureContext,
-      );
-      setPermission(window.Notification?.permission === "granted");
-      setDesired(String(enabled));
-      notificationsRef.current = enabled;
-    } catch (error) {
-      append("Notifications", errorMessage(error), true);
+      if (
+        !value &&
+        window.isSecureContext &&
+        window.Notification?.permission === "default"
+      )
+        window.Notification.requestPermission().catch((error: unknown) => {
+          append("Notifications", errorMessage(error), true);
+        });
+      await save;
     } finally {
-      notificationRequest.current = false;
+      pending.current = null;
     }
   }
-  return { notifications, notificationsRef, toggleNotifications };
+
+  async function toggleNotifications() {
+    try {
+      await setMuted(notificationsRef.current);
+    } catch (error) {
+      append("Notifications", errorMessage(error), true);
+    }
+  }
+
+  return { notifications, notificationsRef, toggleNotifications, setMuted };
 }

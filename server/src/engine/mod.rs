@@ -54,6 +54,8 @@ pub(crate) mod preferences;
 pub(crate) use metadata_write::{MetadataPreparation, native_metadata_command};
 mod models;
 mod notices;
+mod notification_filter;
+mod notifications;
 pub(crate) use notices::MetadataNotice;
 mod presence;
 mod profile;
@@ -117,6 +119,7 @@ pub struct Engine {
     pub(crate) bot_index: crate::bots::models::Index,
     bot_budgets: BTreeMap<String, (std::time::Instant, u32)>,
     authorization: authorization::CompiledPolicy,
+    pub(crate) push: Option<crate::push::Runtime>,
 }
 
 impl Engine {

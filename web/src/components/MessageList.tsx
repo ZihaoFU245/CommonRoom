@@ -16,10 +16,12 @@ import {
   sameMinuteMessage,
 } from "../features/conversation/messages.ts";
 import { messageActions } from "../features/conversation/permissions.ts";
+import type { NotificationStatusContext } from "./NotificationStatus.tsx";
 import { ConsoleOutput } from "./ConsoleOutput.tsx";
 import { ConsoleMessage } from "./ConsoleMessage.tsx";
 interface Props {
   motionScope: string;
+  notificationContext?: NotificationStatusContext | undefined;
   revision: number;
   historyReady: boolean;
   messageBars?: boolean;
@@ -46,6 +48,7 @@ interface Props {
 }
 export const MessageList = memo(function MessageList({
   motionScope,
+  notificationContext,
   revision,
   historyReady,
   messageBars = false,
@@ -139,7 +142,10 @@ export const MessageList = memo(function MessageList({
     if (entry.kind !== "message")
       return (
         <div key={entry.key} data-virtual-key={entry.key}>
-          <ConsoleOutput entry={entry} />
+          <ConsoleOutput
+            entry={entry}
+            notificationContext={notificationContext}
+          />
         </div>
       );
     const actions = messageActions(

@@ -1,4 +1,11 @@
 import { serverBaseUrl } from "../api/server.ts";
+import { api } from "../api/client.ts";
+import { errorMessage } from "../api/protocol.ts";
+import {
+  preferenceValue,
+  receivePreferences,
+} from "../features/preferences/account.ts";
+import { notificationManual } from "../features/preferences/notificationMode.ts";
 import { useMessageActions } from "./useMessageActions.ts";
 import { useCommandNavigation } from "./useCommandNavigation.ts";
 import { useCommandRequests } from "./useCommandRequests.ts";
@@ -35,6 +42,8 @@ import type { ComposerSubmission } from "../features/conversation/submission.ts"
 import { useCommandComposer } from "./useCommandComposer.ts";
 
 interface Context {
+  setNotificationsMuted: (muted: boolean) => Promise<void>;
+  openNotificationSettings: () => void;
   botCommands: BotCommands[];
   selected: string;
   direct: boolean;
@@ -59,6 +68,8 @@ interface Context {
   logout: () => void;
 }
 export function useCommands({
+  setNotificationsMuted,
+  openNotificationSettings,
   botCommands,
   selected,
   direct,
@@ -199,6 +210,92 @@ export function useCommands({
     const local = preferences.handleLocalCommand(text);
     if (local) {
       if (local === "done") setDraft("");
+      return;
+    }
+    if (/^\/man\s+\/?notifications$/u.test(text)) {
+      append(text, notificationManual);
+      setDraft("");
+      return;
+    }
+    if (/^\/notifications(?:\s|$)/u.test(text)) {
+      const argument = text.slice("/notifications".length).trim();
+      if (argument === "install" || argument === "uninstall") {
+        openNotificationSettings();
+        append(
+          text,
+          argument === "install"
+            ? "Choose Install in Notifications settings."
+            : "Choose Uninstall in Notifications settings.",
+        );
+      } else if (argument === "mute" || argument === "unmute") {
+        const entry = append(text, null);
+        setNotificationsMuted(argument === "mute")
+          .then(() =>
+            complete(
+              entry,
+              argument === "mute"
+                ? "Notifications muted."
+                : "Notifications unmuted.",
+            ),
+          )
+          .catch((cause: unknown) =>
+            complete(entry, errorMessage(cause), true),
+          );
+      } else if (argument === "status") {
+        append(text, "Notification status");
+      } else if (!argument) {
+        const id = room?.id ?? state.private_access[selected]?.id;
+        const global = preferenceValue(
+          "notification.global",
+          state.preferences?.["notification.global"] ?? "default",
+        );
+        const key = `notification.${id}`;
+        const rule = id
+          ? preferenceValue(key, state.preferences?.[key] ?? global)
+          : global;
+        append(text, `Notification filter: ${rule}.`);
+      } else {
+        const filter =
+          /^filter\s+(.+)\s+(global|here|#[^\s]+|@direct:[^\s]+)$/u.exec(
+            argument,
+          );
+        const scope = filter?.[2];
+        const raw = filter?.[1]?.trim();
+        if (!scope || !raw) {
+          append(
+            text,
+            "Usage: /notifications filter <rules> <scope>. See /man notifications.",
+            true,
+          );
+          return;
+        }
+        const view = scope === "here" ? selected : scope.replace(/^#/u, "");
+        const id =
+          scope === "global"
+            ? "global"
+            : (state.rooms.find((candidate) => candidate.name === view)?.id ??
+              state.private_access[view]?.id);
+        if (!id) {
+          append(text, "Choose a readable room or private chat.", true);
+          return;
+        }
+        const rule =
+          raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+        const entry = append(text, null);
+        api
+          .preferences(
+            { [`notification.${id}`]: rule === "default" ? null : rule },
+            false,
+          )
+          .then((result) => {
+            receivePreferences(result);
+            complete(entry, "Notification filter saved.");
+          })
+          .catch((cause: unknown) =>
+            complete(entry, errorMessage(cause), true),
+          );
+      }
+      setDraft("");
       return;
     }
     if (!text.startsWith("/") && Array.from(text).length > 4000) {

@@ -317,3 +317,48 @@ async fn preferences_message_preview_height_can_sync_and_reset() {
     assert_eq!(response.0, StatusCode::OK);
     assert!(response.1["values"].get("message_preview_height").is_none());
 }
+
+#[tokio::test]
+async fn notification_reset_clears_only_filter_choices() {
+    let app = app(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    let room = {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(Some("alice"), None, "/room new lounge")
+            .unwrap();
+        engine.data.rooms["lounge"].id.clone()
+    };
+    assert_eq!(
+        write(
+            &app,
+            "alice",
+            json!({
+                (format!("notification.{room}")): "none",
+                (format!("notification_exclude_bots.{room}")): "false",
+                "notification.global": "all",
+                "notification_default_mentions_me": "false",
+                "notification_exclude_bots": "false",
+                "notification_exclude_bot_mentions": "false",
+                "notifications_muted": "true",
+                "theme": "dark"
+            }),
+            false
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (code, response) = request(
+        &app,
+        "alice",
+        "POST",
+        "/api/preferences",
+        json!({"values":{},"reset_notification_filters":true}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        response["values"],
+        json!({"notifications_muted":"true","theme":"dark"})
+    );
+}

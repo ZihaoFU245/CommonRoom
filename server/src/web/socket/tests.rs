@@ -330,3 +330,84 @@ async fn socket_resumes_changed_tail_and_falls_back_after_access_change() {
     assert!(first["rooms"].as_array().unwrap().is_empty());
     server.abort();
 }
+
+#[tokio::test]
+#[allow(clippy::unwrap_used)]
+async fn notification_frames_use_the_server_filter_without_vapid() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let app =
+        crate::web::media::tests::app(Engine::open(std::path::Path::new(":memory:")).unwrap());
+    {
+        let mut engine = app.engine().unwrap();
+        engine.push = Some(crate::push::Runtime::new(None).0);
+        engine
+            .execute(Some("alice"), None, "/room new lobby")
+            .unwrap();
+        engine
+            .execute(Some("alice"), None, "/room add bob #lobby")
+            .unwrap();
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(super::super::http_server::serve(
+        listener,
+        super::super::router(app.clone()),
+        app.config.server.clone(),
+        app.admission.metrics.clone(),
+        {
+            let app = app.clone();
+            async move {
+                let _ = stopped.await;
+                app.stopping
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                app.shutdown.notify_waiters();
+            }
+        },
+    ));
+    let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "http://localhost:5173".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("cookie", "chat_session=bob".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let snapshot = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(snapshot.to_text().unwrap()).unwrap()["kind"],
+        "snapshot"
+    );
+
+    {
+        let mut engine = app.engine().unwrap();
+        engine
+            .execute(Some("alice"), Some("lobby"), "ordinary")
+            .unwrap();
+        engine
+            .execute(Some("alice"), Some("lobby"), "hello @bob")
+            .unwrap();
+    }
+    let notice = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let frame = socket.next().await.unwrap().unwrap();
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["kind"] == "notification" {
+                    break value;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(notice["view"], "lobby");
+    assert_eq!(notice["body"], "hello @bob");
+    stop.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}

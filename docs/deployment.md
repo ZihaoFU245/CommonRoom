@@ -783,6 +783,41 @@ bytes do not survive page reloads. The server's `production=false` mode already
 allows HTTP API and public storage endpoints; production HTTPS and trusted-proxy
 requirements remain enforced.
 
+## Web Push
+
+Set `CHAT_VAPID_PRIVATE_KEY` to a stable, unpadded base64url P-256 private
+scalar, and `CHAT_VAPID_SUBJECT` to an operator contact such as
+`mailto:chat-operator@example.com`. To generate a private value in a secure shell:
+
+```sh
+node -e 'console.log(require("node:crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ format: "jwk" }).d)'
+```
+
+Keep this key in the server's secret environment. Replacing it requires clients
+to unsubscribe and install again. Omit the private key to disable delivery.
+The Rust server needs outbound HTTPS to `fcm.googleapis.com` for Chrome,
+`*.push.apple.com` for Safari, and `updates.push.services.mozilla.com` for Firefox.
+Chromium builds that use the legacy staging push service also need outbound
+HTTPS to `jmt17.google.com`.
+Serve the UI and its worker over HTTPS. The existing API proxy also serves the
+notification subscription route, and the static UI includes the web app manifest.
+
+Opt in under Settings → Notifications on each device. In Safari on macOS and
+Chrome on Android, open CommonRoom over HTTPS and choose Install. On iOS and
+iPadOS 16.4 or later, add CommonRoom to the Home Screen, then open it from its
+icon and choose Install. The Install button requests browser permission.
+If the browser and server disagree about the subscription, choose Uninstall to
+clear it, then choose Install to create a fresh subscription.
+
+Subscriptions follow the browser session and stop delivering on logout, expiry,
+or revocation. Browser sessions expire after 12 hours. Sign in and install again
+to resume delivery after expiry.
+The server routes new messages to Web Push when the subscribed session has no
+connected chat tab. Delivery is best effort with a two-minute lifetime and an
+in-memory queue. For each delivery the server checks that the message still
+exists before sending its preview. Graceful and abrupt restarts can discard
+queued alerts.
+
 ## External agent workers
 
 Browser `/api/*` routes and `/ws` require sessions and reject bearer headers.

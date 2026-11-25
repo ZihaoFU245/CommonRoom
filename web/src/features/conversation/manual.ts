@@ -22,6 +22,7 @@ function literal(text: string): string {
     .replace(/[\\`*_[\]{}()#+.!|<>~-]/gu, "\\$&")
     .replace(/\n/gu, "  \n");
 }
+
 function listing(title: string, text: string): string {
   const lines = text.split("\n").filter((line) => line.trim());
   return `## ${literal(title)}\n\n${

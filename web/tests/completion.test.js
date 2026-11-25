@@ -24,6 +24,8 @@ const names = [
   "/grant",
   "/sudo",
   "/clean",
+  "/man",
+  "/notifications",
 ];
 const commands = names.map((name) => ({
   name,
@@ -55,6 +57,65 @@ function values(draft) {
     (hint) => hint.value,
   );
 }
+
+test("notification completion follows operation, matcher, arguments and scope", () => {
+  const values = (draft) =>
+    suggestions(draft, commands, ["alice", "bob"], ["team"], {
+      privateTargets: ["@direct:bob"],
+    }).map((hint) => hint.value);
+  assert.deepEqual(values("/not"), ["/notifications "]);
+  assert.deepEqual(values("/notifications un"), [
+    "/notifications uninstall ",
+    "/notifications unmute ",
+  ]);
+  assert.deepEqual(values("/notifications fil"), ["/notifications filter "]);
+  assert.deepEqual(values("/notifications sta"), ["/notifications status "]);
+  assert.deepEqual(values("/notifications filter al"), [
+    "/notifications filter all ",
+  ]);
+  assert.deepEqual(values("/notifications filter no"), [
+    "/notifications filter none ",
+  ]);
+  assert.deepEqual(values("/notifications filter @a"), [
+    "/notifications filter @all ",
+  ]);
+  assert.deepEqual(values("/notifications filter all "), [
+    "/notifications filter all here ",
+    "/notifications filter all global ",
+    "/notifications filter all #team ",
+    "/notifications filter all @direct:bob ",
+  ]);
+  assert.deepEqual(values("/notifications filter user_is:ali"), [
+    "/notifications filter user_is:alice ",
+  ]);
+  assert.deepEqual(values("/notifications filter user_role:a"), [
+    "/notifications filter user_role:admin ",
+  ]);
+  assert.deepEqual(values("/notifications filter user_is:alice cont"), [
+    "/notifications filter user_is:alice contains_keyword:",
+  ]);
+  assert.deepEqual(
+    values("/notifications filter contains_keyword:build failed #t"),
+    ["/notifications filter contains_keyword:build failed #team "],
+  );
+  assert.deepEqual(values("/notifications filter mentions_me;@a"), [
+    "/notifications filter mentions_me;@all ",
+  ]);
+  assert.deepEqual(values("/notifications filter all; "), []);
+  assert.deepEqual(values("/man notifications"), ["/man notifications "]);
+  assert.deepEqual(values("/man notificatio"), ["/man notifications "]);
+  assert.deepEqual(values("/notification status"), []);
+  const prefix = "/notifications filter @a";
+  const completion = cursorSuggestions(
+    prefix + "ll; mentions_me here",
+    prefix.length,
+    (draft) => suggestions(draft, commands, [], []),
+  );
+  assert.equal(
+    completion.hints[0].value,
+    "/notifications filter @all; mentions_me here",
+  );
+});
 test("command and argument matches are unlimited and navigation wraps in both directions", () => {
   assert.equal(values("/").length, names.length);
   for (let index = 0; index < names.length; index++) {

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -16,6 +17,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const mobile = process.argv.includes("--mobile");
 const args = process.argv.slice(2).filter((arg) => arg !== "--mobile");
 const remote = args[0] === "--remote-server";
+const pushWorker = args[0] === "--push-worker";
 const plainHttp = remote && args[1] === "http";
 const candidates = process.env.CHROME_BIN
   ? [process.env.CHROME_BIN]
@@ -82,6 +84,30 @@ try {
         ...(remote ? { allowedHosts: ["ui.test"], hmr: false } : {}),
       },
       logLevel: "error",
+      ...(pushWorker
+        ? {
+            plugins: [
+              {
+                name: "push-probe",
+                configureServer(probeServer) {
+                  probeServer.middlewares.use((request, response, next) => {
+                    if (request.url === "/push-controls/") {
+                      response.setHeader("Content-Type", "text/html");
+                      response.end(
+                        '<!doctype html><title>Web Push settings test</title><main id="controls"></main><script type="module" src="/scripts/regressions/push-settings.mjs"></script>',
+                      );
+                      return;
+                    }
+                    if (!["/push-probe", "/push-chat/"].includes(request.url))
+                      return next();
+                    response.setHeader("Content-Type", "text/html");
+                    response.end("<!doctype html><title>Web Push test</title>");
+                  });
+                },
+              },
+            ],
+          }
+        : {}),
     });
     await server.listen();
   }
@@ -174,7 +200,9 @@ try {
   }
   const url =
     fixture?.url ??
-    `http://127.0.0.1:${address.port}/scripts/regressions/index.html${args[0] ? `?${new URLSearchParams({ test: args[0] })}` : ""}`;
+    (pushWorker
+      ? `http://127.0.0.1:${address.port}/push-probe`
+      : `http://127.0.0.1:${address.port}/scripts/regressions/index.html${args[0] ? `?${new URLSearchParams({ test: args[0] })}` : ""}`);
   const { targetId } = await command("Target.createTarget", {
     url: mobile || remote ? "about:blank" : url,
   });
@@ -222,7 +250,174 @@ try {
   }
   if (mobile || remote) await command("Page.navigate", { url }, sessionId);
   await command("Page.bringToFront", {}, sessionId);
-  if (fixture) {
+  if (pushWorker) {
+    const origin = new URL(url).origin;
+    const scope = new URL("/push-chat/", url).href;
+    await command("Browser.setPermission", {
+      origin,
+      permission: { name: "notifications" },
+      setting: "granted",
+    });
+    await command("ServiceWorker.enable", {}, sessionId);
+    await command(
+      "BackgroundService.startObserving",
+      { service: "notifications" },
+      sessionId,
+    );
+    async function evaluate(expression) {
+      const result = await command(
+        "Runtime.evaluate",
+        { expression, awaitPromise: true, returnByValue: true },
+        sessionId,
+      );
+      assert.equal(result.exceptionDetails, undefined);
+      return result.result.value;
+    }
+    await evaluate(
+      "navigator.serviceWorker.register('/media-cache.js', { type: 'module', scope: '/push-chat/' })",
+    );
+    const registrations = () =>
+      events
+        .filter(
+          ({ method }) => method === "ServiceWorker.workerRegistrationUpdated",
+        )
+        .flatMap(({ params }) => params.registrations);
+    const active = () => {
+      const registration = registrations().find(
+        ({ scopeURL }) => scopeURL === scope,
+      );
+      return events
+        .filter(({ method }) => method === "ServiceWorker.workerVersionUpdated")
+        .flatMap(({ params }) => params.versions)
+        .find(
+          ({ registrationId, status }) =>
+            registrationId === registration?.registrationId &&
+            status === "activated",
+        );
+    };
+    async function waitFor(check) {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const result = await check();
+        if (result) return result;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      }
+      const diagnostics = events.filter(
+        ({ method }) =>
+          method.startsWith("ServiceWorker.") ||
+          method.startsWith("BackgroundService."),
+      );
+      throw new Error(
+        `Timed out waiting for the Web Push worker: ${JSON.stringify(diagnostics)}`,
+      );
+    }
+    const { registrationId } = await waitFor(active);
+    const chat = await command("Target.createTarget", { url: scope });
+    const chatIsOpen = async () =>
+      (await command("Target.getTargets")).targetInfos.some(
+        ({ targetId, url }) => targetId === chat.targetId && url === scope,
+      );
+    await waitFor(chatIsOpen);
+    await command("Target.closeTarget", { targetId: chat.targetId });
+    await waitFor(async () => !(await chatIsOpen()));
+    await command(
+      "ServiceWorker.deliverPushMessage",
+      {
+        origin,
+        registrationId,
+        data: JSON.stringify({
+          id: "closed-tab",
+          view: "@direct:bob",
+          title: "bob",
+          body: "Hello from the closed-tab test!",
+        }),
+      },
+      sessionId,
+    );
+    const notification = await waitFor(() =>
+      evaluate(`
+      navigator.serviceWorker.getRegistration('/push-chat/').then(registration =>
+        registration.getNotifications({ tag: 'commonroom-push:closed-tab' }).then(([notification]) =>
+          notification && { title: notification.title, body: notification.body, data: notification.data }
+        )
+      )
+    `),
+    );
+    assert.deepEqual(notification, {
+      title: "bob",
+      body: "Hello from the closed-tab test!",
+      data: { id: "closed-tab", view: "@direct:bob" },
+    });
+    console.log(
+      "PASS the service worker shows the sender and preview with the chat tab closed",
+    );
+    await command(
+      "Page.navigate",
+      { url: `${origin}/push-controls/` },
+      sessionId,
+    );
+    const button = (label) =>
+      `[...document.querySelectorAll("#controls button")].find(button => button.textContent === "${label}")`;
+    await waitFor(() => evaluate(`${button("Install")}?.disabled === false`));
+    assert.equal(await evaluate(`Boolean(${button("Uninstall")})`), false);
+    assert.equal(
+      await evaluate(`${button("Install")}.classList.contains("primary")`),
+      true,
+    );
+    assert.equal(
+      await evaluate(
+        'Boolean(document.querySelector("#controls [role=status]"))',
+      ),
+      false,
+    );
+    async function click(label) {
+      const { x, y } = await evaluate(`(() => {
+        const rect = ${button(label)}.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      })()`);
+      for (const type of ["mousePressed", "mouseReleased"])
+        await command(
+          "Input.dispatchMouseEvent",
+          { type, x, y, button: "left", clickCount: 1 },
+          sessionId,
+        );
+    }
+    await click("Install");
+    await waitFor(() => evaluate(`${button("Uninstall")}?.disabled === false`));
+    assert.equal(await evaluate(`Boolean(${button("Install")})`), false);
+    assert.equal(
+      await evaluate(`${button("Uninstall")}.classList.contains("primary")`),
+      false,
+    );
+    assert.equal(
+      await evaluate(
+        'Boolean(document.querySelector("#controls [role=status]"))',
+      ),
+      false,
+    );
+    await evaluate("window.expirePushSettings()");
+    await waitFor(() =>
+      evaluate(
+        'document.querySelector("#controls [role=status]")?.textContent.includes("Uninstall the previous subscription")',
+      ),
+    );
+    await click("Uninstall");
+    await waitFor(() => evaluate(`${button("Install")}?.disabled === false`));
+    await click("Install");
+    await waitFor(() => evaluate(`${button("Uninstall")}?.disabled === false`));
+    await click("Uninstall");
+    await waitFor(() => evaluate(`${button("Install")}?.disabled === false`));
+    assert.deepEqual(await evaluate("window.pushSettingsResult()"), {
+      installed: false,
+      subscribed: false,
+      requests: ["install-1", "install-2", "uninstall"],
+      subscribedFromClick: true,
+      worker: true,
+    });
+    console.log(
+      "PASS expired subscriptions are replaced from a user click and removal preserves the media worker",
+    );
+  } else if (fixture) {
     try {
       await runRemoteServer({ command, sessionId, fixture, events });
     } catch (error) {

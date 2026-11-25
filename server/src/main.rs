@@ -6,6 +6,7 @@ mod engine;
 mod limits;
 mod manual;
 mod media;
+mod push;
 mod system;
 mod web;
 
@@ -101,6 +102,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await??;
     let config = Config::load_for_database(Path::new(&data_dir), &database)?;
+    let push_sender = push::Sender::from_environment()?;
+    let (push_runtime, push_receiver) =
+        push::Runtime::new(push_sender.as_ref().map(push::Sender::public_key));
+    engine.push = Some(push_runtime);
     engine
         .history_store()
         .configure_cache(&config.server.cache)?;
@@ -150,6 +155,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown: Default::default(),
     };
     let listener = tokio::net::TcpListener::bind(&app.config.bind).await?;
+    if let Some(sender) = push_sender {
+        push::start(app.clone(), sender, push_receiver);
+    }
     console::start(app.clone());
     web::media::start_cleanup(app.clone());
     tracing::info!(address = %listener.local_addr()?, production = app.config.production, "Chat server ready");

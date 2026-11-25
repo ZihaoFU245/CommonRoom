@@ -241,13 +241,22 @@ impl Engine {
         view: &str,
         scope: authorization::Scope,
         revision: u64,
-        message: Message,
+        mut message: Message,
         mutation: PendingMutation,
     ) -> Result<PendingMessage, EngineError> {
         let conversation = match &scope {
             authorization::Scope::Room(id) | authorization::Scope::Private(id) => id.clone(),
             _ => return Err("Invalid message scope.".into()),
         };
+        if matches!(mutation, PendingMutation::Append) {
+            message.from_bot = self.data.bots.contains_key(&message.author_id);
+            message.mentions_bot = message.mentions.iter().any(|name| {
+                self.data
+                    .users
+                    .get(name)
+                    .is_some_and(|account| self.data.bots.contains_key(&account.id))
+            });
+        }
         Ok(PendingMessage {
             database: self.store.db.clone(),
             history: self.history_store().clone(),
@@ -401,6 +410,36 @@ impl Engine {
                 matches!(append.mutation, PendingMutation::Append),
                 append.retention,
             )?;
+        }
+        if let Some(push) = &self.push
+            && matches!(append.mutation, PendingMutation::Append)
+        {
+            let mentions: BTreeSet<String> = append
+                .message
+                .mentions
+                .iter()
+                .filter_map(|name| self.data.users.get(name).map(|account| account.id.clone()))
+                .collect();
+            push.enqueue(crate::push::Event {
+                conversation: append.conversation,
+                private: append.private,
+                id: append.message.id.clone(),
+                author: append.message.author_id.clone(),
+                author_name: append.message.from.clone(),
+                reply_author: append
+                    .message
+                    .reply
+                    .as_ref()
+                    .map(|reply| reply.author_id.clone()),
+                text: append.message.text.clone(),
+                media: Default::default(),
+                sequence: append.message.sequence,
+                mention_all: append.message.mention_all,
+                bot_author: append.message.from_bot,
+                mentions,
+                bot_mention: append.message.mentions_bot,
+                queued: std::time::Instant::now(),
+            });
         }
         Ok(SendResult {
             message: append.message,

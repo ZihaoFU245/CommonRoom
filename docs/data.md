@@ -345,8 +345,9 @@ Concurrent initializations never overwrite an already-set value.
 Recognized keys are `theme`, `palette.base`, `palette.accent`, `font.chat`,
 `font.ui`, `markdown`, `latex`, `name_colors`, `message_bars`,
 `message_bar_opacity`, `message_preview_height`, `name_borders`, `allow_html`,
-`external_avatars`, `notifications`, and `bot_status`. Boolean values are
-`true`/`false`, with bot status enabled when unset. Custom palette seeds are
+`external_avatars`, `notifications_muted`, `notification_exclude_bots`,
+`notification_exclude_bot_mentions`, and `bot_status`. Boolean values are
+`true`/`false`, with bot status and both bot filters enabled when unset. Custom palette seeds are
 six-digit hex colors; theme is `system`, `light`, `dark`, or `custom`. Chat fonts
 range from 14–24, UI fonts from 12–18, and bar opacity from 0–100. These fixed,
 validated keys have a separate bound from the existing 32 other keys per scope.
@@ -354,6 +355,22 @@ Message preview height ranges from 256–1024px (default 256); 1024 disables
 folding entirely. Preferences exposes it in 64px steps.
 Room overrides are rejected. Only the viewer's preferences appear in browser
 snapshots; they do not enter other users' profile directories or bot snapshots.
+
+`notification.<conversation ID>` and `notification.global` hold bounded
+notification rules. An absent rule falls back to the global rule or to the
+default of incoming private messages, direct and room-wide mentions, and
+replies to you. The individual boolean preferences
+`notification_default_direct`, `notification_default_mentions_me`,
+`notification_default_mentions_all`, and `notification_default_replies` disable
+their respective default matchers when set to `false`. These keys and the two
+bot filter keys accept an optional `.<conversation ID>` suffix for conversation
+overrides. Unset conversation options inherit the global values. Existing
+open-tab mute preferences also suppress background
+alerts until the user changes the account mute setting. New conversation overrides require read access. Rule settings
+are bounded to 2,048 per account. Web
+Push subscriptions are optional fields in browser session records, so an
+expired or revoked session no longer receives push. Subscription endpoints and
+keys are absent from account preferences and snapshots.
 
 Users can patch or unset their own preferences through the dedicated browser API.
 General metadata commands cannot set or reset `preferences.*`, including for su

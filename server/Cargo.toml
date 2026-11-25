@@ -40,6 +40,9 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 
 url = "2"
 rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls"] }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+web-push-native = "0.5"
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"

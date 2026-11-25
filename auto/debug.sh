@@ -88,6 +88,26 @@ export CHAT_DATA="$PWD/data"
 export CHAT_PRODUCTION=0 CHAT_BIND=127.0.0.1:3000 CHAT_BASE_URL=/
 export CHAT_TRUST=127.0.0.1 CHAT_DIRECT_BOT_HTTP=0
 mkdir -p "$CHAT_DATA"
+
+# Persist the loopback Web Push identity so a debug restart keeps subscriptions valid.
+debug_vapid_key=${CHAT_VAPID_PRIVATE_KEY:-}
+if [ -z "$debug_vapid_key" ]; then
+    debug_vapid_key=$(
+        key_file="$CHAT_DATA/debug-vapid.key"
+        if [ ! -f "$key_file" ]; then
+            temporary_key=$(mktemp "$CHAT_DATA/.debug-vapid.XXXXXX") || exit 1
+            trap 'rm -f "$temporary_key"' EXIT
+            node -p 'require("node:crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ format: "jwk" }).d' > "$temporary_key" || exit 1
+            if ! ln "$temporary_key" "$key_file" 2>/dev/null && [ ! -f "$key_file" ]; then
+                echo 'Could not save the debug Web Push key.' >&2
+                exit 1
+            fi
+        fi
+        cat "$key_file"
+    )
+fi
+debug_vapid_subject=${CHAT_VAPID_SUBJECT:-mailto:commonroom-debug@example.com}
+
 origins='"http://localhost:5173","http://127.0.0.1:5173","http://localhost:3000","http://127.0.0.1:3000"'
 if [ -n "$network_host" ]; then
     origins="$origins,\"$ui_origin\""
@@ -137,7 +157,8 @@ CHAT_DEBUG_ORIGIN="$ui_origin" __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS="$network_
     node web/node_modules/vite/bin/vite.js preview web --outDir dist-debug \
     --host "$ui_host" --port 5173 --strictPort </dev/null 3<&- &
 ui_pid=$!
-./target/debug/chat <&3 3<&- &
+CHAT_VAPID_PRIVATE_KEY="$debug_vapid_key" CHAT_VAPID_SUBJECT="$debug_vapid_subject" \
+    ./target/debug/chat <&3 3<&- &
 server_pid=$!
 exec 3<&-
 printf 'Debug UI: %s | database: %s | S3: %s\n' "$ui_origin" "$backend" "$with_s3"

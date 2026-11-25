@@ -19,6 +19,7 @@ import { expandAlias } from "../features/conversation/aliases.ts";
 import { suggestions } from "../features/conversation/console.ts";
 import { mentionSuggestions } from "../features/conversation/interactions.ts";
 import { botCommandSuggestions } from "../features/conversation/botCommands.ts";
+import { notificationCommand } from "../features/preferences/notificationMode.ts";
 import {
   focusControl,
   prefersManualTextInput,
@@ -106,50 +107,58 @@ export function useCommandComposer({
   }, [botCommands, state.bot_credentials, state.invite_hints]);
   const completion = useMemo(
     () =>
-      cursorSuggestions(draft, caret, (prefix) =>
-        prefix.startsWith("/")
-          ? suggestions(
-              /\s/u.test(prefix) && !prefix.startsWith("/alias ")
-                ? expandAlias(prefix, aliases)
-                : prefix,
-              /\s/u.test(prefix) && !prefix.startsWith("/alias ")
-                ? serverCommands
-                : availableCommands,
-              state.users,
-              state.available_rooms || state.rooms.map((r) => r.name),
-              {
-                bots: state.bots ?? [],
-                botCredentials: state.bot_credentials ?? [],
-                inviteHints: state.invite_hints ?? {},
-                messages: direct
-                  ? state.direct.filter(
-                      (message) =>
-                        (message.from === state.username &&
-                          message.to === peer) ||
-                        (message.from === peer &&
-                          message.to === state.username),
-                    )
-                  : room?.messages || [],
-                aliases: Object.keys(aliases),
-                privateTargets: Object.keys(state.private_access),
-                privateScopes: Object.keys(state.private_access).map((view) =>
-                  view.startsWith("@direct:")
-                    ? `@private:${[state.username, view.slice(8)].sort().join(":")}`
-                    : view,
-                ),
-              },
-            )
-          : [
-              ...botCommandSuggestions(prefix, botCommands),
-              ...mentionSuggestions(
-                prefix,
-                direct
-                  ? [state.username, ...(peer ? [peer] : [])]
-                  : [...(room?.members || [])],
-                !direct && room?.can_mention_all === true,
+      cursorSuggestions(draft, caret, (prefix) => {
+        if (prefix.startsWith("/")) {
+          const argumentsStarted =
+            /\s/u.test(prefix) && !prefix.startsWith("/alias ");
+          const expanded = argumentsStarted
+            ? expandAlias(prefix, aliases)
+            : prefix;
+          const catalogue = !argumentsStarted
+            ? availableCommands
+            : /^\/(?:notifications|man)(?:\s|$)/u.test(expanded)
+              ? [...serverCommands, notificationCommand]
+              : serverCommands;
+          return suggestions(
+            expanded,
+            catalogue,
+            state.users,
+            state.available_rooms || state.rooms.map((r) => r.name),
+            {
+              bots: state.bots ?? [],
+              botCredentials: state.bot_credentials ?? [],
+              inviteHints: state.invite_hints ?? {},
+              messages: direct
+                ? state.direct.filter(
+                    (message) =>
+                      (message.from === state.username &&
+                        message.to === peer) ||
+                      (message.from === peer && message.to === state.username),
+                  )
+                : room?.messages || [],
+              aliases: Object.keys(aliases),
+              privateTargets: Object.keys(state.private_access),
+              notificationRooms: state.rooms.map((item) => item.name),
+              privateScopes: Object.keys(state.private_access).map((view) =>
+                view.startsWith("@direct:")
+                  ? `@private:${[state.username, view.slice(8)].sort().join(":")}`
+                  : view,
               ),
-            ],
-      ),
+            },
+          );
+        }
+        return [
+          ...botCommandSuggestions(prefix, botCommands),
+          ...mentionSuggestions(
+            prefix,
+            direct
+              ? [state.username, ...(peer ? [peer] : [])]
+              : [...(room?.members || [])],
+            !direct && room?.can_mention_all === true,
+          ),
+        ];
+      }),
+
     [
       draft,
       caret,

@@ -12,7 +12,9 @@ All paths are relative to the configured `base_url`. Nginx serves web assets and
 | `GET /api/history?view=...` | View + sequence cursors/range + limit | `{view,messages,revision,has_before,has_after,name_colors}` |
 | `POST /api/read` | `{view,through}` | `{ok:true}`; targeted read update if cursor advanced |
 | `POST /api/displayname` | `{value:string|null,room?:string|null}` | `{ok:true,sync}`; self only; omit room for global default; stable room ID requires own/any displayname permission |
-| `POST /api/preferences` | `{values:{key:string|null},initialize?:boolean}` | `{values,sync}`; validated own-account settings; initialization fills only absent keys, normal updates patch/unset; private metadata notice after commit |
+| `POST /api/preferences` | `{values:{key:string|null},initialize?:boolean,reset_notification_filters?:boolean}` | `{values,sync}`; validated own-account settings; initialization fills only absent keys, normal updates patch/unset; reset requires empty values and clears account filter overrides and bot-filter preferences; private metadata notice after commit |
+| `GET /api/notifications/push` | — | `{public_key:string|null,installed:boolean}` for the current browser session |
+| `POST /api/notifications/push` | `{subscription:{endpoint,keys:{p256dh,auth}}|null}` | `{ok:true}`; attach or remove the current browser session's Web Push subscription |
 | `POST /api/color` | `{color,room?}` (palette name or `null`; stable room ID or `null` for `@global`) | `{ok:true}`; own account only; root needs no color grant, room requires `w:account.color.own` or `w:account.color.any`; metadata notice on change |
 | `GET /api/bot-commands?after=...` | Session cookie | `{conversations,next}`; up to 32 entries, 512 KiB target; follow `next` with `after` |
 | `GET /api/bot-commands?conversation_id=...` | Session cookie; current read/send/member access | Cached `{conversation_id,bots:[{account_id,username,commands}]}` |
@@ -163,7 +165,10 @@ saves the caller's membership and room user grants and broadcasts updated snapsh
 
 Each message contains an optional boolean `markdown` (absent means plain text), `id`, `from`, nullable `to`, `text`, UTC epoch seconds in `time`, global monotonic `sequence`, `reactions` (reaction → usernames), nullable reply quote `{id,from,text,sequence}`, and mention usernames. Quotes stored before `sequence` was added report zero for it and cannot be paged to. JavaScript uses `Intl.DateTimeFormat` with the browser timezone for visible dates/times. IDs, mentions, and replies are server-generated/filtered; text remains UTF-8.
 The optional `mention_all` boolean marks an authorized room-wide mention.
-Older messages omit it. Individual targets stay in `mentions`.
+Individual targets stay in `mentions`.
+Optional `from_bot` and `mentions_bot` booleans record registered bot
+involvement when a message is appended and support browser notification filters.
+Older messages may omit these optional flags.
 
 Room views contain stable `id`, `name`, `owner`, effective `permissions`, permitted
 `commands`, filtered `members`, and up to 50 latest messages (1,000 tail messages globally per snapshot; some tails may be empty). Read grants govern
@@ -714,6 +719,14 @@ command catalogue invalidations remain pending across recovery. Revoked/expired
 credentials still close the connection; failed command admission returns a
 correlated error so the client can retry. Connection, header and HTTP response
 limits are documented in [Deployment](deployment.md#http-resource-limits).
+
+## Live notifications
+
+The browser socket sends transient `{kind:"notification",id,view,title,body}`
+frames for eligible committed message appends. They are omitted from snapshots
+and resume replay. The same server filter and mute preference govern Web Push.
+The browser uses its own permission and foreground conversation to decide
+whether to display a live frame.
 
 ## Account preference synchronization
 

@@ -125,6 +125,29 @@
   border-collapse: collapse;
   margin: 14px 0;
 }
+.notification-status-scroll {
+  max-inline-size: 100%;
+  overflow-x: auto;
+}
+.notification-status table {
+  display: table;
+  inline-size: 100%;
+}
+.notification-status tbody td:nth-child(2) {
+  overflow-wrap: anywhere;
+}
+.notification-status th,
+.notification-status td:last-child {
+  overflow-wrap: normal;
+}
+.notification-status th:first-child,
+.notification-status :is(th, td):last-child {
+  inline-size: 1%;
+}
+.notification-status thead th,
+.notification-status td:last-child {
+  white-space: nowrap;
+}
 .manual th,
 .manual td {
   padding: 8px 12px;

@@ -56,6 +56,18 @@ export function preferenceValue(key: string, fallback: string): string {
     fallback
   );
 }
+export function savedPreferences(
+  fallback: Readonly<Record<string, string>> = {},
+): Readonly<Record<string, string>> {
+  return active?.state.values ?? fallback;
+}
+export async function saveAccountPreferences(
+  save: () => Promise<PreferenceState>,
+): Promise<void> {
+  const session = active;
+  const result = await save();
+  if (session && active === session) receivePreferences(result);
+}
 export function preferenceError(): string {
   return active?.error ?? "";
 }
@@ -130,7 +142,7 @@ function localValues(): Record<string, string> {
   const seeds = loadSeeds();
   const theme = loadTheme();
   const external = readStorage("commonroom-external-avatars") === "true";
-  const notifications = readStorage("commonroom-notifications") === "on";
+  const notifications = readStorage("commonroom-notifications");
   return {
     theme,
     "palette.base": seeds.base,
@@ -146,7 +158,9 @@ function localValues(): Record<string, string> {
     name_borders: String(loadNameBorders()),
     allow_html: String(loadMarkdownHtml()),
     external_avatars: String(external),
-    notifications: String(notifications),
+    ...(notifications === null
+      ? {}
+      : { notifications: String(notifications === "on") }),
   };
 }
 

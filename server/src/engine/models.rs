@@ -32,10 +32,16 @@ pub struct Message {
     pub mentions: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mention_all: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_bot: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mentions_bot: bool,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Reply {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author_id: String,
     pub from: String,
     pub text: String,
     /// Quotes saved before this field existed decode as zero (unknown).
@@ -70,6 +76,8 @@ pub struct Data {
 pub struct Session {
     pub username: String,
     pub expires: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) push: Option<crate::push::Subscription>,
 }
 #[derive(Clone, Serialize)]
 pub struct RoomView {

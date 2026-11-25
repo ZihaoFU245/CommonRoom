@@ -1,77 +1,46 @@
-import type { Snapshot } from "../../api/protocol.ts";
-import { messageNotificationEvents } from "../conversation/interactions.ts";
+import type { ChatNotification } from "../../api/protocol.ts";
+import { notificationTagPrefix } from "./pushPayload.ts";
 
 interface NotificationOptions {
-  baseline: boolean;
   enabled: boolean;
   NotificationClass: typeof Notification | undefined;
   background: boolean;
   selected: string;
   open: (view: string) => void;
+  worker?: Promise<ServiceWorkerRegistration> | undefined;
 }
-export async function toggleMessageNotifications(
-  enabled: boolean,
-  NotificationClass: typeof Notification | undefined,
-  secureContext: boolean,
-): Promise<boolean> {
-  if (enabled) return false;
-  if (!NotificationClass || !secureContext)
-    throw new Error(
-      "Desktop notifications require a supported browser and HTTPS (or localhost).",
-    );
-  const permission =
-    NotificationClass.permission === "default"
-      ? await NotificationClass.requestPermission()
-      : NotificationClass.permission;
-  if (permission !== "granted")
-    throw new Error(
-      permission === "denied"
-        ? "Notifications are blocked. Allow notifications in your browser's site settings, then try again."
-        : "Notification permission was not granted. Notifications remain muted.",
-    );
-  return true;
-}
-
-export function notifyMessages(
-  previous: Snapshot,
-  next: Snapshot,
+export function showChatNotification(
+  { id, view, title, body }: ChatNotification,
   {
-    baseline,
     enabled,
     NotificationClass,
     background,
     selected,
     open,
+    worker,
   }: NotificationOptions,
 ) {
-  if (baseline || !enabled || NotificationClass?.permission !== "granted")
-    return 0;
-  let delivered = 0;
-  for (const { message, view, roomWide } of messageNotificationEvents(
-    previous,
-    next,
-  )) {
-    if (!background && selected === view) continue;
-    try {
-      const direct = message.to === next.username;
-      const preview = Array.from(message.text).slice(0, 200).join("");
-      const notification = new NotificationClass(
-        direct ? message.from : `#${view}`,
-        {
-          body: direct
-            ? preview
-            : `${message.from} ${roomWide ? "mentioned everyone" : "mentioned you"}\n${preview}`,
-          tag: message.id,
-        },
-      );
-      notification.onclick = () => {
-        open(view);
-        notification.close();
-      };
-      delivered++;
-    } catch {
-      /* A notification failure must never interrupt chat delivery. */
-    }
+  if (
+    !enabled ||
+    NotificationClass?.permission !== "granted" ||
+    (!background && selected === view)
+  )
+    return;
+  try {
+    const notification = new NotificationClass(title, { body, tag: id });
+    notification.onclick = () => {
+      open(view);
+      notification.close();
+    };
+  } catch {
+    worker
+      ?.then((registration) =>
+        registration.showNotification(title, {
+          body,
+          tag: notificationTagPrefix + id,
+          data: { id, view },
+        }),
+      )
+      .catch(() => {});
   }
-  return delivered;
 }

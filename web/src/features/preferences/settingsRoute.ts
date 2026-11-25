@@ -3,6 +3,7 @@ export const settingsSections = {
   appearance: "Appearance",
   alias: "Alias",
   preferences: "Preferences",
+  notifications: "Notifications",
   security: "Security",
 } as const;
 

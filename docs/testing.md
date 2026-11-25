@@ -319,6 +319,16 @@ rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --noc
 
 ## UI verification
 
+`rtk pnpm --dir web test:browser --push-worker` uses an isolated Chrome profile
+to inject a Push API event after closing the chat tab. It checks that the
+worker displays a persistent notification. It also verifies the Install and
+Uninstall actions with Chrome's PushManager calls stubbed. Rust
+`web_push` tests cover subscription persistence, recipient filtering and payload
+encryption. To verify delivery through a live provider, use a deployment with
+[Web Push](deployment.md#web-push) enabled and two accounts. Install on the
+recipient device, close its tab or Home Screen app, send a direct message from
+the other account, and tap the notification to reopen the conversation.
+
 Save-feedback browser regressions exercise actual color HTTP requests returning
 403/502/503 and network errors, retaining the selected color and showing an alert
 beside Apply until a successful retry. The picker remains open while saving.

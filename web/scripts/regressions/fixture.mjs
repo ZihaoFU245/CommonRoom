@@ -1060,24 +1060,43 @@ const empty = {
 await test("the profile bell enables and mutes live private message alerts", async () => {
   const OriginalSocket = window.WebSocket;
   const OriginalNotification = window.Notification;
+  const originalPushSettings = api.pushSettings;
+  const originalPreferences = api.preferences;
+  const originalResetFilters = api.resetNotificationFilters;
+  const originalUrl = location.href;
   const shown = [];
   let socket;
   let values = {};
   let revision = 0;
-  await connectPreferences(
-    "browser-notification-test",
-    async (patch, initialize) => {
-      values = {
+  const save = async (patch, initialize) => {
+    values = Object.fromEntries(
+      Object.entries({
         ...values,
         ...patch,
-        ...(initialize ? { notifications: "false" } : {}),
-      };
-      return {
-        values,
-        sync: { instance: "notifications", revision: ++revision },
-      };
-    },
-  );
+        ...(initialize ? { notifications_muted: "true" } : {}),
+      }).filter(([, value]) => value !== null),
+    );
+    return {
+      values,
+      sync: { instance: "notifications", revision: ++revision },
+    };
+  };
+  await connectPreferences("browser-notification-test", save);
+  api.pushSettings = async () => ({ public_key: null, installed: false });
+  api.preferences = save;
+  api.resetNotificationFilters = () =>
+    save(
+      Object.fromEntries(
+        Object.keys(values)
+          .filter(
+            (key) =>
+              key.startsWith("notification.") ||
+              key.startsWith("notification_"),
+          )
+          .map((key) => [key, null]),
+      ),
+      false,
+    );
   window.Notification = class {
     static permission = "granted";
     constructor(title, { body }) {
@@ -1141,6 +1160,14 @@ await test("the profile bell enables and mutes live private message alerts", asy
     bell().click();
     await until(() => bell()?.getAttribute("aria-pressed") === "true");
     socket.receive(snapshot(1));
+    const notice = {
+      kind: "notification",
+      id: "fresh",
+      view: "@direct:bob",
+      title: "bob",
+      body: "hello",
+    };
+    socket.receive(notice);
     check(
       shown[0]?.title === "bob" && shown[0]?.body === "hello",
       "a live DM shows the sender and message without requiring a mention",
@@ -1148,14 +1175,199 @@ await test("the profile bell enables and mutes live private message alerts", asy
     bell().click();
     await until(() => bell()?.getAttribute("aria-pressed") === "false");
     socket.receive(snapshot(2));
+    check(values.notifications_muted === "true", "mute is saved on the server");
+    socket.receive({ ...notice, id: "after-mute" });
     await until(
       () => tests.querySelector(".unread-badge")?.textContent === "2",
     );
     check(shown.length === 1, "a muted bell silences the next DM");
+
+    if (!tests.querySelector('[aria-label="Settings"]'))
+      tests.querySelector('[aria-label="Open navigation"]').click();
+    await until(() => tests.querySelector('[aria-label="Settings"]'));
+    tests.querySelector('[aria-label="Settings"]').click();
+    await until(() => tests.querySelector('[data-section="notifications"]'));
+    tests.querySelector('[data-section="notifications"]').click();
+    const panel = () =>
+      tests.querySelector('.settings-content[aria-label="Notifications"]');
+    await until(() => panel()?.textContent.includes("disabled on this server"));
+    check(
+      panel().querySelectorAll(".notification-device button").length === 1 &&
+        panel().querySelector(".notification-device .primary")?.textContent ===
+          "Install",
+      "background notifications show the single applicable accent action",
+    );
+    const setting = (key) => panel().querySelector(`#settings-${key}`);
+    const sender = setting("notification_exclude_bots");
+    const mentions = setting("notification_exclude_bot_mentions");
+    check(
+      sender.checked && mentions.checked,
+      "both bot filters default to enabled",
+    );
+    sender.click();
+    await until(
+      () =>
+        values.notification_exclude_bots === "false" &&
+        !sender.checked &&
+        !mentions.disabled,
+    );
+    mentions.click();
+    await until(
+      () =>
+        values.notification_exclude_bots === "false" &&
+        values.notification_exclude_bot_mentions === "false",
+    );
+    const scopePicker = () => panel().querySelector("#notification-scope");
+    async function chooseScope(label) {
+      scopePicker().click();
+      const option = () =>
+        [...panel().querySelectorAll('[role="option"]:not([inert] *)')].find(
+          (item) => item.textContent.trim() === label,
+        );
+      await until(option);
+      option().click();
+      await until(() => scopePicker().textContent.trim() === label);
+    }
+    const incomingDms = () => setting("notification_default_direct");
+    await chooseScope("@direct:bob");
+    check(incomingDms().checked, "DM defaults inherit the global setting");
+    incomingDms().click();
+    await until(
+      () =>
+        values["notification_default_direct.alice-bob"] === "false" &&
+        !incomingDms().checked,
+    );
+    await chooseScope("Global");
+    check(
+      incomingDms().checked,
+      "a DM override leaves the global setting enabled",
+    );
+    await chooseScope("@direct:bob");
+    check(!incomingDms().checked, "the selected DM displays its override");
+    [...panel().querySelectorAll("button")]
+      .find((button) => button.textContent === "Use global defaults")
+      .click();
+    await until(
+      () =>
+        values["notification_default_direct.alice-bob"] === undefined &&
+        incomingDms().checked,
+    );
+    tests.querySelector('[aria-label="Close settings"]').click();
+    await until(() => !tests.querySelector(".settings-dialog[open]"));
+    location.hash = new URLSearchParams({ room: "@direct:bob" }).toString();
+    await until(() => tests.querySelector(".composer textarea"));
+    const input = tests.querySelector(".composer textarea");
+    async function submit(text) {
+      input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(50);
+      input.form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    }
+    await submit("/man notifications");
+    await until(() => tests.textContent.includes("Actor and keyword"));
+    for (const [partial, completed] of [
+      ["/notifications fil", "/notifications filter "],
+      ["/notifications filter @a", "/notifications filter @all "],
+      ["/notifications filter @all he", "/notifications filter @all here "],
+    ]) {
+      input.value = partial;
+      input.setSelectionRange(partial.length, partial.length);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(50);
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await until(() => input.value === completed);
+    }
+    await submit(input.value);
+    await until(() => values["notification.alice-bob"] === "@all");
+    await submit("/notifications filter none here");
+    await until(() => values["notification.alice-bob"] === "none");
+    await submit("/notifications status");
+    await until(() =>
+      [...tests.querySelectorAll(".console-output table tbody tr")].some(
+        (row) =>
+          row.children[0]?.textContent === "@direct:bob" &&
+          row.children[1]?.textContent === "none",
+      ),
+    );
+    const statusWidget = () => tests.querySelector(".notification-status");
+    const defaultFilters = () =>
+      [...statusWidget().querySelectorAll("tbody tr")]
+        .filter((row) => row.children[0]?.textContent === "Global")
+        .map((row) => row.children[1]?.textContent);
+    const defaults = [
+      "Direct mentions",
+      "Room-wide mentions",
+      "Replies to you",
+      "Incoming DMs",
+    ];
+    check(
+      defaultFilters().join() === defaults.join(),
+      "each global default matcher has its own row",
+    );
+    for (const cell of statusWidget().querySelectorAll(
+      "thead th, tbody th:first-child",
+    )) {
+      const text = document.createRange();
+      text.selectNodeContents(cell);
+      check(
+        text.getClientRects().length === 1,
+        `the notification table keeps ${cell.textContent} on one line`,
+      );
+    }
+    statusWidget()
+      .querySelector('[aria-label="Delete Direct mentions from Global"]')
+      .click();
+    await until(
+      () =>
+        defaultFilters().join() === defaults.slice(1).join() &&
+        values.notification_default_mentions_me === "false",
+    );
+    const deleteFilter = () =>
+      statusWidget()?.querySelector(
+        '[aria-label="Delete notification filter for @direct:bob"]',
+      );
+    deleteFilter().click();
+    await until(
+      () => !deleteFilter() && values["notification.alice-bob"] === undefined,
+    );
+    await submit("/notifications filter all global");
+    await until(() => values["notification.global"] === "all");
+    await until(() =>
+      statusWidget()?.querySelector(
+        '[aria-label="Delete notification filter for Global"]',
+      ),
+    );
+    [...statusWidget().querySelectorAll("button")]
+      .find((button) => button.textContent === "Reset to default")
+      .click();
+    await until(
+      () =>
+        defaultFilters().join() === defaults.join() &&
+        values.notification_default_mentions_me === undefined &&
+        values["notification.global"] === undefined,
+    );
+    check(
+      values.notifications_muted === "true" &&
+        values.notification_exclude_bots === undefined &&
+        values.notification_exclude_bot_mentions === undefined,
+      "reset clears filters and preserves mute",
+    );
   } finally {
     render(null, tests);
     window.WebSocket = OriginalSocket;
     window.Notification = OriginalNotification;
+    api.pushSettings = originalPushSettings;
+    api.preferences = originalPreferences;
+    api.resetNotificationFilters = originalResetFilters;
+    history.replaceState(null, "", originalUrl);
     disconnectPreferences();
   }
 });

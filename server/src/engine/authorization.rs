@@ -398,9 +398,21 @@ pub(super) struct CompiledPolicy {
     pub(super) revision: u64,
     scopes: HashMap<String, HashMap<Scope, Rights>>,
     pub(super) groups: HashMap<String, BTreeSet<Group>>,
+    scoped_groups: HashMap<String, HashMap<Scope, BTreeSet<Group>>>,
     pub(super) media_revocations: BTreeMap<String, BTreeSet<String>>,
 }
 impl CompiledPolicy {
+    pub(super) fn has_role(&self, id: &str, scope: &Scope, role: Group) -> bool {
+        self.groups
+            .get(id)
+            .is_some_and(|roles| roles.contains(&role))
+            || self
+                .scoped_groups
+                .get(id)
+                .and_then(|scopes| scopes.get(scope))
+                .is_some_and(|roles| roles.contains(&role))
+    }
+
     pub(super) fn effective_for(&self, id: &str, scope: &Scope) -> Rights {
         let mut r = self
             .scopes
@@ -513,6 +525,14 @@ impl CompiledPolicy {
                 result
                     .groups
                     .entry(a.account_id.clone())
+                    .or_default()
+                    .insert(a.group);
+            } else {
+                result
+                    .scoped_groups
+                    .entry(a.account_id.clone())
+                    .or_default()
+                    .entry(a.scope.clone())
                     .or_default()
                     .insert(a.group);
             }

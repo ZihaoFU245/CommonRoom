@@ -2042,6 +2042,7 @@ fn session_only_rollback_preserves_expired_and_replaced_sessions_on_failure() {
         Session {
             username: "alice".into(),
             expires: 0,
+            push: None,
         },
     );
     let before = e.data.clone();

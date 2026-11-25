@@ -1,4 +1,6 @@
 /** JSON contract shared by HTTP responses and WebSocket frames. */
+import { notificationPreviewMaxLength } from "../features/preferences/pushPayload.ts";
+
 export interface Reply {
   id: string;
   from: string;
@@ -20,6 +22,8 @@ export interface Message {
   reply: Reply | null;
   mentions: string[];
   mention_all?: boolean;
+  from_bot?: boolean;
+  mentions_bot?: boolean;
 }
 export interface MessageColors {
   version: string;
@@ -186,7 +190,15 @@ export interface BotActivity {
   expires: number;
   draft?: string;
 }
+export interface ChatNotification {
+  kind: "notification";
+  id: string;
+  view: string;
+  title: string;
+  body: string;
+}
 export type ServerFrame =
+  | ChatNotification
   | { kind: "media"; ids?: string[] }
   | BotActivity
   | AvatarUpdate
@@ -301,6 +313,8 @@ export const isMessage = (v: unknown): v is Message =>
   (v.markdown === undefined || typeof v.markdown === "boolean") &&
   (v.edited === undefined || typeof v.edited === "boolean") &&
   (v.mention_all === undefined || typeof v.mention_all === "boolean") &&
+  (v.from_bot === undefined || typeof v.from_bot === "boolean") &&
+  (v.mentions_bot === undefined || typeof v.mentions_bot === "boolean") &&
   (v.private_id === undefined || typeof v.private_id === "string") &&
   typeof v.id === "string" &&
   typeof v.from === "string" &&
@@ -478,6 +492,23 @@ export function parseFrame(raw: string): ServerFrame | null {
   }
   if (isSnapshot(value)) return value;
   if (!record(value)) return null;
+  if (value.kind === "notification")
+    return typeof value.id === "string" &&
+      typeof value.view === "string" &&
+      typeof value.title === "string" &&
+      typeof value.body === "string" &&
+      value.id.length <= 128 &&
+      value.view.length <= 256 &&
+      value.title.length <= 256 &&
+      value.body.length <= notificationPreviewMaxLength
+      ? {
+          kind: "notification",
+          id: value.id,
+          view: value.view,
+          title: value.title,
+          body: value.body,
+        }
+      : null;
   if (value.kind === "resumed") return { kind: "resumed" };
   if (value.kind === "media") {
     if (value.ids === undefined) return { kind: "media" };

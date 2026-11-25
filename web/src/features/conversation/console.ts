@@ -9,6 +9,7 @@ import type {
   BotCredentialHint,
 } from "../../api/protocol.ts";
 import { nameColors } from "../preferences/nameColors.ts";
+import { notificationSuggestions } from "../preferences/notificationMode.ts";
 import { permissionNames } from "./completion.ts";
 // Commands and output live only in this tab; chat comes from server snapshots.
 export function clearedOrder(cleared: Record<string, number>, view: string) {
@@ -193,6 +194,7 @@ export function suggestions(
     aliases?: string[];
     privateScopes?: string[];
     privateTargets?: string[];
+    notificationRooms?: string[];
   } = {},
 ): Hint[] {
   if (!draft.startsWith("/") || draft.includes("\n")) return [];
@@ -214,6 +216,13 @@ export function suggestions(
   }
   const spec = commands.find((c) => c.name === name);
   if (!spec) return [];
+  if (name === "/notifications")
+    return notificationSuggestions(
+      draft,
+      users,
+      context.notificationRooms ?? rooms,
+      context.privateTargets ?? [],
+    );
   if (name === "/alias" && parts.length > 3) {
     return suggestions(
       parts.slice(2).join(" "),

@@ -7,6 +7,10 @@ import {
 } from "./api/clientMetricSchema.ts";
 import { MediaCache } from "./features/conversation/mediaCache.ts";
 import { mediaFileUrl, mediaRequestUrl } from "./api/mediaFile.ts";
+import {
+  isPushPayload,
+  notificationTagPrefix,
+} from "./features/preferences/pushPayload.ts";
 // Keep the worker isolated from Window globals and application bootstrap.
 interface Lifetime {
   waitUntil(work: Promise<unknown>): void;
@@ -25,9 +29,18 @@ interface MediaMessage extends Lifetime {
   ports: readonly MessagePort[];
   source: MediaClient | null;
 }
+interface ChatWindow {
+  url: string;
+  navigate(url: string): Promise<ChatWindow | null>;
+  focus(): Promise<ChatWindow>;
+}
 declare const self: {
-  registration: { scope: string };
-  clients: { claim(): Promise<void> };
+  registration: Pick<ServiceWorkerRegistration, "scope" | "showNotification">;
+  clients: {
+    claim(): Promise<void>;
+    matchAll(options: { type: "window" }): Promise<ChatWindow[]>;
+    openWindow(url: string): Promise<ChatWindow | null>;
+  };
   skipWaiting(): Promise<void>;
   addEventListener(
     type: "install" | "activate",
@@ -38,7 +51,67 @@ declare const self: {
     type: "message",
     listener: (event: MediaMessage) => void,
   ): void;
+  addEventListener(
+    type: "push",
+    listener: (event: Lifetime & { data: { json(): unknown } | null }) => void,
+  ): void;
+  addEventListener(
+    type: "notificationclick",
+    listener: (event: Lifetime & { notification: Notification }) => void,
+  ): void;
 };
+self.addEventListener("push", (event) => {
+  let data: unknown;
+  try {
+    data = event.data?.json();
+  } catch {
+    // A malformed payload can still produce a generic notification.
+  }
+  const payload = isPushPayload(data) ? data : undefined;
+  event.waitUntil(
+    self.registration.showNotification(
+      payload?.title || "CommonRoom",
+      payload
+        ? {
+            body: payload.body || "New message",
+            tag: notificationTagPrefix + payload.id,
+            data: { id: payload.id, view: payload.view },
+          }
+        : { body: "New message", tag: notificationTagPrefix },
+    ),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  if (!event.notification.tag.startsWith(notificationTagPrefix)) return;
+  event.notification.close();
+  const data: unknown = event.notification.data;
+  const target = new URL(self.registration.scope);
+  if (isPushPayload(data))
+    target.hash = new URLSearchParams({ room: data.view }).toString();
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window" });
+      for (const client of windows) {
+        const current = new URL(client.url);
+        if (current.pathname !== target.pathname) continue;
+        if (current.href === target.href) {
+          // eslint-disable-next-line no-restricted-syntax -- This focuses a browser window.
+          await client.focus();
+          return;
+        }
+        const navigated = await client.navigate(target.href).catch(() => null);
+        if (navigated) {
+          // eslint-disable-next-line no-restricted-syntax -- This focuses a browser window.
+          await navigated.focus();
+          return;
+        }
+      }
+      await self.clients.openWindow(target.href);
+    })(),
+  );
+});
+
 const media = new MediaCache(caches);
 const metricClients = new Map<
   string,

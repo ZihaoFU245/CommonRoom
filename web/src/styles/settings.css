@@ -369,6 +369,28 @@
   margin: 0 0 16px;
   overflow-wrap: anywhere;
 }
+.notification-device {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 12px;
+  margin-block-end: 12px;
+}
+.notification-device h3,
+.notification-device .account-summary {
+  margin: 0;
+}
+.notification-device .notification-device-action {
+  grid-area: 1 / 2 / span 2;
+  align-self: center;
+  margin: 0;
+  min-block-size: 28px;
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+.notification-restore {
+  align-self: flex-start;
+}
 .security-choice {
   display: flex;
   align-items: center;
@@ -381,7 +403,9 @@
 }
 @media (pointer: coarse) {
   .bot-status-choice,
-  .enter-send-choice {
+  .enter-send-choice,
+  .notification-choice,
+  .notification-device .notification-device-action {
     min-block-size: 44px;
   }
 }

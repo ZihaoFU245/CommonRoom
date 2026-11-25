@@ -38,6 +38,11 @@ rtk proxy ./auto/debug.sh
 at http://127.0.0.1:5173, proxying the API/WebSocket to `127.0.0.1:3000`.
 It defaults to SQLite with no S3 operations. Debug data and its generated
 `config.json` live in the repository's `data/` directory.
+Web Push is enabled by default. The script creates a private development key
+at `data/debug-vapid.key` and reuses it across restarts. Set
+`CHAT_VAPID_PRIVATE_KEY` or `CHAT_VAPID_SUBJECT` before starting debug to
+override the development key or contact. Open the loopback UI and use
+Settings → Notifications → Install to subscribe.
 The debug server samples every authenticated browser page for client metrics.
 An active debug page sends its first batch after about two seconds of buffered
 activity, then at most once per minute.

@@ -103,6 +103,8 @@ pub(super) fn new_message(from: &str, to: Option<&str>, text: &str) -> Message {
         reply: None,
         mentions: mentioned_names(text),
         mention_all: false,
+        from_bot: false,
+        mentions_bot: false,
     }
 }
 pub(super) fn mentioned_names(text: &str) -> BTreeSet<String> {

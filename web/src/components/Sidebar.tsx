@@ -399,15 +399,9 @@ export function Sidebar({
             onClick={toggleNotifications}
             aria-pressed={notifications}
             aria-label={
-              notifications
-                ? "Mute message notifications"
-                : "Enable message notifications"
+              notifications ? "Mute notifications" : "Unmute notifications"
             }
-            title={
-              notifications
-                ? "Room mention and private message notifications on"
-                : "Room mention and private message notifications muted · Click to enable"
-            }
+            title={notifications ? "Notifications on" : "Notifications muted"}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 17h14l-2-3V9a5 5 0 0 0-10 0v5l-2 3Zm5 3h4" />

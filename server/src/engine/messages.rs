@@ -15,6 +15,7 @@ impl std::fmt::Display for ReactionError {
 pub(super) fn reply_quote(original: &Message) -> Reply {
     Reply {
         id: original.id.clone(),
+        author_id: original.author_id.clone(),
         from: original.from.clone(),
         text: original.text.chars().take(160).collect(),
         sequence: original.sequence,

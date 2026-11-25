@@ -37,7 +37,7 @@ import {
 import type { Snapshot, Message } from "../api/protocol.ts";
 import { errorMessage } from "../api/protocol.ts";
 import { api } from "../api/client.ts";
-import { notifyMessages } from "../features/preferences/notifications.ts";
+import { showChatNotification } from "../features/preferences/notifications.ts";
 import {
   timeline,
   clearedOrder,
@@ -190,7 +190,7 @@ export function Chat({
   const input = useRef<HTMLTextAreaElement>(null);
   const { output, cleared, setCleared, ledger, append, complete, clearView } =
     useLocalConsole(initial, selected, selectedRef, atBottom);
-  const { notifications, notificationsRef, toggleNotifications } =
+  const { notifications, notificationsRef, toggleNotifications, setMuted } =
     useChatNotifications(append);
 
   const {
@@ -204,7 +204,7 @@ export function Chat({
     initial,
     {
       onLogout,
-      onSnapshot(previous, data, baseline) {
+      onSnapshot(previous, data) {
         const view = selectedRef.current;
         const oldId =
           previous.private_access[view]?.id ??
@@ -220,24 +220,6 @@ export function Chat({
             ) ?? data.rooms.find((room) => room.id === oldId)?.name;
           if (renamedView) setSelected(renamedView);
         }
-        const contentChanged = Object.entries(data.unread).some(
-          ([view, unread]) =>
-            unread.through > (previous.unread[view]?.through ?? 0),
-        );
-        if (contentChanged)
-          notifyMessages(previous, data, {
-            baseline,
-            enabled: notificationsRef.current,
-            NotificationClass: window.Notification,
-            background: document.hidden || !document.hasFocus(),
-            selected: selectedRef.current,
-            open: (view) => {
-              window.focus();
-              if (narrow) choose(view, { focusComposer: false });
-              else setSelected(view);
-            },
-          });
-
         if (
           desiredRoom.current &&
           (data.rooms.some((r) => r.name === desiredRoom.current) ||
@@ -248,6 +230,19 @@ export function Chat({
           desiredRoom.current = null;
         }
       },
+      onNotification: (notice) =>
+        showChatNotification(notice, {
+          enabled: notificationsRef.current,
+          NotificationClass: window.Notification,
+          worker: navigator.serviceWorker?.ready,
+          background: document.hidden || !document.hasFocus(),
+          selected: selectedRef.current,
+          open: (view) => {
+            window.focus();
+            if (narrow) choose(view, { focusComposer: false });
+            else setSelected(view);
+          },
+        }),
       onResult: (data) => commands.receive(data),
       onDisconnect: () => commands.disconnect(),
       whenIdle: (callback) => commands.whenIdle(callback),
@@ -320,6 +315,9 @@ export function Chat({
     ],
   );
   const commands = useCommands({
+    setNotificationsMuted: setMuted,
+    openNotificationSettings: () => openSettingsSection("notifications"),
+
     botCommands: useBotCommands(
       room?.id ?? state.private_access[selected]?.id,
       botCommandVersions,
@@ -925,6 +923,7 @@ export function Chat({
               value={room?.id ?? state.private_access[selected]?.id}
             >
               <MessageList
+                notificationContext={state}
                 messageBars={messageBars}
                 avatars={state.avatars}
                 motionScope={

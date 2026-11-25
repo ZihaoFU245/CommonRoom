@@ -36,6 +36,44 @@ impl SessionWrite {
     }
 }
 impl Engine {
+    pub(crate) fn prepare_push_subscription(
+        &self,
+        digest: &str,
+        subscription: Option<crate::push::Subscription>,
+        expected: Option<&crate::push::Subscription>,
+    ) -> Option<SessionWrite> {
+        let current = self.data.sessions.get(digest)?;
+        if current.expires <= now() || !self.active(&current.username) {
+            return None;
+        }
+        if expected.is_some_and(|value| current.push.as_ref() != Some(value))
+            || current.push == subscription
+        {
+            return None;
+        }
+        let mut after = self.data.sessions.clone();
+        if let Some(subscription) = &subscription {
+            // A browser subscription can only belong to one session on this deployment.
+            for session in after.values_mut() {
+                if session
+                    .push
+                    .as_ref()
+                    .is_some_and(|other| other.endpoint == subscription.endpoint)
+                {
+                    session.push = None;
+                }
+            }
+        }
+        after.get_mut(digest)?.push = subscription;
+        Some(SessionWrite {
+            store: self.auth_store(),
+            before: self.data.sessions.clone(),
+            after,
+            at: now(),
+            event: None,
+        })
+    }
+
     pub(crate) fn auth_store(&self) -> AuthStore {
         AuthStore {
             database: self.store.db.clone(),

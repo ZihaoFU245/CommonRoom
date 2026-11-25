@@ -450,6 +450,7 @@ impl Engine {
             Session {
                 username: username.into(),
                 expires: now() + 43200,
+                push: None,
             },
         );
         Ok(sessions)

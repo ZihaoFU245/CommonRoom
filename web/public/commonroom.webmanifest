@@ -1,0 +1,10 @@
+{
+  "id": "./",
+  "name": "CommonRoom",
+  "short_name": "CommonRoom",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#ffffff",
+  "background_color": "#ffffff"
+}

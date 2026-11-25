@@ -7,6 +7,7 @@ mod display_names;
 mod error;
 mod metadata_commands;
 pub(crate) mod metrics;
+pub(crate) mod notifications;
 mod preferences;
 pub(crate) mod principal;
 mod profiles;
@@ -280,6 +281,10 @@ pub fn router(app: App) -> Router {
         .route(path("/api/read"), post(history::read))
         .route(path("/api/color"), post(colors::set))
         .route(path("/api/preferences"), post(preferences::set))
+        .route(
+            path("/api/notifications/push"),
+            get(notifications::status).post(notifications::update),
+        )
         .route(
             path("/api/displayname"),
             post(display_names::set_display_name),

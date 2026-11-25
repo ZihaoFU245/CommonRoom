@@ -8,6 +8,8 @@ pub(crate) struct Input {
     values: BTreeMap<String, Option<String>>,
     #[serde(default)]
     initialize: bool,
+    #[serde(default)]
+    reset_notification_filters: bool,
 }
 
 pub(crate) async fn set(
@@ -16,6 +18,12 @@ pub(crate) async fn set(
     Json(input): Json<Input>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     security::check_origin(&app, &headers)?;
+    if input.reset_notification_filters && (input.initialize || !input.values.is_empty()) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "Reset notification filters in a separate request.",
+        ));
+    }
     let permit = app.io_permit()?;
     admission::spawn_io(permit, async move {
         let (identity, store) = media::native_context(&app, media::Access::Browser(headers)).await?;
@@ -24,7 +32,15 @@ pub(crate) async fn set(
             let identity = identity.clone();
             move |engine| -> Result<_, ApiError> {
                 media::verify_identity(&identity, engine)?;
-                Ok(engine.prepare_preferences(&identity.user, input.values, input.initialize)?)
+                let values = if input.reset_notification_filters {
+                    engine.preferences(&identity.user).into_keys()
+                        .filter(|key| key.starts_with("notification.") || key.starts_with("notification_"))
+                        .map(|key| (key, None))
+                        .collect()
+                } else {
+                    input.values
+                };
+                Ok(engine.prepare_preferences(&identity.user, values, input.initialize)?)
             }
         }).await?;
         if let Some(pending) = pending {

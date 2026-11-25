@@ -277,6 +277,24 @@ pub(crate) async fn connection(
     if presence.authenticate(&headers).await.is_err() {
         return;
     }
+    let (mut notifications, _push_socket) = if bot {
+        (None, None)
+    } else if let Some(token) = super::auth::token(&app.config, &headers) {
+        let digest = crate::engine::session_digest(token);
+        app.inspect_engine(move |engine, _| {
+            Ok::<_, crate::engine::EngineError>(
+                engine
+                    .push
+                    .as_ref()
+                    .map(|runtime| (Some(runtime.subscribe()), runtime.open_socket(digest)))
+                    .unwrap_or_default(),
+            )
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        (None, None)
+    };
     let mut interests = crate::web::transport::Interests::default();
     let mut tails = (delta && !bot).then(deltas::Tails::default);
     let resumed = if let Some(token) = resume.filter(|_| !bot) {
@@ -304,7 +322,37 @@ pub(crate) async fn connection(
     let mut budget = crate::web::transport::Budget::new();
 
     loop {
-        let event = events.next(&mut socket).await;
+        let event = tokio::select! {
+            event = events.next(&mut socket) => event,
+            notification = async {
+                match &mut notifications {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match notification {
+                    Ok(event) => {
+                        let headers = headers.clone();
+                        let result = app.inspect_engine(move |engine, config| {
+                            let view = super::auth::identity(engine, config, &headers)
+                                .and_then(|user| engine.notification_view(&user, &event));
+                            Ok::<_, crate::engine::EngineError>(view.map(|view| {
+                                let title = if event.private { event.author_name.clone() } else { format!("#{view}") };
+                                json!({"kind":"notification","id":event.id,"view":view,"title":title,
+                                    "body":event.preview()})
+                            }))
+                        }).await;
+                        if let Ok(Some(frame)) = result
+                            && !send(&mut socket, Message::Text(frame.to_string().into())).await {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => notifications = None,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                }
+                continue;
+            }
+        };
         match event {
             crate::web::transport::Event::Maintenance | crate::web::transport::Event::Change(_) => {
                 let mut changes = match event {

@@ -1,4 +1,4 @@
-import type { Message, Snapshot, Hint } from "../../api/protocol.ts";
+import type { Hint } from "../../api/protocol.ts";
 function nameCharacter(value: string): boolean {
   return (
     /^[A-Za-z0-9_-]$/u.test(value) ||
@@ -29,53 +29,6 @@ export function mentionSuggestions(
           : "Mention",
       value: draft.slice(0, index) + `@${name} `,
     }));
-}
-export function messageNotificationEvents(previous: Snapshot, next: Snapshot) {
-  const seen = new Set(
-    [...previous.rooms.flatMap((r) => r.messages), ...previous.direct].map(
-      (m) => m.id,
-    ),
-  );
-  const previousRooms = new Map(previous.rooms.map((r) => [r.name, r]));
-  const events: { message: Message; view: string; roomWide?: true }[] = [];
-  for (const room of next.rooms) {
-    const previousRoom = previousRooms.get(room.name);
-    if (!previousRoom) continue;
-    const newest = Math.max(0, ...previousRoom.messages.map((m) => m.time));
-    const through = previous.unread[room.name]?.through;
-    for (const message of room.messages) {
-      const roomMention =
-        message.mention_all &&
-        !message.edited &&
-        room.is_member &&
-        previousRoom.id === room.id &&
-        through !== undefined &&
-        message.sequence > through;
-      if (
-        !seen.has(message.id) &&
-        message.from !== next.username &&
-        (roomMention ||
-          (message.time >= newest && message.mentions?.includes(next.username)))
-      )
-        events.push({
-          message,
-          view: room.name,
-          ...(roomMention ? { roomWide: true } : {}),
-        });
-    }
-  }
-  for (const message of next.direct) {
-    if (
-      message.from === next.username ||
-      message.to !== next.username ||
-      seen.has(message.id)
-    )
-      continue;
-    const view = `@direct:${message.from}`;
-    if (message.sequence > (previous.unread[view]?.through ?? 0))
-      events.push({ message, view });
-  }
-  return events;
 }
 export function mentionedText(
   text: string,

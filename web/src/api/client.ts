@@ -179,7 +179,29 @@ function isPreferences(value: unknown): value is PreferenceState {
   );
 }
 
+interface PushSettings {
+  public_key: string | null;
+  installed: boolean;
+}
+
+function isPushSettings(value: unknown): value is PushSettings {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "public_key" in value &&
+    (value.public_key === null || typeof value.public_key === "string") &&
+    "installed" in value &&
+    typeof value.installed === "boolean"
+  );
+}
+
 export const api = {
+  pushSettings: (signal: AbortSignal) =>
+    request("notifications/push", isPushSettings, undefined, signal),
+  installPush: (subscription: PushSubscriptionJSON) =>
+    request("notifications/push", isOk, { subscription }),
+  uninstallPush: () =>
+    request("notifications/push", isOk, { subscription: null }),
   fileLink: async (href: string, signal: AbortSignal, download = false) => {
     const base = serverBaseUrl();
     const file = mediaFileUrl(href, base);
@@ -193,6 +215,11 @@ export const api = {
   },
   preferences: (values: Record<string, string | null>, initialize: boolean) =>
     request("preferences", isPreferences, { values, initialize }),
+  resetNotificationFilters: () =>
+    request("preferences", isPreferences, {
+      values: {},
+      reset_notification_filters: true,
+    }),
   setDisplayName: (value: string | null, room?: string) =>
     request("displayname", isOk, { value, room }),
   setAvatar: (url: string | null) => request("avatars", isOk, { url }),
