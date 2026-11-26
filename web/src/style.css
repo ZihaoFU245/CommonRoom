@@ -31,6 +31,15 @@
     min-width: 44px;
     min-height: 44px;
   }
+  :is(.attach-button, .settings-navigation button):active:not(
+      :disabled,
+      :has(input:disabled)
+    ) {
+    background: var(--wash);
+  }
+  :is(.primary, .send-button):active:enabled {
+    filter: brightness(0.88);
+  }
 }
 .composer-area {
   min-height: calc(var(--chat-footer-height) + env(safe-area-inset-bottom));

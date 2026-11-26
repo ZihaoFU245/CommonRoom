@@ -115,6 +115,11 @@ export function LoginServerSettings({
             }}
           >
             <strong id="login-server-title">Server settings</strong>
+            {matchMedia("(display-mode: standalone)").matches && (
+              <p class="account-summary">
+                If you set a custom server in Safari, enter the same URL here.
+              </p>
+            )}
             <label for="login-server-url">Server URL</label>
             <input
               ref={input}

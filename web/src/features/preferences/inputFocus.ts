@@ -2,6 +2,14 @@ export const touchControls = "(hover: none) and (pointer: coarse)";
 // Short touch viewports keep the phone layout in landscape.
 export const mobileLayout = `(max-width: 700px), ${touchControls} and (max-height: 500px)`;
 
+/** Reserve the edges for browser history gestures and leave pinch zoom native. */
+export function canSwipeInPage(x: number) {
+  const viewport = window.visualViewport;
+  const left = viewport?.offsetLeft ?? 0;
+  const right = left + (viewport?.width ?? window.innerWidth);
+  return (!viewport || viewport.scale === 1) && x > left + 24 && x < right - 24;
+}
+
 const textInputTypes = new Set([
   "email",
   "number",

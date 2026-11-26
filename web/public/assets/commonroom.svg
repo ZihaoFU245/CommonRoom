@@ -1,0 +1,7 @@
+<!-- Front bubble adapted from https://www.svgrepo.com/svg/547820/dialogue/ -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#fff"/>
+  <path fill="#827ba8" d="M396 326h388q80 0 80 80v202q0 74-74 74h-12v82l-118-82H396q-74 0-74-74V400q0-74 74-74Z"/>
+  <path d="M452 445h292m-292 90h144" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round"/>
+  <path fill="#000" d="M245.97 836.7l2.32-118.66-111.4-17.8 44.22-419.22 535.82-55.37-66.83 544.03-201.51-25.69-202.62 92.7z m-76.26-161.6l109.08 17.43-1.89 97.03 167-76.4 180.11 22.96 58.57-476.75-474.17 49-38.68 366.74z"/>
+</svg>

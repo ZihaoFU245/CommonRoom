@@ -191,8 +191,13 @@ export function ManagedAttachment({
                 }
                 onClick={() => saveSticker(ownershipCost)}
               >
-                {actionLabel}
+                <span aria-live="polite">
+                  {saving ? "Saving…" : actionLabel}
+                </span>
               </button>
+              {ownershipCost && (
+                <small class="library-save-cost">{ownershipCost}</small>
+              )}
               {error && <span role="status">{error}</span>}
             </span>
           )}

@@ -849,7 +849,10 @@
     border-radius: 50%;
     background: var(--sidebar-module);
   }
-  .mobile-conversation-list .chat-list-row[data-menu-open] .room-link {
+  .mobile-conversation-list .chat-list-row[data-menu-open] .room-link,
+  .mobile-conversation-list
+    .chat-swipe-track:not([data-chat-swipe-dragging])
+    .room-link:active {
     background: var(--sidebar-module);
   }
   .mobile-conversation-list .chat-list-row[data-menu-open] .chat-row-icon {

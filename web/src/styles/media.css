@@ -616,6 +616,9 @@
   color: var(--accent-ink);
   cursor: pointer;
 }
+.library-save-cost {
+  display: none;
+}
 .sticker-hold-surface {
   display: contents;
 }
@@ -645,18 +648,22 @@
   }
 }
 @media (max-width: 700px), (hover: none) and (pointer: coarse) {
-  .chat-message .library-save:not(:has([role="status"], :focus-visible)) {
-    min-height: 0;
-    margin-top: 0;
+  .chat-message .library-save > button {
+    min-block-size: 44px;
+    padding-inline: 8px;
+    border-radius: 6px;
   }
-  .chat-message .library-save > button:not(:focus-visible) {
-    position: absolute;
-    inline-size: 1px;
-    block-size: 1px;
-    margin: -1px;
-    padding: 0;
-    clip-path: inset(50%);
-    overflow: hidden;
+  .chat-message .library-save > button:disabled {
+    color: var(--muted);
+    opacity: 1;
+  }
+  .chat-message .library-save > button:active:not(:disabled) {
+    background: var(--wash);
+  }
+  .chat-message .library-save > .library-save-cost {
+    display: block;
+    color: var(--muted);
+    line-height: 1.4;
   }
 }
 

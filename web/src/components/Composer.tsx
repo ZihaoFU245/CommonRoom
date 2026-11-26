@@ -365,10 +365,10 @@ export function Composer({
                 selectCaret();
               });
             }}
-            close={() => {
+            close={(reason) => {
               setLibraryOpen(false);
               setLibraryClosing(false);
-              focusControl(input.current);
+              if (reason !== "history") focusControl(input.current);
             }}
           />
         </Suspense>

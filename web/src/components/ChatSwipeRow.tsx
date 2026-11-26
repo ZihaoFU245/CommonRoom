@@ -1,6 +1,7 @@
 import type { JSX, VNode } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { useEvent } from "../hooks/useEvent.ts";
+import { canSwipeInPage } from "../features/preferences/inputFocus.ts";
 
 const swipeWidth = 64;
 const commitDistance = 48;
@@ -66,6 +67,7 @@ export function ChatSwipeRow({
       settling.current = undefined;
       element.removeAttribute("data-chat-swipe-ready");
       element.removeAttribute("data-chat-swipe-settling");
+      element.removeAttribute("data-chat-swipe-dragging");
     };
   }, [enabled, chatOrder]);
 
@@ -148,6 +150,7 @@ export function ChatSwipeRow({
         return;
     }
     gesture.current = undefined;
+    element.removeAttribute("data-chat-swipe-dragging");
     if (!settling.current && Math.abs(element.scrollLeft - swipeWidth) < 1)
       return;
     const action =
@@ -184,7 +187,10 @@ export function ChatSwipeRow({
               y: touch.clientY,
               horizontal: false,
               eligible:
-                enabled && !settling.current && event.touches.length === 1,
+                enabled &&
+                !settling.current &&
+                event.touches.length === 1 &&
+                canSwipeInPage(touch.clientX),
             }
           : undefined;
       }}
@@ -197,6 +203,7 @@ export function ChatSwipeRow({
         if (x > 10 && x > y) {
           start.horizontal = true;
           suppressClick.current = true;
+          event.currentTarget.setAttribute("data-chat-swipe-dragging", "");
         }
       }}
       onScroll={(event) => {

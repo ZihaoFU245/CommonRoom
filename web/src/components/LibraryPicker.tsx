@@ -94,7 +94,7 @@ export function LibraryPicker({
   canEmoji?: boolean;
   select: (media: CompletedMedia) => void;
   selectEmoji?: (emoji: string) => void;
-  close: () => void;
+  close: (reason?: "history") => void;
   anchor?: RefObject<HTMLButtonElement>;
   closing?: boolean;
   openedAt?: number | undefined;

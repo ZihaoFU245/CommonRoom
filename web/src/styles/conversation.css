@@ -780,18 +780,25 @@ button:focus-visible {
   }
 }
 @media (any-pointer: coarse) {
+  .chat-message:has(> .message-action-trigger:enabled)
+    .message-body
+    :is(.message-image, a:has(.message-image)) {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
   .message-action-trigger {
     display: block;
   }
   .chat-message:has(> .message-action-trigger:enabled):has(
-      .message-body :is(a, audio, button, code, iframe, pre, video)
+      .message-body :is(a, audio, button, code, iframe, img, pre, video)
     ) {
     min-height: 44px;
     padding-right: 54px;
   }
   .message-action-trigger:focus-visible,
   .chat-message:has(
-      .message-body :is(a, audio, button, code, iframe, pre, video)
+      .message-body :is(a, audio, button, code, iframe, img, pre, video)
     )
     > .message-action-trigger:enabled {
     display: grid;
@@ -805,6 +812,9 @@ button:focus-visible {
     border-radius: 6px;
     background: var(--paper);
     font-size: 1.25rem;
+  }
+  .message-action-trigger:active:not(:disabled) {
+    background: var(--wash);
   }
 }
 .reaction-picker {

@@ -335,6 +335,16 @@ export async function libraryRegressions({
     }
     click("Open media library");
     await until(() => !tests.querySelector(".library-picker"));
+    click("Open media library");
+    await until(() => tests.querySelector(".library-picker"));
+    const editor = tests.querySelector(".composer textarea");
+    check(document.activeElement !== editor, "the open picker owns focus");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await until(() => !tests.querySelector(".library-picker"));
+    check(
+      document.activeElement !== editor,
+      "history dismissal leaves the composer unfocused",
+    );
     const matchMedia = window.matchMedia;
     window.matchMedia = (query) => {
       const result = matchMedia.call(window, query);
@@ -2524,9 +2534,14 @@ export async function libraryRegressions({
       expires: null,
     };
     const calls = [];
+    let finishSave;
+    const saveGate = new Promise((resolve) => {
+      finishSave = resolve;
+    });
     api.mediaStatus = async () => info;
     api.libraryChange = async (...args) => {
       calls.push(args);
+      await saveGate;
       info = { ...info, saved: true, expires: null };
       return { ok: true };
     };
@@ -2698,7 +2713,19 @@ export async function libraryRegressions({
         );
         refreshed.click();
       } else saveButton().click();
+      await until(() => saveButton()?.textContent.trim() === "Saving…");
+      const pendingHeight = saveButton().getBoundingClientRect().height;
+      check(
+        saveButton().disabled && pendingHeight >= (mobile ? 44 : 24),
+        "the save control stays visible and disabled while the request is pending",
+      );
+      finishSave();
       await until(() => tests.textContent.includes("Saved"));
+      check(
+        saveButton().disabled &&
+          saveButton().getBoundingClientRect().height === pendingHeight,
+        "the Saved confirmation keeps the same visible button height",
+      );
       check(
         calls[0][0] === id &&
           calls[0][1] === "save" &&

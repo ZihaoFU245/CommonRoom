@@ -3,6 +3,7 @@ import { createContext } from "preact";
 import type { JSX, RefObject, VNode } from "preact";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
+  canSwipeInPage,
   focusControl,
   touchControls,
 } from "../features/preferences/inputFocus.ts";
@@ -10,6 +11,7 @@ import { useEvent } from "../hooks/useEvent.ts";
 
 const interactive =
   "a, button, summary, input, textarea, select, video, audio, iframe, pre, code, [contenteditable], [role='button']";
+const messageImage = ".message-image, a:has(.message-image)";
 const replyDistance = 64;
 
 type MenuPosition = {
@@ -18,6 +20,7 @@ type MenuPosition = {
   keyboard: boolean;
   touchHold?: true;
   sticker?: HTMLElement | undefined;
+  media?: Element | null;
 };
 
 export const StickerActionsContext = createContext<
@@ -33,7 +36,7 @@ export function useMessageActionMenu(
   const [stickers] = useState(
     () => new WeakMap<HTMLElement, MessageAction | undefined>(),
   );
-  const heldSticker = useRef<HTMLElement>();
+  const heldMedia = useRef<Element>();
   const press = useRef<{
     id: number;
     x: number;
@@ -109,7 +112,7 @@ export function useMessageActionMenu(
     gesture: {
       onPointerDown(event: JSX.TargetedPointerEvent<HTMLElement>) {
         cancelPress();
-        heldSticker.current = undefined;
+        heldMedia.current = undefined;
         if (
           !enabled ||
           position ||
@@ -119,29 +122,30 @@ export function useMessageActionMenu(
         )
           return;
         const sticker = stickerAt(event.target);
+        const image = event.target.closest(messageImage);
         const interactiveTarget = event.target.closest(interactive);
-        const control = sticker ? null : interactiveTarget;
+        const media = sticker ?? image;
+        const control = media ? null : interactiveTarget;
         const { clientX: x, clientY: y, pointerId: id } = event;
-        const target = sticker ?? control ?? event.currentTarget;
-        // Leave edge gestures to browser Back and Forward.
-        const viewport = window.visualViewport;
-        const left = viewport?.offsetLeft ?? 0;
-        const right = left + (viewport?.width ?? window.innerWidth);
+        const target = media ?? control ?? event.currentTarget;
         const replyRow =
-          onSwipeReply &&
-          !interactiveTarget &&
-          (!viewport || viewport.scale === 1) &&
-          x > left + 24 &&
-          x < right - 24
+          onSwipeReply && !interactiveTarget && canSwipeInPage(x)
             ? event.currentTarget
             : undefined;
         if (sticker) target.setAttribute("data-touch-held", "");
         const timer = window.setTimeout(() => {
           if (press.current) press.current.held = true;
-          if (sticker) heldSticker.current = sticker;
+          if (media) heldMedia.current = media;
           else if (control) target.setAttribute("data-touch-held", "");
           if (!control)
-            setPosition({ x, y, keyboard: false, touchHold: true, sticker });
+            setPosition({
+              x,
+              y,
+              keyboard: false,
+              touchHold: true,
+              sticker,
+              media,
+            });
         }, 500);
         press.current = {
           id,
@@ -204,16 +208,16 @@ export function useMessageActionMenu(
       onPointerCancel: cancelPress,
       onLostPointerCapture: cancelPress,
       onClickCapture(event: JSX.TargetedMouseEvent<HTMLElement>) {
-        const sticker = heldSticker.current;
-        if (!event.detail || !sticker || !(event.target instanceof Element))
+        const media = heldMedia.current;
+        if (!event.detail || !media || !(event.target instanceof Element))
           return;
         if (
-          !sticker.contains(event.target) &&
-          event.target !== sticker.closest(interactive)
+          !media.contains(event.target) &&
+          event.target !== media.closest(interactive)
         )
           return;
-        heldSticker.current = undefined;
-        // A hold opens the menu even when the sticker is inside a link.
+        heldMedia.current = undefined;
+        // Releasing a hold must not activate the underlying image link.
         event.preventDefault();
         event.stopPropagation();
       },
@@ -226,7 +230,9 @@ export function useMessageActionMenu(
           enabled &&
           touch &&
           event.target instanceof Element &&
-          (stickerAt(event.target) || !event.target.closest(interactive))
+          (stickerAt(event.target) ||
+            event.target.closest(messageImage) ||
+            !event.target.closest(interactive))
         )
           event.preventDefault();
       },
@@ -293,15 +299,15 @@ export function MessageActionMenu({
       element.style.maxHeight = `${Math.max(0, height - 16)}px`;
       element.style.maxWidth = `${Math.max(0, width - 16)}px`;
       const bounds = element.getBoundingClientRect();
-      const sticker = position.sticker?.getBoundingClientRect();
+      const media = position.media?.getBoundingClientRect();
       const image = position.sticker
         ?.querySelector("img")
         ?.getBoundingClientRect();
-      const stickerBottom = sticker?.bottom ?? position.y;
-      const stickerTop = sticker?.top ?? position.y;
-      const below = Math.max(stickerBottom, image?.bottom ?? stickerBottom) + 8;
+      const mediaBottom = media?.bottom ?? position.y;
+      const mediaTop = media?.top ?? position.y;
+      const below = Math.max(mediaBottom, image?.bottom ?? mediaBottom) + 8;
       const above =
-        Math.min(stickerTop, image?.top ?? stickerTop) - 8 - bounds.height;
+        Math.min(mediaTop, image?.top ?? mediaTop) - 8 - bounds.height;
       const nextTop =
         below + bounds.height <= top + height - 8
           ? below
@@ -325,16 +331,16 @@ export function MessageActionMenu({
 
     const dismiss = () => close.current();
     const outside = (event: PointerEvent | FocusEvent) => {
-      const sticker = position.sticker;
+      const media = position.media;
       if (
         event.target instanceof Node &&
         !element.contains(event.target) &&
         !trigger.current?.contains(event.target) &&
         !(
           event.type === "focusin" &&
-          sticker &&
-          (sticker.contains(event.target) ||
-            event.target === sticker.closest(interactive))
+          media &&
+          (media.contains(event.target) ||
+            event.target === media.closest(interactive))
         )
       )
         dismiss();
@@ -360,7 +366,6 @@ export function MessageActionMenu({
       if (showingPanel && element.contains(document.activeElement)) place();
       else dismiss();
     };
-    const resize = showingPanel ? place : dismiss;
     const toggled = () => {
       if (!element.matches(":popover-open")) dismiss();
     };
@@ -369,18 +374,20 @@ export function MessageActionMenu({
     document.addEventListener("focusin", outside);
     document.addEventListener("keydown", escape, true);
     window.addEventListener("scroll", scroll, true);
-    window.addEventListener("resize", resize);
-    viewport?.addEventListener("resize", resize);
-    viewport?.addEventListener("scroll", resize);
+    window.addEventListener("resize", place);
+    window.addEventListener("popstate", dismiss);
+    viewport?.addEventListener("resize", place);
+    viewport?.addEventListener("scroll", place);
     return () => {
       element.removeEventListener("toggle", toggled);
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", escape, true);
       window.removeEventListener("scroll", scroll, true);
-      window.removeEventListener("resize", resize);
-      viewport?.removeEventListener("resize", resize);
-      viewport?.removeEventListener("scroll", resize);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("popstate", dismiss);
+      viewport?.removeEventListener("resize", place);
+      viewport?.removeEventListener("scroll", place);
     };
   }, [position, trigger, mode, showingPanel]);
 

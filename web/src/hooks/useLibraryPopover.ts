@@ -8,10 +8,11 @@ import { useEvent } from "./useEvent.ts";
 export function useLibraryPopover(
   anchor: RefObject<HTMLButtonElement> | undefined,
   closing: boolean,
-  close: () => void,
+  close: (reason?: "history") => void,
   escapeAction: () => boolean,
 ) {
   const onEscape = useEvent(escapeAction);
+  const onHistoryTraversal = useEvent(() => close("history"));
   const dialog = useRef<HTMLDialogElement>(null);
   const motion = useRef<Animation | undefined>(undefined);
   const exiting = useRef(false);
@@ -114,6 +115,7 @@ export function useLibraryPopover(
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape, true);
+    window.addEventListener("popstate", onHistoryTraversal);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule);
     window.visualViewport?.addEventListener("resize", schedule);
@@ -127,12 +129,13 @@ export function useLibraryPopover(
       resize.disconnect();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape, true);
+      window.removeEventListener("popstate", onHistoryTraversal);
       window.removeEventListener("resize", schedule);
       window.removeEventListener("scroll", schedule);
       window.visualViewport?.removeEventListener("resize", schedule);
       window.visualViewport?.removeEventListener("scroll", schedule);
     };
-  }, [anchor, dismiss, move, onEscape]);
+  }, [anchor, dismiss, move, onEscape, onHistoryTraversal]);
   useLayoutEffect(() => {
     if (closing) dismiss();
     else if (exiting.current) move(true);

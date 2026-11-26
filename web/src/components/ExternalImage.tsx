@@ -61,6 +61,7 @@ export function ExternalImage({ src, alt }: { src: string; alt: string }) {
       </button>
     ) : file.url ? (
       <img
+        class="message-image"
         {...(file.crossOrigin ? { crossOrigin: file.crossOrigin } : {})}
         src={file.url}
         width={size?.width}

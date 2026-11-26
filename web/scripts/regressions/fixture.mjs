@@ -2017,6 +2017,69 @@ await test("message actions support a touch hold and preserve desktop buttons", 
     "pointer cancellation clears widget feedback",
   );
   widget.remove();
+  if (touch) {
+    const link = document.createElement("a");
+    link.href = "#image-link";
+    const image = document.createElement("img");
+    image.className = "message-image";
+    image.width = 32;
+    image.height = 24;
+    body.append(image);
+    check(
+      getComputedStyle(trigger).clipPath === "none",
+      "an unlinked image exposes a visible message actions button",
+    );
+    const context = () =>
+      new PointerEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        pointerType: "touch",
+      });
+    const normalLinkMenu = context();
+    body.append(link);
+    link.dispatchEvent(normalLinkMenu);
+    check(
+      !normalLinkMenu.defaultPrevented,
+      "ordinary links retain the browser context menu",
+    );
+    link.append(image);
+    const imageMenu = context();
+    image.dispatchEvent(imageMenu);
+    check(
+      imageMenu.defaultPrevented &&
+        getComputedStyle(link).userSelect === "none",
+      "the app takes ownership of a linked image hold",
+    );
+    const imagePointer = (type) =>
+      image.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          pointerType: "touch",
+          pointerId: 3,
+          isPrimary: true,
+          clientX: 100,
+          clientY: 100,
+        }),
+      );
+    imagePointer("pointerdown");
+    await until(menu);
+    imagePointer("pointerup");
+    link.focus();
+    const releaseClick = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+    });
+    link.dispatchEvent(releaseClick);
+    window.visualViewport?.dispatchEvent(new Event("scroll"));
+    check(
+      releaseClick.defaultPrevented && menu(),
+      "release and visual viewport movement leave the image menu open",
+    );
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await until(() => !menu());
+    link.remove();
+  }
   await hold();
   const heldMenu = menu();
   if (typeof heldMenu.showPopover === "function") {
@@ -7178,8 +7241,7 @@ await test("mobile chat swipes and menus update unread state", async () => {
     delta,
     offset,
     ready,
-    end = "touchend",
-    interruptReturn = false,
+    { end = "touchend", interruptReturn = false, startX = 150 } = {},
   ) => {
     const track = row(name).querySelector(".chat-swipe-track");
     const action = delta > 0 ? "read" : "unread";
@@ -7193,8 +7255,8 @@ await test("mobile chat swipes and menus update unread state", async () => {
       "the scroll track rests on the chat and its action starts outlined",
     );
     track.style.scrollSnapType = "none";
-    touch(track, "touchstart", 150);
-    touch(track, "touchmove", 150 + delta);
+    touch(track, "touchstart", startX);
+    touch(track, "touchmove", startX + delta);
     track.scrollLeft = offset;
     track.dispatchEvent(new Event("scroll"));
     check(
@@ -7304,12 +7366,17 @@ await test("mobile chat swipes and menus update unread state", async () => {
       badge("beta")?.textContent === "2",
       "swiping left on unread leaves its count intact",
     );
-    await swipe("beta", 55, 10, true, "touchcancel");
+    await swipe("beta", 55, 10, false, { startX: 8 });
+    check(
+      reads.length === 0 && badge("beta")?.textContent === "2",
+      "a swipe from the browser edge never acknowledges messages",
+    );
+    await swipe("beta", 55, 10, true, { end: "touchcancel" });
     check(
       reads.length === 0,
       "cancelling the gesture cannot acknowledge messages",
     );
-    await swipe("beta", 55, 10, true, "touchend", true);
+    await swipe("beta", 55, 10, true, { interruptReturn: true });
     await until(() => !badge("beta"));
     check(
       JSON.stringify(reads) === JSON.stringify([["beta", 6]]),
