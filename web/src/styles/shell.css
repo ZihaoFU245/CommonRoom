@@ -5,16 +5,12 @@
   font-size: 1.35714rem;
   font-weight: 650;
   letter-spacing: -0.7px;
-  color: var(--subtle);
+  color: var(--ink);
 }
 .brand-mark {
   width: 36px;
   height: 36px;
   flex-shrink: 0;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 .sidebar-heading {
   min-height: var(--chat-header-height);
@@ -54,6 +50,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+:root:not([data-theme="dark"]) .login-top .brand {
+  color: #000;
 }
 .login-card {
   width: min(100%, 390px);
@@ -295,7 +294,6 @@
 }
 .sidebar .brand {
   font-size: 1.28571rem;
-  color: var(--ink);
 }
 
 .pinned-chats-heading {

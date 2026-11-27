@@ -3,7 +3,9 @@ import { defaultSeeds, derivePalette, paletteTokens } from "./palette.ts";
 import {
   defaultTheme,
   defaultFonts,
+  defaultPageTitle,
   loadFonts,
+  loadPageTitle,
   loadSeeds,
   loadTheme,
   resolvesToDark,
@@ -56,6 +58,11 @@ export function applyAppearance(
  */
 export function bootAppearance() {
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  try {
+    document.title = loadPageTitle() || defaultPageTitle;
+  } catch {
+    document.title = defaultPageTitle;
+  }
   try {
     const fonts = loadFonts();
     document.documentElement.style.setProperty(

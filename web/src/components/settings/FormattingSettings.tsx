@@ -1,3 +1,9 @@
+import { useState } from "preact/hooks";
+import {
+  defaultPageTitle,
+  loadPageTitle,
+  savePageTitle,
+} from "../../features/preferences/settings.ts";
 import { useMessagePreviewHeight } from "../../hooks/useMessagePreviewHeight.ts";
 import {
   messagePreviewMin,
@@ -39,6 +45,8 @@ export function FormattingSettings({
   | "onShowBotStatusChange"
 >) {
   const [previewHeight, setPreviewHeight] = useMessagePreviewHeight();
+  const [pageTitle, setPageTitle] = useState(loadPageTitle);
+  const [titleFeedback, setTitleFeedback] = useState("");
   const previewLabel =
     previewHeight === messagePreviewMax
       ? "Show full messages"
@@ -46,6 +54,40 @@ export function FormattingSettings({
   return (
     <>
       <h3>Preferences</h3>
+      <form
+        class="account-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const value = new FormData(event.currentTarget).get("page-title");
+          const title = typeof value === "string" ? value.trim() : "";
+          if (!savePageTitle(title)) {
+            setTitleFeedback("Could not save the page title in this browser.");
+            return;
+          }
+          document.title = title || defaultPageTitle;
+          setPageTitle(title);
+          setTitleFeedback("Page title saved.");
+        }}
+      >
+        <label for="page-title">Page title</label>
+        <input
+          id="page-title"
+          name="page-title"
+          type="text"
+          placeholder={defaultPageTitle}
+          aria-describedby="page-title-description"
+          value={pageTitle}
+          onInput={(event) => {
+            setPageTitle(event.currentTarget.value);
+            setTitleFeedback("");
+          }}
+        />
+        <p id="page-title-description" class="account-summary">
+          Applies in this browser. Leave blank to use CommonRoom.
+        </p>
+        <button type="submit">Save title</button>
+        <span role="status">{titleFeedback}</span>
+      </form>
       <label class="security-choice enter-send-choice" for="enter-send">
         <input
           id="enter-send"

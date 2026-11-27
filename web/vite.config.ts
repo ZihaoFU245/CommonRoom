@@ -312,6 +312,15 @@ export default defineConfig({
   build: {
     target: ["chrome114", "edge107", "firefox104", "safari16"],
     cssTarget: ["chrome114", "edge107", "firefox104", "safari16"],
+    rollupOptions: {
+      output: {
+        // Keep the legacy favicon redirect valid across deployments.
+        assetFileNames: ({ names }) =>
+          names.includes("favicon.svg")
+            ? "favicon.svg"
+            : "assets/[name]-[hash][extname]",
+      },
+    },
   },
   plugins: [
     preact(),

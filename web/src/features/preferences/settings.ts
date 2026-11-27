@@ -5,6 +5,18 @@ import {
 } from "../../api/browserStorage.ts";
 import type { Fonts } from "../../api/protocol.ts";
 import { defaultSeeds, parseHex } from "./palette.ts";
+
+export const defaultPageTitle = "CommonRoom";
+const pageTitleKey = "commonroom-page-title";
+
+export function loadPageTitle() {
+  return readStorage(pageTitleKey)?.trim() ?? "";
+}
+
+export function savePageTitle(value: string) {
+  return writeStorage(pageTitleKey, value.trim());
+}
+
 export const defaultFonts = { chat: 16, ui: 14 };
 export function fontSettings(input: unknown): Fonts {
   const value =

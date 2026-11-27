@@ -13,6 +13,7 @@ test("appearance bootstrap applies saved fonts and custom palette before render"
     },
   };
   const entries = new Map([
+    ["commonroom-page-title", "My chat tab"],
     ["commonroom-fonts", '{"chat":22,"ui":18}'],
     ["commonroom-theme", "custom"],
     ["commonroom-palette", '{"base":"#123456","accent":"#abcdef"}'],
@@ -30,16 +31,25 @@ test("appearance bootstrap applies saved fonts and custom palette before render"
     });
   }
   bootAppearance();
+  assert.equal(document.title, "My chat tab");
   assert.equal(properties.get("--chat-font-size"), "22px");
   assert.equal(properties.get("--ui-font-size"), "18px");
   const palette = derivePalette("#123456", "#abcdef");
   assert.equal(root.dataset.theme, palette.polarity);
   for (const [key, value] of Object.entries(palette.tokens))
     assert.equal(properties.get(`--${key}`), value);
+  globalThis.localStorage.getItem = (key) => {
+    if (key === "commonroom-fonts") throw new Error("Font read failed");
+    return entries.get(key) ?? null;
+  };
+  bootAppearance();
+  assert.equal(document.title, "My chat tab");
+  assert.equal(properties.get("--chat-font-size"), "16px");
   globalThis.localStorage.getItem = () => {
     throw new Error("Unexpected storage failure");
   };
   assert.doesNotThrow(bootAppearance);
+  assert.equal(document.title, "CommonRoom");
   assert.equal(root.dataset.theme, "dark");
   assert.equal(properties.get("--chat-font-size"), "16px");
   assert.equal(properties.get("--ui-font-size"), "14px");

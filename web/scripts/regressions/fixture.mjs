@@ -224,6 +224,32 @@ await test("keyboard viewport pan keeps the sidebar anchored and the composer vi
   }
 });
 
+await test("login branding uses black in light mode and theme ink in dark mode", async () => {
+  const root = document.documentElement;
+  const originalTheme = root.getAttribute("data-theme");
+  try {
+    root.dataset.theme = "light";
+    render(h(Login, { initialError: "", onLogin() {} }), tests);
+    const brand = tests.querySelector(".login-top .brand");
+    const mark = brand.querySelector(".brand-mark");
+    await until(() => mark.getBBox().width > 0);
+    check(
+      getComputedStyle(brand).color === "rgb(0, 0, 0)" &&
+        getComputedStyle(mark).color === "rgb(0, 0, 0)",
+      "the login wordmark and SVG outline use true black",
+    );
+    root.dataset.theme = "dark";
+    check(
+      getComputedStyle(brand).color === "rgb(250, 250, 250)" &&
+        getComputedStyle(mark).color === getComputedStyle(brand).color,
+      "the logo and wordmark use the dark theme foreground",
+    );
+  } finally {
+    if (originalTheme === null) root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", originalTheme);
+  }
+});
+
 await test("invite registration checks confirmation and returns to sign in", async () => {
   const original = api.register;
   const calls = [];
@@ -1570,6 +1596,8 @@ await test("command owners preserve drafts across delayed acknowledgements and f
 await test("settings panel switches clear credentials and ignore late account results", async () => {
   const pending = deferred(),
     commands = [];
+  const originalTitle = document.title;
+  const savedTitle = localStorage.getItem("commonroom-page-title");
   const state = {
     ...empty,
     account_access: {
@@ -1688,7 +1716,24 @@ await test("settings panel switches clear credentials and ignore late account re
       !tests.querySelector("#account-name"),
       "account editor closes on tab changes",
     );
+    await openSection("Preferences");
+    await until(() => tests.querySelector("#page-title"));
+    type("page-title", "  My chat tab  ");
+    click("Save title");
+    await until(() => document.title === "My chat tab");
+    await openSection("Appearance");
+    await until(() => !tests.querySelector("#page-title"));
+    await openSection("Preferences");
+    await until(
+      () => tests.querySelector("#page-title")?.value === "My chat tab",
+    );
+    type("page-title", "   ");
+    click("Save title");
+    await until(() => document.title === "CommonRoom");
   } finally {
+    document.title = originalTitle;
+    if (savedTitle === null) localStorage.removeItem("commonroom-page-title");
+    else localStorage.setItem("commonroom-page-title", savedTitle);
     pending.resolve({ kind: "notice", id: 1, text: "done" });
     render(null, tests);
   }
@@ -7551,12 +7596,23 @@ await test("room selection preserves fragments and restores the default view wit
         "desktop chat rows use the compact single-line layout",
       );
       const brand = list.querySelector(".brand");
+      const brandMark = brand.querySelector("svg.brand-mark");
+      await until(() => brandMark?.getBBox().width > 0);
+      const icon = new URL(
+        brandMark.querySelector("use").getAttribute("href"),
+        location.href,
+      );
+      check(
+        icon.pathname.endsWith("/src/assets/commonroom.svg") &&
+          icon.hash === "#brand-mark" &&
+          brandMark.getAttribute("aria-hidden") === "true",
+        "the sidebar loads the themed web SVG next to its wordmark",
+      );
       check(
         getComputedStyle(brand).color ===
           getComputedStyle(tests.querySelector(".navigation-toggle")).color &&
-          getComputedStyle(brand.querySelector("svg")).stroke ===
-            getComputedStyle(brand).color,
-        "the sidebar wordmark, logo and navigation toggle share the ink color",
+          getComputedStyle(brandMark).color === getComputedStyle(brand).color,
+        "the sidebar wordmark, logo outline, and toggle share the theme ink",
       );
     }
     if (narrow) {
