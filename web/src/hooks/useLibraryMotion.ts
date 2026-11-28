@@ -211,6 +211,11 @@ export function useLibraryMotion(mode: string) {
         sync();
       });
     };
+    const syncBeforePaint = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      sync();
+    };
     const resize = new ResizeObserver(schedule);
     const mutations = new MutationObserver((records) => {
       // Thumbnail loads replace children inside a tile. Only a resulting
@@ -230,24 +235,21 @@ export function useLibraryMotion(mode: string) {
                 record.target.closest(".library-grid > li")
               ),
         )
-      )
-        schedule();
+      ) {
+        // Restore the painted positions before the browser shows the new order.
+        syncBeforePaint();
+      }
     });
     sync();
     resize.observe(root);
     mutations.observe(root, { childList: true, subtree: true });
-    const motionPreferenceChanged = () => {
-      cancelAnimationFrame(frame);
-      frame = 0;
-      sync();
-    };
-    reduced.addEventListener("change", motionPreferenceChanged);
+    reduced.addEventListener("change", syncBeforePaint);
     return () => {
       cancelAnimationFrame(frame);
       root.removeEventListener("scroll", scrolled);
       resize.disconnect();
       mutations.disconnect();
-      reduced.removeEventListener("change", motionPreferenceChanged);
+      reduced.removeEventListener("change", syncBeforePaint);
       for (const tile of previous.values()) tile.motion?.cancel();
       for (const [ghost, motion] of exits) {
         motion.cancel();

@@ -10,6 +10,8 @@ import {
 } from "../features/preferences/motion.ts";
 import { useEvent } from "./useEvent.ts";
 
+const reorderSlop = 10;
+
 interface Drag {
   id: string;
   pointer: number;
@@ -26,8 +28,6 @@ interface Drag {
   moved: boolean;
   order: string[];
   original: string[];
-  hover: string | null;
-  hoverSince: number;
   edgeDirection: number;
   edgeSince: number;
   lastFrame: number;
@@ -260,8 +260,6 @@ export function useLibraryReorder(
         moved: false,
         order: ids,
         original: ids.slice(),
-        hover: null,
-        hoverSince: 0,
         edgeDirection: 0,
         edgeSince: 0,
         lastFrame: performance.now(),
@@ -269,6 +267,62 @@ export function useLibraryReorder(
       };
       active.current = drag;
       let dropping = false;
+      let lastPlacement:
+        | {
+            x: number;
+            y: number;
+            targetId: string;
+            axis: "x" | "y";
+            direction: number;
+          }
+        | undefined;
+      const updatePlacement = () => {
+        const centerX = drag.x - drag.offsetX + bounds.width / 2;
+        const centerY = drag.y - drag.offsetY + bounds.height / 2;
+        const point = { x: centerX, y: centerY + content.scrollTop };
+        if (
+          lastPlacement &&
+          Math.hypot(point.x - lastPlacement.x, point.y - lastPlacement.y) <
+            reorderSlop
+        )
+          return;
+
+        const candidates = Array.from(
+          content.querySelectorAll<HTMLElement>("[data-library-reorder-id]"),
+        );
+        const target = candidates.find((candidate) => {
+          if (candidate === tile) return false;
+          const box = tileBounds(candidate, content);
+          return (
+            centerX >= box.left &&
+            centerX < box.left + box.width &&
+            centerY >= box.top &&
+            centerY < box.top + box.height
+          );
+        });
+        const targetId = target?.dataset.libraryReorderId;
+        if (!target || !targetId) return;
+        // A wide neighbor can still cover the pointer after swapping slots.
+        // Crossing it again requires deliberate movement back toward it.
+        if (lastPlacement?.targetId === targetId) {
+          const { axis, direction } = lastPlacement;
+          if ((point[axis] - lastPlacement[axis]) * direction > -reorderSlop)
+            return;
+        }
+
+        const rowDelta = target.offsetTop - tile.offsetTop;
+        lastPlacement = {
+          ...point,
+          targetId,
+          axis: rowDelta ? "y" : "x",
+          direction: Math.sign(rowDelta || target.offsetLeft - tile.offsetLeft),
+        };
+        const next = drag.order.filter((value) => value !== id);
+        next.splice(drag.order.indexOf(targetId), 0, id);
+        drag.order = next;
+        drag.changed = next.join() !== drag.original.join();
+        setOrder(next);
+      };
       const update = () => {
         if (active.current !== drag) return;
         if (!drag.preview) {
@@ -329,42 +383,9 @@ export function useLibraryReorder(
           content.scrollTop +=
             (edge * Math.min(240, 90 + distance * 3) * elapsed) / 1000;
         }
-        if (
-          drag.moved ||
-          drag.hover !== null ||
-          oldScroll !== content.scrollTop
-        ) {
+        if (drag.moved || oldScroll !== content.scrollTop) {
           drag.moved = false;
-          const centerX = drag.x - drag.offsetX + bounds.width / 2;
-          const centerY = drag.y - drag.offsetY + bounds.height / 2;
-          const candidates = Array.from(
-            content.querySelectorAll<HTMLElement>("[data-library-reorder-id]"),
-          );
-          const target = candidates.find((candidate) => {
-            if (candidate === tile) return false;
-            const box = tileBounds(candidate, content);
-            return (
-              centerX >= box.left + box.width * 0.2 &&
-              centerX <= box.left + box.width * 0.8 &&
-              centerY >= box.top + box.height * 0.2 &&
-              centerY <= box.top + box.height * 0.8
-            );
-          });
-          const targetId = target?.dataset.libraryReorderId;
-          if (targetId !== drag.hover) {
-            drag.hover = targetId ?? null;
-            drag.hoverSince = now;
-          }
-          if (target && targetId && (dropping || now - drag.hoverSince >= 90)) {
-            const index = drag.order.indexOf(targetId);
-            const next = drag.order.filter((value) => value !== id);
-            next.splice(index, 0, id);
-            if (next.join() !== drag.order.join()) {
-              drag.order = next;
-              drag.changed = next.join() !== drag.original.join();
-              setOrder(next);
-            }
-          }
+          updatePlacement();
         }
         drag.frame = requestAnimationFrame(update);
       };

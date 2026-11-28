@@ -683,11 +683,29 @@ export async function libraryRegressions({
     const target = tiles()[4].getBoundingClientRect();
     const dragX = target.left + target.width / 2 - start.width / 2 + 20;
     const dragY = target.top + target.height / 2 - start.height / 2 + 20;
-    pointer("pointermove", document, dragX, dragY);
-    await until(
-      () =>
-        ids()[4] === initial[0].media_id &&
-        document.querySelector(".library-drag-preview"),
+    let firstReorderedBox;
+    const observeReorder = new MutationObserver(() => {
+      if (ids()[4] !== initial[0].media_id) return;
+      observeReorder.disconnect();
+      const box = sibling.getBoundingClientRect();
+      firstReorderedBox = {
+        deltaX: box.left - before.left,
+        deltaY: box.top - before.top + content.scrollTop - scrollBefore,
+        animations: sibling.getAnimations().length,
+      };
+    });
+    observeReorder.observe(grid, { childList: true });
+    try {
+      pointer("pointermove", document, dragX, dragY);
+      await until(() => firstReorderedBox);
+    } finally {
+      observeReorder.disconnect();
+    }
+    check(
+      firstReorderedBox.animations > 0 &&
+        Math.abs(firstReorderedBox.deltaX) < 1 &&
+        Math.abs(firstReorderedBox.deltaY) < 1,
+      `reordering starts from the previous painted box before the next frame: ${JSON.stringify(firstReorderedBox)}`,
     );
     check(
       moves.length === 0,
@@ -839,6 +857,105 @@ export async function libraryRegressions({
       "successful and failed keyboard moves retain focus for the next arrow key",
     );
   });
+  for (const position of ["edge", "center"]) {
+    await test(`media library drag targets the tile ${position} without shifting back`, async () => {
+      const items = Array.from({ length: 3 }, (_, index) => ({
+        ...sticker,
+        media_id: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      }));
+      const moves = [];
+      api.mediaConfig = async () => ({ enabled: true, max_size: 10000 });
+      api.library = async (view) => page(view === "recent" ? [] : items);
+      api.libraryMove = async (id, anchor) => {
+        moves.push({ id, anchor });
+        return { ok: true };
+      };
+      render(
+        h(LibraryPicker, {
+          account: `drag-target-${position}`,
+          canSelect: true,
+          select() {},
+          close() {},
+        }),
+        tests,
+      );
+      await manage();
+      const picker = tests.querySelector(".library-picker");
+      picker.style.width = "340px";
+      tests.querySelector(".library-edit").click();
+      const grid = picker.querySelector(".library-grid");
+      const tiles = () => [
+        ...grid.querySelectorAll("[data-library-reorder-id]"),
+      ];
+      await until(() => tiles().length === 3);
+      const [source, target, next] = tiles();
+      tiles().forEach((tile, index) => {
+        tile.style.flex = `0 0 ${index === 1 ? 140 : 32}px`;
+        tile.style.height = "64px";
+      });
+      await sleep(350);
+      function pointer(type, element, x, y) {
+        element.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            isPrimary: true,
+            pointerId: 32,
+            clientX: x,
+            clientY: y,
+          }),
+        );
+      }
+      const sourceBox = source.getBoundingClientRect();
+      const targetBox = target.getBoundingClientRect();
+      const x =
+        targetBox.left + (position === "edge" ? 10 : targetBox.width / 2);
+      const y = targetBox.top + targetBox.height / 2;
+      pointer(
+        "pointerdown",
+        source.querySelector(".library-preview"),
+        sourceBox.left + sourceBox.width / 2,
+        sourceBox.top + sourceBox.height / 2,
+      );
+      pointer("pointermove", document, x, y);
+      await until(
+        () => tiles()[1] === source,
+        () => `the tile ${position} accepts the drag`,
+      );
+      const holdsOrder = () => tiles()[0] === target && tiles()[1] === source;
+      let shiftedBack = false;
+      const observer = new MutationObserver(() => {
+        shiftedBack ||= !holdsOrder();
+      });
+      observer.observe(grid, { childList: true });
+      try {
+        for (const offset of [0, -1, 1, 14, 0]) {
+          pointer("pointermove", document, x + offset, y);
+          await sleep(120);
+        }
+      } finally {
+        observer.disconnect();
+      }
+      check(
+        !shiftedBack && holdsOrder(),
+        "holding near the same point keeps the accepted slot",
+      );
+      if (position === "center") {
+        pointer("pointermove", document, x - 14, y);
+        await until(() => tiles()[0] === source);
+        pointer("pointermove", document, x, y);
+        await until(holdsOrder);
+      }
+      pointer("pointerup", document, x, y);
+      await until(() => moves.length === 1);
+      check(
+        moves[0].id === source.dataset.libraryReorderId &&
+          moves[0].anchor.before_id === next.dataset.libraryReorderId,
+        "release saves the slot shown during the drag",
+      );
+    });
+  }
   await test("media library drag scrolls overflow and releases cancelled or unmounted previews", async () => {
     const items = Array.from({ length: 20 }, (_, index) => ({
       ...sticker,
