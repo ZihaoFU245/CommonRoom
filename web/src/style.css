@@ -11,6 +11,10 @@
 @import "./styles/name-colors.css";
 @import "./styles/attachments.css";
 
+:root[data-ios-safari] {
+  touch-action: manipulation;
+}
+
 /* Keep editable text legible without triggering iOS focus zoom. This follows
    component styles so small UI font preferences cannot override it. */
 @media (any-pointer: coarse) {

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { useSyncExternalStore } from "preact/compat";
 import { api } from "../../api/client.ts";
 import { errorMessage } from "../../api/protocol.ts";
-import { ensureMediaCache } from "../../features/conversation/mediaController.ts";
+import { promiseWithResolvers } from "../../api/promiseWithResolvers.ts";
+import { requestAbort } from "../../api/requestAbort.ts";
+import { registerMediaWorker } from "../../features/conversation/mediaController.ts";
 import {
   saveAccountPreferences,
   savedPreferences,
@@ -21,6 +23,38 @@ interface PushState {
   manager: PushManager | null;
   installed: boolean;
   subscription: PushSubscription | null;
+}
+
+async function readDeviceSubscription(signal: AbortSignal) {
+  if (!window.isSecureContext || !navigator.serviceWorker)
+    return { manager: null, subscription: null };
+
+  // Push uses the active registration. Media requests also need a controller handshake.
+  const deadline = requestAbort(15000, signal);
+  const { promise: cancelled, reject } = promiseWithResolvers<never>();
+  const abort = () => reject(deadline.signal.reason);
+  deadline.signal.addEventListener("abort", abort, { once: true });
+  try {
+    deadline.signal.throwIfAborted();
+    return await Promise.race([
+      cancelled,
+      registerMediaWorker().then(async (registration) => {
+        deadline.signal.throwIfAborted();
+        const active = registration.active
+          ? registration
+          : await navigator.serviceWorker.ready;
+        deadline.signal.throwIfAborted();
+        const manager = active.pushManager ?? null;
+        return {
+          manager,
+          subscription: (await manager?.getSubscription()) ?? null,
+        };
+      }),
+    ]);
+  } finally {
+    deadline.signal.removeEventListener("abort", abort);
+    deadline.dispose();
+  }
 }
 
 function matchesKey(
@@ -166,22 +200,15 @@ export function NotificationSettings({
   const [state, setState] = useState<PushState>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<"install" | "uninstall">();
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     async function load() {
       const config = await api.pushSettings(controller.signal);
-      const supported =
-        window.isSecureContext &&
-        "serviceWorker" in navigator &&
-        typeof PushManager !== "undefined" &&
-        typeof Notification !== "undefined";
-      let manager: PushManager | null = null;
-      if (supported && (config.public_key || config.installed)) {
-        await ensureMediaCache();
-        const registration = await navigator.serviceWorker.ready;
-        manager = registration.pushManager;
-      }
-      const subscription = await manager?.getSubscription();
+      const device =
+        config.public_key || config.installed
+          ? await readDeviceSubscription(controller.signal)
+          : { manager: null, subscription: null };
       if (!controller.signal.aborted)
         setState({
           key: config.public_key
@@ -190,16 +217,15 @@ export function NotificationSettings({
                 (byte) => byte.charCodeAt(0),
               )
             : null,
-          manager,
+          ...device,
           installed: config.installed,
-          subscription: subscription ?? null,
         });
     }
     load().catch((cause: unknown) => {
       if (!controller.signal.aborted) setError(errorMessage(cause));
     });
     return () => controller.abort();
-  }, []);
+  }, [retry]);
 
   async function install() {
     if (!state?.manager || !state.key || state.subscription || busy) return;
@@ -247,6 +273,7 @@ export function NotificationSettings({
     incompatible || (state && state.installed !== !!state.subscription);
   const remove =
     busy === "uninstall" || state?.installed || !!state?.subscription;
+  const loadFailed = !state && !!error;
   const issue =
     error ||
     (repair
@@ -264,14 +291,22 @@ export function NotificationSettings({
           type="button"
           class={`notification-device-action ${remove ? "account-setting-action" : "primary"}`}
           aria-busy={!!busy || (!state && !error)}
-          disabled={!!busy || (!remove && (!state?.key || !state.manager))}
+          disabled={
+            !!busy ||
+            (!remove && !loadFailed && (!state?.key || !state.manager))
+          }
           onClick={() => {
+            if (loadFailed) {
+              setError("");
+              setRetry((attempt) => attempt + 1);
+              return;
+            }
             (remove ? uninstall() : install()).catch((cause: unknown) =>
               setError(errorMessage(cause)),
             );
           }}
         >
-          {remove ? "Uninstall" : "Install"}
+          {remove ? "Uninstall" : loadFailed ? "Retry" : "Install"}
         </button>
         <p class="account-summary">Receives background notification pushes.</p>
       </div>

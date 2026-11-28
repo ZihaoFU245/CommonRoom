@@ -48,7 +48,12 @@ export function MarkdownFrame({ source }: { source: string }) {
           if (sent.current) return;
           sent.current = true;
           frame.current?.contentWindow?.postMessage(
-            { kind: "markdown-render", source },
+            {
+              kind: "markdown-render",
+              source,
+              disableDoubleTapZoom:
+                document.documentElement.hasAttribute("data-ios-safari"),
+            },
             "*",
           );
         }}

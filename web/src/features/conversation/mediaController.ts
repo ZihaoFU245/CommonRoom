@@ -39,6 +39,17 @@ export function mediaCacheReady(): boolean {
   );
 }
 
+export function registerMediaWorker(): Promise<ServiceWorkerRegistration> {
+  const service = navigator.serviceWorker;
+  if (!script || !service)
+    throw new Error("Open this app over HTTPS or localhost to load media.");
+  return service.register(script, {
+    type: "module",
+    scope: new URL("./", document.baseURI).pathname,
+    updateViaCache: "none",
+  });
+}
+
 export function ensureMediaCache(): Promise<void> {
   if (mediaCacheReady()) return Promise.resolve();
   if (!pending) {
@@ -92,12 +103,7 @@ async function connect(): Promise<void> {
   cancellation.signal.addEventListener("abort", abort, { once: true });
   try {
     // Register without blocking the deadline on a stalled worker download.
-    service
-      .register(script, {
-        type: "module",
-        scope: new URL("./", document.baseURI).pathname,
-        updateViaCache: "none",
-      })
+    registerMediaWorker()
       .then((value) => {
         if (cancellation.signal.aborted) return;
         registration = value;

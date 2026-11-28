@@ -282,8 +282,12 @@ export async function libraryRegressions({
     const picker = tests.querySelector(".library-picker");
     let animation = picker.getAnimations()[0];
     check(animation, "opening has an animation");
-    animation.finish();
-    await animation.finished;
+    await until(
+      () =>
+        picker.getAnimations().length === 0 &&
+        getComputedStyle(picker).transform === "none",
+      () => "the settled picker should release its opening transform",
+    );
     for (let turn = 0; turn < 6; turn++) {
       click("Open media library");
       await until(() => picker.getAnimations()[0] !== animation);
@@ -328,8 +332,8 @@ export async function libraryRegressions({
           Math.abs(continued.top - bounds.top) < 1,
         "reversal also preserves painted scale and placement",
       );
-      reopened.finish();
-      await reopened.finished;
+      reopened.play();
+      await until(() => !picker.getAnimations().length);
       animation = reopened;
     }
     click("Open media library");
@@ -498,13 +502,17 @@ export async function libraryRegressions({
     const acquiredGrid = collections.querySelector(".library-grid");
     const uploadTile = acquiredGrid.querySelector(".library-upload-tile");
     const existingTile = acquiredGrid.querySelector(".library-sticker-tile");
-    const uploadBounds = uploadTile.getBoundingClientRect();
-    const existingBounds = existingTile.getBoundingClientRect();
-    check(
-      Math.abs(uploadBounds.top - existingBounds.top) < 1 &&
-        uploadBounds.left > existingBounds.left &&
-        Math.abs(uploadBounds.width - uploadBounds.height) < 1,
-      "upload placeholder follows collection media as a compact square",
+    await until(
+      () => {
+        const uploadBounds = uploadTile.getBoundingClientRect();
+        const existingBounds = existingTile.getBoundingClientRect();
+        return (
+          Math.abs(uploadBounds.top - existingBounds.top) < 1 &&
+          uploadBounds.left > existingBounds.left &&
+          Math.abs(uploadBounds.width - uploadBounds.height) < 1
+        );
+      },
+      () => "the upload placeholder should settle beside the media as a square",
     );
 
     render(

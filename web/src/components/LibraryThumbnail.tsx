@@ -34,6 +34,7 @@ export function LibraryThumbnail({
         <img
           src={preview}
           alt=""
+          decoding="async"
           onLoad={({ currentTarget }) =>
             onSize(currentTarget.naturalWidth, currentTarget.naturalHeight)
           }
@@ -49,6 +50,7 @@ export function LibraryThumbnail({
           width="96"
           height="96"
           loading="lazy"
+          decoding="async"
           onError={() => setFailed(true)}
           onLoad={({ currentTarget }) => {
             onSize(currentTarget.naturalWidth, currentTarget.naturalHeight);

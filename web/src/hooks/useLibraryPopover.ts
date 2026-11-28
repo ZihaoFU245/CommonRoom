@@ -22,8 +22,8 @@ export function useLibraryPopover(
     exiting.current = !opening;
     const previous = motion.current;
     const painted = previous ? getComputedStyle(element) : undefined;
-    const opacity = painted ? Number(painted.opacity) : 0;
-    const transform = painted?.transform ?? "scale(0.15)";
+    const opacity = painted ? Number(painted.opacity) : opening ? 0 : 1;
+    const transform = painted?.transform ?? (opening ? "scale(0.15)" : "none");
     previous?.cancel();
     motion.current = undefined;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -49,7 +49,13 @@ export function useLibraryPopover(
     animation.finished
       .then(
         () => {
-          if (motion.current === animation && exiting.current) close();
+          if (motion.current !== animation) return;
+          if (exiting.current) close();
+          else {
+            // Release the transform layer so WebKit can scroll the open panel normally.
+            motion.current = undefined;
+            animation.cancel();
+          }
         },
         () => undefined,
       )

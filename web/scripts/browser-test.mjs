@@ -303,12 +303,14 @@ try {
         await new Promise((resolveWait) => setTimeout(resolveWait, 50));
       }
       const diagnostics = events.filter(
-        ({ method }) =>
-          method.startsWith("ServiceWorker.") ||
-          method.startsWith("BackgroundService."),
+        ({ method, params }) =>
+          method === "Runtime.exceptionThrown" ||
+          (method.startsWith("ServiceWorker.") &&
+            JSON.stringify(params).includes(origin)),
       );
+      const page = await evaluate("document.body.innerText");
       throw new Error(
-        `Timed out waiting for the Web Push worker: ${JSON.stringify(diagnostics)}`,
+        `Timed out waiting for the Web Push worker: ${page}\n${JSON.stringify(diagnostics)}`,
       );
     }
     const { registrationId } = await waitFor(active);
@@ -351,6 +353,7 @@ try {
     console.log(
       "PASS the service worker shows the sender and preview with the chat tab closed",
     );
+    await command("Runtime.enable", {}, sessionId);
     await command(
       "Page.navigate",
       { url: `${origin}/push-controls/` },
@@ -358,6 +361,14 @@ try {
     );
     const button = (label) =>
       `[...document.querySelectorAll("#controls button")].find(button => button.textContent === "${label}")`;
+    await waitFor(() => evaluate(`${button("Retry")}?.disabled === false`));
+    assert.equal(
+      await evaluate(
+        'document.querySelector("#controls [role=status]").textContent',
+      ),
+      "Cannot register the worker.",
+    );
+    await click("Retry");
     await waitFor(() => evaluate(`${button("Install")}?.disabled === false`));
     assert.equal(await evaluate(`Boolean(${button("Uninstall")})`), false);
     assert.equal(

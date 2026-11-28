@@ -224,6 +224,23 @@ await test("keyboard viewport pan keeps the sidebar anchored and the composer vi
   }
 });
 
+await test("Safari touch styles preserve Chrome defaults", async () => {
+  const root = document.documentElement;
+  try {
+    check(
+      getComputedStyle(root).touchAction === "auto",
+      "Chrome keeps its default touch action",
+    );
+    root.setAttribute("data-ios-safari", "");
+    check(
+      getComputedStyle(root).touchAction === "manipulation",
+      "Safari disables double-tap zoom while preserving panning and pinch zoom",
+    );
+  } finally {
+    root.removeAttribute("data-ios-safari");
+  }
+});
+
 await test("login branding uses black in light mode and theme ink in dark mode", async () => {
   const root = document.documentElement;
   const originalTheme = root.getAttribute("data-theme");

@@ -17,6 +17,17 @@ import { AppErrorBoundary } from "./components/AppErrorBoundary.tsx";
 import { useAppViewport } from "./hooks/useAppViewport.ts";
 import { trackFocusInput } from "./features/preferences/inputFocus.ts";
 
+// Chrome on iOS can also expose WebKit CSS features.
+if (
+  CSS.supports("-webkit-touch-callout", "none") &&
+  !/(?:CriOS|FxiOS|EdgiOS|OPiOS)\//u.test(navigator.userAgent) &&
+  (/Version\/.*Safari\//u.test(navigator.userAgent) ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true ||
+    matchMedia("(display-mode: standalone)").matches)
+) {
+  document.documentElement.dataset.iosSafari = "";
+}
+
 // Production HTTPS redirects and HSTS are configured by the serving proxy.
 startMediaCache(new URL(mediaWorkerUrl, document.baseURI));
 const root = document.getElementById("app");

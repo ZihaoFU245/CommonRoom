@@ -46,7 +46,12 @@ function receive(event: MessageEvent<unknown>): void {
   const prefix =
     '<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="' +
     policy.replaceAll("&", "&amp;").replaceAll('"', "&quot;") +
-    '"><script>(' +
+    '">' +
+    ("disableDoubleTapZoom" in event.data &&
+    event.data.disableDoubleTapZoom === true
+      ? "<style>html{touch-action:manipulation}</style>"
+      : "") +
+    "<script>(" +
     observeSize.toString() +
     ")();<\/script>";
   document.open();

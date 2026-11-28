@@ -12,8 +12,12 @@ let subscription = null;
 let subscribedFromClick = false;
 const requests = [];
 let subscriptionCount = 0;
+let settingsLoads = 0;
 
-api.pushSettings = async () => ({ public_key: key, installed });
+api.pushSettings = async () => {
+  settingsLoads += 1;
+  return { public_key: key, installed };
+};
 PushManager.prototype.getSubscription = async () => subscription;
 PushManager.prototype.subscribe = async (options) => {
   subscribedFromClick = navigator.userActivation.isActive;
@@ -44,6 +48,15 @@ api.uninstallPush = async () => {
   return { ok: true };
 };
 
+// Exercise worker-based push with no global API constructors or media handshake.
+Object.defineProperty(window, "PushManager", { value: undefined });
+Object.defineProperty(window, "Notification", { value: undefined });
+const service = navigator.serviceWorker;
+const register = service.register.bind(service);
+service.register = async (...args) => {
+  if (settingsLoads < 2) throw new Error("Cannot register the worker.");
+  return register(...args);
+};
 startMediaCache(new URL("/media-cache.js", location.href));
 const mount = (key) =>
   render(

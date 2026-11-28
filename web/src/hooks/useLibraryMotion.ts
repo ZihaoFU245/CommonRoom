@@ -203,33 +203,51 @@ export function useLibraryMotion(mode: string) {
       }
       previous = next;
     };
-    const resize = new ResizeObserver(sync);
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        sync();
+      });
+    };
+    const resize = new ResizeObserver(schedule);
     const mutations = new MutationObserver((records) => {
-      // Ignore our own exit layer. It is outside the live layout and selectors.
+      // Thumbnail loads replace children inside a tile. Only a resulting
+      // change to the tile's box needs measurement, via ResizeObserver.
       if (
-        records.some(
-          (record) =>
-            record.target !== root ||
-            [...record.addedNodes, ...record.removedNodes].some(
-              (node) =>
-                !(
-                  node instanceof HTMLElement &&
-                  node.classList.contains("library-motion-exit")
-                ),
-            ),
+        records.some((record) =>
+          record.target === root
+            ? [...record.addedNodes, ...record.removedNodes].some(
+                (node) =>
+                  !(
+                    node instanceof HTMLElement &&
+                    node.classList.contains("library-motion-exit")
+                  ),
+              )
+            : !(
+                record.target instanceof Element &&
+                record.target.closest(".library-grid > li")
+              ),
         )
       )
-        sync();
+        schedule();
     });
     sync();
     resize.observe(root);
     mutations.observe(root, { childList: true, subtree: true });
-    reduced.addEventListener("change", sync);
+    const motionPreferenceChanged = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      sync();
+    };
+    reduced.addEventListener("change", motionPreferenceChanged);
     return () => {
+      cancelAnimationFrame(frame);
       root.removeEventListener("scroll", scrolled);
       resize.disconnect();
       mutations.disconnect();
-      reduced.removeEventListener("change", sync);
+      reduced.removeEventListener("change", motionPreferenceChanged);
       for (const tile of previous.values()) tile.motion?.cancel();
       for (const [ghost, motion] of exits) {
         motion.cancel();
