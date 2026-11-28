@@ -11,7 +11,6 @@ pub fn manual(topic: Option<&str>) -> Result<String, String> {
         "groups" => GROUPS,
         "scopes" => SCOPES,
         "ownership" => OWNERSHIP,
-        "console" => CONSOLE,
         "sudo" => SUDO,
         "bot" => BOT,
         "clean" => CLEAN,
@@ -104,7 +103,7 @@ const OVERVIEW: &str = r#"# CommonRoom manual
 
 - Use `/man history`, `/man user`, or another command name for its usage.
 - `/help` lists commands available in the selected conversation.
-- `/console` opens the Command view; select a room or use `/room join room` to return to a conversation.
+- `/clear` removes command output from the current chat in this browser tab.
 
 - Manuals are public documentation.
 - Reading one does not grant permission to run the command."#;
@@ -516,7 +515,6 @@ const SCOPES: &str = r#"# Scopes
 - User metadata/lists and bots require an explicit room or `@global` in private views.
 - Grant/revoke keep explicit permission scopes; group assignments without a room stay global.
 - Both places must allow the command, and each affected target must allow the action.
-- The Command view does not bypass target checks.
 
 - Cleanup across multiple conversations checks every target before changing any history.
 
@@ -600,29 +598,6 @@ const SUDO: &str = r#"# /sudo
 
 - Revoking either grant blocks future sudo commands.
 - Explicit group assignments and other additive grants still apply."#;
-
-const CONSOLE: &str = r#"# /console
-
-- Open the Command view in this browser tab.
-- There is no Command button in the sidebar.
-
-## Usage
-
-```text
-/console
-```
-
-- Accounts with no conversations start in this view automatically.
-- Select a conversation in the sidebar, or use `/room join room`, to leave it.
-- Each view keeps its own command output until the tab is refreshed.
-
-## Access required
-
-- The `/console` command grant must allow the selected context.
-- The user group includes it by default.
-- Opening the Command view does not add permissions.
-- Commands still check their context, targets, and required actions.
-- This command is available in the web UI only."#;
 
 const OWNERSHIP: &str = r#"# Room ownership
 

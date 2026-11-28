@@ -54,6 +54,7 @@ export function ConsoleOutput({
     };
   }, [Manual, showNotificationStatus]);
   const text = useMemo(() => outputMarkdown(entry), [entry]);
+  const command = commandText(entry.command);
   return (
     <article
       class={`console-output ${entry.error ? "error" : ""}`}
@@ -68,9 +69,9 @@ export function ConsoleOutput({
       ) : Manual ? (
         <Manual
           text={text}
-          foldSections={
-            !entry.error &&
-            /^\/system\s+metrics$/u.test(commandText(entry.command))
+          foldSections={!entry.error && /^\/system\s+metrics$/u.test(command)}
+          copyMetrics={
+            !entry.error && /^\/system\s+metrics\s+--txt$/u.test(command)
           }
         />
       ) : (

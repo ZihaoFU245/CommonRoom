@@ -45,7 +45,6 @@ interface Props {
   activeHint: number;
   replyTarget: ReplyTarget | null;
   input: RefObject<HTMLTextAreaElement>;
-  consoleView: boolean;
   alwaysSendWithEnter: boolean;
   draft: string;
   pending: boolean;
@@ -70,7 +69,6 @@ export function Composer({
   activeHint,
   replyTarget,
   input,
-  consoleView,
   alwaysSendWithEnter,
   draft,
   pending,
@@ -94,20 +92,19 @@ export function Composer({
   const composition = useCompositionGuard(keydown);
   const attachmentId = mediaUpload?.attachment?.media.media_id;
   useEffect(() => {
-    if (attachmentId && canWrite && !consoleView && !libraryOpen)
+    if (attachmentId && canWrite && !libraryOpen)
       focusControl(input.current, { preventScroll: true });
-  }, [attachmentId, canWrite, consoleView, libraryOpen, input]);
+  }, [attachmentId, canWrite, libraryOpen, input]);
   useEffect(() => {
     hintList.current
       ?.querySelector('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest" });
   }, [activeHint, hints.length]);
-  const attachVisible = !!mediaUpload?.enabled && !consoleView && canWrite;
+  const attachVisible = !!mediaUpload?.enabled && canWrite;
   const attachAllowed =
     !!mediaUpload &&
     canAttachFile({
       enabled: mediaUpload.enabled,
-      consoleView,
       canWrite,
       pending,
       uploading: mediaUpload.busy,
@@ -268,7 +265,7 @@ export function Composer({
               />
             </label>
           )}
-          {!consoleView && canWrite && !pending && (
+          {canWrite && !pending && (
             <button
               ref={libraryButton}
               type="button"
@@ -287,11 +284,6 @@ export function Composer({
               <PickerIcon name="sticker" />
             </button>
           )}
-          {consoleView && (
-            <span class="prompt" aria-hidden="true">
-              ›
-            </span>
-          )}
           <textarea
             name="message"
             ref={input}
@@ -305,13 +297,7 @@ export function Composer({
             aria-activedescendant={
               hints.length ? `hint-${activeHint}` : undefined
             }
-            placeholder={
-              consoleView
-                ? "Command"
-                : canWrite
-                  ? "Message or command"
-                  : "Read-only conversation · Enter a command"
-            }
+            placeholder={canWrite ? "Message or command" : "Enter a command"}
             value={draft}
             onInput={(event) => edit(event.currentTarget.value)}
             onPaste={paste}

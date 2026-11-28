@@ -271,7 +271,6 @@ fn sudo_covers_every_engine_command_without_borrowing_another_identity() {
         "/man sudo",
         "/permissions @audit",
         "/whoami",
-        "/console",
         "/debug on",
         "/user ls",
         "/room ls",
@@ -809,40 +808,32 @@ fn room_directory_lists_only_own_private_pairs_even_with_inspection_access() {
 }
 
 #[test]
-fn console_command_is_readonly_and_uses_the_selected_context_grant() {
+fn removed_console_command_ignores_legacy_grants() {
     let mut e = fixture();
-    e.execute(Some("bob"), None, "/tell eve hello").unwrap();
-    let before = e.data.clone();
-    for actor in ["alice", "bob", "mallory"] {
-        for context in [None, Some("team"), Some("@direct:eve")] {
-            // Alice and Mallory have no access to Bob's private pair; invocation
-            // there remains subject to the usual context authorization.
-            if context == Some("@direct:eve") && actor != "bob" {
-                continue;
-            }
-            assert_eq!(
-                e.execute(Some(actor), context, "/console").unwrap(),
-                "Command view opened."
-            );
-        }
-    }
+    e.execute(None, None, "/grant bob @global /help").unwrap();
+    e.data
+        .policy
+        .grants
+        .iter_mut()
+        .find(|grant| grant.permissions.contains("/help"))
+        .unwrap()
+        .permissions
+        .insert("/console".into());
+    e.authorization = authorization::CompiledPolicy::compile(&e.data).unwrap();
+
     assert!(
-        e.execute(Some("bob"), Some("team"), "/console extra")
+        !e.commands_for(Some("bob"), None)
+            .iter()
+            .any(|command| command.name == "/console")
+    );
+    assert!(!e.effective(Some("bob"), &Scope::Server).command("/console"));
+    assert!(e.execute(Some("bob"), None, "/console").is_err());
+    assert!(
+        e.execute(None, None, "/grant bob @global /console")
             .is_err()
     );
-    assert!(e.execute(None, None, "/console").is_err());
-    assert!(e.data == before);
-    e.execute(None, None, "/revoke bob user").unwrap();
-    assert!(e.execute(Some("bob"), Some("team"), "/console").is_err());
-    e.execute(None, None, "/grant bob #team /console").unwrap();
-    assert!(e.execute(Some("bob"), Some("team"), "/console").is_ok());
-    // The Command view collects available scoped commands; actual operations
-    // still require their own target command and action grants.
-    assert!(e.execute(Some("bob"), None, "/console").is_ok());
-    assert!(e.execute(Some("bob"), None, "/ls user").is_err());
-    e.execute(None, None, "/revoke bob #team /console").unwrap();
-    assert!(e.execute(Some("bob"), Some("team"), "/console").is_err());
-    assert!(e.execute(Some("bob"), None, "/console").is_err());
+    assert!(crate::manual::manual(Some("console")).is_err());
+    assert!(e.execute(Some("bob"), None, "/help").is_ok());
 }
 
 #[test]
@@ -1744,7 +1735,6 @@ fn every_registered_command_and_content_endpoint_denies_accounts_without_grants(
         "/help".into(),
         "/invite ls".into(),
         "/bot ls @global".into(),
-        "/console".into(),
         "/man grant".into(),
         "/permissions #team".into(),
         "/debug on".into(),

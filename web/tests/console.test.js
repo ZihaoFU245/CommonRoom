@@ -8,7 +8,6 @@ import {
   privateMessages,
   redactCommand,
   commandText,
-  clearedOrder,
 } from "../src/features/conversation/console.ts";
 
 test("system subcommands complete only when the server advertises su access", () => {
@@ -113,7 +112,7 @@ test("sudo completion uses elevated commands without exposing them directly", ()
   );
 });
 
-test("prototype member room names preserve transcript and local clear behavior", () => {
+test("prototype member room names preserve transcript and local output", () => {
   const message = { id: "one", sequence: 1, time: 1 };
   const ledger = { sequence: 2, messages: new Map([["one", 1]]) };
   for (const view of [
@@ -126,20 +125,7 @@ test("prototype member room names preserve transcript and local clear behavior",
     "__proto__",
   ]) {
     const output = [{ kind: "command", key: "local", room: view, order: 2 }];
-    assert.equal(
-      timeline([message], output, ledger, clearedOrder({}, view), view).length,
-      2,
-    );
-    assert.equal(
-      timeline(
-        [message],
-        output,
-        ledger,
-        clearedOrder({ [view]: 2 }, view),
-        view,
-      ).length,
-      0,
-    );
+    assert.equal(timeline([message], output, ledger, view).length, 2);
   }
 });
 
@@ -195,20 +181,20 @@ test("sudo passwords stay masked and wrapped commands retain completion and UI r
 test("local command output stays in its origin view", () => {
   const output = [
     { key: "room", room: "lol", order: 1 },
-    { key: "command", room: "@command", order: 2 },
+    { key: "command", room: "", order: 2 },
     { key: "private", room: "@direct:bob", order: 3 },
   ];
   const ledger = { messages: new Map() };
   assert.deepEqual(
-    timeline([], output, ledger, 0, "lol").map((entry) => entry.key),
+    timeline([], output, ledger, "lol").map((entry) => entry.key),
     ["room"],
   );
   assert.deepEqual(
-    timeline([], output, ledger, 0, "@command").map((entry) => entry.key),
+    timeline([], output, ledger, "").map((entry) => entry.key),
     ["command"],
   );
-  assert.equal(timeline([], output, ledger, 3, "@direct:bob").length, 0);
-  assert.equal(timeline([], [], ledger, 0, "lol").length, 0);
+  assert.equal(timeline([], output, ledger, "@direct:bob").length, 1);
+  assert.equal(timeline([], [], ledger, "lol").length, 0);
 });
 test("private conversations contain only messages between the selected people", () => {
   const direct = [
@@ -259,9 +245,9 @@ test("snapshots preserve output ordering, clear is local, refresh only restores 
     timeline([first, next], output, ledger).map((e) => e.key),
     ["first", "local", "next"],
   );
-  assert.equal(
-    timeline([first, next], output, ledger, ledger.sequence).length,
-    0,
+  assert.deepEqual(
+    timeline([first, next], [], ledger).map((entry) => entry.key),
+    ["first", "next"],
   );
   const refreshed = ingest({
     rooms: [{ messages: [first, next] }],

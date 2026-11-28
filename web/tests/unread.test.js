@@ -17,19 +17,17 @@ test("history backfill preserves message and local command order", () => {
   ];
   ingest(snapshot, ledger, older);
   assert.deepEqual(
-    timeline([...older, newer], output, ledger, 0, "room").map((e) => e.key),
+    timeline([...older, newer], output, ledger, "room").map((e) => e.key),
     ["1", "2", "3", "command"],
   );
-  assert.equal(
-    timeline([...older, newer], output, ledger, ledger.sequence, "room").length,
-    0,
+  assert.deepEqual(
+    timeline([...older, newer], [], ledger, "room").map((e) => e.key),
+    ["1", "2", "3"],
   );
   const live = { id: "4", sequence: 4, time: 4 };
   ingest({ rooms: [{ messages: [newer, live] }], direct: [] }, ledger, older);
   assert.deepEqual(
-    timeline([...older, newer, live], output, ledger, 0, "room").map(
-      (e) => e.key,
-    ),
+    timeline([...older, newer, live], output, ledger, "room").map((e) => e.key),
     ["1", "2", "3", "command", "4"],
   );
 });

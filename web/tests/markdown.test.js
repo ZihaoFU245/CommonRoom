@@ -115,7 +115,6 @@ test("format is captured for room, private, explicit tell and reply submissions"
     text: "**hello**",
     draft: "**hello**",
     selected: "lobby",
-    consoleView: false,
     peer: null,
     replyId: null,
     markdown: true,

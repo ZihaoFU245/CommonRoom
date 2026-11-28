@@ -239,7 +239,8 @@ cheaply since startup, with no periodic logging/profiling. See
 
 Message commands (`/tell`, `/history`, `/reply`, `/react`, `/edit`, `/retract`),
 `/permissions`, `/sudo`, `/bot`, `/system`, `/clean`, `/debug`, `/whoami`,
-`/console`, `/clear`, `/logout`, `/help` and `/man` retain their purposes.
+`/logout`, `/help` and `/man` retain their purposes.
+`/clear` dismisses command output in the current chat in this tab.
 `/clean age scope [--dry-run]` always requires an explicit scope. Use `#ROOM`,
 `@direct:USER` for your existing private chat, `@private:a:b` for one pair,
 `@private` for all private chats, or `@global` for all conversations. `@all` is

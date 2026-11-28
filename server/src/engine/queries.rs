@@ -507,13 +507,6 @@ impl Engine {
             actor, room, parts, ..
         } = *context;
         match parts[0] {
-            "/console" => {
-                require_len(parts, 1, "/console")?;
-                if actor.is_none() {
-                    return Err("The Command view is available in the web UI only.".into());
-                }
-                Ok("Command view opened.".into())
-            }
             "/debug" => {
                 let allowed = self.allows(actor, &context.scope, Action::Metadata)
                     || (context.scope == Scope::Server

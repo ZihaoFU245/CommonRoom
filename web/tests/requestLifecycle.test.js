@@ -122,7 +122,6 @@ test("confirmation captures alias expansion, sudo target and originating view", 
     text: expandAlias("/sudo /drop #lobby", aliases),
     draft: "/sudo /drop #lobby",
     selected: "lobby",
-    consoleView: false,
     peer: null,
     replyId: null,
   };
@@ -154,7 +153,6 @@ test("private history keeps current syntax and messages/replies retain Unicode",
     text: "/history 1 100",
     draft: "/history 1 100",
     selected: "@direct:bob",
-    consoleView: false,
     peer: "bob",
     replyId: null,
   };
@@ -168,7 +166,7 @@ test("private history keeps current syntax and messages/replies retain Unicode",
   assert.equal(submissionFrame(context).text, "/tell bob 中文 🙂");
   context.replyId = "m1";
   assert.equal(submissionFrame(context).text, "/reply m1 中文 🙂");
-  context.consoleView = true;
+  context.selected = "";
   assert.equal(submissionFrame(context).room, null);
 });
 

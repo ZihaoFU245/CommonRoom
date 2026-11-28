@@ -9,7 +9,6 @@ export function useLocalConsole(
   atBottom: RefObject<boolean>,
 ) {
   const [output, setOutput] = useState<LocalOutput[]>([]);
-  const [cleared, setCleared] = useState<Record<string, number>>({});
   const [initialLedger] = useState(() => ingest(initial));
   const ledger = useRef<Ledger>(initialLedger);
   function append(
@@ -41,14 +40,8 @@ export function useLocalConsole(
     );
   }
 
-  function clearView() {
-    setOutput((previous) =>
-      previous.filter((entry) => entry.room !== selected),
-    );
-    setCleared((previous) => ({
-      ...previous,
-      [selected]: ledger.current.sequence,
-    }));
+  function clearOutput(view: string) {
+    setOutput((previous) => previous.filter((entry) => entry.room !== view));
   }
-  return { output, cleared, setCleared, ledger, append, complete, clearView };
+  return { output, ledger, append, complete, clearOutput };
 }

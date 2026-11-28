@@ -7,7 +7,6 @@ import {
 
 const idle = {
   enabled: true,
-  consoleView: false,
   canWrite: true,
   pending: false,
   uploading: false,
@@ -35,7 +34,6 @@ test("attaching stays available exactly while the composer can take a file", () 
   assert.equal(canAttachFile(idle), true);
   assert.equal(canAttachFile({ ...idle, draft: "hello" }), true);
   assert.equal(canAttachFile({ ...idle, enabled: false }), false);
-  assert.equal(canAttachFile({ ...idle, consoleView: true }), false);
   assert.equal(canAttachFile({ ...idle, canWrite: false }), false);
   assert.equal(canAttachFile({ ...idle, pending: true }), false);
   assert.equal(canAttachFile({ ...idle, uploading: true }), false);

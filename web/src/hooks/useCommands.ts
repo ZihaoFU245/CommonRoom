@@ -47,7 +47,6 @@ interface Context {
   botCommands: BotCommands[];
   selected: string;
   direct: boolean;
-  consoleView: boolean;
   peer: string | null;
   state: Snapshot;
   room: Room | undefined;
@@ -64,7 +63,7 @@ interface Context {
     view?: string,
   ) => string;
   complete: (key: string, result: string, error?: boolean) => void;
-  clearView: () => void;
+  clearOutput: (view: string) => void;
   logout: () => void;
 }
 export function useCommands({
@@ -73,7 +72,6 @@ export function useCommands({
   botCommands,
   selected,
   direct,
-  consoleView,
   peer,
   state,
   room,
@@ -85,7 +83,7 @@ export function useCommands({
   setSelected,
   append,
   complete,
-  clearView,
+  clearOutput,
   logout,
 }: Context) {
   const preferences = useCommandPreferences(append);
@@ -116,7 +114,6 @@ export function useCommands({
     currentState,
     desiredRoom,
     setSelected,
-    clearView,
     logout,
   });
   const outbox = useOutgoingMessages();
@@ -164,7 +161,6 @@ export function useCommands({
     lifecycle,
     socket,
     selected,
-    consoleView,
     replyTarget,
     setReplyTarget,
     requestDelete,
@@ -302,13 +298,16 @@ export function useCommands({
       append(text, "Messages support at most 4000 characters.", true);
       return;
     }
-    if (!text.startsWith("/") && !permissions.includes("w:message.create")) {
+    if (
+      !text.startsWith("/") &&
+      (!selected || !permissions.includes("w:message.create"))
+    ) {
       append(text, "This conversation is read-only.", true);
       return;
     }
     if (text.startsWith("/") && !canExecute(text.split(/\s+/)[0] ?? "")) {
       const command = text.split(/\s+/u)[0] ?? "";
-      const scope = consoleView ? "Command view" : selected;
+      const scope = selected || "@global";
       append(
         text,
         `Command grant missing: ${command} in ${scope}. Action permissions alone do not enable a command. Check /permissions or /man ${command.slice(1)}.`,
@@ -317,7 +316,7 @@ export function useCommands({
       return;
     }
     if (text === "/clear") {
-      clearView();
+      clearOutput(selected);
       setDraft("");
       return;
     }
@@ -338,15 +337,10 @@ export function useCommands({
       append(text, "Use /tell user message for private messages.", true);
       return;
     }
-    if (consoleView && !text.startsWith("/")) {
-      append(text, "Use a command or select a room to send a message.", true);
-      return;
-    }
     const submission = captureSubmission({
       text,
       draft,
       selected,
-      consoleView,
       peer,
       replyId: replyTarget?.id ?? null,
       markdown: attachment ? true : markdown,
@@ -413,6 +407,7 @@ export function useCommands({
       )
         setDraft("");
       if (current.reply) setReplyTarget(null);
+      if (commandText(current.text) === "/clear") clearOutput(current.room);
       navigation.acknowledge(current.text);
     }
   }

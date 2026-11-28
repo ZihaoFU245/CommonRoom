@@ -40,7 +40,6 @@ import { api } from "../api/client.ts";
 import { showChatNotification } from "../features/preferences/notifications.ts";
 import {
   timeline,
-  clearedOrder,
   privatePeers,
   privateMessages,
 } from "../features/conversation/console.ts";
@@ -125,12 +124,12 @@ export function Chat({
   const [selected, setSelected] = useState(() => {
     const requested =
       new URLSearchParams(location.hash.slice(1)).get("room") || "";
-    return (requested?.startsWith("@direct:") &&
-      privatePeers(initial).includes(requested.slice(8))) ||
-      requested === "@command" ||
+    const peers = privatePeers(initial);
+    return (requested.startsWith("@direct:") &&
+      peers.includes(requested.slice(8))) ||
       initial.rooms.some((room) => room.name === requested)
       ? requested
-      : initial.rooms[0]?.name || "@command";
+      : (initial.rooms[0]?.name ?? (peers[0] ? `@direct:${peers[0]}` : ""));
   });
   const [draftPeers, setDraftPeers] = useState<string[]>([]);
   const initialSelection = useRef(selected);
@@ -188,8 +187,12 @@ export function Chat({
   const virtualTimeline = useRef<VirtualTimelineHandle>(null);
   const atBottom = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
-  const { output, cleared, setCleared, ledger, append, complete, clearView } =
-    useLocalConsole(initial, selected, selectedRef, atBottom);
+  const { output, ledger, append, complete, clearOutput } = useLocalConsole(
+    initial,
+    selected,
+    selectedRef,
+    atBottom,
+  );
   const { notifications, notificationsRef, toggleNotifications, setMuted } =
     useChatNotifications(append);
 
@@ -293,7 +296,6 @@ export function Chat({
   );
   const direct = selected === "@direct" || selected.startsWith("@direct:");
   const peer = selected.startsWith("@direct:") ? selected.slice(8) : null;
-  const consoleView = selected === "@command";
   const tail = useMemo(
     () =>
       direct
@@ -339,7 +341,6 @@ export function Chat({
     ),
     selected,
     direct,
-    consoleView,
     peer,
     state,
     room,
@@ -351,7 +352,7 @@ export function Chat({
     setSelected,
     append,
     complete,
-    clearView,
+    clearOutput,
     logout: () => {
       logout().catch(reportUnexpectedError);
     },
@@ -408,7 +409,7 @@ export function Chat({
   const displaySelection = useRef<{ name: string; started: number }>();
   const displayStart = useRef<number>();
   const conversationDisplayed =
-    !conversationListOpen && !consoleView && (Boolean(room) || direct);
+    !conversationListOpen && (Boolean(room) || direct);
   useLayoutEffect(() => {
     if (!conversationDisplayed) return;
     const pending = displaySelection.current;
@@ -479,9 +480,6 @@ export function Chat({
     messages,
     historyReady,
     output,
-    cleared,
-    resetCleared: () =>
-      setCleared((previous) => ({ ...previous, [selected]: 0 })),
     settingsOpen,
     conversationListOpen,
     status,
@@ -494,15 +492,8 @@ export function Chat({
     historyLoading: loading,
   });
   const entries = useMemo(
-    () =>
-      timeline(
-        messages,
-        output,
-        renderLedger,
-        clearedOrder(cleared, selected),
-        selected,
-      ),
-    [messages, output, cleared, selected, renderLedger],
+    () => timeline(messages, output, renderLedger, selected),
+    [messages, output, selected, renderLedger],
   );
   const handleReact = useEvent(reactTo);
   const handleEdit = useEvent(commands.editMessage);
@@ -576,15 +567,12 @@ export function Chat({
     observer.observe(area);
     return () => observer.disconnect();
   }, []);
+  const defaultView =
+    state.rooms[0]?.name ?? (peers[0] ? `@direct:${peers[0]}` : "");
   useEffect(() => {
-    if (
-      (peer && !peers.includes(peer)) ||
-      (!direct && !consoleView && !state.rooms.some((r) => r.name === selected))
-    )
-      setSelected(
-        state.rooms[0]?.name || (peers[0] ? `@direct:${peers[0]}` : "@command"),
-      );
-  }, [state.rooms, selected, peers, peer, direct, consoleView]);
+    if ((peer && !peers.includes(peer)) || (!direct && !room))
+      setSelected(defaultView);
+  }, [defaultView, room, peers, peer, direct, selected]);
   useEffect(() => {
     const params = new URLSearchParams(location.hash.slice(1));
     if (
@@ -592,8 +580,13 @@ export function Chat({
       (!params.has("room") && (narrow || selected === initialSelection.current))
     )
       return;
-    params.set("room", selected);
-    history.replaceState(history.state, "", `#${params.toString()}`);
+    if (selected) params.set("room", selected);
+    else params.delete("room");
+    history.replaceState(
+      history.state,
+      "",
+      params.size ? `#${params}` : location.pathname + location.search,
+    );
   }, [selected, narrow]);
   const traversedHash = useRef<string>();
   const historyTimer = useRef<number>();
@@ -620,7 +613,17 @@ export function Chat({
     traversedHash.current = event.type === "popstate" ? hash : undefined;
     if (duplicate) return;
     const params = new URLSearchParams(hash.slice(1));
-    const room = params.get("room");
+    let room = params.get("room");
+    if (room === "@command") {
+      room = defaultView || null;
+      if (room) params.set("room", room);
+      else params.delete("room");
+      history.replaceState(
+        history.state,
+        "",
+        params.size ? `#${params}` : location.pathname + location.search,
+      );
+    }
     const nextSettings = settingsScreen(params);
     const home = !room;
     const requested = room || initialSelection.current;
@@ -630,8 +633,7 @@ export function Chat({
       if (narrow && home) return;
       if (
         requested &&
-        (requested === "@command" ||
-          state.rooms.some((room) => room.name === requested) ||
+        (state.rooms.some((room) => room.name === requested) ||
           (requested.startsWith("@direct:") &&
             peers.includes(requested.slice(8))))
       ) {
@@ -890,7 +892,6 @@ export function Chat({
             <ChatHeader
               heading={conversationHeading}
               onBack={narrow ? backToConversations : undefined}
-              consoleView={consoleView}
               direct={direct}
               peer={peer}
               avatar={peer ? state.avatars?.[peer] : undefined}
@@ -974,14 +975,16 @@ export function Chat({
             <Composer
               account={state.username}
               mediaUpload={commands.mediaUpload}
-              canWrite={commands.permissions.includes("w:message.create")}
+              canWrite={
+                Boolean(selected) &&
+                commands.permissions.includes("w:message.create")
+              }
               minimumComposerHeight={minimumComposerHeight}
               actualComposerHeight={actualComposerHeight}
               hints={hints}
               activeHint={activeHint}
               replyTarget={replyTarget}
               input={input}
-              consoleView={consoleView}
               alwaysSendWithEnter={alwaysSendWithEnter}
               draft={draft}
               pending={pending}

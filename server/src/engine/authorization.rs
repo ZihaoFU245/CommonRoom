@@ -200,7 +200,6 @@ const COMMANDS: &[&str] = &[
     "/permissions",
     "/man",
     "/owner",
-    "/console",
     "/sudo",
     "/bot",
     "/invite",
@@ -330,7 +329,6 @@ fn group_rights(group: Group, scope: &Scope) -> Rights {
             "/clear",
             "/logout",
             "/permissions",
-            "/console",
         ],
     );
     if group == Group::Admin {
@@ -549,6 +547,10 @@ impl CompiledPolicy {
         for grant in &data.policy.grants {
             let mut mask = Rights::default();
             for p in &grant.permissions {
+                // Older databases may contain a grant for the removed browser command.
+                if p == "/console" {
+                    continue;
+                }
                 if matches!(p.as_str(), "w:account.color.own" | "w:account.color.any")
                     && !matches!(grant.scope, Scope::Room(_))
                 {

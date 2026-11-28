@@ -1355,7 +1355,6 @@ async fn every_catalogued_command_form_runs_through_web_dispatch() {
         (Some("team"), "/permissions"),
         (Some("team"), "/debug on"),
         (Some("team"), "/whoami"),
-        (Some("team"), "/console"),
         (Some("team"), "/tell bob private-message"),
         (Some("team"), "original-message"),
         (Some("team"), "/reply $message reply-message"),

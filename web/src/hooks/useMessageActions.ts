@@ -15,7 +15,6 @@ interface Context {
   lifecycle: ReturnType<typeof createRequestLifecycle>;
   socket: RefObject<WebSocket | null>;
   selected: string;
-  consoleView: boolean;
   replyTarget: ReplyTarget | null;
   setReplyTarget: (reply: ReplyTarget | null) => void;
   requestDelete: (action: () => void) => void;
@@ -31,7 +30,6 @@ export function useMessageActions({
   lifecycle,
   socket,
   selected,
-  consoleView,
   replyTarget,
   setReplyTarget,
   requestDelete,
@@ -72,7 +70,7 @@ export function useMessageActions({
           action: true,
         },
         frame: {
-          room: consoleView ? null : selected,
+          room: selected,
           text: `/edit ${message.id} ${value.trim()}`,
         },
         complete: (result, current) => {
@@ -96,7 +94,7 @@ export function useMessageActions({
   function sendAction(text: string) {
     lifecycle.submit({
       command: { text, room: selected, key: null, action: true },
-      frame: { room: consoleView ? null : selected, text },
+      frame: { room: selected, text },
       complete: handleAcknowledgement,
     });
   }

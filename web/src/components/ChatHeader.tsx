@@ -5,7 +5,6 @@ import type { RefObject } from "preact";
 export function ChatHeader({
   heading,
   onBack,
-  consoleView,
   direct,
   peer,
   avatar,
@@ -16,7 +15,6 @@ export function ChatHeader({
 }: {
   heading: RefObject<HTMLHeadingElement>;
   onBack: (() => void) | undefined;
-  consoleView: boolean;
   direct: boolean;
   peer: string | null;
   avatar: string | undefined;
@@ -40,27 +38,25 @@ export function ChatHeader({
         </button>
       )}
       <div class="room-title">
-        {!consoleView && direct && peer ? (
+        {direct && peer ? (
           <span class="private-chat-icon">
             <span class="hash" aria-hidden="true">
               ↗
             </span>
             <Avatar url={avatar} name={peer} />
           </span>
-        ) : (
-          <span>{consoleView ? ">" : direct ? "↗" : "#"}</span>
-        )}
+        ) : selected ? (
+          <span>{direct ? "↗" : "#"}</span>
+        ) : null}
         <h1 ref={heading} tabIndex={-1}>
-          {consoleView ? (
-            "Command"
-          ) : direct ? (
+          {direct ? (
             peer ? (
               <DisplayName name={peer} interactive />
             ) : (
               "Private messages"
             )
           ) : (
-            selected
+            selected || "No conversation selected"
           )}
         </h1>
       </div>

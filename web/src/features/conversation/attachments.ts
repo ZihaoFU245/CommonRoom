@@ -2,8 +2,6 @@
 export interface AttachmentAvailability {
   /** The server exposes media configuration. */
   enabled: boolean;
-  /** Console output never carries attachments. */
-  consoleView: boolean;
   /** The conversation allows writing. */
   canWrite: boolean;
   /** A message is being sent. */
@@ -18,7 +16,6 @@ export interface AttachmentAvailability {
 /** The attach control and pasted images share one availability rule. */
 export function canAttachFile({
   enabled,
-  consoleView,
   canWrite,
   pending,
   uploading,
@@ -27,7 +24,6 @@ export function canAttachFile({
 }: AttachmentAvailability): boolean {
   return (
     enabled &&
-    !consoleView &&
     canWrite &&
     !pending &&
     !uploading &&

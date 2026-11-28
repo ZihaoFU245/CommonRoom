@@ -303,14 +303,9 @@ try {
     /Permission: user/,
   );
   assert.ok(
-    bob.snapshot.commands.some((command) => command.name === "/console"),
+    !bob.snapshot.commands.some((command) => command.name === "/console"),
   );
-  await send(bob, "/console");
-  assert.equal(
-    bob.frames.find((f) => f.id === bob.serial).text,
-    "Command view opened.",
-  );
-  await send(bob, "/console extra", null, "error");
+  await send(bob, "/console", null, "error");
   await send(bob, "/grant bob", null, "error");
   await send(bob, "/configs", null, "error");
   await send(bob, "/clean 7d @all", null, "error");

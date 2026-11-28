@@ -1,11 +1,6 @@
 .sidebar nav {
   margin-top: 8px;
 }
-.prompt {
-  color: var(--ink);
-  font-size: 1.71429rem;
-  line-height: 1;
-}
 .console-history {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.92857rem;
@@ -106,17 +101,43 @@
   background: var(--wash);
   white-space: break-spaces;
 }
-.console-output .manual pre {
+.console-output .manual :is(pre, .metrics-code-block) {
   max-width: 100%;
   margin: 12px 0;
-  padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--wash);
+}
+.console-output .manual pre {
+  padding: 12px 14px;
   line-height: 1.6;
   white-space: pre;
   overflow-x: auto;
   overflow-wrap: normal;
+}
+.console-output .manual .metrics-code-block pre {
+  margin: 0;
+  border: 0;
+  background: none;
+}
+.metrics-code-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 14px;
+  border-block-start: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+.metrics-code-actions button {
+  min-block-size: 32px;
+  padding-inline: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.metrics-code-actions button:hover {
+  border-color: currentcolor;
 }
 .manual table {
   display: block;
@@ -187,7 +208,7 @@
   border-radius: 8px;
   background: var(--paper);
   box-shadow: var(--shadow-float);
-  max-height: min(250px, 40dvh);
+  max-height: min(250px, calc(var(--app-height, 100dvh) * 0.4));
   overflow: auto;
 }
 .command-hints button {

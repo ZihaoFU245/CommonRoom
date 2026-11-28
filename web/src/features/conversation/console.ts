@@ -12,9 +12,6 @@ import { nameColors } from "../preferences/nameColors.ts";
 import { notificationSuggestions } from "../preferences/notificationMode.ts";
 import { permissionNames } from "./completion.ts";
 // Commands and output live only in this tab; chat comes from server snapshots.
-export function clearedOrder(cleared: Record<string, number>, view: string) {
-  return Object.hasOwn(cleared, view) ? (cleared[view] ?? 0) : 0;
-}
 const ingestIds = new WeakMap<Ledger, Set<string>>();
 const noExtras: Message[] = [];
 export function ingest(
@@ -104,7 +101,6 @@ export function timeline(
   messages: Message[],
   output: LocalOutput[],
   ledger: Ledger,
-  cleared = 0,
   view?: string,
 ): TimelineEntry[] {
   return [
@@ -115,9 +111,7 @@ export function timeline(
       order: ledger.messages.get(message.id) ?? 0,
     })),
     ...output.filter((entry) => view === undefined || entry.room === view),
-  ]
-    .filter((entry) => entry.order > cleared)
-    .sort((a, b) => a.order - b.order);
+  ].sort((a, b) => a.order - b.order);
 }
 
 export function privatePeers(

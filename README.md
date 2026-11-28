@@ -103,8 +103,8 @@ Bob can then run `/sudo /room new support` or another slash command. Temporary
 elevation retains Bob's identity and leaves his group assignments unchanged.
 Read `/man sudo` for details.
 
-Use `/console` to open the Command view, and select a conversation in the sidebar
-to return. `/room ls` lists rooms and their owners plus your own readable private
+Use `/clear` to dismiss command output in the current chat in this tab.
+`/room ls` lists rooms and their owners plus your own readable private
 conversations; it excludes other people's private pairs, even for su.
 Use `/user ls` to list the current room’s members (`/user ls @global` lists accounts), `/user new NAME PASSWORD` to create one, and `/user delete NAME` or `/room delete #NAME` for removal. Browser removals ask for confirmation; `/alias A B` saves a local command-prefix mapping. See [Commands](docs/commands.md) for syntax and [Security](docs/security.md) for permissions.
 

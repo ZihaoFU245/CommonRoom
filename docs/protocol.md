@@ -205,7 +205,7 @@ membership. Edits and replayed messages do not trigger a room-wide alert.
 
 History requests carry an abort signal and are accepted only for the current view and stable resource ID. Each page represents a coherent content revision; live updates may already be newer. Range-preserving retries stop after three attempts and report a refresh status rather than looping indefinitely. Live tails merge into the current window by ID; cleanup/reactions/gaps refresh the visible page around its anchor, never the complete retained history. Pure appends while browsing older pages advance metadata without moving the window. Read-only updates preserve message-array references to avoid re-rendering the transcript.
 
-Command output is bounded to the last 200 entries in tab memory, scoped to the originating view. Refresh removes it. `/clear` changes visible local history only. Ordinary sends clear the composer immediately and appear in a separate pending
+Command output is bounded to the last 200 entries in tab memory, scoped to the originating view. Refresh removes it. `/clear` removes local command output for the current view and preserves chat history. Ordinary sends clear the composer immediately and appear in a separate pending
 list. Up to 16 message acknowledgements may overlap; commands remain exclusive.
 Typing and completion stay available while requests are pending. Failed sends
 retain their text and an Edit and resend action; uncertain disconnected sends

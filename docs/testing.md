@@ -273,7 +273,8 @@ duplicate scroll events. The visible-image browser regression checks small upwar
 scrolls while preview dimensions change.
 
 Browser command-output regressions submit `/debug on` without a command grant in
-rooms, Command view and private chats, then submit another message or command.
+rooms and private chats, then verify that `/clear` dismisses the error, preserves
+the transcript, and leaves the composer ready to send another message.
 The room case uses 1,000 messages and exercises the first lazy formatter load:
 command output must stay mounted while loading so virtual row measurements cannot
 oscillate between Suspense fallback and content heights and hang the tab.
@@ -309,9 +310,7 @@ and compiled-policy rollback. Output regressions verify that @global and its
 legacy alias resolve to the same scope, command requirements do not grant actions,
 and assignment privacy and cleanup limits remain separate from permission formatting. The room
 directory excludes other users' private pairs even with explicit inspection grants
-or su membership. `/console` checks scoped grants, rejects extra arguments, and
-does not change authorization or persisted state. Run
-the manual optimized permission benchmark with:
+or su membership. Run the manual optimized permission benchmark with:
 
 ```sh
 rtk cargo test --release --locked permission_lookup_benchmark -- --ignored --nocapture

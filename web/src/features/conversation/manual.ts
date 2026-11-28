@@ -141,7 +141,7 @@ export function outputMarkdown(
   const scopeLabel = (scope?: string) => {
     if (scope === "@global") return "globally";
     const room = !scope ? entry.room : scope;
-    if (!room || room === "@command") return "globally";
+    if (!room) return "globally";
     return room && !room.startsWith("@")
       ? `in #${room.replace(/^#/u, "")}`
       : "in the selected room";

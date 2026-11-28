@@ -92,8 +92,8 @@ pub(crate) fn execution(input: &str) -> Execution {
         | ["/bot", "ls" | "info", ..]
         | ["/bot", "token", "ls", ..]
         | [
-            "/system" | "/permissions" | "/debug" | "/help" | "/man" | "/whoami" | "/console"
-            | "/ls" | "/members" | "/history",
+            "/system" | "/permissions" | "/debug" | "/help" | "/man" | "/whoami" | "/ls"
+            | "/members" | "/history",
             ..,
         ] => Execution::Read,
         ["/clean", ..] if parts.last() == Some(&"--dry-run") => Execution::Read,
@@ -212,13 +212,6 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
             false,
         ),
         (
-            "General",
-            "/console",
-            "/console",
-            "Open the Command view in this browser tab",
-            false,
-        ),
-        (
             "Account",
             "/grant",
             "/grant user|@all group [#room|@global] | /grant user|@all scope permission",
@@ -296,7 +289,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
                 && (!console
                     || ![
                         "/passwd", "/join", "/leave", "/tell", "/history", "/react", "/reply",
-                        "/debug", "/console",
+                        "/debug",
                     ]
                     .contains(name))
         })
@@ -319,7 +312,7 @@ fn catalogue(admin: bool, console: bool) -> Vec<Command> {
         result.push(Command {
             name: "/clear",
             usage: "/clear",
-            description: "Clear this view locally; refresh restores messages",
+            description: "Clear command output in the current chat in this tab",
             section: "General",
             requirements: requirements("/clear"),
             admin: false,

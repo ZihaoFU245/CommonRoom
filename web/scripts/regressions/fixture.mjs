@@ -1051,6 +1051,66 @@ await test("system metrics sections expand independently while keeping rates vis
   }
 });
 
+await test("plain text system metrics copy the complete report", async () => {
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const report = `System metrics\n\n${"counter: 42\n".repeat(500)}Final counter: 99\n`;
+  const copied = [];
+  let deny = false;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      async writeText(text) {
+        if (deny) throw new DOMException("Clipboard denied", "NotAllowedError");
+        copied.push(text);
+      },
+    },
+  });
+  try {
+    for (const command of [
+      "/system metrics --txt",
+      "/sudo /system metrics --txt",
+    ]) {
+      render(
+        h(ConsoleOutput, {
+          entry: {
+            command,
+            result: `\`\`\`text\n${report}\`\`\``,
+            error: false,
+          },
+        }),
+        tests,
+      );
+      await until(() => tests.querySelector(".metrics-code-actions button"));
+      const button = tests.querySelector(".metrics-code-actions button");
+      const block = tests.querySelector("pre");
+      const status = tests.querySelector('[role="status"]');
+      check(
+        button.getBoundingClientRect().top >=
+          block.getBoundingClientRect().bottom,
+        "Copy button sits below the full code block",
+      );
+      deny = false;
+      button.click();
+      await until(() => status.textContent === "Copied");
+      check(
+        copied.pop() === report,
+        "The full report is copied with its line breaks",
+      );
+      check(
+        copied.length === 0,
+        "Each activation writes to the clipboard once",
+      );
+      deny = true;
+      button.click();
+      await until(() => status.textContent === "Couldn’t copy");
+      render(null, tests);
+    }
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else delete navigator.clipboard;
+  }
+});
+
 const message = (sequence) => ({
   id: `m-${sequence}`,
   sequence,
@@ -1477,8 +1537,6 @@ await test("slow read acknowledgements drain the latest conversation without ano
     messages: [message(10)],
     historyReady: true,
     output: [],
-    cleared: {},
-    resetCleared() {},
     settingsOpen: false,
     conversationListOpen: false,
     status: "online",
@@ -1541,7 +1599,6 @@ await test("command owners preserve drafts across delayed acknowledgements and f
     botCommands: [],
     selected: "team",
     direct: false,
-    consoleView: false,
     peer: null,
     state,
     room: state.rooms[0],
@@ -2599,11 +2656,20 @@ await test("same-minute message bars join without gaps and break on minute, auth
 });
 
 for (const view of ["team", "@command", "@direct:bob"]) {
-  await test(`normal users can keep composing after denied debug commands in ${view}`, async () => {
+  await test(`/clear preserves chat and composing after a denied command in ${view}`, async () => {
     const savedHash = location.hash;
     history.replaceState(null, "", `#room=${encodeURIComponent(view)}`);
     const OriginalSocket = window.WebSocket;
     const frames = [];
+    const clear = {
+      name: "/clear",
+      usage: "/clear",
+      description: "Clear command output",
+      requirements: "",
+      section: "General",
+      admin: false,
+      console: false,
+    };
     const state = {
       ...empty,
       commands: [
@@ -2624,21 +2690,28 @@ for (const view of ["team", "@command", "@direct:bob"]) {
           owner: "owner",
           members: ["alice"],
           permissions: ["r:message.read", "w:message.create"],
-          commands: [],
+          commands: [clear],
           messages: Array.from({ length: 1000 }, (_, i) => message(i + 1)),
         },
       ],
       private_peers: ["bob"],
-      direct: [{ ...message(1001), to: "bob" }],
+      direct: [{ ...message(1001), to: "bob", private_id: "private-id" }],
       private_access: {
         "@direct:bob": {
           id: "private-id",
           permissions: ["r:message.read", "w:message.create"],
-          commands: [],
+          commands: [clear],
         },
       },
       unread: {
         team: { revision: 1, count: 0, first: null, oldest: 1, through: 1000 },
+        "@direct:bob": {
+          revision: 1,
+          count: 0,
+          first: null,
+          oldest: 1001,
+          through: 1001,
+        },
       },
     };
     class TestSocket {
@@ -2694,27 +2767,40 @@ for (const view of ["team", "@command", "@direct:bob"]) {
         }),
         tests,
       );
-      await until(() => tests.querySelector(".composer textarea"));
+      await until(() => tests.querySelector(".connection.online"));
       const input = tests.querySelector(".composer textarea");
-      input.value = "/debug on";
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      await sleep(50);
-      tests
-        .querySelector(".composer")
-        .dispatchEvent(
-          new Event("submit", { bubbles: true, cancelable: true }),
-        );
+      const expectedView = view === "@command" ? "team" : view;
+      await until(
+        () =>
+          new URLSearchParams(location.hash.slice(1)).get("room") ===
+          expectedView,
+      );
+      const sequence = view === "@direct:bob" ? 1001 : 1000;
+      const retainedMessage = () =>
+        tests.querySelector(`[data-sequence="${sequence}"]`);
+      await until(retainedMessage);
+      async function submit(text) {
+        input.value = text;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await until(() => input.value === text);
+        await sleep(50);
+        tests
+          .querySelector(".composer")
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true }),
+          );
+      }
+      await submit("/debug on");
       await until(() => tests.querySelector(".console-output.error"));
       check(frames.length === 0, "missing command grant is rejected locally");
-      const nextText = view === "@command" ? "/help" : "still responsive";
-      input.value = nextText;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      await sleep(50);
-      tests
-        .querySelector(".composer")
-        .dispatchEvent(
-          new Event("submit", { bubbles: true, cancelable: true }),
-        );
+
+      await submit("/clear");
+      await until(() => !tests.querySelector(".console-output"));
+      check(retainedMessage(), "The existing chat message remains visible");
+      check(frames.length === 0, "Clear runs locally");
+
+      const nextText = "still responsive";
+      await submit(nextText);
       await until(() => frames.length === 1);
       check(
         frames[0].text.includes(nextText),
@@ -2799,8 +2885,6 @@ await test("unread shortcut hides at its target and returns only above it", asyn
     messages: [80, 90, 100].map(message),
     historyReady: true,
     output: [],
-    cleared: {},
-    resetCleared() {},
     settingsOpen: false,
     conversationListOpen: false,
     status: "online",
@@ -2874,8 +2958,6 @@ await test("unread navigation resolves a deleted target after paging and within 
     historyReady: true,
     historyLoading: false,
     output: [],
-    cleared: {},
-    resetCleared() {},
     settingsOpen: false,
     conversationListOpen: false,
     status: "online",
@@ -5020,7 +5102,7 @@ await test("bot credential controls show local dates and insert IDs at wide and 
     function Probe({ available = credentials }) {
       const composer = useCommandComposer({
         botCommands: pluginCommands,
-        selected: "@command",
+        selected: "",
         direct: false,
         peer: null,
         state: { ...empty, bots: ["helper"], bot_credentials: available },
@@ -5054,7 +5136,6 @@ await test("bot credential controls show local dates and insert IDs at wide and 
             activeHint: composer.activeHint,
             replyTarget: null,
             input,
-            consoleView: true,
             draft: composer.draft,
             pending: false,
             canWrite: true,
@@ -5161,7 +5242,6 @@ await test("reply composer keeps Unicode display names on one line", () => {
           activeHint: -1,
           replyTarget: { id: "m-1", from: name, text: "这是啥bug" },
           input: { current: null },
-          consoleView: false,
           draft: "",
           pending: false,
           canWrite: true,
@@ -5228,7 +5308,6 @@ await test("Safari IME confirmation never sends or selects composer hints", asyn
       activeHint: composer.activeHint,
       replyTarget: null,
       input,
-      consoleView: false,
       draft: composer.draft,
       pending: false,
       canWrite: true,

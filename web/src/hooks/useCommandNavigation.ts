@@ -11,7 +11,6 @@ export function useCommandNavigation({
   currentState,
   desiredRoom,
   setSelected,
-  clearView,
   logout,
 }: {
   permissions: string[];
@@ -19,7 +18,6 @@ export function useCommandNavigation({
   currentState: ValueRef<Snapshot>;
   desiredRoom: RefObject<string | null>;
   setSelected: (view: string) => void;
-  clearView: () => void;
   logout: () => void;
 }) {
   const [debug, setDebug] = useState(false);
@@ -46,12 +44,7 @@ export function useCommandNavigation({
             ? name
             : undefined
           : argument;
-    if (command === "/clear") clearView();
     if (command === "/logout") logout();
-    if (command === "/console") {
-      desiredRoom.current = null;
-      setSelected("@command");
-    }
     if (
       (["/new", "/join"].includes(command || "") ||
         (command === "/room" && ["new", "join"].includes(argument || ""))) &&

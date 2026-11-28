@@ -17,8 +17,6 @@ interface Context {
   messages: Message[];
   historyReady: boolean;
   output: LocalOutput[];
-  cleared: Record<string, number>;
-  resetCleared: () => void;
   settingsOpen: boolean;
   conversationListOpen: boolean;
   status: string;
@@ -37,8 +35,6 @@ export function useReadTracking({
   messages,
   historyReady,
   output,
-  cleared,
-  resetCleared,
   settingsOpen,
   conversationListOpen,
   status,
@@ -162,7 +158,6 @@ export function useReadTracking({
       );
       if (nearest !== undefined) {
         setUnreadBoundary(nearest);
-        resetCleared();
         virtualTimeline.current?.scrollToSequence(nearest, 0, true);
       }
     }
@@ -219,7 +214,6 @@ export function useReadTracking({
       }
       setUnreadBoundary(first || null);
       if (first) {
-        resetCleared();
         virtualTimeline.current?.scrollToSequence(first);
         atBottom.current = false;
       } else {
@@ -241,7 +235,6 @@ export function useReadTracking({
     identity,
     historyReady,
     output,
-    cleared,
     unread,
     hasAfter,
     historyLoading,
@@ -359,7 +352,6 @@ export function useReadTracking({
       first,
     );
     if (nearest === undefined) return;
-    resetCleared();
     setUnreadBoundary(nearest);
     atBottom.current = false;
     virtualTimeline.current?.scrollToSequence(nearest, 0, true);

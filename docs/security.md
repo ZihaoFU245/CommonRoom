@@ -125,13 +125,11 @@ uploads. Other actions retain their additive semantics.
 
 The evaluator checks the command in its invocation context and on each resolved
 target, then checks the target action. Selecting one room does not authorize an explicit target
-in another room. The Command view can invoke commands available in an authorized
-scope, but command and action checks still apply on the actual target. Multi-conversation cleanup authorizes
+in another room. Multi-conversation cleanup authorizes
 all targets before mutating any. HTTP history and read tracking require resource
 read access independently of slash-command grants.
 
-`/console` opens the browser's Command view after checking its command grant in
-the selected context. It gives no additional access. `/room ls` lists only the
+`/room ls` lists only the
 signed-in account's readable private pairs, even when su or explicit grants allow
 inspection of other pairs. Inspection grants still apply to those resources.
 

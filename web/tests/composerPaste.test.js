@@ -84,12 +84,12 @@ function props(overrides = {}) {
       retry: undefined,
     },
     minimumComposerHeight: 42,
+    maximumComposerHeight: 240,
     actualComposerHeight: 42,
     hints: [],
     activeHint: 0,
     replyTarget: null,
     input: { current: null },
-    consoleView: false,
     draft: "",
     pending: false,
     canWrite: true,
@@ -217,7 +217,6 @@ test("text and non-image pastes keep the browser's own behavior", () => {
 
 test("paste is refused exactly where the attach picker is disabled", () => {
   const cases = [
-    ["console view", {}, { consoleView: true }],
     ["read-only conversation", {}, { canWrite: false }],
     ["while sending", {}, { pending: true }],
     ["while uploading", { busy: true }, {}],
@@ -244,7 +243,7 @@ test("paste is refused exactly where the attach picker is disabled", () => {
     assert.deepEqual(recorded.started, [], `${label}: no upload starts`);
     const merged = props(recorded.overrides);
     const picker = element("input", recorded.overrides);
-    if (merged.consoleView || !merged.canWrite || !merged.mediaUpload.enabled)
+    if (!merged.canWrite || !merged.mediaUpload.enabled)
       assert.equal(picker, null, `${label}: the picker is hidden`);
     else
       assert.equal(

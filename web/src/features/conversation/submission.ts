@@ -5,7 +5,6 @@ export interface ComposerSubmission {
   text: string;
   draft: string;
   selected: string;
-  consoleView: boolean;
   peer: string | null;
   replyId: string | null;
 }
@@ -26,13 +25,13 @@ export function deletionKind(text: string): "message" | "resource" | null {
       : null;
 }
 export function submissionFrame(submission: Readonly<ComposerSubmission>) {
-  const { text, peer, replyId, selected, consoleView } = submission;
+  const { text, peer, replyId, selected } = submission;
   const message = !text.startsWith("/");
   return {
     ...(submission.markdown === undefined
       ? {}
       : { markdown: submission.markdown }),
-    room: consoleView ? null : selected,
+    room: selected || null,
     text:
       message && replyId
         ? `/reply ${replyId} ${text}`

@@ -22,7 +22,7 @@ export function useCommandRequests(socket: RefObject<WebSocket | null>) {
       return Promise.reject(new Error("Another command is pending."));
     return new Promise((resolve) => {
       lifecycle.submit({
-        command: { text, room: "@command", key: null, action: true },
+        command: { text, room: "", key: null, action: true },
         frame: { room: null, text },
         complete: resolve,
       });
